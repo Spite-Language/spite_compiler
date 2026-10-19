@@ -6,47 +6,49 @@ old project.
 
 **The compiler is being written again, and only the compiler.** The language is decided and does not move:
 the standard library, the tests, the documentation and the decision log stay in
-`D:/Projects/SpiteLanguage` until they move to a repository of their own. The old compiler is the thing
+`../SpiteLanguage` until they move to a repository of their own. The old compiler is the thing
 being ported, and it is the reference for every rule: every diagnostic it writes, this compiler must write
 too, with the same words, at the same line. The ideas for the new one are in
-[`new_compiler.md`](D:/Projects/SpiteLanguage/new_compiler.md), and `TODO.md` is the list of what is left, in
+[`new_compiler.md`](../SpiteLanguage/new_compiler.md), and `TODO.md` is the list of what is left, in
 the order it is done.
 
 ## Do this
 
-Three commands, in this folder. Nothing to think about, and each one says what it did.
+Two commands, in this folder. Nothing to think about, and each one says what it did.
 
-**1. Build the compiler.** The old compiler (in `D:/Projects/SpiteLanguage`) builds this one, because this
-one is written in Spite. It is written to `.spite/spite.exe`, inside this folder, so it is never mixed up
+**1. Build the compiler.** The old compiler (the one in `.spite/spite-0.0.6-windows/`) builds this one, because
+this one is written in Spite. It is written to `.spite/spite.exe`, inside this folder, so it is never mixed up
 with the old compiler's own:
 
-    bash D:/Projects/SpiteLanguage/bin/spite D:/Projects/SpiteCompiler/.spite/spite_compiler --build --executable-path=D:/Projects/SpiteCompiler/.spite/spite.exe
+    .spite/spite-0.0.6-windows/spite.exe .spite/spite_compiler --build --executable-path=.spite/spite.exe
 
-**2. Build the test program with the compiler that was just built:**
+**2. Run a test with the compiler that was just built.** The tests live in the repository beside this one,
+`../SpiteSpec/tests`, one folder per program, and they are run from there:
 
-    D:/Projects/SpiteCompiler/.spite/spite.exe D:/Projects/SpiteCompiler/examples/exit_code
+    .spite/spite.exe ../SpiteSpec/tests/exit_code
+    ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
 
-It writes the program here:
-
-    D:/Projects/SpiteCompiler/examples/exit_code/.spite/build/exit_code.exe
-
-**3. Run it:**
-
-    D:/Projects/SpiteCompiler/examples/exit_code/.spite/build/exit_code.exe
-
-It prints nothing and leaves the exit code 4072, which is what the program computes.
-
-All of it in one copy-and-paste, from `D:/Projects/SpiteCompiler`:
-
-    bash D:/Projects/SpiteLanguage/bin/spite D:/Projects/SpiteCompiler/.spite/spite_compiler --build --executable-path=D:/Projects/SpiteCompiler/.spite/spite.exe
-    D:/Projects/SpiteCompiler/.spite/spite.exe D:/Projects/SpiteCompiler/examples/exit_code
-    D:/Projects/SpiteCompiler/examples/exit_code/.spite/build/exit_code.exe
-    echo %ERRORLEVEL%
+The first command writes the executable to `<program>/.spite/build/<name>.exe`, and the second runs it: the
+value the program answers is the exit code it leaves (4072 for `exit_code`, 10 for `sum`). `TODO.md` says
+how a test is ported, and when.
 
 Two things to know about the paths. The folder is named `SpiteCompiler`, and a program folder is named in
 snake_case, so the build goes through the junction `.spite/spite_compiler`, which is this same folder under
 a name the rule allows. And the compiler is built with `--build`, so it is written and not run: the run
 would fail, because the compiler cannot compile its own source yet.
+
+**The standard library is named by the program, not found by the compiler.** A program's first line loads
+it, with the path relative to the program that holds the load:
+
+```spite
+func Example(): Integer {
+    load "../../../SpiteCompiler/.spite/spite-0.0.6-windows/library"
+    load "../../../SpiteCompiler/.spite/spite-0.0.6-windows/library_windows"
+```
+
+The programs of the old repository do not do that yet: they relied on the launcher, which is gone. Until
+they name the library, the new compiler cannot read them, and `TODO.md` says so.
+
 
 ## How it is run
 
@@ -71,7 +73,7 @@ snake_case, and the program answers the value its entry constructor gives as the
 - **It writes machine code.** The low representation is printed to a Windows x86 executable. There is no C
   anywhere in this project: no C is written, no C is read, and no C compiler is needed to build a program.
 - **It imports the standard library.** The library lives in another repository
-  (`D:/Projects/SpiteLanguage/library`) and this project does not provide it, change it or keep a copy of
+  (`../SpiteLanguage/library`) and this project does not provide it, change it or keep a copy of
   it. The compiler reads it as a program loads any other folder, and compiles it. The library is not part
   of the language: it is a regular folder a program loads, and anyone can bring their own. The compiler
   names no class of it, and the language gives every library the same way to reach the C library and the

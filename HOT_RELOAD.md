@@ -13,7 +13,7 @@ a small library the running program loads and swaps in. Objects, singletons and 
 stay as they were: only functions change.
 
 The original compiler does this with C, and its numbers are in
-`D:/Projects/SpiteLanguage/benchmarks/a_reload_compiles_only_the_classes_that_changed`:
+`../SpiteLanguage/benchmarks/a_reload_compiles_only_the_classes_that_changed`:
 
 | Step | The original |
 |---|---|
@@ -73,7 +73,7 @@ state and the answer.
 ## What a reload may change
 
 This is the language's rule, and the compiler enforces it. The table is the original's
-(`D:/Projects/SpiteLanguage/docs/repl.md`, *What a reload can change*); ours is the same table.
+(`../SpiteLanguage/docs/repl.md`, *What a reload can change*); ours is the same table.
 
 | You change | What happens |
 |---|---|
@@ -102,7 +102,7 @@ has to decide, and each one has bitten the original at least once.
 
 ### The reopening
 
-**The rule** (`D:/Projects/SpiteLanguage/specs/packages.md`): every loaded root merges into the same
+**The rule** (`../SpiteLanguage/specs/packages.md`): every loaded root merges into the same
 namespaces, and a second root with the same folder structure and file name **reopens** the class. A later
 `func` or `var` with the same name replaces the earlier one, in load order (the entry folder first, then the
 loads in the order they were discovered), a `var`'s replacement type must match, and a new `func`, `var`,
@@ -141,7 +141,7 @@ HotCounter changed`).
 ### The layout
 
 **The rule.** A class's attributes are laid out in the object, and the layout is the compiler's decision
-(`D:/Projects/SpiteLanguage/specs/memory.md`). A reload that adds, removes, renames or retypes an attribute
+(`../SpiteLanguage/specs/memory.md`). A reload that adds, removes, renames or retypes an attribute
 changes the layout, and every live object of the class has to move to the new attributes.
 
 **Why it is dangerous.** The running program holds objects. A reload that moved them wrongly loses their

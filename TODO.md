@@ -7,13 +7,13 @@ moves. The compiler is written in Spite and is built by the old compiler until i
 
 **The compiler is being written again, and only the compiler.** The language is decided and does not move; the
 standard library, the tests, the documentation and the decision log stay where they are
-(`D:/Projects/SpiteLanguage`) until they move to a repository of their own. What is here is the compiler, and
+(`../SpiteLanguage`) until they move to a repository of their own. What is here is the compiler, and
 nothing else.
 
 **Why again.** The old compiler got to be hard to maintain, and hard for a small model to work on, which
 is one of the goals the language has: it is one program of 277 files, and a change to one part of it means
 reading the rest. The ideas for the new one are written down in
-[`new_compiler.md`](D:/Projects/SpiteLanguage/new_compiler.md), and they are these:
+[`new_compiler.md`](../SpiteLanguage/new_compiler.md), and they are these:
 
 - **It is broken into steps, one folder each**, and a step takes the previous step's answer and hands its
   own answer to the next one. No step reaches back into another.
@@ -33,13 +33,13 @@ for every rule:
 
 | What | Where it is |
 |---|---|
-| the compiler being ported | [`D:/Projects/SpiteLanguage/compiler`](D:/Projects/SpiteLanguage/compiler) |
-| the ideas this compiler is built on | [`new_compiler.md`](D:/Projects/SpiteLanguage/new_compiler.md) |
-| the language, normative | [`specs/`](D:/Projects/SpiteLanguage/specs) |
-| the language, taught | [`docs/`](D:/Projects/SpiteLanguage/docs) |
-| the 263 programs that must fail with the same texts | [`diagnostics/`](D:/Projects/SpiteLanguage/diagnostics) |
-| the corpus the compiler must pass | [`conformance/`](D:/Projects/SpiteLanguage/conformance) |
-| the suite that says whether it does | [`check.sh`](D:/Projects/SpiteLanguage/check.sh) |
+| the compiler being ported | [`../SpiteLanguage/compiler`](../SpiteLanguage/compiler) |
+| the ideas this compiler is built on | [`new_compiler.md`](../SpiteLanguage/new_compiler.md) |
+| the language, normative | [`specs/`](../SpiteLanguage/specs) |
+| the language, taught | [`docs/`](../SpiteLanguage/docs) |
+| the 263 programs that must fail with the same texts | [`diagnostics/`](../SpiteLanguage/diagnostics) |
+| the corpus the compiler must pass | [`conformance/`](../SpiteLanguage/conformance) |
+| the suite that says whether it does | [`check.sh`](../SpiteLanguage/check.sh) |
 | what the old compiler does and does not do | [the table below](#what-the-original-compiler-has-that-this-one-does-not) |
 
 **The old compiler's rules are this compiler's rules.** Every diagnostic it writes is one this compiler must
@@ -53,14 +53,14 @@ Asked and answered: **no, not yet.** What happens today, exactly:
 
 - `spite .` fails, in both compilers. A program folder is named in snake_case (the language's rule, and the
   new compiler's mapping refuses a folder that is not), and this folder is `SpiteCompiler`. The old
-  compiler answers `error: 'D:/Projects/SpiteCompiler' holds no program: a program is a folder holding an
-  entry file named after it, 'D:/Projects/SpiteCompiler/SpiteCompiler.spite'`, and the new one answers
+  compiler answers `error: '.' holds no program: a program is a folder holding an
+  entry file named after it, './SpiteCompiler.spite'`, and the new one answers
   `error: the folder 'SpiteCompiler' is not named in snake_case: every folder of a program is lowercase
   words joined by '_', so rename it 'spite_compiler'`.
 - The build goes through the junction, which is the same folder under a snake_case name, and the compiler
   is written to `.spite/spite.exe` so it is never mixed up with the old compiler's own:
 
-      bash D:/Projects/SpiteLanguage/bin/spite D:/Projects/SpiteCompiler/.spite/spite_compiler --build --executable-path=D:/Projects/SpiteCompiler/.spite/spite.exe
+      bash ../SpiteLanguage/bin/spite .spite/spite_compiler --build --executable-path=.spite/spite.exe
 
   That command also *runs* the compiler, and the run fails: the compiler cannot compile its own source
   yet, so the exit code is 1 even though the executable is written. `--build` skips the run.
@@ -87,7 +87,7 @@ The tasks, in the order they are needed:
 The original compiler reloads a running program by spawning itself, compiling the changed classes into a
 library beside the executable, and having the running program load that library and swap the new code in.
 Its own numbers, for a small program of four classes (from
-`D:/Projects/SpiteLanguage/benchmarks/a_reload_compiles_only_the_classes_that_changed`):
+`../SpiteLanguage/benchmarks/a_reload_compiles_only_the_classes_that_changed`):
 
 | Step | The original |
 |---|---|
@@ -149,11 +149,11 @@ function, so a reload's optimisation of the changed class does not change the ot
 Two steps, and the second is the one that matters.
 
 1. **The old compiler builds the new one.** It already does: the new compiler's source is Spite the old
-   compiler accepts, and `bash D:/Projects/SpiteLanguage/bin/spite D:/Projects/SpiteCompiler/.spite/spite_compiler`
+   compiler accepts, and `bash ../SpiteLanguage/bin/spite .spite/spite_compiler`
    builds it. Every change here keeps that true, because the new compiler is written in the language the
    old one compiles.
 2. **The new compiler builds the original repository's test suite.** The new compiler compiles every program
-   under `D:/Projects/SpiteLanguage`, runs it, and gives what the original compiler gives: the same output,
+   under `../SpiteLanguage`, runs it, and gives what the original compiler gives: the same output,
    the same count of allocations and frees, and the same errors with the same texts.
 
 Step 1 holds today. Step 2 is what the list below is for, in the order it is done.
@@ -162,7 +162,7 @@ Step 1 holds today. Step 2 is what the list below is for, in the order it is don
 
 - **It writes machine code.** The low representation is printed to a Windows x86 executable. There is no C
   anywhere in this project: no C is written, no C is read, and no C compiler is needed to build a program.
-- **It imports the standard library.** The library lives in another repository (`D:/Projects/SpiteLanguage/library`)
+- **It imports the standard library.** The library lives in another repository (`../SpiteLanguage/library`)
   and this project does not provide it, change it or carry a copy of it. The compiler reads it as a program
   loads any other folder, and compiles it.
 - **It reads what the program needs.** The mapping and the symbols read only the classes something names, so
@@ -230,7 +230,7 @@ has a loop and a call with an argument, and answers 4072. The compiler writes ea
 
 ## What the original compiler has that this one does not
 
-The original compiler lives in `D:/Projects/SpiteLanguage/compiler`. This is what each of its parts has
+The original compiler lives in `../SpiteLanguage/compiler`. This is what each of its parts has
 that this compiler does not have yet, and what this compiler does instead.
 
 | The original | What it has | What this compiler has instead |
@@ -379,6 +379,28 @@ compiler has to know the library's members and their signatures to answer them.
 
 ### 5. The rest
 
+- [ ] **The programs of the old repository name the library.** A program's first line loads it, because
+      the launcher is gone: `load "<path>/library"` and `load "<path>/library_windows"`. The programs under
+      `../SpiteLanguage` (the examples, the corpus, the documentation's programs) do not do that
+      yet, so the new compiler cannot read them, and they are the test that says whether it is compatible.
+      The old compiler cannot follow that either: it loads the library twice, once through the launcher and
+      once through the program, and gives a loaded platform folder the namespace of its own name.
+- [ ] **The library is loaded the way the new compiler loads it.** While the old compiler builds this
+      compiler, the library is the release's own shape: the Windows part sits inside it, as
+      `.spite/spite-0.0.6-windows/library/windows`, and the launcher loads it. The old compiler gives a
+      loaded platform folder the namespace of its own name, so it cannot be loaded as the program names it,
+      and it refuses a program that names the library itself. After the bootstrap, the library is the
+      program's to name, in its first line, and the parts are:
+  - [ ] **A loaded folder reopens a class another folder declares.** Two folders, one class: the one
+        loaded later wins, and the members of the earlier are kept. The mapping keeps one class per name
+        today, so the shared part of the library is lost when the Windows part is loaded.
+  - [ ] **A folder named after an operating system is not a namespace.** The Windows part is the library's
+        classes again, not `Windows.File`, and only the target system's folder is loaded at all.
+  - [ ] **The old compiler's rules about the library go.** "Only the library may read the memory at an
+        address" is a rule about a folder name, and it stops when the library is any folder a program
+        names.
+  - [ ] **This compiler's own entry file names the library**, the way every other program does, when the
+        new compiler is the one that builds it.
 - [ ] **The cache per step**, so restarting a compilation redoes only the work that changed.
 - [ ] **The tree shaking**, and the inspectable build.
 - [ ] **The optimisation passes**, ours and not the original's: the register allocation, the folding of the
@@ -391,7 +413,7 @@ compiler has to know the library's members and their signatures to answer them.
 One line each, so none is forgotten. The ones under *Not ours* are about the C the original writes,
 and this compiler writes machine code instead. The rest are ours to do, and each one needs the
 feature its group names. The original writes each of them down with the case that shows it, in
-`D:/Projects/SpiteLanguage/docs/optimizations.md`.
+`../SpiteLanguage/docs/optimizations.md`.
 
 ### The tree shaking and the compile-time questions
 
@@ -511,7 +533,7 @@ feature its group names. The original writes each of them down with the case tha
 
 One line each, so none is forgotten. A proof is a fact the compiler establishes while compiling, and it
 is what lets the compiler fold a check away, keep a value in a frame, or refuse a program it can prove
-wrong. The original writes each of them down in `D:/Projects/SpiteLanguage/docs/proofs.md`, and the same
+wrong. The original writes each of them down in `../SpiteLanguage/docs/proofs.md`, and the same
 rules hold here: a program that is wrong must be refused, and a program that is right must not pay for
 a check nothing needs.
 
@@ -926,7 +948,7 @@ saw. Each line below is one of them, named by the program that checks it.
 
 ## What the original test suite asks of us
 
-`bash D:/Projects/SpiteLanguage/check.sh` is the suite. It is the definition of "done" for this compiler,
+`bash ../SpiteLanguage/check.sh` is the suite. It is the definition of "done" for this compiler,
 and each of its jobs is a thing this compiler must be able to do.
 
 | The job | What it runs | What this compiler must do |
@@ -941,6 +963,40 @@ and each of its jobs is a thing this compiler must be able to do.
 | The compiler's memory | The compiler compiles itself once more with `--debug-memory` and frees everything it takes | The same. |
 | The other systems | Each system's folder in `library/` compiles, and the programs that ask the system for what this one does not run | The same, once there is a backend for those systems. This compiler writes Windows x86 only, so the job is out of reach until then. |
 | The reloads, the final classes, the launcher | The fast reloads, `--final-classes` and the launcher all work | The same. |
+
+## The tests
+
+The tests live in their own folder, `../SpiteSpec`, with a `tests` subfolder in it, so that they ship
+as a repository of their own with the tests up to date, instead of mixed in with the compiler. This
+repository is the compiler and nothing else.
+
+**The shape.** One folder per program under `tests`, named after what the program is, and each program
+stands on its own: it shares no file with another test, so a test can be read, changed or moved without
+touching the rest. `../SpiteSpec/tests/exit_code/exit_code.spite` is the shape.
+
+**The format.** A program names the standard library in its first line, because there is no launcher any
+more and the compiler does not go looking for a library:
+
+```spite
+func ExitCode(): Integer {
+    load "../../../SpiteCompiler/.spite/spite-0.0.6-windows/library"
+    load "../../../SpiteCompiler/.spite/spite-0.0.6-windows/library_windows"
+```
+
+**How the tests are ported.** A program is ported when the part of the language it needs works, and not
+before: the port is the work, and the program is what shows the work is done.
+
+- [ ] The program is moved into `../SpiteSpec/tests/<name>/`, one folder of its own, and nothing it
+      shares with another program comes with it.
+- [ ] It is updated to the new format: the first line names the library, the entry class is the program's
+      own, and anything the old compiler needed the launcher for is written in the program itself.
+- [ ] It is run from there, with the compiler this repository builds, and the answer it gives is the answer
+      the old compiler gives.
+- [ ] The programs of the old repository keep their own copies while the old compiler is still the one
+      that builds this compiler. They are the corpus the new compiler is held to, and each one is ported
+      as the part of the language it uses lands.
+- [ ] A part of the language is done when the programs that use it are ported and answer the same, not when
+      the code for it is written.
 
 ## The rules
 

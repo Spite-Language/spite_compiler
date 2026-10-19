@@ -66,6 +66,19 @@ step that fails stops the run there: a syntax error dies at the syntax tree and 
 
 ## Commits
 
+**Ask the owner before you commit, and wait for the answer.** This repository is a port, and what a commit
+carries is what the port carries, so no commit is made without the owner's authorization. Before you commit,
+show these two things:
+
+- **What to test.** The commands that prove the change works, and what each one should answer. For a change
+  to the compiler, that is the build, the demo program, and the exit code the program leaves. For a change to
+  a document, that is the document itself, and every claim it makes about the code.
+- **What to review.** The files the commit touches, and what to look at in them: the rules the change has to
+  keep (no em dashes, the naming, one statement per line, no call inside a call), the contract of any step
+  whose behaviour changed, and the lines of `TODO.md` that the change makes true, or untrue.
+
+The commit is made after the answer, and not before.
+
 **Always start a commit message with a gitmoji.** This is not optional.
 
 ```
@@ -123,12 +136,12 @@ The name `main` is not used: the branch is `master`.
 Three commands, and the README says what each one does:
 
 ```
-bash D:/Projects/SpiteLanguage/bin/spite D:/Projects/SpiteCompiler/.spite/spite_compiler --build --executable-path=D:/Projects/SpiteCompiler/.spite/spite.exe
-D:/Projects/SpiteCompiler/.spite/spite.exe D:/Projects/SpiteCompiler/examples/exit_code
-D:/Projects/SpiteCompiler/examples/exit_code/.spite/build/exit_code.exe
+.spite/spite-0.0.6-windows/spite.exe .spite/spite_compiler --build --executable-path=.spite/spite.exe
+.spite/spite.exe ../SpiteSpec/tests/exit_code
+../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
 ```
 
-The first builds this compiler with the old compiler, the second builds the demo program with the compiler
+The first builds this compiler with the old compiler, the second builds a test program with the compiler
 that was just built, and the third runs it. The compiler is written to `.spite/spite.exe` so it is never
 mixed up with the old compiler's own.
 
