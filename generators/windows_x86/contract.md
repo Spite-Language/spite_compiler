@@ -1,0 +1,47 @@
+# generators/windows_x86
+
+The last step: machine code, and the file around it.
+
+## What it takes and answers
+
+It takes a low representation and answers bytes: a Windows PE executable file, written to disk, that runs.
+
+## The split
+
+- `pe.spite` lays the file out. It owns the headers, the section table, the import table and where every
+  label lands, because those are all questions about the shape of the whole file and answering them one
+  instruction at a time would mean writing the file twice.
+- `emitter.spite` turns one instruction into bytes. It owns the encoding of each instruction, the register
+  numbers, and how the machine's calling convention lays arguments down.
+- `registers.spite` is the one place that knows which machine register a virtual register becomes.
+- `layout.spite` owns every address in the file: the image base, the sections, and the import table.
+- `fixup.spite` is a patch to make once every instruction is written and the places they land are known.
+
+## What is built
+
+A 32-bit PE for Windows, two sections, importing `ExitProcess` from `kernel32.dll`, with the program
+computing a whole number and answering it as the process exit code. That is the smallest thing that is
+really a Windows program rather than a demonstration.
+
+`examples/exit_code` is the program that proves it: it computes 4072 with a loop and a call, and the
+executable it is written to leaves that as the exit code.
+
+## What is not built
+
+- Calling out to the standard library, so nothing prints and nothing reads a file yet.
+- The 64-bit machine, and every machine but this one.
+- Relocations and a relocatable image. The file is fixed at the address it is written for, which is
+  allowed and is what the small programs the compiler builds to test itself need.
+- Registers. Every virtual register lives in a stack slot, so every value is written and read through
+  memory.
+- Anything above the subset `low_intermediary_representation` lowers.
+
+## The calling convention
+
+The Windows 32-bit convention on `cdecl` is what the emitter follows: arguments pushed right to left onto
+the stack, the caller clearing them, `eax` answering a value, `esp` holding the frame. A Spite class is a
+pointer to its own block, so a method takes the instance as its first argument, exactly as the old
+compiler's generated C did.
+
+The frame is the usual one: `ebp` is the frame pointer, the parameters are at `[ebp + 8]` and up, and the
+values the function made live below it, each at its own slot.

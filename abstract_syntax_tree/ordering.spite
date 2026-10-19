@@ -1,0 +1,272 @@
+var path = ""
+var class_name = ""
+var report = Diagnostics.Report()
+var seen_names = List<String>()
+var singletons = 0
+var codegen_values = 0
+var bounded_values = 0
+var enums = 0
+var numbered_values = 0
+var unions = 0
+var types = 0
+var shaped_members = 0
+var declared_variables = 0
+var inferred_declared_variables = 0
+var declared_functions = 0
+var answers_nothing = 0
+var parameters = 0
+
+func Ordering(starting_path: String, starting_class_name: String, starting_report: Diagnostics.Report) {
+    path = starting_path
+    class_name = starting_class_name
+    report = starting_report
+}
+
+func check(file: AbstractSyntaxTree.Shapes.SourceFile) {
+    var highest = 0
+    var index = 0
+    while index < file.declarations.count() {
+        var declaration = file.declarations[index]
+        var own = rank_of(declaration)
+        if own < highest {
+            misplaced(declaration, own, highest)
+        } else {
+            highest = own
+        }
+        read_declaration(declaration)
+        index = index + 1
+    }
+}
+
+func misplaced(declaration: AbstractSyntaxTree.Shapes.Declarations.Declaration, own: Integer, highest: Integer) {
+    var shape = AbstractSyntaxTree.Reader.Shape()
+    var line = shape.line_of_declaration(declaration)
+    var later = rank_name(own)
+    var earlier = rank_name(highest - 1)
+    var message = misplaced_message(later, earlier)
+    report.at(path, line, 0, message)
+}
+
+func misplaced_message(later: String, earlier: String): String {
+    return "this {later} stands after a {earlier}: a file is ordered, a singleton line first, then codegen values, enums, unions, types, variables and declared_functions"
+}
+
+func rank_of(declaration: AbstractSyntaxTree.Shapes.Declarations.Declaration): Integer {
+    switch declaration {
+        AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration: return 0
+        AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration: return 1
+        AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration: return 2
+        AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration: return 3
+        AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration: return 4
+        AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration: return 5
+        AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration: return 6
+    }
+}
+
+func rank_name(rank: Integer): String {
+    switch rank {
+        0: return "singleton line"
+        1: return "codegen value"
+        2: return "enum"
+        3: return "union"
+        4: return "type"
+        5: return "variable"
+        _: return "function"
+    }
+}
+
+func read_declaration(declaration: AbstractSyntaxTree.Shapes.Declarations.Declaration) {
+    switch declaration {
+        AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration: read_singleton()
+        AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration: read_generic(declaration)
+        AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration: read_enum(declaration)
+        AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration: read_union(declaration)
+        AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration: read_type_shape(declaration)
+        AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration: read_attribute(declaration)
+        AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration: read_function(declaration)
+    }
+}
+
+func read_singleton() {
+    singletons = singletons + 1
+}
+
+func read_generic(declaration: AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration) {
+    codegen_values = codegen_values + 1
+    if declaration.bound {
+        bounded_values = bounded_values + 1
+    }
+    remember(declaration.name, declaration.line)
+}
+
+func read_enum(declaration: AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration) {
+    enums = enums + 1
+    var value_names = List<String>()
+    var index = 0
+    while index < declaration.values.count() {
+        var value = declaration.values[index]
+        if value.number {
+            numbered_values = numbered_values + 1
+        }
+        if value_names.contains(value.name) {
+            report.at(path, declaration.line, 0, "'{declaration.name}' lists '{value.name}' twice")
+        } else {
+            value_names.append(value.name)
+        }
+        index = index + 1
+    }
+    remember(declaration.name, declaration.line)
+}
+
+func read_union(declaration: AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration) {
+    unions = unions + 1
+    var member_names = List<String>()
+    var index = 0
+    while index < declaration.member_names.count() {
+        var member = declaration.member_names[index]
+        if member_names.contains(member) {
+            report.at(path, declaration.line, 0, "'{declaration.name}' lists '{member}' twice")
+        } else {
+            member_names.append(member)
+        }
+        index = index + 1
+    }
+    remember(declaration.name, declaration.line)
+}
+
+func read_type_shape(declaration: AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration) {
+    types = types + 1
+    var index = 0
+    while index < declaration.members.count() {
+        read_type_member(declaration, declaration.members[index])
+        index = index + 1
+    }
+    remember(declaration.name, declaration.line)
+}
+
+func read_type_member(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration,
+    member: AbstractSyntaxTree.Shapes.Types.TypeMember,
+) {
+    if member.result {
+        shaped_members = shaped_members + 1
+    }
+    read_parameters(declaration, member.parameters)
+    if member.name.is_empty() {
+        report.at(path, declaration.line, 0, "a member of '{declaration.name}' has no name")
+    }
+}
+
+func read_attribute(declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration) {
+    declared_variables = declared_variables + 1
+    if not declaration.declared_type {
+        inferred_declared_variables = inferred_declared_variables + 1
+    }
+    if not declaration.value {
+        report.at(path, declaration.line, 0, "'{declaration.name}' has no default value: write '=' and the value")
+    }
+    remember(declaration.name, declaration.line)
+}
+
+func read_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    declared_functions = declared_functions + 1
+    if not declaration.result {
+        answers_nothing = answers_nothing + 1
+    }
+    read_parameters(declaration, declaration.parameters)
+    read_constructor(declaration)
+    remember(declaration.name, declaration.line)
+}
+
+func read_parameters(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.Declaration,
+    list: List<AbstractSyntaxTree.Shapes.Declarations.Parameter>,
+) {
+    var index = 0
+    while index < list.count() {
+        var parameter = list[index]
+        parameters = parameters + 1
+        var line = declaration_line(declaration)
+        var last = index == list.count() - 1
+        if parameter.is_variadic and not last {
+            var complaint = variadic_message(parameter.name)
+            report.at(path, line, 0, complaint)
+        }
+        if not parameter.declared_type {
+            var complaint = untyped_message(parameter.name)
+            report.at(path, line, 0, complaint)
+        }
+        index = index + 1
+    }
+}
+
+func untyped_message(name: String): String {
+    return "{name}' has no type: a parameter is declared 'name: Type'"
+}
+
+func variadic_message(name: String): String {
+    return "'{name}' is written with dots so the caller passes the values one by one, so it is the last parameter"
+}
+
+func declaration_line(declaration: AbstractSyntaxTree.Shapes.Declarations.Declaration): Integer {
+    var shape = AbstractSyntaxTree.Reader.Shape()
+    return shape.line_of_declaration(declaration)
+}
+
+func read_constructor(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    var is_constructor = declaration.name == class_name
+    if is_constructor {
+        read_constructor_body(declaration)
+    }
+}
+
+func read_constructor_body(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    assert declaration.body
+    var message = empty_constructor_message(class_name)
+    if declaration.body.statements.is_empty() {
+        report.at(path, declaration.line, 0, message)
+    }
+}
+
+func empty_constructor_message(name: String): String {
+    return "'{name}' has an empty constructor: delete it, since a class without one is made from its defaults"
+}
+
+func remember(name: String, line: Integer) {
+    assert not name.is_empty()
+    var is_repeat = seen_names.contains(name)
+    if is_repeat {
+        var message = twice_message(name)
+        report.at(path, line, 0, message)
+    } else {
+        seen_names.append(name)
+    }
+}
+
+func twice_message(name: String): String {
+    return "'{name}' is declared twice in '{path}'"
+}
+
+func summary(): String {
+    var parts = List<String>()
+    add_count(parts, "singleton", singletons)
+    add_count(parts, "codegen value", codegen_values)
+    add_count(parts, "bounded codegen value", bounded_values)
+    add_count(parts, "enum", enums)
+    add_count(parts, "fixed enum value", numbered_values)
+    add_count(parts, "union", unions)
+    add_count(parts, "type", types)
+    add_count(parts, "member that answers", shaped_members)
+    add_count(parts, "variable", declared_variables)
+    add_count(parts, "variable with an inferred type", inferred_declared_variables)
+    add_count(parts, "function", declared_functions)
+    add_count(parts, "function that answers nothing", answers_nothing)
+    add_count(parts, "parameter", parameters)
+    return parts.join(", ")
+}
+
+func add_count(parts: List<String>, what: String, count: Integer) {
+    if count > 0 {
+        parts.append("{count} {what}")
+    }
+}

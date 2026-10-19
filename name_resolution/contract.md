@@ -1,0 +1,93 @@
+# name_resolution
+
+The step that answers one question: for every name the program writes, which class, function,
+attribute, parameter or local holds it.
+
+It is the step the old compiler calls discovery and resolution together, split apart. Everything after it
+needs to know what is reachable, and reachability is only knowable once a name is answered.
+
+## What it takes and answers
+
+It takes the `SourceFile` of every class the `symbols` step read, and answers:
+
+- a `ResolvedType` for every type written anywhere in the program,
+- a `Monomorphised` instance for every generic class the program writes with type arguments.
+
+## The rule it follows
+
+**Every time a generic or a type is found, it is monomorphised.**
+
+A generic class is a file with a `generic $name` line. It is a template, not a class: nothing of it is
+compiled until it is written with a type. So when the resolver finds a type that names a generic class,
+it does not resolve the name and move on. It *mints an instance*: a copy of that class with its type
+parameter bound to the type written at the use.
+
+`List<Integer>` mints `List_of_Integer`. `List<List<Integer>>` mints `List_of_List_of_Integer`. The
+instance is cached by its class and its arguments, so the same instantiation is made once however many
+times it is written.
+
+The instance's own types are then resolved with the substitution in place, and *that* finds more generic
+classes, which are monomorphised in turn. The work is a queue, and it ends when no new instance is
+minted.
+
+## The rules it enforces
+
+- A generic class written with no argument is an error naming the class and the line.
+- A generic class written with the wrong number of arguments is an error.
+- A class that is not generic written with an argument is a **note**, not an error. The old compiler
+  drops the argument silently; the note says so once per class. `Spite.AttributeDeclaration<$value_type>`
+  is such a case in the standard library: the class holds no type parameter, so the argument means
+  nothing and is dropped.
+- A type parameter that is not bound is an error.
+- A name that answers to nothing is collected and reported at the end of the run.
+
+## The two kinds of dependent type
+
+A type written with two segments is a qualified class name when the first segment names a class or a
+namespace, and a dependent type when it does not:
+
+- `Spite.Access` is the class `Access` in the namespace `Spite`.
+- `member.class` is the class of the value named `member`, which is a parameter of the enclosing
+  function.
+- `$value_type.element_type` is the element type of the type bound to `$value_type`.
+
+The old compiler decides the same way, by looking for the owner as a class and falling back to the
+member reading.
+
+A dependent type is resolved by finding the owner's type and then the member's type in it. The
+associated types of the built-in generic classes are known without a file:
+
+| class | member | is |
+| --- | --- | --- |
+| `List<T>` | `element_type` | `T` |
+| `Dictionary<K, V>` | `key_type` | `K` |
+| `Dictionary<K, V>` | `value_type` | `V` |
+| `Symbol<T>` | `value_type` | `T` |
+
+Any other member is found in the class's own declarations.
+
+## What is not built yet
+
+- The resolver answers a *type*, not a *value*. A name that is a function, an attribute or a local is
+  still not resolved, so a program cannot yet say which of its classes are reachable.
+- A template that nothing instantiates is never checked. That is deliberate: the same rule as everywhere
+  else in this compiler, that what is not used is not read. It does mean a broken generic class is only
+  found when something writes it.
+- The high representation is not built from these instances yet. `high_intermediary_representation/sample.spite`
+  writes its program by hand, so the monomorphised instances are not yet compiled into anything.
+
+## The files
+
+- `resolved_type.spite` — a type that has been resolved: a path, its arguments, whether it is nullable,
+  and whether it is a class, a type parameter, a dependent member or a codegen value.
+- `types.spite` — the builder for the above. A class cannot be called in Spite, so the ways of making
+  one live here.
+- `substitution.spite` — what a type parameter is bound to, and the applying of it to a type.
+- `instance.spite` — a monomorphised class: where it came from, its name, the parameters it binds, the
+  arguments it was given, and its substitution.
+- `mangle.spite` — the name of an instance: `List_of_Integer`.
+- `type_use.spite` — a type as it is written in a file, before it is resolved.
+- `finder.spite` — the walk over a file that finds every type written in it, in declarations, in
+  statements and in the type arguments of a call.
+- `resolver.spite` — the work: find the types, resolve them, mint the instances, and mint the instances
+  the instances need.

@@ -1,0 +1,1139 @@
+var path = ""
+var namespace = ""
+var tokens = List<AbstractSyntaxTree.Tokens.Token>()
+var position = 0
+var report = Diagnostics.Report()
+var failed = false
+var raw = ""
+var cursor = 0
+var literal = ""
+var pieces = List<AbstractSyntaxTree.Shapes.Expressions.TextPiece>()
+var no_path = List<String>()
+var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+var no_values = List<AbstractSyntaxTree.Shapes.Declarations.EnumValue>()
+var no_members = List<String>()
+var no_shapes = List<AbstractSyntaxTree.Shapes.Types.TypeMember>()
+var no_parameters = List<AbstractSyntaxTree.Shapes.Declarations.Parameter>()
+var no_statements = List<AbstractSyntaxTree.Shapes.Statements.Statement>()
+
+func Parser(
+    starting_path: String,
+    starting_namespace: String,
+    starting_tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    starting_report: Diagnostics.Report,
+) {
+    path = starting_path
+    namespace = starting_namespace
+    tokens = starting_tokens
+    report = starting_report
+}
+
+func parse_file(): AbstractSyntaxTree.Shapes.SourceFile {
+    var file = AbstractSyntaxTree.Shapes.SourceFile(path, namespace)
+    while not finished() {
+        var start = current()
+        var written = declaration()
+        file.declarations.append(written)
+        end_of_statement(start.line)
+    }
+    return file
+}
+
+func declaration(): AbstractSyntaxTree.Shapes.Declarations.Declaration {
+    var kind = current().kind
+    switch kind {
+        'keyword_singleton': return singleton_declaration()
+        'keyword_generic': return generic_declaration()
+        'keyword_enum': return enum_declaration()
+        'keyword_union': return union_declaration()
+        'keyword_type': return type_declaration()
+        'keyword_variable': return attribute_declaration()
+        'keyword_function': return function_declaration()
+        _: return not_a_declaration()
+    }
+}
+
+func singleton_declaration(): AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration {
+    var start = advance()
+    var written = AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration()
+    written.line = start.line
+    return written
+}
+
+func generic_declaration(): AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration {
+    var start = advance()
+    var token = current()
+    if token.kind != 'generic_name' {
+        refuse("expected a codegen value after 'generic', as in 'generic $name'")
+        return empty_generic(start.line)
+    }
+    var name_token = advance()
+    var bound: AbstractSyntaxTree.Shapes.Types.Type? = null
+    if check('colon') {
+        advance()
+        bound = type_reference()
+    }
+    var written = AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration(name_token.text, bound)
+    written.line = start.line
+    return written
+}
+
+func empty_generic(line: Integer): AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration {
+    var no_bound: AbstractSyntaxTree.Shapes.Types.Type? = null
+    var written = AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration("", no_bound)
+    written.line = line
+    return written
+}
+
+func enum_declaration(): AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration {
+    var start = advance()
+    var name = class_name_expected("an enum")
+    var values = List<AbstractSyntaxTree.Shapes.Declarations.EnumValue>()
+    if opening_brace_expected() {
+        read_enum_values(values)
+    } else {
+        return empty_enum(start.line)
+    }
+    var written = AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration(name, values)
+    written.line = start.line
+    return written
+}
+
+func read_enum_values(values: List<AbstractSyntaxTree.Shapes.Declarations.EnumValue>) {
+    while not finished() and not check('close_brace') {
+        var token = current()
+        if token.kind != 'symbol_literal' {
+            refuse("an enum's values are symbols, as in 'knight'")
+            return
+        }
+        var symbol = advance()
+        var number: AbstractSyntaxTree.Shapes.Expressions.Expression? = null
+        if check('equals') {
+            advance()
+            number = expression()
+        }
+        var value = AbstractSyntaxTree.Shapes.Declarations.EnumValue(symbol.text, number)
+        values.append(value)
+        end_of_statement(token.line)
+    }
+    closing_brace_expected()
+}
+
+func empty_enum(line: Integer): AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration {
+    var written = AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration("", no_values)
+    written.line = line
+    return written
+}
+
+func union_declaration(): AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration {
+    var start = advance()
+    var name = class_name_expected("a union")
+    var members = List<String>()
+    if opening_brace_expected() {
+        read_union_members(members)
+    } else {
+        return empty_union(start.line)
+    }
+    var written = AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration(name, members)
+    written.line = start.line
+    return written
+}
+
+func read_union_members(members: List<String>) {
+    while not finished() and not check('close_brace') {
+        var token = current()
+        if token.kind != 'class_name' {
+            refuse("a union's members are classes, as in 'Player'")
+            return
+        }
+        var path = dotted_name()
+        members.append(path)
+        end_of_statement(token.line)
+    }
+    closing_brace_expected()
+}
+
+func dotted_name(): String {
+    var first = advance()
+    var written = first.text
+    var keep_going = true
+    while keep_going and check('dot') {
+        advance()
+        var next_token = current()
+        if next_token.kind != 'class_name' {
+            refuse("expected a class name after the dot and found {next_token.written()}")
+            keep_going = false
+        } else {
+            var next_name = advance()
+            written = "{written}.{next_name.text}"
+        }
+    }
+    return written
+}
+
+func empty_union(line: Integer): AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration {
+    var written = AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration("", no_members)
+    written.line = line
+    return written
+}
+
+func type_declaration(): AbstractSyntaxTree.Shapes.Declarations.Declaration {
+    var start = advance()
+    var name = class_name_expected("a type")
+    var members = List<AbstractSyntaxTree.Shapes.Types.TypeMember>()
+    if opening_brace_expected() {
+        read_type_members(members)
+    } else {
+        return empty_type(start.line)
+    }
+    var written = AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration(name, members)
+    written.line = start.line
+    return written
+}
+
+func read_type_members(members: List<AbstractSyntaxTree.Shapes.Types.TypeMember>) {
+    while not finished() and not check('close_brace') {
+        var member = type_member()
+        members.append(member)
+    }
+    closing_brace_expected()
+}
+
+func empty_type(line: Integer): AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration {
+    var written = AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration("", no_shapes)
+    written.line = line
+    return written
+}
+
+func type_member(): AbstractSyntaxTree.Shapes.Types.TypeMember {
+    var token = current()
+    if token.kind != 'name' {
+        refuse("a type's members are written 'name: Type' or 'name(Type, Type): Type'")
+        return empty_type_member()
+    }
+    var name = advance()
+    var parameters = List<AbstractSyntaxTree.Shapes.Declarations.Parameter>()
+    var result: AbstractSyntaxTree.Shapes.Types.Type? = null
+    if check('open_parenthesis') {
+        advance()
+        read_member_parameters(parameters)
+        closing_parenthesis_expected("a function's parameters")
+    }
+    if check('colon') {
+        advance()
+        result = type_reference()
+    }
+    end_of_statement(token.line)
+    return AbstractSyntaxTree.Shapes.Types.TypeMember(name.text, parameters, result)
+}
+
+func read_member_parameters(parameters: List<AbstractSyntaxTree.Shapes.Declarations.Parameter>) {
+    while not finished() and not check('close_parenthesis') {
+        var taken = named_parameter(false)
+        parameters.append(taken)
+        if check('comma') {
+            advance()
+        }
+    }
+}
+
+func empty_type_member(): AbstractSyntaxTree.Shapes.Types.TypeMember {
+    var no_result: AbstractSyntaxTree.Shapes.Types.Type? = null
+    return AbstractSyntaxTree.Shapes.Types.TypeMember("", no_parameters, no_result)
+}
+
+func attribute_declaration(): AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration {
+    var start = advance()
+    var name = name_expected("a variable")
+    var declared: AbstractSyntaxTree.Shapes.Types.Type? = null
+    if check('colon') {
+        advance()
+        declared = type_reference()
+    }
+    var value: AbstractSyntaxTree.Shapes.Expressions.Expression? = null
+    if check('equals') {
+        advance()
+        value = expression()
+    } else {
+        refuse("every variable has a default value, so write '=' and the value")
+    }
+    var written = AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration(name, declared, value)
+    written.line = start.line
+    return written
+}
+
+func function_declaration(): AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration {
+    var start = advance()
+    var name = function_name()
+    var parameters = List<AbstractSyntaxTree.Shapes.Declarations.Parameter>()
+    if check('open_parenthesis') {
+        advance()
+        read_parameters(parameters)
+        closing_parenthesis_expected("a function's parameters")
+    } else {
+        refuse("a function takes its parameters in parentheses, as in 'func name(value: Type)'")
+    }
+    var result: AbstractSyntaxTree.Shapes.Types.Type? = null
+    if check('colon') {
+        advance()
+        result = type_reference()
+    }
+    var body: AbstractSyntaxTree.Shapes.Statements.Block? = null
+    if check('open_brace') {
+        body = block()
+    }
+    var written = AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration(name, parameters, result, body)
+    written.line = start.line
+    return written
+}
+
+func function_name(): String {
+    var token = current()
+    if token.kind == 'name' or token.kind == 'class_name' {
+        return advance().text
+    }
+    refuse("a function is declared 'func name()', so a name follows 'func'")
+    return ""
+}
+
+func read_parameters(parameters: List<AbstractSyntaxTree.Shapes.Declarations.Parameter>) {
+    while not finished() and not check('close_parenthesis') {
+        var taken = parameter()
+        parameters.append(taken)
+        if check('comma') {
+            advance()
+        }
+    }
+}
+
+func parameter(): AbstractSyntaxTree.Shapes.Declarations.Parameter {
+    if check('dots') {
+        advance()
+        return named_parameter(true)
+    }
+    return named_parameter(false)
+}
+
+func named_parameter(is_variadic: Boolean): AbstractSyntaxTree.Shapes.Declarations.Parameter {
+    var token = current()
+    if token.kind != 'name' {
+        refuse("a parameter is declared 'name: Type'")
+        return empty_parameter(is_variadic)
+    }
+    var name = advance()
+    if not check('colon') {
+        refuse("a parameter is declared 'name: Type', so write its type after the ':'")
+        return empty_parameter(is_variadic)
+    }
+    advance()
+    var declared = type_reference()
+    return AbstractSyntaxTree.Shapes.Declarations.Parameter(name.text, declared, is_variadic)
+}
+
+func empty_parameter(is_variadic: Boolean): AbstractSyntaxTree.Shapes.Declarations.Parameter {
+    var empty = AbstractSyntaxTree.Shapes.Types.NamedType(no_path, no_arguments)
+    return AbstractSyntaxTree.Shapes.Declarations.Parameter("", empty, is_variadic)
+}
+
+func name_expected(what: String): String {
+    var token = current()
+    if token.kind != 'name' {
+        refuse("expected the name of {what} and found {token.written()}")
+        return ""
+    }
+    return advance().text
+}
+
+func class_name_expected(what: String): String {
+    var token = current()
+    if token.kind != 'class_name' {
+        refuse("{what} is named in PascalCase, and found {token.written()}")
+        return ""
+    }
+    return advance().text
+}
+
+func opening_brace_expected(): Boolean {
+    if check('open_brace') {
+        advance()
+        return true
+    }
+    refuse("expected an opening brace and found {current().written()}")
+    return false
+}
+
+func closing_brace_expected() {
+    if check('close_brace') {
+        advance()
+        return
+    }
+    refuse("this brace is never closed: write the closing brace that ends it")
+}
+
+func closing_parenthesis_expected(what: String) {
+    if check('close_parenthesis') {
+        advance()
+        return
+    }
+    refuse("expected the closing parenthesis of {what} and found {current().written()}")
+}
+
+func statement(): AbstractSyntaxTree.Shapes.Statements.Statement {
+    var start = current()
+    var kind = start.kind
+    switch kind {
+        'keyword_variable': return variable_statement()
+        'keyword_return': return return_statement()
+        'keyword_if': return if_statement()
+        'keyword_else': return stranded_else(start.line)
+        'keyword_while': return while_statement()
+        'keyword_switch': return switch_statement()
+        'keyword_assert': return assert_statement(start.line)
+        'keyword_crash': return crash_statement(start.line)
+        'keyword_load': return load_statement()
+        'open_brace': return block()
+        _: return simple_statement(start.line)
+    }
+}
+
+func variable_statement(): AbstractSyntaxTree.Shapes.Statements.Statement {
+    var start = advance()
+    var name = name_expected("a variable")
+    var declared: AbstractSyntaxTree.Shapes.Types.Type? = null
+    if check('colon') {
+        advance()
+        declared = type_reference()
+    }
+    var value: AbstractSyntaxTree.Shapes.Expressions.Expression? = null
+    if check('equals') {
+        advance()
+        value = expression()
+    } else {
+        refuse("every variable has a default value, so write '=' and the value")
+    }
+    var written = AbstractSyntaxTree.Shapes.Statements.VariableStatement(name, declared, value)
+    written.line = start.line
+    return written
+}
+
+func return_statement(): AbstractSyntaxTree.Shapes.Statements.Statement {
+    var start = advance()
+    var value: AbstractSyntaxTree.Shapes.Expressions.Expression? = null
+    if not at_end_of_statement() {
+        value = expression()
+    }
+    var written = AbstractSyntaxTree.Shapes.Statements.ReturnStatement(value)
+    written.line = start.line
+    return written
+}
+
+func if_statement(): AbstractSyntaxTree.Shapes.Statements.Statement {
+    var start = advance()
+    var condition = expression()
+    var then_branch = block()
+    var else_branch: AbstractSyntaxTree.Shapes.Statements.Block? = null
+    if check('keyword_else') {
+        else_branch = else_of(start.line)
+    }
+    var written = AbstractSyntaxTree.Shapes.Statements.IfStatement(condition, then_branch, else_branch)
+    written.line = start.line
+    return written
+}
+
+func else_of(line: Integer): AbstractSyntaxTree.Shapes.Statements.Block {
+    advance()
+    var inner = statement()
+    var statements = List<AbstractSyntaxTree.Shapes.Statements.Statement>()
+    statements.append(inner)
+    var written = AbstractSyntaxTree.Shapes.Statements.Block(statements)
+    written.line = line
+    return written
+}
+
+func stranded_else(line: Integer): AbstractSyntaxTree.Shapes.Statements.Statement {
+    refuse("this 'else' follows no 'if': an 'else' comes right after the brace closing the branch it answers")
+    var empty = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+    var written = AbstractSyntaxTree.Shapes.Statements.CrashStatement(empty)
+    written.line = line
+    return written
+}
+
+func while_statement(): AbstractSyntaxTree.Shapes.Statements.Statement {
+    var start = advance()
+    var condition = expression()
+    var body = block()
+    var written = AbstractSyntaxTree.Shapes.Statements.WhileStatement(condition, body)
+    written.line = start.line
+    return written
+}
+
+func switch_statement(): AbstractSyntaxTree.Shapes.Statements.Statement {
+    var start = advance()
+    var value = expression()
+    var cases = List<AbstractSyntaxTree.Shapes.Statements.SwitchCase>()
+    if opening_brace_expected() {
+        read_cases(cases)
+    }
+    var written = AbstractSyntaxTree.Shapes.Statements.SwitchStatement(value, cases)
+    written.line = start.line
+    return written
+}
+
+func read_cases(cases: List<AbstractSyntaxTree.Shapes.Statements.SwitchCase>) {
+    while not finished() and not check('close_brace') {
+        var written = switch_case()
+        cases.append(written)
+    }
+    closing_brace_expected()
+}
+
+func switch_case(): AbstractSyntaxTree.Shapes.Statements.SwitchCase {
+    var value = expression()
+    if not check('colon') {
+        refuse("a case is written 'value:' or 'Class:', so write the ':' after it")
+        return empty_case()
+    }
+    advance()
+    var body = case_body()
+    return AbstractSyntaxTree.Shapes.Statements.SwitchCase(value, body)
+}
+
+func empty_case(): AbstractSyntaxTree.Shapes.Statements.SwitchCase {
+    var body = AbstractSyntaxTree.Shapes.Statements.Block(no_statements)
+    var empty = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+    return AbstractSyntaxTree.Shapes.Statements.SwitchCase(empty, body)
+}
+
+func case_body(): AbstractSyntaxTree.Shapes.Statements.Block {
+    if check('open_brace') {
+        return block()
+    }
+    var statements = List<AbstractSyntaxTree.Shapes.Statements.Statement>()
+    if not finished() {
+        var inner = statement()
+        statements.append(inner)
+    }
+    return AbstractSyntaxTree.Shapes.Statements.Block(statements)
+}
+
+func assert_statement(line: Integer): AbstractSyntaxTree.Shapes.Statements.Statement {
+    advance()
+    var condition = expression()
+    var written = AbstractSyntaxTree.Shapes.Statements.AssertStatement(condition)
+    written.line = line
+    return written
+}
+
+func crash_statement(line: Integer): AbstractSyntaxTree.Shapes.Statements.Statement {
+    advance()
+    var condition = expression()
+    var written = AbstractSyntaxTree.Shapes.Statements.CrashStatement(condition)
+    written.line = line
+    return written
+}
+
+func load_statement(): AbstractSyntaxTree.Shapes.Statements.Statement {
+    var start = advance()
+    var folder = expression()
+    var written = AbstractSyntaxTree.Shapes.Statements.LoadStatement(folder)
+    written.line = start.line
+    return written
+}
+
+func simple_statement(line: Integer): AbstractSyntaxTree.Shapes.Statements.Statement {
+    var value = expression()
+    if check('equals') {
+        advance()
+        var right = expression()
+        var assigned = AbstractSyntaxTree.Shapes.Statements.AssignmentStatement(value, right)
+        assigned.line = line
+        return assigned
+    }
+    var written = AbstractSyntaxTree.Shapes.Statements.ExpressionStatement(value)
+    written.line = line
+    return written
+}
+
+func block(): AbstractSyntaxTree.Shapes.Statements.Block {
+    var start = current()
+    if not opening_brace_expected() {
+        var broken = AbstractSyntaxTree.Shapes.Statements.Block(no_statements)
+        broken.line = start.line
+        return broken
+    }
+    var statements = List<AbstractSyntaxTree.Shapes.Statements.Statement>()
+    while not finished() and not check('close_brace') {
+        var token = current()
+        var inner = statement()
+        statements.append(inner)
+        end_of_statement(token.line)
+    }
+    closing_brace_expected()
+    var written = AbstractSyntaxTree.Shapes.Statements.Block(statements)
+    written.line = start.line
+    return written
+}
+
+func not_a_declaration(): AbstractSyntaxTree.Shapes.Declarations.Declaration {
+    refuse("a file holds declarations and nothing else, so a statement cannot stand here")
+    return AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration()
+}
+
+func end_of_statement(start_line: Integer) {
+    var token = current()
+    var kind = token.kind
+    var is_end = kind == 'end_of_file' or kind == 'close_brace'
+    var on_its_own_line = token.line > start_line
+    if not is_end and not on_its_own_line {
+        refuse("'{token.lexeme}' is left over after the end of the statement: a statement is one line")
+    }
+}
+
+func at_end_of_statement(): Boolean {
+    var kind = current().kind
+    return kind == 'end_of_file' or kind == 'close_brace'
+}
+
+func expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    return or_expression()
+}
+
+func or_expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var value = and_expression()
+    var keep_going = true
+    while keep_going and not failed {
+        if check('or') {
+            advance()
+            var right = and_expression()
+            value = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(value, 'or', right)
+        } else {
+            keep_going = false
+        }
+    }
+    return value
+}
+
+func and_expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var value = not_expression()
+    var keep_going = true
+    while keep_going and not failed {
+        if check('and') {
+            advance()
+            var right = not_expression()
+            value = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(value, 'and', right)
+        } else {
+            keep_going = false
+        }
+    }
+    return value
+}
+
+func not_expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    if check('not') {
+        advance()
+        var operand = not_expression()
+        return AbstractSyntaxTree.Shapes.Expressions.UnaryExpression('not', operand)
+    }
+    return comparison_expression()
+}
+
+func comparison_expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var value = sum_expression()
+    var keep_going = true
+    while keep_going and not failed {
+        var operator = comparison_operator()
+        if operator == 'end_of_file' {
+            keep_going = false
+        } else {
+            advance()
+            var right = sum_expression()
+            value = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(value, operator, right)
+        }
+    }
+    return value
+}
+
+func comparison_operator(): AbstractSyntaxTree.Tokens.TokenKind {
+    var kind = current().kind
+    switch kind {
+        'equal_equal': return kind
+        'not_equal': return kind
+        'less': return kind
+        'greater': return kind
+        'less_or_equal': return kind
+        'greater_or_equal': return kind
+        _: return 'end_of_file'
+    }
+}
+
+func sum_expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var value = product_expression()
+    var keep_going = true
+    while keep_going and not failed {
+        var kind = current().kind
+        if kind == 'plus' or kind == 'minus' {
+            advance()
+            var right = product_expression()
+            value = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(value, kind, right)
+        } else {
+            keep_going = false
+        }
+    }
+    return value
+}
+
+func product_expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var value = negated_expression()
+    var keep_going = true
+    while keep_going and not failed {
+        var kind = current().kind
+        if kind == 'star' or kind == 'slash' or kind == 'percent' {
+            advance()
+            var right = negated_expression()
+            value = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(value, kind, right)
+        } else {
+            keep_going = false
+        }
+    }
+    return value
+}
+
+func negated_expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    if check('minus') {
+        advance()
+        var operand = negated_expression()
+        return AbstractSyntaxTree.Shapes.Expressions.UnaryExpression('minus', operand)
+    }
+    return postfix_expression()
+}
+
+func postfix_expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var value = primary_expression()
+    var keep_going = not failed
+    while keep_going and not failed {
+        var following = after_primary(value)
+        if following {
+            value = following
+        } else {
+            keep_going = false
+        }
+    }
+    return value
+}
+
+func after_primary(
+    before: AbstractSyntaxTree.Shapes.Expressions.Expression,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    var kind = current().kind
+    switch kind {
+        'dot': return member_after(before)
+        'open_bracket': return index_after(before)
+        'open_parenthesis': return call_after(before, no_arguments)
+        'less': return generic_call_after(before)
+        _: return null
+    }
+}
+
+func member_after(
+    before: AbstractSyntaxTree.Shapes.Expressions.Expression,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    advance()
+    var token = current()
+    var kind = token.kind
+    if kind != 'name' and kind != 'class_name' and kind != 'generic_name' {
+        refuse("expected a name after the dot and found {token.written()}")
+        return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+    }
+    var name = advance()
+    return AbstractSyntaxTree.Shapes.Expressions.MemberExpression(before, name.text)
+}
+
+func index_after(
+    before: AbstractSyntaxTree.Shapes.Expressions.Expression,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    advance()
+    var index = expression()
+    closing_bracket_expected()
+    return AbstractSyntaxTree.Shapes.Expressions.IndexExpression(before, index)
+}
+
+func closing_bracket_expected() {
+    if check('close_bracket') {
+        advance()
+        return
+    }
+    refuse("expected the closing bracket and found {current().written()}")
+}
+
+func call_after(
+    before: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    generic_arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    advance()
+    var arguments = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    read_arguments(arguments)
+    closing_parenthesis_expected("a call's arguments")
+    return AbstractSyntaxTree.Shapes.Expressions.CallExpression(before, generic_arguments, arguments)
+}
+
+func read_arguments(arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>) {
+    while not failed and not check('close_parenthesis') {
+        var written = expression()
+        arguments.append(written)
+        if check('comma') {
+            advance()
+        }
+    }
+}
+
+func generic_call_after(
+    before: AbstractSyntaxTree.Shapes.Expressions.Expression,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    var saved = position
+    advance()
+    var arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    quiet_generic_arguments_into(arguments)
+    var closed = check('greater')
+    if closed {
+        advance()
+        return call_after(before, arguments)
+    }
+    position = saved
+    return null
+}
+
+func quiet_generic_argument(): AbstractSyntaxTree.Shapes.Types.GenericArgument? {
+    var token = current()
+    var kind = token.kind
+    var is_number = kind == 'integer_literal' or kind == 'decimal_literal'
+    var is_written = kind == 'text_literal' or kind == 'symbol_literal'
+    var is_flag = kind == 'keyword_true' or kind == 'keyword_false'
+    if is_number or is_written or is_flag {
+        advance()
+        return AbstractSyntaxTree.Shapes.Types.GenericArgument(false, token.text)
+    }
+    var quiet = quiet_type()
+    if quiet {
+        var argument = AbstractSyntaxTree.Shapes.Types.GenericArgument(false, "")
+        argument.of_type(quiet)
+        return argument
+    }
+    return null
+}
+
+func quiet_generic_arguments_into(arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>) {
+    while not failed and not at_end() {
+        var argument = quiet_generic_argument()
+        if argument {
+            arguments.append(argument)
+        }
+        if check('comma') {
+            advance()
+        } else {
+            return
+        }
+    }
+}
+
+func quiet_generic_arguments(): List<AbstractSyntaxTree.Shapes.Types.GenericArgument> {
+    assert check('less')
+    var saved = position
+    advance()
+    var arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    quiet_generic_arguments_into(arguments)
+    if check('greater') {
+        advance()
+        return arguments
+    }
+    position = saved
+    return List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+}
+
+func primary_expression(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var token = current()
+    var kind = token.kind
+    switch kind {
+        'integer_literal': return literal_after(token)
+        'decimal_literal': return literal_after(token)
+        'symbol_literal': return literal_after(token)
+        'keyword_true': return literal_after(token)
+        'keyword_false': return literal_after(token)
+        'keyword_null': return literal_after(token)
+        'keyword_this': return literal_after(token)
+        'text_literal': return text_after(token)
+        'name': return name_after(token)
+        'class_name': return name_after(token)
+        'generic_name': return name_after(token)
+        'open_parenthesis': return grouped()
+        'open_bracket': return list_literal()
+        'open_brace': return pair_literal()
+        'question': return refused_question()
+        _: return refused_primary()
+    }
+}
+
+func literal_after(token: AbstractSyntaxTree.Tokens.Token): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    advance()
+    return AbstractSyntaxTree.Shapes.Expressions.LiteralExpression(token.kind, token.text)
+}
+
+func name_after(token: AbstractSyntaxTree.Tokens.Token): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    advance()
+    return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression(token.text)
+}
+
+func grouped(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    advance()
+    var inner = expression()
+    closing_parenthesis_expected("a group")
+    return inner
+}
+
+func list_literal(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    advance()
+    var entries = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    read_list_entries(entries)
+    closing_bracket_expected()
+    return AbstractSyntaxTree.Shapes.Expressions.ListLiteral(entries, false)
+}
+
+func read_list_entries(entries: List<AbstractSyntaxTree.Shapes.Expressions.Expression>) {
+    while not failed and not check('close_bracket') {
+        var written = expression()
+        entries.append(written)
+        if check('comma') {
+            advance()
+        }
+    }
+}
+
+func pair_literal(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    advance()
+    var entries = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    read_pair_entries(entries)
+    closing_brace_expected()
+    return AbstractSyntaxTree.Shapes.Expressions.ListLiteral(entries, true)
+}
+
+func read_pair_entries(entries: List<AbstractSyntaxTree.Shapes.Expressions.Expression>) {
+    while not failed and not check('close_brace') {
+        var written = entry_literal()
+        entries.append(written)
+        if check('comma') {
+            advance()
+        }
+    }
+}
+
+func entry_literal(): AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
+    var key = expression()
+    if not check('colon') {
+        refuse("a written key is written 'key: value', so write the ':' after it")
+        return empty_entry()
+    }
+    advance()
+    var value = expression()
+    return AbstractSyntaxTree.Shapes.Expressions.EntryLiteral(key, value)
+}
+
+func empty_entry(): AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
+    var empty = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+    return AbstractSyntaxTree.Shapes.Expressions.EntryLiteral(empty, empty)
+}
+
+func refused_question(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var message = question_message()
+    refuse(message)
+    return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+}
+
+func question_message(): String {
+    var part = "a question mark follows a type to write it as one that may be absent, as in 'Monster?'"
+    return "{part}: it is not how Spite chooses between two values, so write an 'if' with an 'else'"
+}
+
+func refused_primary(): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    refuse("expected a value and found {current().written()}")
+    return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+}
+
+func text_after(token: AbstractSyntaxTree.Tokens.Token): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    advance()
+    var written = text_pieces_of(token.text)
+    return AbstractSyntaxTree.Shapes.Expressions.TextLiteral(written)
+}
+
+func type_reference(): AbstractSyntaxTree.Shapes.Types.Type {
+    var quiet = quiet_type()
+    if quiet {
+        return quiet
+    }
+    refuse("expected a type and found {current().written()}")
+    return AbstractSyntaxTree.Shapes.Types.NamedType(no_path, no_arguments)
+}
+
+func quiet_type(): AbstractSyntaxTree.Shapes.Types.Type? {
+    var token = current()
+    var kind = token.kind
+    if kind == 'class_name' or kind == 'generic_name' or kind == 'name' {
+        return named_type_after()
+    }
+    return null
+}
+
+func named_type_after(): AbstractSyntaxTree.Shapes.Types.Type {
+    var first = advance()
+    var path = List<String>()
+    path.append(first.text)
+    read_type_path(path)
+    var arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    if check('less') {
+        arguments = quiet_generic_arguments()
+    }
+    var written = AbstractSyntaxTree.Shapes.Types.NamedType(path, arguments)
+    if check('question') {
+        advance()
+        written.is_nullable = true
+    }
+    return written
+}
+
+func read_type_path(path: List<String>) {
+    while check('dot') {
+        advance()
+        var next_token = current()
+        if next_token.kind != 'class_name' and next_token.kind != 'name' and next_token.kind != 'generic_name' {
+            refuse("expected a class name after the dot and found {next_token.written()}")
+            return
+        }
+        var next_name = advance()
+        path.append(next_name.text)
+    }
+}
+
+func text_pieces_of(starting_raw: String): List<AbstractSyntaxTree.Shapes.Expressions.TextPiece> {
+    raw = starting_raw
+    pieces = List<AbstractSyntaxTree.Shapes.Expressions.TextPiece>()
+    literal = ""
+    cursor = 0
+    while cursor < raw.length() and not failed {
+        read_text_piece()
+    }
+    flush_literal()
+    if pieces.is_empty() {
+        var empty = AbstractSyntaxTree.Shapes.Expressions.TextPiece("", null)
+        pieces.append(empty)
+    }
+    return pieces
+}
+
+func read_text_piece() {
+    var code = raw.code_at(cursor)
+    switch code {
+        92: read_escape_piece()
+        123: read_hole_piece()
+        _: read_plain_piece()
+    }
+}
+
+func read_escape_piece() {
+    var pair = raw.slice(cursor, cursor + 2)
+    literal = "{literal}{pair}"
+    cursor = cursor + 2
+}
+
+func read_hole_piece() {
+    var end = end_of_hole()
+    var inner = raw.slice(cursor + 1, end)
+    var hole = hole_between(inner)
+    flush_literal()
+    var piece = AbstractSyntaxTree.Shapes.Expressions.TextPiece("", hole)
+    pieces.append(piece)
+    cursor = end + 1
+}
+
+func read_plain_piece() {
+    var letter = raw.character_at(cursor)
+    literal = "{literal}{letter}"
+    cursor = cursor + 1
+}
+
+func flush_literal() {
+    if not literal.is_empty() {
+        var piece = AbstractSyntaxTree.Shapes.Expressions.TextPiece(literal, null)
+        pieces.append(piece)
+        literal = ""
+    }
+}
+
+func end_of_hole(): Integer {
+    var depth = 0
+    var index = cursor
+    while index < raw.length() {
+        var code = raw.code_at(index)
+        depth = depth + brace_of(code)
+        if depth == 0 {
+            return index
+        }
+        index = index + 1
+    }
+    return raw.length() - 1
+}
+
+func brace_of(code: Integer): Integer {
+    if code == 123 {
+        return 1
+    }
+    if code == 125 {
+        return -1
+    }
+    return 0
+}
+
+func hole_between(inner: String): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    var hole_lexer = AbstractSyntaxTree.Lexer.Lexer(path, inner, report)
+    var hole_tokens = hole_lexer.tokens_of()
+    var hole_parser = Parser(path, namespace, hole_tokens, report)
+    var hole = hole_parser.expression()
+    if report.has_error() {
+        failed = true
+    }
+    return hole
+}
+
+func current(): AbstractSyntaxTree.Tokens.Token {
+    var at = position
+    if at >= tokens.count() {
+        at = tokens.count() - 1
+    }
+    var token = tokens[at]
+    crash token
+    return token
+}
+
+func advance(): AbstractSyntaxTree.Tokens.Token {
+    var token = current()
+    if not at_end() {
+        position = position + 1
+    }
+    return token
+}
+
+func check(kind: AbstractSyntaxTree.Tokens.TokenKind): Boolean {
+    return current().kind == kind
+}
+
+func at_end(): Boolean {
+    return position >= tokens.count() - 1
+}
+
+func finished(): Boolean {
+    return failed or at_end()
+}
+
+func refuse(message: String) {
+    assert not failed
+    failed = true
+    var token = current()
+    report.at(path, token.line, token.column, message)
+}

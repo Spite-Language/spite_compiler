@@ -1,0 +1,608 @@
+var path = ""
+var source = ""
+var report = Diagnostics.Report()
+var found = List<AbstractSyntaxTree.Tokens.Token>()
+var keywords = Dictionary<String, AbstractSyntaxTree.Tokens.TokenKind>()
+var refused_words = Dictionary<String, String>()
+var refusals = 0
+var position = 0
+var line = 1
+var column = 1
+
+func Lexer(starting_path: String, starting_source: String, starting_report: Diagnostics.Report) {
+    path = starting_path
+    source = starting_source
+    report = starting_report
+    learn_keywords()
+    learn_refused_words()
+}
+
+func tokens_of(): List<AbstractSyntaxTree.Tokens.Token> {
+    read_all_tokens()
+    record('end_of_file', "", "", line, column)
+    if refusals >= 20 {
+        report.once("the compiler stopped naming the spelling it refuses after 20 in {path}")
+    }
+    return found
+}
+
+func read_all_tokens() {
+    while not at_end() {
+        skip_layout()
+        if not at_end() {
+            read_token()
+        }
+    }
+}
+
+func skip_layout() {
+    while layout_here() {
+        skip_one_layout()
+    }
+}
+
+func layout_here(): Boolean {
+    if at_end() {
+        return false
+    }
+    var code = code_here()
+    return is_space(code) or code == 35
+}
+
+func skip_one_layout() {
+    var code = code_here()
+    if is_space(code) {
+        advance()
+    } else {
+        skip_comment()
+    }
+}
+
+func skip_comment() {
+    while not at_end() and code_here() != 10 {
+        advance()
+    }
+}
+
+func read_token() {
+    var code = code_here()
+    switch code {
+        34: read_text()
+        39: read_symbol()
+        123: simple('open_brace')
+        125: simple('close_brace')
+        40: simple('open_parenthesis')
+        41: simple('close_parenthesis')
+        91: simple('open_bracket')
+        93: simple('close_bracket')
+        44: simple('comma')
+        58: simple('colon')
+        63: simple('question')
+        46: read_dot()
+        36: read_generic_name()
+        37: simple('percent')
+        43: simple('plus')
+        45: read_minus()
+        61: read_equals()
+        47: read_slash()
+        42: read_star()
+        60: read_less()
+        62: read_greater()
+        33: read_not()
+        59: refuse("';'", "';' is not something Spite reads: a statement is one line")
+        38: refuse("&", "Spite has no '&': bits are functions on the whole numbers, 'bits_and(mask)'")
+        124: refuse("|", "Spite has no '|': bits are functions on the whole numbers, 'bits_or(mask)'")
+        94: refuse("^", "Spite has no '^': bits are functions on the whole numbers, 'bits_exclusive_or(mask)'")
+        126: refuse("~", "Spite has no '~': bits are functions on the whole numbers, 'bits_inverted()'")
+        _: read_anything_else(code)
+    }
+}
+
+func read_anything_else(code: Integer) {
+    if starts_a_name(code) {
+        read_name()
+        return
+    }
+    if is_digit(code) {
+        read_number()
+        return
+    }
+    var written = source.character_at(position)
+    refuse(written, "this is not something Spite reads: write it in words, or tell the compiler what it is")
+}
+
+func read_name() {
+    var start = line
+    var column_here = column
+    var word = ""
+    var code = code_here()
+    while inside_name(code) {
+        var letter = source.character_at(position)
+        word = "{word}{letter}"
+        advance()
+        code = code_here()
+    }
+    var keyword = keywords[word]
+    if keyword {
+        record(keyword, word, word, start, column_here)
+        return
+    }
+    var refusal = refused_words[word]
+    if refusal {
+        refuse_from(word, refusal)
+        return
+    }
+    var kind: AbstractSyntaxTree.Tokens.TokenKind = 'name'
+    var first = word.code_at(0)
+    if is_upper_letter(first) {
+        kind = 'class_name'
+    }
+    record(kind, word, word, start, column_here)
+}
+
+func read_number() {
+    var start = line
+    var column_here = column
+    var word = ""
+    var code = code_here()
+    while is_digit(code) {
+        var letter = source.character_at(position)
+        word = "{word}{letter}"
+        advance()
+        code = code_here()
+    }
+    var kind: AbstractSyntaxTree.Tokens.TokenKind = 'integer_literal'
+    var after_point = code_after(1)
+    if code == 46 and is_digit(after_point) {
+        kind = 'decimal_literal'
+        word = "{word}."
+        advance()
+        code = code_here()
+        while is_digit(code) {
+            var letter = source.character_at(position)
+            word = "{word}{letter}"
+            advance()
+            code = code_here()
+        }
+    }
+    record(kind, word, word, start, column_here)
+}
+
+func read_symbol() {
+    var start = line
+    var column_here = column
+    var word = ""
+    advance()
+    var code = code_here()
+    while inside_name(code) {
+        var letter = source.character_at(position)
+        word = "{word}{letter}"
+        advance()
+        code = code_here()
+    }
+    if code != 39 {
+        report.at(path, start, column_here, "this symbol is never closed: write its closing \"'\"")
+        record('symbol_literal', word, word, start, column_here)
+        return
+    }
+    advance()
+    record('symbol_literal', word, word, start, column_here)
+}
+
+func read_generic_name() {
+    var start = line
+    var column_here = column
+    var word = "$"
+    advance()
+    var code = code_here()
+    while inside_name(code) {
+        var letter = source.character_at(position)
+        word = "{word}{letter}"
+        advance()
+        code = code_here()
+    }
+    if word == "$" {
+        report.at(
+            path,
+            start,
+            column_here,
+            "'$' is written before a name, as in '$name': what is replaced at code generation is a hole, never a value",
+        )
+        record('generic_name', word, word, start, column_here)
+        return
+    }
+    record('generic_name', word, word, start, column_here)
+}
+
+func read_text() {
+    var start = line
+    var column_here = column
+    var content = ""
+    advance()
+    while not at_end() {
+        var code = code_here()
+        var closes = code == 34
+        switch code {
+            34: close_text(start, column_here, content)
+            92: content = read_escape_pair(content)
+            123: content = read_hole_text(content)
+            _: content = read_one_letter(content)
+        }
+        if closes {
+            return
+        } else {
+            keep_reading()
+        }
+    }
+    report.at(path, start, column_here, "this text is never closed: write its closing '\"'")
+    record('text_literal', content, content, start, column_here)
+}
+
+func keep_reading() {
+    return
+}
+
+func close_text(start: Integer, column_here: Integer, content: String) {
+    advance()
+    record('text_literal', content, content, start, column_here)
+}
+
+func read_escape_pair(content: String): String {
+    var code = code_after(1)
+    if is_escape_code(code) {
+        var pair = source.slice(position, position + 2)
+        move_to(position + 2)
+        return "{content}{pair}"
+    }
+    var message = escape_message()
+    report.at(path, line, column, message)
+    var alone = source.slice(position, position + 1)
+    move_to(position + 1)
+    return "{content}{alone}"
+}
+
+func read_hole_text(content: String): String {
+    var end = end_of_hole()
+    var raw = source.slice(position, end + 1)
+    move_to(end + 1)
+    return "{content}{raw}"
+}
+
+func read_one_letter(content: String): String {
+    var letter = source.character_at(position)
+    advance()
+    return "{content}{letter}"
+}
+
+func move_to(where: Integer) {
+    var keep_going = position < where
+    while keep_going and not at_end() {
+        advance()
+        keep_going = position < where
+    }
+}
+
+func end_of_hole(): Integer {
+    var depth = 0
+    var index = position
+    while index < source.length() {
+        var code = source.code_at(index)
+        if code == 34 {
+            index = past_inner_text(source, index)
+        } else {
+            depth = depth + brace_of(code)
+            if depth == 0 {
+                return index
+            }
+            index = index + 1
+        }
+    }
+    return source.length() - 1
+}
+
+func read_escape(): String {
+    var start = position
+    var start_line = line
+    var start_column = column
+    var after = code_after(1)
+    if not is_escape_code(after) {
+        var message = escape_message()
+        report.at(path, start_line, start_column, message)
+    }
+    var pair = source.slice(start, start + 2)
+    position = start + 2
+    column = start_column + 2
+    return pair
+}
+
+func escape_message(): String {
+    return "this is not something Spite reads in a text: write the two characters backslash and n, t or r for a line end, a tab or a return, and backslash and the character for a quote or a brace"
+}
+
+func is_escape_code(code: Integer): Boolean {
+    switch code {
+        110: return true
+        116: return true
+        114: return true
+        92: return true
+        34: return true
+        _: return code == 123
+    }
+}
+
+func brace_of(code: Integer): Integer {
+    if code == 123 {
+        return 1
+    }
+    if code == 125 {
+        return -1
+    }
+    return 0
+}
+
+func past_inner_text(content: String, start: Integer): Integer {
+    var index = start + 1
+    while index < content.length() {
+        if content.code_at(index) == 34 {
+            return index + 1
+        }
+        index = index + 1
+    }
+    return content.length()
+}
+
+func read_dot() {
+    var second = code_after(1)
+    var third = code_after(2)
+    if second == 46 and third == 46 {
+        written_run('dots', 3)
+        return
+    }
+    simple('dot')
+}
+
+func read_equals() {
+    var next_code = code_after(1)
+    if next_code == 61 {
+        written_run('equal_equal', 2)
+        return
+    }
+    simple('equals')
+}
+
+func read_minus() {
+    var next_code = code_after(1)
+    if next_code == 62 {
+        refuse("->", "Spite has no '->': there are no lambdas, so pass a function by name")
+        return
+    }
+    simple('minus')
+}
+
+func read_star() {
+    var next_code = code_after(1)
+    if next_code == 42 {
+        refuse("**", "Spite has no '**': write 'base.power(exponent)'")
+        return
+    }
+    simple('star')
+}
+
+func read_slash() {
+    var next_code = code_after(1)
+    if next_code == 47 {
+        refuse("//", "Spite has no '//': a comment is one line starting with '#' and holding a link to a heading")
+        return
+    }
+    if next_code == 42 {
+        refuse("/*", "Spite has no '/* */': a comment is one line starting with '#' and holding a link to a heading")
+        return
+    }
+    simple('slash')
+}
+
+func read_less() {
+    var next_code = code_after(1)
+    if next_code == 61 {
+        written_run('less_or_equal', 2)
+        return
+    }
+    if next_code == 60 {
+        refuse("<<", "Spite has no '<<': write 'value.shifted_left(count)'")
+        return
+    }
+    simple('less')
+}
+
+func read_greater() {
+    var next_code = code_after(1)
+    if next_code == 61 {
+        written_run('greater_or_equal', 2)
+        return
+    }
+    if next_code == 62 {
+        refuse(">>", "Spite has no '>>': write 'value.shifted_right(count)'")
+        return
+    }
+    simple('greater')
+}
+
+func read_not() {
+    var next_code = code_after(1)
+    if next_code == 61 {
+        written_run('not_equal', 2)
+        return
+    }
+    refuse("!", "Spite writes 'not' as a word")
+}
+
+func simple(kind: AbstractSyntaxTree.Tokens.TokenKind) {
+    var start = line
+    var column_here = column
+    var written = source.character_at(position)
+    advance()
+    record(kind, written, written, start, column_here)
+}
+
+func written_run(kind: AbstractSyntaxTree.Tokens.TokenKind, count: Integer) {
+    var start = line
+    var column_here = column
+    var written = ""
+    var index = 0
+    while index < count {
+        var letter = source.character_at(position)
+        written = "{written}{letter}"
+        advance()
+        index = index + 1
+    }
+    record(kind, written, written, start, column_here)
+}
+
+func refuse(written: String, message: String) {
+    refuse_from(written, message)
+}
+
+func refuse_from(written: String, message: String) {
+    var start = line
+    var column_here = column
+    var index = 0
+    while index < written.length() and not at_end() {
+        advance()
+        index = index + 1
+    }
+    if refusals < 20 {
+        refusals = refusals + 1
+        report.at(path, start, column_here, message)
+    }
+}
+
+func record(
+    kind: AbstractSyntaxTree.Tokens.TokenKind,
+    lexeme: String,
+    text: String,
+    starting_line: Integer,
+    starting_column: Integer,
+) {
+    var token = AbstractSyntaxTree.Tokens.Token(kind, lexeme, text, starting_line, starting_column)
+    found.append(token)
+}
+
+func at_end(): Boolean {
+    return position >= source.length()
+}
+
+func code_here(): Integer {
+    if at_end() {
+        return -1
+    }
+    return source.code_at(position)
+}
+
+func code_after(offset: Integer): Integer {
+    var at = position + offset
+    if at < 0 or at >= source.length() {
+        return -1
+    }
+    return source.code_at(at)
+}
+
+func advance(): Integer {
+    var code = source.code_at(position)
+    position = position + 1
+    if code == 10 {
+        line = line + 1
+        column = 1
+    } else {
+        column = column + 1
+    }
+    return code
+}
+
+func is_space(code: Integer): Boolean {
+    switch code {
+        32: return true
+        9: return true
+        13: return true
+        _: return code == 10
+    }
+}
+
+func is_digit(code: Integer): Boolean {
+    return code >= 48 and code <= 57
+}
+
+func is_lower_letter(code: Integer): Boolean {
+    return code >= 97 and code <= 122
+}
+
+func is_upper_letter(code: Integer): Boolean {
+    return code >= 65 and code <= 90
+}
+
+func starts_a_name(code: Integer): Boolean {
+    if is_lower_letter(code) {
+        return true
+    }
+    if is_upper_letter(code) {
+        return true
+    }
+    return code == 95
+}
+
+func inside_name(code: Integer): Boolean {
+    if starts_a_name(code) {
+        return true
+    }
+    if is_digit(code) {
+        return true
+    }
+    return code == 95
+}
+
+func learn_keywords() {
+    keywords["func"] = 'keyword_function'
+    keywords["var"] = 'keyword_variable'
+    keywords["enum"] = 'keyword_enum'
+    keywords["union"] = 'keyword_union'
+    keywords["type"] = 'keyword_type'
+    keywords["return"] = 'keyword_return'
+    keywords["if"] = 'keyword_if'
+    keywords["else"] = 'keyword_else'
+    keywords["while"] = 'keyword_while'
+    keywords["switch"] = 'keyword_switch'
+    keywords["assert"] = 'keyword_assert'
+    keywords["crash"] = 'keyword_crash'
+    keywords["load"] = 'keyword_load'
+    keywords["this"] = 'keyword_this'
+    keywords["null"] = 'keyword_null'
+    keywords["true"] = 'keyword_true'
+    keywords["false"] = 'keyword_false'
+    keywords["generic"] = 'keyword_generic'
+    keywords["singleton"] = 'keyword_singleton'
+    keywords["and"] = 'and'
+    keywords["or"] = 'or'
+    keywords["not"] = 'not'
+}
+
+func learn_refused_words() {
+    refused_words["for"] = "Spite has no 'for': Spite has only the 'while' loop. Write 'while', or the member templates 'each_<member>()', 'map_<member>()' and 'filter_<member>()'"
+    refused_words["foreach"] = "Spite has no 'foreach': Spite has only the 'while' loop. Write 'while', or the member templates 'each_<member>()' and 'filter_<member>()'"
+    refused_words["do"] = "Spite has no 'do': write 'if value \{ }', which narrows the name itself"
+    refused_words["elif"] = "Spite writes 'else if'"
+    refused_words["let"] = "Spite has no 'let': a variable is declared 'var name = value'"
+    refused_words["const"] = "Spite has no 'const': every variable is declared 'var name = value' and may be written again"
+    refused_words["new"] = "there is no 'new' in Spite: write 'Monster()'"
+    refused_words["self"] = "Spite has no 'self': a class reads its own attributes and calls its own functions by name"
+    refused_words["nil"] = "'nil' is not a value in Spite: write 'null'"
+    refused_words["none"] = "'none' is not a value in Spite: write 'null', or name what is missing ('no_handle', 'empty')"
+    refused_words["undefined"] = "'undefined' is not a value in Spite: every function answers, or it answers 'T?' and is narrowed"
+    refused_words["import"] = "there are no imports: write 'load \"folder\"', which loads a package"
+    refused_words["require"] = "there are no imports: write 'load \"folder\"', which loads a package"
+    refused_words["break"] = "Spite has no 'break': a loop stops in its own condition"
+    refused_words["continue"] = "Spite has no 'continue': a loop goes on in its own condition"
+    refused_words["fn"] = "a function is declared 'func', not 'fn'"
+    refused_words["def"] = "a function is declared 'func', not 'def'"
+    refused_words["struct"] = "there is no 'struct': a file is a class, so every class is already one object with its own fields"
+    refused_words["interface"] = "there is no 'interface': a 'type' declares a shape a value matches"
+    refused_words["match"] = "there is no 'match': a 'switch' covers every member of a union, every value of an enum or every case of a text or a number"
+}

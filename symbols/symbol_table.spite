@@ -1,0 +1,206 @@
+var empty_report = Diagnostics.Report()
+var map = Mapping.FolderMap(empty_report)
+var report = Diagnostics.Report()
+var files = Dictionary<String, AbstractSyntaxTree.Shapes.SourceFile>()
+var summaries = List<String>()
+var names = Mapping.Names()
+var unknown_names = List<String>()
+var paths_read = List<String>()
+var class_files = Dictionary<String, Mapping.ClassFile>()
+
+func SymbolTable(starting_map: Mapping.FolderMap, starting_report: Diagnostics.Report) {
+    map = starting_map
+    report = starting_report
+}
+
+func entry_class(folder: String): Mapping.ClassFile {
+    var segment = names.last_segment(folder)
+    var wanted = names.of_folder(segment)
+    var found = map.class_named(wanted)
+    if found {
+        return found
+    }
+    var message = entry_message(folder, wanted)
+    report.at(folder, 0, 0, message)
+    return Mapping.ClassFile("", "", "")
+}
+
+func entry_message(folder: String, wanted: String): String {
+    return "a program is a folder holding an entry file named after it, '{folder}/{wanted.lower_case()}.spite'"
+}
+
+func read_class(class_file: Mapping.ClassFile) {
+    assert not files[class_file.path]
+    var text = File(class_file.path).read()
+    if not text {
+        report.at(class_file.path, 0, 0, "could not read '{class_file.path}'")
+        return
+    }
+    var tokens = AbstractSyntaxTree.Lexer.Lexer(class_file.path, text, report).tokens_of()
+    var parser = AbstractSyntaxTree.Parser.Parser(class_file.path, class_file.namespace, tokens, report)
+    var file = parser.parse_file()
+    files[class_file.path] = file
+    paths_read.append(class_file.path)
+    class_files[class_file.path] = class_file
+    if not report.has_error() {
+        check_order(class_file, file)
+        read_mentioned_classes(class_file.path, tokens, class_file.namespace)
+    }
+}
+
+func check_order(class_file: Mapping.ClassFile, file: AbstractSyntaxTree.Shapes.SourceFile) {
+    var ordering = AbstractSyntaxTree.Ordering(class_file.path, class_file.simple_name, report)
+    ordering.check(file)
+    var counted = ordering.summary()
+    summaries.append("{class_file.simple_name}: {counted}")
+}
+
+func read_mentioned_classes(path: String, tokens: List<AbstractSyntaxTree.Tokens.Token>, from_namespace: String) {
+    var index = 0
+    while index < tokens.count() {
+        var kind = tokens[index].kind
+        if kind == 'class_name' {
+            index = read_mention_at(path, tokens, index, from_namespace)
+        } else {
+            index = index + 1
+        }
+    }
+}
+
+func read_mention_at(
+    path: String,
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    start: Integer,
+    from_namespace: String,
+): Integer {
+    var token = tokens[start]
+    crash token
+    var written = written_name_at(tokens, start)
+    var steps = token_count(written)
+    var found = find(written, from_namespace)
+    if found {
+        read_a_class(found)
+    } else {
+        note_missing(written)
+    }
+    return start + steps
+}
+
+func read_a_class(found: Mapping.ClassFile) {
+    var already = files[found.path]
+    if already {
+        return
+    } else {
+        read_class(found)
+    }
+}
+
+func note_missing(written: String) {
+    if not unknown_names.contains(written) {
+        unknown_names.append(written)
+    }
+}
+
+func token_count(written: String): Integer {
+    var segments = written.split(".")
+    return segments.count() * 2 - 1
+}
+
+func written_name_at(tokens: List<AbstractSyntaxTree.Tokens.Token>, start: Integer): String {
+    var first = tokens[start]
+    crash first
+    var written = first.text
+    var index = start + 1
+    var keep_going = true
+    while keep_going and index + 1 < tokens.count() {
+        var dot = tokens[index].kind
+        var next = tokens[index + 1].kind
+        if dot == 'dot' and next == 'class_name' {
+            written = "{written}.{tokens[index + 1].text}"
+            index = index + 2
+        } else {
+            keep_going = false
+        }
+    }
+    return written
+}
+
+func find(written: String, from_namespace: String): Mapping.ClassFile? {
+    var searched = from_namespace
+    var keep_going = not searched.is_empty()
+    while keep_going {
+        var here = find_here(searched, written)
+        if here {
+            return here
+        }
+        searched = enclosing(searched)
+        keep_going = not searched.is_empty()
+    }
+    var roots = map.root_namespaces()
+    var index = 0
+    while index < roots.count() {
+        var found = find_here(roots[index], written)
+        if found {
+            return found
+        }
+        index = index + 1
+    }
+    return map.class_named(written)
+}
+
+func find_here(namespace: String, written: String): Mapping.ClassFile? {
+    var qualified = names.joined(namespace, written)
+    return map.class_named(qualified)
+}
+
+func enclosing(namespace: String): String {
+    var segments = namespace.split(".")
+    if segments.count() < 2 {
+        return ""
+    }
+    var shorter = List<String>()
+    var index = 0
+    while index < segments.count() - 1 {
+        shorter.append(segments[index])
+        index = index + 1
+    }
+    return shorter.join(".")
+}
+
+func file_count(): Integer {
+    return files.count()
+}
+
+func class_named(written: String, from_namespace: String): Mapping.ClassFile? {
+    return find(written, from_namespace)
+}
+
+func read(class_file: Mapping.ClassFile) {
+    var already = files[class_file.path]
+    if already {
+        return
+    } else {
+        read_class(class_file)
+    }
+}
+
+func file_for(path: String): AbstractSyntaxTree.Shapes.SourceFile? {
+    return files[path]
+}
+
+func read_paths(): List<String> {
+    return paths_read
+}
+
+func class_file_for(path: String): Mapping.ClassFile? {
+    return class_files[path]
+}
+
+func summary(): String {
+    return summaries.join("\n")
+}
+
+func not_yet_resolved(): String {
+    var names = unknown_names
+    return names.join(", ")
+}

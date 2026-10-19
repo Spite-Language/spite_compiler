@@ -1,0 +1,388 @@
+var empty_functions = List<LowIntermediaryRepresentation.Functions.LowFunction>()
+var empty_names = List<String>()
+var program = LowIntermediaryRepresentation.Programs.LowProgram(empty_functions, "")
+var layout = Generators.WindowsX86.Layout(empty_names)
+var registers = Generators.WindowsX86.Registers()
+var report = Diagnostics.Report()
+var code = Buffer()
+var instruction_offsets = List<Integer>()
+var next_instruction = 0
+var jump_fixups = List<Generators.WindowsX86.Fixup>()
+var call_fixups = List<Generators.WindowsX86.Fixup>()
+var offsets_by_qualified = Dictionary<String, Integer>()
+var offsets_by_name = Dictionary<String, Integer>()
+var current_class = ""
+var current_slots = 0
+var entry_call_at = 0
+
+func Emitter(
+    starting_program: LowIntermediaryRepresentation.Programs.LowProgram,
+    starting_layout: Generators.WindowsX86.Layout,
+    starting_report: Diagnostics.Report,
+) {
+    program = starting_program
+    layout = starting_layout
+    report = starting_report
+}
+
+func emitted(): Buffer {
+    code = Buffer()
+    instruction_offsets = List<Integer>()
+    next_instruction = 0
+    jump_fixups = List<Generators.WindowsX86.Fixup>()
+    call_fixups = List<Generators.WindowsX86.Fixup>()
+    offsets_by_qualified = Dictionary<String, Integer>()
+    offsets_by_name = Dictionary<String, Integer>()
+    emit_the_entry()
+    program.held_functions.each(emit_one_function)
+    jump_fixups.each(fix_one_jump)
+    call_fixups.each(fix_one_call)
+    fix_the_entry()
+    return code
+}
+
+func emit_the_entry() {
+    code.append(232)
+    entry_call_at = code.count()
+    append_dword(0)
+    code.append(80)
+    code.append(255)
+    code.append(21)
+    var address = layout.address_of_import("ExitProcess")
+    append_dword(address)
+    code.append(15)
+    code.append(11)
+}
+
+func emit_one_function(own: LowIntermediaryRepresentation.Functions.LowFunction) {
+    var offset = code.count()
+    record_the_function(own, offset)
+    current_class = own.class_name
+    current_slots = own.slots
+    var first = next_instruction
+    emit_the_prologue(own)
+    var position = 0
+    while position < own.instructions.count() {
+        var instruction = own.instructions[position]
+        var here = code.count()
+        instruction_offsets.append(here)
+        next_instruction = next_instruction + 1
+        emit_one_instruction(instruction, first)
+        position = position + 1
+    }
+    emit_the_epilogue()
+}
+
+func record_the_function(own: LowIntermediaryRepresentation.Functions.LowFunction, offset: Integer) {
+    var qualified = "{own.class_name}.{own.name}"
+    offsets_by_qualified[qualified] = offset
+    var known = offsets_by_name[own.name]
+    if known {
+        offsets_by_name[own.name] = -1
+    } else {
+        offsets_by_name[own.name] = offset
+    }
+}
+
+func emit_the_prologue(own: LowIntermediaryRepresentation.Functions.LowFunction) {
+    code.append(85)
+    code.append(139)
+    code.append(236)
+    code.append(129)
+    code.append(236)
+    var room = registers.frame_room(own.slots)
+    append_dword(room)
+    var index = 0
+    while index < own.parameter_count {
+        emit_a_parameter(own, index)
+        index = index + 1
+    }
+}
+
+func emit_a_parameter(own: LowIntermediaryRepresentation.Functions.LowFunction, index: Integer) {
+    var from = registers.parameter_address(index)
+    var into = registers.slot_address(index, own.slots)
+    code.append(139)
+    code.append(133)
+    append_dword(from)
+    code.append(137)
+    code.append(133)
+    append_dword(into)
+}
+
+func emit_the_epilogue() {
+    code.append(129)
+    code.append(196)
+    var room = registers.frame_room(current_slots)
+    append_dword(room)
+    code.append(93)
+    code.append(195)
+}
+
+func emit_one_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction, first: Integer) {
+    var kind = instruction.kind
+    if kind == "number" {
+        emit_number(instruction)
+    } else if kind == "read" {
+        emit_move(instruction.first, instruction.second)
+    } else if kind == "write" {
+        emit_move(instruction.second, instruction.first)
+    } else if kind == "copy" {
+        emit_move(instruction.first, instruction.second)
+    } else if kind == "operation" {
+        emit_operation(instruction)
+    } else if kind == "jump" {
+        emit_jump(instruction, first)
+    } else if kind == "jump_if_false" {
+        emit_jump_if_false(instruction, first)
+    } else if kind == "call" {
+        emit_call(instruction)
+    } else if kind == "return" {
+        emit_return(instruction)
+    } else {
+        var message = "the instruction '{kind}' is one this emitter does not write yet"
+        report.at("", 0, 0, message)
+    }
+}
+
+func emit_number(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    var into = registers.slot_address(instruction.first, current_slots)
+    var read = instruction.text.to_integer()
+    var value = 0
+    if read {
+        value = read
+    } else {
+        var message = "'{instruction.text}' is not a whole number"
+        report.at("", 0, 0, message)
+    }
+    code.append(199)
+    code.append(133)
+    append_dword(into)
+    append_dword(value)
+}
+
+func emit_move(from: Integer, into: Integer) {
+    var source = registers.slot_address(from, current_slots)
+    var target = registers.slot_address(into, current_slots)
+    code.append(139)
+    code.append(133)
+    append_dword(source)
+    code.append(137)
+    code.append(133)
+    append_dword(target)
+}
+
+func emit_operation(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    var left = registers.slot_address(instruction.first, current_slots)
+    var right = registers.slot_address(instruction.second, current_slots)
+    var into = registers.slot_address(instruction.third, current_slots)
+    var operator = instruction.text
+    code.append(139)
+    code.append(133)
+    append_dword(left)
+    if operator == "+" {
+        code.append(3)
+        code.append(133)
+        append_dword(right)
+    } else if operator == "-" {
+        code.append(43)
+        code.append(133)
+        append_dword(right)
+    } else if operator == "*" {
+        code.append(15)
+        code.append(175)
+        code.append(133)
+        append_dword(right)
+    } else if operator == "/" {
+        emit_division(right)
+    } else if operator == "%" {
+        emit_remainder(right)
+    } else if operator == "<" {
+        emit_comparison(156, right)
+    } else if operator == ">" {
+        emit_comparison(159, right)
+    } else if operator == "<=" {
+        emit_comparison(158, right)
+    } else if operator == ">=" {
+        emit_comparison(157, right)
+    } else if operator == "==" {
+        emit_comparison(148, right)
+    } else if operator == "!=" {
+        emit_comparison(149, right)
+    } else {
+        var message = "the operation '{operator}' is one this emitter does not write yet"
+        report.at("", 0, 0, message)
+        return
+    }
+    code.append(137)
+    code.append(133)
+    append_dword(into)
+}
+
+func emit_division(right: Integer) {
+    code.append(99)
+    code.append(139)
+    code.append(141)
+    append_dword(right)
+    code.append(247)
+    code.append(249)
+}
+
+func emit_remainder(right: Integer) {
+    emit_division(right)
+    code.append(137)
+    code.append(208)
+}
+
+func emit_comparison(setting: Integer, right: Integer) {
+    code.append(59)
+    code.append(133)
+    append_dword(right)
+    code.append(15)
+    code.append(setting)
+    code.append(192)
+    code.append(15)
+    code.append(182)
+    code.append(192)
+}
+
+func emit_jump(instruction: LowIntermediaryRepresentation.Instructions.Instruction, first: Integer) {
+    code.append(233)
+    var at = code.count()
+    append_dword(0)
+    var target = first + instruction.to
+    var fixup = Generators.WindowsX86.Fixup(at, target, "", current_class)
+    jump_fixups.append(fixup)
+}
+
+func emit_jump_if_false(instruction: LowIntermediaryRepresentation.Instructions.Instruction, first: Integer) {
+    var value = registers.slot_address(instruction.first, current_slots)
+    code.append(131)
+    code.append(189)
+    append_dword(value)
+    code.append(0)
+    code.append(15)
+    code.append(132)
+    var at = code.count()
+    append_dword(0)
+    var target = first + instruction.to
+    var fixup = Generators.WindowsX86.Fixup(at, target, "", current_class)
+    jump_fixups.append(fixup)
+}
+
+func emit_call(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    var arguments = instruction.places
+    var index = arguments.count() - 1
+    while index >= 0 {
+        var place = arguments[index]
+        crash place
+        var address = registers.slot_address(place, current_slots)
+        code.append(255)
+        code.append(181)
+        append_dword(address)
+        index = index - 1
+    }
+    code.append(232)
+    var at = code.count()
+    append_dword(0)
+    var fixup = Generators.WindowsX86.Fixup(at, 0, instruction.callee, current_class)
+    call_fixups.append(fixup)
+    code.append(129)
+    code.append(196)
+    var room = arguments.count() * 4
+    append_dword(room)
+    var into = registers.slot_address(instruction.first, current_slots)
+    code.append(137)
+    code.append(133)
+    append_dword(into)
+}
+
+func emit_return(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction.first >= 0 {
+        var address = registers.slot_address(instruction.first, current_slots)
+        code.append(139)
+        code.append(133)
+        append_dword(address)
+    } else {
+        code.append(49)
+        code.append(192)
+    }
+    emit_the_epilogue()
+}
+
+func fix_one_jump(fixup: Generators.WindowsX86.Fixup) {
+    var target = instruction_offsets[fixup.target_index]
+    if target {
+        var relative = target - (fixup.at + 4)
+        write_dword_at(fixup.at, relative)
+    } else {
+        var message = "the jump goes to an instruction that is not there"
+        report.at("", 0, 0, message)
+    }
+}
+
+func fix_one_call(fixup: Generators.WindowsX86.Fixup) {
+    var qualified = "{fixup.owner_class}.{fixup.callee}"
+    var found = offsets_by_qualified[qualified]
+    if found {
+        var relative = found - (fixup.at + 4)
+        write_dword_at(fixup.at, relative)
+    } else {
+        fix_a_call_without_its_class(fixup)
+    }
+}
+
+func fix_a_call_without_its_class(fixup: Generators.WindowsX86.Fixup) {
+    var found = offsets_by_name[fixup.callee]
+    if found {
+        fix_a_call_that_was_found(fixup, found)
+    } else {
+        var message = "the function '{fixup.callee}' is not there"
+        report.at("", 0, 0, message)
+    }
+}
+
+func fix_a_call_that_was_found(fixup: Generators.WindowsX86.Fixup, found: Integer) {
+    if found > 0 {
+        var relative = found - (fixup.at + 4)
+        write_dword_at(fixup.at, relative)
+    } else {
+        var message = "the function '{fixup.callee}' is in more than one class, so the call cannot say which one it means"
+        report.at("", 0, 0, message)
+    }
+}
+
+func fix_the_entry() {
+    var qualified = "{program.entry}.{program.entry}"
+    var found = offsets_by_qualified[qualified]
+    if found {
+        var relative = found - (entry_call_at + 4)
+        write_dword_at(entry_call_at, relative)
+    } else {
+        var message = "the entry function '{program.entry}' is not there"
+        report.at("", 0, 0, message)
+    }
+}
+
+func append_dword(value: Long) {
+    var written = value
+    if written < 0 {
+        written = written + wrap_around()
+    }
+    var unsigned: UnsignedInteger = written
+    code.append_unsigned_integer(unsigned)
+}
+
+func write_dword_at(at: Integer, value: Long) {
+    var written = value
+    if written < 0 {
+        written = written + wrap_around()
+    }
+    var unsigned: UnsignedInteger = written
+    code.write_unsigned_integer_at(at, unsigned)
+}
+
+func wrap_around(): Long {
+    var half: Long = 65536
+    return half * 65536
+}

@@ -1,0 +1,557 @@
+var empty_report = Diagnostics.Report()
+var empty_map = Mapping.FolderMap(empty_report)
+var symbols = Symbols.SymbolTable(empty_map, empty_report)
+var report = empty_report
+var minted = List<Instance>()
+var by_key = Dictionary<String, Instance>()
+var unknown = List<String>()
+var kept_notes = List<String>()
+var buildable = List<Instance>()
+var dropped = List<String>()
+var finder = Finder()
+var mangle = Mangle()
+var types = Types()
+var templates = List<String>()
+var substitution = Substitution()
+var namespace = ""
+var current_path = ""
+var wanted_member = ""
+var found = List<ResolvedType>()
+var given = List<ResolvedType>()
+
+func Resolver(starting_symbols: Symbols.SymbolTable, starting_report: Diagnostics.Report) {
+    symbols = starting_symbols
+    report = starting_report
+}
+
+func resolve_all() {
+    var paths = symbols.read_paths()
+    var index = 0
+    while index < paths.count() {
+        var path = paths[index]
+        var file = symbols.file_for(path)
+        var class_file = symbols.class_file_for(path)
+        if file {
+            if class_file {
+                resolve_file(class_file, file)
+            } else {
+                return
+            }
+        }
+        index = index + 1
+    }
+}
+
+func resolve_file(class_file: Mapping.ClassFile, file: AbstractSyntaxTree.Shapes.SourceFile) {
+    var parameters = generic_parameters_of(file)
+    if parameters.count() > 0 {
+        if not templates.contains(file.path) {
+            templates.append(file.path)
+        }
+    } else {
+        var uses = finder.find(file)
+        var outer_substitution = substitution
+        var outer_namespace = namespace
+        var outer_path = current_path
+        substitution = Substitution()
+        namespace = file.namespace
+        current_path = file.path
+        uses.each(resolve_use)
+        substitution = outer_substitution
+        namespace = outer_namespace
+        current_path = outer_path
+        var no_arguments = List<ResolvedType>()
+        var empty_substitution = Substitution()
+        var plain = Instance(
+            class_file.path,
+            class_file.simple_name,
+            class_file.simple_name,
+            parameters,
+            no_arguments,
+            empty_substitution,
+        )
+        buildable.append(plain)
+    }
+}
+
+func resolve_use(use: TypeUse) {
+    switch use.kind {
+        "parameter": check_bound(use)
+        "member": resolve_qualified_or_member(use)
+        _: resolve_named(use)
+    }
+}
+
+func resolve_qualified_or_member(use: TypeUse) {
+    var written = use.path.join(".")
+    var found = symbols.class_named(written, namespace)
+    if found {
+        resolve_found_class(found, use, written)
+    } else {
+        resolve_member(use)
+    }
+}
+
+func check_bound(use: TypeUse) {
+    var name = use.path.join(".")
+    var bound = substitution.lookup(name)
+    if bound {
+        return
+    } else {
+        var message = "the type parameter '{name}' is not bound: a generic class is only written once its type parameter has a type"
+        report.at(current_path, use.line, 0, message)
+    }
+}
+
+func resolve_named(use: TypeUse) {
+    var written = use.path.join(".")
+    var found_class = symbols.class_named(written, namespace)
+    if found_class {
+        resolve_found_class(found_class, use, written)
+    } else {
+        resolve_built_in(written, use)
+    }
+}
+
+func resolve_built_in(written: String, use: TypeUse) {
+    var parameters = built_in_parameters_of(written)
+    if parameters.count() == 0 {
+        note_unknown(written)
+    } else {
+        mint_built_in(written, parameters, use)
+    }
+}
+
+func mint_built_in(written: String, parameters: List<String>, use: TypeUse) {
+    var given = List<ResolvedType>()
+    var index = 0
+    while index < use.arguments.count() {
+        var argument = use.arguments[index]
+        var applied = resolve_argument(argument)
+        given.append(applied)
+        index = index + 1
+    }
+    if given.count() > 0 {
+        mint(written, written, "", parameters, given)
+    } else {
+        return
+    }
+}
+
+func built_in_parameters_of(written: String): List<String> {
+    if written == "Symbol" {
+        var names = List<String>()
+        names.append("$value_type")
+        return names
+    }
+    return List<String>()
+}
+
+func resolve_found_class(class_file: Mapping.ClassFile, use: TypeUse, written: String) {
+    symbols.read(class_file)
+    var file = symbols.file_for(class_file.path)
+    if file {
+        check_class(file, class_file, use, written)
+    } else {
+        return
+    }
+}
+
+func check_class(
+    file: AbstractSyntaxTree.Shapes.SourceFile,
+    class_file: Mapping.ClassFile,
+    use: TypeUse,
+    written: String,
+) {
+    var parameters = generic_parameters_of(file)
+    if parameters.count() == 0 {
+        check_no_parameters(class_file, use, written)
+    } else {
+        check_parameters(class_file, parameters, use, written)
+    }
+}
+
+func check_no_parameters(_class_file: Mapping.ClassFile, use: TypeUse, written: String) {
+    if use.arguments.count() > 0 {
+        note_dropped_argument(written)
+    } else {
+        return
+    }
+}
+
+func note_dropped_argument(written: String) {
+    if not dropped.contains(written) {
+        dropped.append(written)
+        var message = "'{written}' is not a generic class, so the type written after it is dropped"
+        kept_notes.append(message)
+    }
+}
+
+func check_parameters(class_file: Mapping.ClassFile, parameters: List<String>, use: TypeUse, written: String) {
+    if use.arguments.count() == 0 {
+        var message = "the class '{written}' is generic and needs an argument, as in '{written}<Integer>'"
+        report.at(class_file.path, use.line, 0, message)
+    } else {
+        var given = List<ResolvedType>()
+        var index = 0
+        while index < use.arguments.count() {
+            var argument = use.arguments[index]
+            var applied = resolve_argument(argument)
+            given.append(applied)
+            index = index + 1
+        }
+        mint(class_file.path, class_file.simple_name, class_file.namespace, parameters, given)
+    }
+}
+
+func mint(
+    path: String,
+    class_name: String,
+    owner: String,
+    parameters: List<String>,
+    given_arguments: List<ResolvedType>,
+) {
+    var name = mangle.of(class_name, given_arguments)
+    var key = "{path}|{name}"
+    var existing = by_key[key]
+    if existing {
+        return
+    } else {
+        var own = Substitution()
+        var index = 0
+        while index < parameters.count() and index < given_arguments.count() {
+            own.bind(parameters[index], given_arguments[index])
+            index = index + 1
+        }
+        var instance = Instance(path, class_name, name, parameters, given_arguments, own)
+        by_key[key] = instance
+        minted.append(instance)
+        buildable.append(instance)
+        resolve_inside(instance, path, owner)
+    }
+}
+
+func resolve_inside(instance: Instance, path: String, owner: String) {
+    var file = symbols.file_for(path)
+    if file {
+        var uses = finder.find(file)
+        var outer_substitution = substitution
+        var outer_namespace = namespace
+        var outer_path = current_path
+        substitution = instance.substitution
+        namespace = owner
+        current_path = path
+        uses.each(resolve_use)
+        substitution = outer_substitution
+        namespace = outer_namespace
+        current_path = outer_path
+    } else {
+        return
+    }
+}
+
+func resolve_argument(argument: ResolvedType): ResolvedType {
+    if argument.is_a_member() {
+        return resolve_member_argument(argument)
+    } else {
+        return substitution.apply(argument)
+    }
+}
+
+func resolve_member_argument(argument: ResolvedType): ResolvedType {
+    var written = argument.path.join(".")
+    var found = symbols.class_named(written, namespace)
+    if found {
+        var named = types.named(argument.path, argument.arguments)
+        return substitution.apply(named)
+    } else {
+        return dependent_member(argument)
+    }
+}
+
+func dependent_member(argument: ResolvedType): ResolvedType {
+    var base = base_of_member(argument)
+    if base {
+        return member_of(base, argument)
+    } else {
+        return argument
+    }
+}
+
+func base_of_member(argument: ResolvedType): ResolvedType? {
+    if argument.owner_type {
+        return substitution.apply(argument.owner_type)
+    } else {
+        var owner = argument.path[0]
+        crash owner
+        return substitution.lookup(owner)
+    }
+}
+
+func member_of(base: ResolvedType, argument: ResolvedType): ResolvedType {
+    var member_name = argument.path[1]
+    crash member_name
+    var found = member_type_of(base, member_name)
+    if found {
+        return substitution.apply(found)
+    } else {
+        return argument
+    }
+}
+
+func resolve_member(use: TypeUse) {
+    var base = base_of(use)
+    if base {
+        resolve_member_of(base, use)
+    } else {
+        return
+    }
+}
+
+func resolve_member_of(base: ResolvedType, use: TypeUse) {
+    var member_name = use.path[1]
+    crash member_name
+    var member_type = member_type_of(base, member_name)
+    if member_type {
+        use_member_type(member_type, use)
+    } else {
+        var message = "the type '{base.written()}' has no member named '{member_name}'"
+        report.at(current_path, use.line, 0, message)
+    }
+}
+
+func use_member_type(member_type: ResolvedType, use: TypeUse) {
+    if member_type.is_a_parameter() {
+        return
+    } else {
+        var owner = TypeUse(member_type.path, member_type.arguments, "named", use.line)
+        resolve_named(owner)
+    }
+}
+
+func base_of(use: TypeUse): ResolvedType? {
+    if use.owner_type {
+        return substitution.apply(use.owner_type)
+    } else {
+        return base_from_name(use.owner)
+    }
+}
+
+func base_from_name(owner: String): ResolvedType? {
+    if owner.starts_with("$") {
+        return substitution.lookup(owner)
+    } else {
+        return null
+    }
+}
+
+func member_type_of(base: ResolvedType, member_name: String): ResolvedType? {
+    if member_name == "class" {
+        return base
+    } else {
+        return other_member_of(base, member_name)
+    }
+}
+
+func other_member_of(base: ResolvedType, member_name: String): ResolvedType? {
+    var special = special_member_of(base, member_name)
+    if special {
+        return special
+    } else {
+        return declared_member_of(base, member_name)
+    }
+}
+
+func special_member_of(base: ResolvedType, member_name: String): ResolvedType? {
+    var class_name = base.path.join(".")
+    if class_name == "List" and member_name == "element_type" {
+        return argument_of(base, 0)
+    }
+    if class_name == "Dictionary" and member_name == "key_type" {
+        return argument_of(base, 0)
+    }
+    if class_name == "Dictionary" and member_name == "value_type" {
+        return argument_of(base, 1)
+    }
+    if class_name == "Symbol" and member_name == "value_type" {
+        return argument_of(base, 0)
+    }
+    return null
+}
+
+func argument_of(base: ResolvedType, index: Integer): ResolvedType? {
+    if index < base.arguments.count() {
+        return base.arguments[index]
+    } else {
+        return null
+    }
+}
+
+func declared_member_of(base: ResolvedType, member_name: String): ResolvedType? {
+    var written = base.path.join(".")
+    var class_file = symbols.class_named(written, namespace)
+    if class_file {
+        return member_in_file(class_file, member_name)
+    } else {
+        return null
+    }
+}
+
+func member_in_file(class_file: Mapping.ClassFile, member_name: String): ResolvedType? {
+    symbols.read(class_file)
+    var file = symbols.file_for(class_file.path)
+    if file {
+        return member_in_declarations(file, member_name)
+    } else {
+        return null
+    }
+}
+
+func member_in_declarations(file: AbstractSyntaxTree.Shapes.SourceFile, member_name: String): ResolvedType? {
+    wanted_member = member_name
+    found = List<ResolvedType>()
+    file.declarations.each(find_member)
+    if found.count() > 0 {
+        return found[0]
+    } else {
+        return null
+    }
+}
+
+func find_member(declaration: AbstractSyntaxTree.Shapes.Declarations.Declaration) {
+    if declaration == AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration {
+        find_in_attribute(declaration)
+        return
+    }
+    if declaration == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration {
+        find_in_function(declaration)
+        return
+    }
+    return
+}
+
+func find_in_attribute(declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration) {
+    if declaration.name == wanted_member and declaration.declared_type {
+        var written = convert_type(declaration.declared_type)
+        found.append(written)
+    } else {
+        return
+    }
+}
+
+func find_in_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    if declaration.name == wanted_member and declaration.result {
+        var written = convert_type(declaration.result)
+        found.append(written)
+    } else {
+        return
+    }
+}
+
+func convert_type(shape: AbstractSyntaxTree.Shapes.Types.Type): ResolvedType {
+    var named = shape
+    var segments = named.path
+    var outer = given
+    given = List<ResolvedType>()
+    named.arguments.each(convert_argument)
+    var mine = given
+    given = outer
+    return convert_path(segments, mine)
+}
+
+func convert_path(segments: List<String>, mine: List<ResolvedType>): ResolvedType {
+    if segments.count() == 1 {
+        return convert_one(segments, mine)
+    } else {
+        return convert_member(segments)
+    }
+}
+
+func convert_one(segments: List<String>, mine: List<ResolvedType>): ResolvedType {
+    var first = segments[0]
+    crash first
+    if first.starts_with("$") {
+        return types.parameter(first)
+    } else {
+        return types.named(segments, mine)
+    }
+}
+
+func convert_member(segments: List<String>): ResolvedType {
+    var owner = segments[0]
+    crash owner
+    var member_name = segments[1]
+    crash member_name
+    return types.member(owner, member_name, null)
+}
+
+func convert_argument(argument: AbstractSyntaxTree.Shapes.Types.GenericArgument) {
+    if argument.is_type {
+        convert_type_argument(argument)
+    } else {
+        var written = types.value(argument.text)
+        given.append(written)
+    }
+}
+
+func convert_type_argument(argument: AbstractSyntaxTree.Shapes.Types.GenericArgument) {
+    if argument.type_reference {
+        var written = convert_type(argument.type_reference)
+        given.append(written)
+    } else {
+        var written = types.value("")
+        given.append(written)
+    }
+}
+
+func generic_parameters_of(file: AbstractSyntaxTree.Shapes.SourceFile): List<String> {
+    var names = List<String>()
+    var index = 0
+    while index < file.declarations.count() {
+        var declaration = file.declarations[index]
+        if declaration == AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration {
+            var declared = declaration
+            names.append(declared.name)
+        }
+        index = index + 1
+    }
+    return names
+}
+
+func note_unknown(written: String) {
+    if not unknown.contains(written) {
+        unknown.append(written)
+    }
+}
+
+func instances_count(): Integer {
+    return minted.count()
+}
+
+func templates_count(): Integer {
+    return templates.count()
+}
+
+func summary(): String {
+    var lines = List<String>()
+    var index = 0
+    while index < minted.count() {
+        var instance = minted[index]
+        var arguments = instance.written_arguments()
+        lines.append("{instance.name}  from  {instance.class_name}<{arguments}>  in  {instance.origin}")
+        index = index + 1
+    }
+    return lines.join("\n")
+}
+
+func buildable_classes(): List<Instance> {
+    return buildable
+}
+
+func unknown_names(): String {
+    return unknown.join(", ")
+}
+
+func notes_text(): String {
+    return kept_notes.join("\n")
+}

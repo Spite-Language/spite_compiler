@@ -1,0 +1,220 @@
+var report = Diagnostics.Report()
+var roots = List<Mapping.MappedFolder>()
+var folders_by_namespace = Dictionary<String, Mapping.MappedFolder>()
+var classes_by_namespace = Dictionary<String, Mapping.ClassFile>()
+var names = Mapping.Names()
+
+func FolderMap(starting_report: Diagnostics.Report) {
+    report = starting_report
+}
+
+func add_root(path: String, named_by: String): Mapping.MappedFolder? {
+    var directory = Directory(path)
+    if not directory.exists() {
+        report.at(named_by, 0, 0, "could not find the folder '{path}' it loads")
+        return null
+    }
+    var folder_name = directory.name
+    if not names.written_in_snake_case(folder_name) {
+        report.at(
+            named_by,
+            0,
+            0,
+            "the folder '{folder_name}' is not named in snake_case: every folder of a program is lowercase words joined by '_', so rename it '{names.snake_case_of(folder_name)}'",
+        )
+        return null
+    }
+    var namespace = names.of_folder(folder_name)
+    if namespace == "Spite" {
+        report.at(
+            named_by,
+            0,
+            0,
+            "'spite' is reserved for the built-in Spite namespace: name the folder something else",
+        )
+        return null
+    }
+    var already = folders_by_namespace[namespace]
+    if already {
+        if already.path == directory.path {
+            var message = double_load_message(folder_name)
+            report.at(named_by, 0, 0, message)
+            return null
+        }
+        report.once("the namespace '{namespace}' is written by both '{already.path}' and '{directory.path}'")
+        return null
+    }
+    var overlapping = root_holding(directory.path)
+    if overlapping {
+        var message = overlap_message(folder_name, overlapping.path)
+        report.at(named_by, 0, 0, message)
+        return null
+    }
+    var folder = Mapping.MappedFolder(namespace, directory.path)
+    folder.key_prefix = ""
+    folders_by_namespace[namespace] = folder
+    roots.append(folder)
+    map_entries(folder)
+    return folder
+}
+
+func double_load_message(folder_name: String): String {
+    return "'{folder_name}' is loaded twice, and every class of it is already in the program: load a folder once"
+}
+
+func overlap_message(folder_name: String, holding_path: String): String {
+    return "'{folder_name}' lies inside '{holding_path}', which is already loaded, so its classes would be read twice: load one or the other"
+}
+
+func root_holding(path: String): Mapping.MappedFolder? {
+    var index = 0
+    while index < roots.count() {
+        var root = roots[index]
+        if inside(path, root.path) {
+            return root
+        }
+        if inside(root.path, path) {
+            return root
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func inside(path: String, folder: String): Boolean {
+    var prefix = "{folder}/"
+    return path.starts_with(prefix)
+}
+
+func map_entries(folder: Mapping.MappedFolder) {
+    var directory = Directory(folder.path)
+    var folder_names = directory.entries().filter_directories().map_names()
+    var index = 0
+    while index < folder_names.count() {
+        var folder_name = folder_names[index]
+        if not is_hidden(folder_name) {
+            map_sub_folder(folder, folder_name)
+        }
+        index = index + 1
+    }
+    var file_names = directory.entries().filter_files().map_names()
+    index = 0
+    while index < file_names.count() {
+        var file_name = file_names[index]
+        if is_spite_file(file_name) {
+            map_file(folder, file_name)
+        }
+        index = index + 1
+    }
+}
+
+func map_sub_folder(folder: Mapping.MappedFolder, folder_name: String) {
+    if not names.written_in_snake_case(folder_name) {
+        report.at(
+            "{folder.path}/{folder_name}",
+            0,
+            0,
+            "the folder '{folder_name}' is not named in snake_case: every folder of a program is lowercase words joined by '_', so rename it '{names.snake_case_of(folder_name)}'",
+        )
+        return
+    }
+    var namespace = names.of_folder(folder_name)
+    if folder.folder_named(namespace) {
+        report.at(
+            "{folder.path}/{folder_name}",
+            0,
+            0,
+            "'{folder_name}' is both a file and a folder here, and a dotted name means one thing: give one of them another name",
+        )
+        return
+    }
+    if folders_by_namespace[namespace] {
+        report.once("the namespace '{namespace}' is mapped by two folders")
+        return
+    }
+    var joined_namespace = names.joined(folder.key_prefix, namespace)
+    var sub_folder = Mapping.MappedFolder(joined_namespace, "{folder.path}/{folder_name}")
+    sub_folder.key_prefix = joined_namespace
+    folders_by_namespace[joined_namespace] = sub_folder
+    folder.folders.append(sub_folder)
+    map_entries(sub_folder)
+}
+
+func map_file(folder: Mapping.MappedFolder, file_name: String) {
+    var name_length = file_name.length()
+    var base = file_name.slice(0, name_length - 6)
+    if not names.written_in_snake_case(base) {
+        report.at(
+            "{folder.path}/{file_name}",
+            0,
+            0,
+            "'{base}' is not named in snake_case: every class file is lowercase words joined by '_', so rename it '{names.snake_case_of(base)}.spite'",
+        )
+        return
+    }
+    var simple_name = names.class_name_of(base)
+    if folder.file_named(simple_name) {
+        report.once("'{folder.path}/{file_name}' is mapped by another file of the same class")
+        return
+    }
+    var own = names.joined(folder.key_prefix, simple_name)
+    var namespace = own
+    if simple_name != folder.namespace {
+        namespace = own
+    }
+    var mapped = Mapping.ClassFile(namespace, simple_name, "{folder.path}/{file_name}")
+    folder.files.append(mapped)
+    classes_by_namespace[own] = mapped
+    classes_by_namespace[namespace] = mapped
+}
+
+func is_spite_file(file_name: String): Boolean {
+    return file_name.ends_with(".spite")
+}
+
+func is_hidden(name: String): Boolean {
+    return name.starts_with(".")
+}
+
+func has(namespace: String): Boolean {
+    return classes_by_namespace.has(namespace)
+}
+
+func class_count(): Integer {
+    return classes_by_namespace.count()
+}
+
+func class_named(namespace: String): Mapping.ClassFile? {
+    return classes_by_namespace[namespace]
+}
+
+func folder_named(namespace: String): Mapping.MappedFolder? {
+    return folders_by_namespace[namespace]
+}
+
+func root_namespaces(): List<String> {
+    return roots.map_namespaces()
+}
+
+func every_class(): List<Mapping.ClassFile> {
+    var all = List<Mapping.ClassFile>()
+    var index = 0
+    while index < roots.count() {
+        collect_classes(roots[index], all)
+        index = index + 1
+    }
+    return all
+}
+
+func collect_classes(folder: Mapping.MappedFolder, into: List<Mapping.ClassFile>) {
+    var index = 0
+    while index < folder.files.count() {
+        into.append(folder.files[index])
+        index = index + 1
+    }
+    index = 0
+    while index < folder.folders.count() {
+        collect_classes(folder.folders[index], into)
+        index = index + 1
+    }
+}
