@@ -206,8 +206,8 @@ the whole standard library too: 145 classes, every one of them, with no error.
 Below that it resolves every type, monomorphises every generic, builds the high representation of those
 97 classes, folds it, drops what nothing reaches, lowers it to instruction lists, threads its jumps, folds
 its moves, and writes the machine code and the PE file around it. On its own source it stops at the
-emitter, which reports the calls it cannot resolve yet: the standard library is not loaded, a class with
-no constructor has none yet, and the division the emitter writes divides by an address.
+emitter, which reports the calls it cannot resolve yet: the standard library is not loaded, and a class
+with no constructor has none yet.
 
 The road from here to a released executable is:
 

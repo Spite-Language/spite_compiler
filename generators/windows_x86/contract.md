@@ -46,6 +46,11 @@ compiler's generated C did.
 The frame is the usual one: `ebp` is the frame pointer, the parameters are at `[ebp + 8]` and up, and the
 values the function made live below it, each at its own slot.
 
+The whole-number division is a signed one, the way Go has it: the quotient is truncated toward zero and
+the remainder keeps the sign of the dividend. The machine's `idiv` does exactly that, and the sign of the
+dividend is put in the high half of it with `cdq` first. The `cdq` is the byte `0x99`: the byte `0x63` is
+the `arpl` instruction in this mode, and the machine would read the two together and never divide at all.
+
 ## How a call finds the function it reaches
 
 A call names the function it reaches and the class that owns it, and the emitter looks the two up

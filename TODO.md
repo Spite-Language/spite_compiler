@@ -230,7 +230,7 @@ run stops there.
 - **The generator** (`generators/windows_x86`). A 32-bit PE for Windows with two sections, importing
   `ExitProcess` from `kernel32.dll`, and the program answering its entry constructor's value as the process
   exit code. The emitter writes the whole number arithmetic, the comparisons, `while`, the calls between a
-  program's own functions and `return`.
+  program's own functions and `return`. The division is a signed one, the way Go has it.
 - **The decisions** (`DECISIONS.md`), one row each, in the order they were made.
 
 ### The programs that prove it
@@ -247,6 +247,7 @@ The tests live in `../SpiteSpec/tests`, one folder per program, and the compiler
 | `../SpiteSpec/tests/chains` | a call on a value a call answers, and two classes with a function of one name | 14 |
 | `../SpiteSpec/tests/whole_library` | every class of the standard library named, so the whole library is read | 0 |
 | `../SpiteSpec/tests/receivers` | a receiver that is a call of another class's function, and two classes with a function of one name | 18 |
+| `../SpiteSpec/tests/divisions` | a whole number divided and taken the remainder of, in a loop | 210 |
 
     .spite/spite.exe ../SpiteSpec/tests/exit_code
     ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
