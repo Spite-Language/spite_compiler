@@ -260,7 +260,7 @@ that this compiler does not have yet, and what this compiler does instead.
 | The original | What it has | What this compiler has instead |
 |---|---|---|
 | `source/syntax/` | The lexer, the parser, the printer, and the **formatter** (the compiler rewrites every file in the one style and reads the program again) | The lexer, the parser and the ordering check. No printer and no formatter yet. |
-| `source/analysis/` | The class, function, field, parameter, enum, union, template and type information of every class | The name resolution, which answers the types and mints the instances. The class, function and field information is missing. |
+| `source/analysis/` | The class, function, field, parameter, enum, union, template and type information of every class | The name resolution, which answers the types, mints the instances, and answers the class every function of every class answers. The class, function and field information is missing. |
 | `source/discovery/` | The whole program discovered before anything is written, `load` from a git repository pinned to a commit, the paths, the versions | The mapping and the symbols, which read only the classes something names. No `load`, no packages, no versions. |
 | `source/intermediate/` | The intermediate representation and its passes: the layout and the placements, the ownership and the reference counts, the reachability, the proofs, the reflection lowering, the statement and expression lowering | The high and the low representation, with two passes. The layout, the ownership, the proofs and the reflection are missing. |
 | `source/generation/` | The C generator: eighty files that write the C of the whole language, the tree shaking, the inlining, the specialisation, the templates, the member templates, the codegen values | The x86 emitter, which writes whole numbers and the control flow. The C generator is not to be reproduced: this compiler writes machine code. |
@@ -309,6 +309,12 @@ lists that follow: **every optimisation the original does**, **every proof the o
 error the original reports**. A milestone is done when the items of it are done, not when the list below is
 ticked.
 
+**Where the work is now.** The whole standard library reads, the name resolution answers the class every
+function answers, and the emitter writes the whole number arithmetic, the division included. The next
+thing is the object: a class instance, its attributes, and a method that takes the instance as its first
+argument. Everything after it (the strings, the lists, the runtime the library asks for) needs an object
+to live in, so it is the one that unblocks the rest.
+
 ### 1. The program runs
 
 Until this is done, only a program of whole numbers with a loop and a call can be built. Everything here is
@@ -334,7 +340,9 @@ what the imported library and the original repository's corpus, examples and doc
       programs pin that count in an `allocations.txt`, so what is allocated and what lives in a frame has
       to be decided as the original decides it, and not only be correct.
 - [ ] **The objects.** A class is a pointer to its own block: the attributes live in the object, the methods
-      take it as their first argument, and the objects are made and released.
+      take it as their first argument, and the objects are made and released. The original puts an object
+      that never leaves its function in the frame and the rest on the heap, so the first piece is the memory
+      an object takes, and the heap comes from the runtime the library asks for.
 - [ ] **The strings**, and the text literals with their holes.
 - [ ] **The lists and the dictionaries**, with their templates and their member templates.
 - [ ] **The references**, the enums, the unions and the `type` shapes.

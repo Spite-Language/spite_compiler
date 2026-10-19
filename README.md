@@ -145,7 +145,7 @@ same instantiation is made once however many times it is written. The instance's
 resolved with the substitution in place, and *that* finds more generic classes, which are monomorphised
 in turn.
 
-The compiler compiling itself reads 133 classes, finds 3 generic ones and mints 26 instances.
+The compiler compiling itself reads 97 classes, and it finds no generic class of its own yet.
 
 ## Running the pipeline without a program to compile
 
