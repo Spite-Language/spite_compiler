@@ -30,7 +30,7 @@ with the old compiler's own:
 
 The first command writes the executable to `<program>/.spite/build/<name>.exe`, and the second runs it: the
 value the program answers is the exit code it leaves (4072 for `exit_code`, 10 for `sum`, 3 for
-`two_names`, 21 for `branches`). `TODO.md` says how a test is ported, and when.
+`two_names`, 21 for `branches`, 14 for `chains`). `TODO.md` says how a test is ported, and when.
 
 Two things to know about the paths. The folder is named `SpiteCompiler`, and a program folder is named in
 snake_case, so the build goes through the junction `.spite/spite_compiler`, which is this same folder under
@@ -189,10 +189,11 @@ repository were written and checked.
   proof, and the proofs are not made yet, so a value that is maybe nothing is read as if it were there.
 - A call names the class that owns the function it reaches, when the compiler can tell it. A call on an
   instance reaches a function of the receiver's class, and the class of a receiver is the class of the
-  value it holds: from the type the name is declared with, from the class a constructor call makes, or from
-  the name the value was copied from. The answer of a call is not known yet, so a receiver that is a call
-  (`File(path).read()`) has no owner: the reachability pass keeps every function of that name, and the
-  emitter says the call cannot say which one it means when two classes have a function of one name.
+  value it holds: from the type the name is declared with, from the class a constructor call makes, from
+  the name the value was copied from, or from the class a call answers. The answer of a call of another
+  class's function is not known, so a receiver that is such a call has no owner: the reachability pass keeps
+  every function of that name, and the emitter says the call cannot say which one it means when two classes
+  have a function of one name.
 - The compiler cannot compile itself yet: its own source is far outside the subset. It reads itself, and
   it reports what it cannot lower.
 - Caching per step, and the development memory that hot reload needs.
@@ -215,9 +216,9 @@ The road from here to a released executable is:
    and concurrency. Each needs its kinds in the high representation, its kinds in the low one, and its
    instructions in the emitter. `switch`, `assert` and `crash` are with them, and the narrowing of a
    `T?` is a proof, and the proofs come after.
-2. The class of what a call answers, so a receiver that is a call (`File(path).read()`) names its class
-   too. The class of a receiver is known when the receiver is a name, and the answer of a call is not known
-   yet.
+2. The result type of another class's function, so a receiver that is a call (`File(path).read()`) names
+   its class too. The builder knows the class a call answers when the function is one of the class it is
+   building, and the answer of a call of another class is not known yet.
 3. The imported standard library called out to, so a program can print and read a file. The emitter writes
    a Windows executable that calls `ExitProcess`; it needs the runtime the library asks for, and the
    library reaches the C library through `DynamicLibrary`, so the emitter must be able to call a function

@@ -46,8 +46,12 @@ The `Builder` fills the owner in with what the language lets it tell:
   the value the receiver holds.
 
 The class of a value comes from the type the name is declared with, or from the class a constructor call
-makes, or from the name the value was copied from. A type parameter that is not bound names no class, and a
-dependent type (`x.class`) names none either.
+makes, or from the name the value was copied from, or from the class a call answers. A type parameter that
+is not bound names no class, and a dependent type (`x.class`) names none either.
+
+The class a call answers is the result type of the function it reaches, and the builder knows the result
+types of the class it is building. A call of another class's function answers a class that is not known
+here, and a receiver that is such a call names no owner.
 
 A receiver the compiler cannot place names no owner: the answer of a call is not known here, so the class of
 `File(path).read()` is not known either. An empty owner is not a guess and not a name: it says the compiler
