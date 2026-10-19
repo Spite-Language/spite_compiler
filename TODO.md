@@ -387,13 +387,23 @@ compiler has to know the library's members and their signatures to answer them.
       once through the program, and gives a loaded platform folder the namespace of its own name.
 - [ ] **The library is loaded the way the new compiler loads it.** While the old compiler builds this
       compiler, the library is the release's own shape: the Windows part sits inside it, as
-      `.spite/spite-0.0.6-windows/library/windows`, and the launcher loads it. The old compiler gives a
-      loaded platform folder the namespace of its own name, so it cannot be loaded as the program names it,
-      and it refuses a program that names the library itself. After the bootstrap, the library is the
-      program's to name, in its first line, and the parts are:
+      `.spite/spite-0.0.6-windows/library/windows`, and the launcher loads it. The old compiler cannot have
+      the program name it, and says so: the compiler's own prelude reopens the library's `Spite` classes, and
+      it may only do that when the library was loaded as the library, which is the launcher's doing
+      (`'Spite' holds the standard library's own classes, so a file in a 'spite' folder may only reopen one
+      of them`). After the bootstrap, the library is the program's to name, in its first line, and the parts
+      are:
   - [ ] **A loaded folder reopens a class another folder declares.** Two folders, one class: the one
         loaded later wins, and the members of the earlier are kept. The mapping keeps one class per name
         today, so the shared part of the library is lost when the Windows part is loaded.
+  - [ ] **The load order is the order the program says.** The folders a program loads come before the
+        program itself, so a program's own file reopens what the library declares, the way the launcher
+        loaded the library first. A file that is loaded later replaces the earlier declaration of a name,
+        and the earlier keeps the names the later does not have.
+  - [ ] **A change to a file that lost the load priority changes nothing.** The declaration that wins is
+        the one the program runs, so a save in a file that only loses decides the class is not the class
+        that runs, and the reload must leave the code in memory alone. This is the same fact the manifest
+        holds, and it is why the fact is written down when the class is compiled.
   - [ ] **A folder named after an operating system is not a namespace.** The Windows part is the library's
         classes again, not `Windows.File`, and only the target system's folder is loaded at all.
   - [ ] **The old compiler's rules about the library go.** "Only the library may read the memory at an
