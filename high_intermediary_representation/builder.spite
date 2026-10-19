@@ -1,6 +1,8 @@
 var file = AbstractSyntaxTree.Shapes.SourceFile("", "")
 var substitution = NameResolution.Substitution()
 var type_builder = NameResolution.Types()
+var mangle = NameResolution.Mangle()
+var names = Mapping.Names()
 var built_functions = List<HighIntermediaryRepresentation.Functions.HighFunction>()
 var built_statements = List<HighIntermediaryRepresentation.Statements.Statement>()
 var built_values = List<HighIntermediaryRepresentation.Values.Value>()
@@ -8,6 +10,8 @@ var skipped = 0
 var built_names = List<String>()
 var built_types = List<String>()
 var current_class = ""
+var classes_of_names = Dictionary<String, String>()
+var classes_of_attributes = Dictionary<String, String>()
 
 func Builder(starting_file: AbstractSyntaxTree.Shapes.SourceFile, starting_substitution: NameResolution.Substitution) {
     file = starting_file
@@ -16,6 +20,7 @@ func Builder(starting_file: AbstractSyntaxTree.Shapes.SourceFile, starting_subst
 
 func build(class_name: String): HighIntermediaryRepresentation.Classes.HighClass {
     current_class = class_name
+    classes_of_attributes = Dictionary<String, String>()
     built_functions = List<HighIntermediaryRepresentation.Functions.HighFunction>()
     file.declarations.each(read_declaration)
     return HighIntermediaryRepresentation.Classes.HighClass(class_name, built_functions)
@@ -26,7 +31,32 @@ func read_declaration(declaration: AbstractSyntaxTree.Shapes.Declarations.Declar
         read_function(declaration)
         return
     }
+    if declaration == AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration {
+        read_attribute(declaration)
+        return
+    }
     return
+}
+
+func read_attribute(declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration) {
+    var class = class_of_an_attribute(declaration)
+    note_the_class_of_the_attribute(declaration.name, class)
+}
+
+func class_of_an_attribute(declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration): String {
+    if declaration.declared_type {
+        return class_of_a_type(declaration.declared_type)
+    } else {
+        return class_of_an_expression(declaration.value)
+    }
+}
+
+func note_the_class_of_the_attribute(name: String, class: String) {
+    if class.is_empty() {
+        return
+    } else {
+        classes_of_attributes[name] = class
+    }
 }
 
 func read_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
@@ -41,7 +71,7 @@ func read_a_function(
     declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
     body: AbstractSyntaxTree.Shapes.Statements.Block,
 ) {
-    var block = lower_block(body)
+    classes_of_names = Dictionary<String, String>()
     built_names = List<String>()
     declaration.parameters.each(read_parameter)
     built_types = List<String>()
@@ -50,6 +80,8 @@ func read_a_function(
     var types = built_types
     built_names = List<String>()
     built_types = List<String>()
+    declaration.parameters.each(read_parameter_class)
+    var block = lower_block(body)
     var result = ""
     if declaration.result {
         result = type_builder.written_of(declaration.result, substitution)
@@ -68,6 +100,15 @@ func read_parameter_type(parameter: AbstractSyntaxTree.Shapes.Declarations.Param
         written = type_builder.written_of(parameter.declared_type, substitution)
     }
     built_types.append(written)
+}
+
+func read_parameter_class(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
+    if parameter.declared_type {
+        var class = class_of_a_type(parameter.declared_type)
+        note_the_class_of(parameter.name, class)
+    } else {
+        return
+    }
 }
 
 func lower_block(block: AbstractSyntaxTree.Shapes.Statements.Block): HighIntermediaryRepresentation.Statements.Block {
@@ -110,6 +151,147 @@ func lower_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
         built_statements.append(declared)
     } else {
         skipped = skipped + 1
+    }
+    var class = class_of_a_local(statement)
+    note_the_class_of(statement.name, class)
+}
+
+func class_of_a_local(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement): String {
+    if statement.declared_type {
+        return class_of_a_type(statement.declared_type)
+    } else {
+        return class_of_an_expression(statement.value)
+    }
+}
+
+func note_the_class_of(name: String, class: String) {
+    if class.is_empty() {
+        return
+    } else {
+        classes_of_names[name] = class
+    }
+}
+
+func class_of_a_type(shape: AbstractSyntaxTree.Shapes.Types.Type): String {
+    var named = shape
+    var path = named.path
+    if path.is_empty() {
+        return ""
+    }
+    var first = path.first()
+    crash first
+    if first.starts_with("$") {
+        return class_of_a_parameter(first)
+    }
+    if not names_a_class(first) {
+        return ""
+    }
+    var last = path.last()
+    crash last
+    return class_of_the_class(last, named.arguments)
+}
+
+func class_of_a_parameter(name: String): String {
+    var bound = substitution.lookup(name)
+    if bound {
+        return class_of_a_bound_type(bound)
+    } else {
+        return ""
+    }
+}
+
+func class_of_the_class(name: String, arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>): String {
+    var single = List<String>()
+    single.append(name)
+    var only_the_class = AbstractSyntaxTree.Shapes.Types.NamedType(single, arguments)
+    var written = type_builder.convert(only_the_class)
+    var applied = substitution.apply(written)
+    return class_of_a_bound_type(applied)
+}
+
+func class_of_a_bound_type(written: NameResolution.ResolvedType): String {
+    if written.is_a_parameter() {
+        return ""
+    }
+    if written.is_a_member() {
+        return ""
+    }
+    if written.is_a_value() {
+        return ""
+    }
+    var path = written.path
+    if path.is_empty() {
+        return ""
+    }
+    var last = path.last()
+    crash last
+    return mangle.of(last, written.arguments)
+}
+
+func names_a_class(written: String): Boolean {
+    if written.is_empty() {
+        return false
+    }
+    var first = written.code_at(0)
+    return not names.is_lower_letter(first)
+}
+
+func class_of_an_expression(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var name = expression
+        return class_of_a_name(name.name)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        var call = expression
+        return class_of_a_call(call)
+    }
+    return ""
+}
+
+func class_of_a_name(name: String): String {
+    var known = classes_of_names[name]
+    if known {
+        return known
+    } else {
+        return class_of_an_attribute_name(name)
+    }
+}
+
+func class_of_an_attribute_name(name: String): String {
+    var known = classes_of_attributes[name]
+    if known {
+        return known
+    } else {
+        return ""
+    }
+}
+
+func class_of_a_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): String {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var name = callee
+        return class_of_a_callee_name(name)
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var member = callee
+        return class_of_a_callee_member(member)
+    }
+    return ""
+}
+
+func class_of_a_callee_name(name: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression): String {
+    if name.is_a_class_name {
+        return name.name
+    } else {
+        return ""
+    }
+}
+
+func class_of_a_callee_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): String {
+    if member.is_a_class_name {
+        return member.name
+    } else {
+        return ""
     }
 }
 
@@ -234,7 +416,7 @@ func owner_of_a_receiver(receiver: AbstractSyntaxTree.Shapes.Expressions.Identif
     if receiver.is_a_class_name {
         return receiver.name
     } else {
-        return ""
+        return class_of_a_name(receiver.name)
     }
 }
 

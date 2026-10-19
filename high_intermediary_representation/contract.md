@@ -42,12 +42,17 @@ The `Builder` fills the owner in with what the language lets it tell:
 - a call with no receiver reaches a function of the class the file declares, so the owner is that class;
 - a call of a class's name makes an object, so the owner is that class;
 - a call on a class's name reaches a function of that class, so the owner is that class;
-- a call on an instance reaches a function of the receiver's class, and the receiver's class is not known
-  yet, so the owner is empty.
+- a call on an instance reaches a function of the receiver's class, and the receiver's class is the class of
+  the value the receiver holds.
 
-An empty owner is not a guess and not a name: it says the compiler does not know yet. The owner is what a
-pass needs to tell two functions of one name apart, and a pass that is given an empty owner falls back to
-the name alone.
+The class of a value comes from the type the name is declared with, or from the class a constructor call
+makes, or from the name the value was copied from. A type parameter that is not bound names no class, and a
+dependent type (`x.class`) names none either.
+
+A receiver the compiler cannot place names no owner: the answer of a call is not known here, so the class of
+`File(path).read()` is not known either. An empty owner is not a guess and not a name: it says the compiler
+does not know yet. The owner is what a pass needs to tell two functions of one name apart, and a pass that
+is given an empty owner falls back to the name alone.
 
 ## The shapes
 
