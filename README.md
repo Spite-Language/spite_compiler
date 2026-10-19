@@ -169,7 +169,7 @@ repository were written and checked.
   is declared once, a constructor is not empty) and `Walk`.
 - `name_resolution` — finds every type written in the program, resolves it, and mints a monomorphised
   instance for every generic class it finds. It also answers the two kinds of dependent type, `x.class`
-  and `$type.member`.
+  and `$type.member`, and the class every function of every class answers.
 - `high_intermediary_representation` — the program as values and control flow: `Value` of `WholeNumber`,
   `Name`, `Operation` and `Answer`, and `Statement` of `Declare`, `Assign`, `While`, `Call` and `Return`.
   `Builder` lowers a class's file into it, with the substitution of its instance applied.
@@ -190,10 +190,9 @@ repository were written and checked.
 - A call names the class that owns the function it reaches, when the compiler can tell it. A call on an
   instance reaches a function of the receiver's class, and the class of a receiver is the class of the
   value it holds: from the type the name is declared with, from the class a constructor call makes, from
-  the name the value was copied from, or from the class a call answers. The answer of a call of another
-  class's function is not known, so a receiver that is such a call has no owner: the reachability pass keeps
-  every function of that name, and the emitter says the call cannot say which one it means when two classes
-  have a function of one name.
+  the name the value was copied from, or from the class a call answers. The class a call of another
+  class's function answers is the result type of that function, and the name resolution answers it for
+  every class it reads.
 - The compiler cannot compile itself yet: its own source is far outside the subset. It reads itself, and
   it reports what it cannot lower.
 - Caching per step, and the development memory that hot reload needs.
@@ -201,15 +200,14 @@ repository were written and checked.
 ## Where it stands
 
 The compiler builds, runs, maps its folders, reads only the classes something names, lexes, parses, checks
-that a file is ordered, and walks the tree. It reads its own source: 95 classes, and only those. It reads
+that a file is ordered, and walks the tree. It reads its own source: 97 classes, and only those. It reads
 the whole standard library too: 145 classes, every one of them, with no error.
 
 Below that it resolves every type, monomorphises every generic, builds the high representation of those
-95 classes, folds it, drops what nothing reaches, lowers it to instruction lists, threads its jumps, folds
+97 classes, folds it, drops what nothing reaches, lowers it to instruction lists, threads its jumps, folds
 its moves, and writes the machine code and the PE file around it. On its own source it stops at the
 emitter, which reports the calls it cannot resolve yet: the standard library is not loaded, a class with
-no constructor has none yet, the class of a receiver is not known when the receiver is not a name, and the
-division the emitter writes divides by an address.
+no constructor has none yet, and the division the emitter writes divides by an address.
 
 The road from here to a released executable is:
 
@@ -217,14 +215,11 @@ The road from here to a released executable is:
    and concurrency. Each needs its kinds in the high representation, its kinds in the low one, and its
    instructions in the emitter. `switch`, `assert` and `crash` are with them, and the narrowing of a
    `T?` is a proof, and the proofs come after.
-2. The result type of another class's function, so a receiver that is a call (`File(path).read()`) names
-   its class too. The builder knows the class a call answers when the function is one of the class it is
-   building, and the answer of a call of another class is not known yet.
-3. The imported standard library called out to, so a program can print and read a file. The emitter writes
+2. The imported standard library called out to, so a program can print and read a file. The emitter writes
    a Windows executable that calls `ExitProcess`; it needs the runtime the library asks for, and the
    library reaches the C library through `DynamicLibrary`, so the emitter must be able to call a function
    in a DLL by name.
-4. Then this compiler compiling itself, which is the test that the language is complete.
+3. Then this compiler compiling itself, which is the test that the language is complete.
 
 `TODO.md` is the list of what is left, in the order it is done, and what the original repository's test
 suite asks of this compiler for it to be done.

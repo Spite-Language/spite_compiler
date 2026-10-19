@@ -21,8 +21,9 @@ A subset, enough to compile a program of whole numbers that calls its own functi
 references, unions, reflection and concurrency are all still to come, and each needs its own value kinds
 here first.
 
-The `Builder` is the step from the syntax tree to this representation. It takes a class's `SourceFile` and
-the substitution of the instance it belongs to, and answers a `HighClass`:
+The `Builder` is the step from the syntax tree to this representation. It takes a class's `SourceFile`, the
+substitution of the instance it belongs to, and the answers the name resolution gave, and answers a
+`HighClass`:
 
 - every function with a body becomes a `HighFunction` with its parameters, their types *after* the
   substitution, its result type after the substitution, and its body lowered;
@@ -49,9 +50,9 @@ The class of a value comes from the type the name is declared with, or from the 
 makes, or from the name the value was copied from, or from the class a call answers. A type parameter that
 is not bound names no class, and a dependent type (`x.class`) names none either.
 
-The class a call answers is the result type of the function it reaches, and the builder knows the result
-types of the class it is building. A call of another class's function answers a class that is not known
-here, and a receiver that is such a call names no owner.
+The class a call answers is the result type of the function it reaches. The name resolution answers the
+result type of every function of every class it resolves, so the builder asks it for the class a function
+of another class answers. A receiver that is such a call names its owner.
 
 A receiver the compiler cannot place names no owner: the answer of a call is not known here, so the class of
 `File(path).read()` is not known either. An empty owner is not a guess and not a name: it says the compiler

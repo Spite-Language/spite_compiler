@@ -11,7 +11,9 @@ needs to know what is reachable, and reachability is only knowable once a name i
 It takes the `SourceFile` of every class the `symbols` step read, and answers:
 
 - a `ResolvedType` for every type written anywhere in the program,
-- a `Monomorphised` instance for every generic class the program writes with type arguments.
+- a `Monomorphised` instance for every generic class the program writes with type arguments,
+- the class every function of every class answers, so a receiver that is a call of another class's
+  function names its class.
 
 ## The rule it follows
 
@@ -96,3 +98,6 @@ member is answered when the class is compiled.
   statements and in the type arguments of a call.
 - `resolver.spite` — the work: find the types, resolve them, mint the instances, and mint the instances
   the instances need.
+- `class_name.spite` — the class a type names: the class of a named type, of a type parameter, and of a
+  type that is dependent on another.
+- `answers.spite` — the class every function of every class answers.
