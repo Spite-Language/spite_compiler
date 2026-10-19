@@ -201,7 +201,8 @@ repository were written and checked.
 ## Where it stands
 
 The compiler builds, runs, maps its folders, reads only the classes something names, lexes, parses, checks
-that a file is ordered, and walks the tree. It reads its own source: 95 classes, and only those.
+that a file is ordered, and walks the tree. It reads its own source: 95 classes, and only those. It reads
+the whole standard library too: 145 classes, every one of them, with no error.
 
 Below that it resolves every type, monomorphises every generic, builds the high representation of those
 95 classes, folds it, drops what nothing reaches, lowers it to instruction lists, threads its jumps, folds

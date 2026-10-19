@@ -208,7 +208,11 @@ run stops there.
   file is ordered, a name is declared once, a constructor is not empty) and the walk.
 - **The name resolution** (`name_resolution`). Every type written in the program is resolved, the two kinds
   of dependent type (`x.class` and `$type.member`) are answered, and every generic class found is
-  monomorphised: `List<Integer>` mints `List_of_Integer`, once however many times it is written.
+  monomorphised: `List<Integer>` mints `List_of_Integer`, once however many times it is written. A member
+  read on a type parameter is a codegen value, and it is a note, because the original gives the type
+  argument at run time and the compiler cannot know it while it reads.
+- **The whole standard library reads.** A program that names every class of the library reads all 145 of
+  them, with no error: 27 generic classes and 54 monomorphised instances.
 - **The high representation** (`high_intermediary_representation`). The program as values and control flow,
   and the builder that lowers a class into it with the substitution of its instance applied. A call names
   the class that owns the function it reaches, so two functions of one name are told apart, and the class
@@ -241,6 +245,7 @@ The tests live in `../SpiteSpec/tests`, one folder per program, and the compiler
 | `../SpiteSpec/tests/two_names` | two classes with a function of one name, a call on an instance and the class nothing reaches | 3 |
 | `../SpiteSpec/tests/branches` | an `if` with an `else` inside a loop, and an `if` that answers | 21 |
 | `../SpiteSpec/tests/chains` | a call on a value a call answers, and two classes with a function of one name | 14 |
+| `../SpiteSpec/tests/whole_library` | every class of the standard library named, so the whole library is read | 0 |
 
     .spite/spite.exe ../SpiteSpec/tests/exit_code
     ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe

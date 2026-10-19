@@ -66,6 +66,11 @@ associated types of the built-in generic classes are known without a file:
 
 Any other member is found in the class's own declarations.
 
+A member read on a type parameter is a codegen value: the original compiles a generic class once and
+gives the type argument at run time, so `$value_type.key_type` is the key type of whatever the argument
+is, and the compiler cannot know it while it reads. Such a member is a note, not an error, and the
+member is answered when the class is compiled.
+
 ## What is not built yet
 
 - The resolver answers a *type*, not a *value*. A name that is a function, an attribute or a local is
