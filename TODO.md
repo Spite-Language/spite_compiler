@@ -195,17 +195,25 @@ run stops there.
 - **The command line.** `spite <path>`, always with the path written. `spite low-ir` runs the back half of
   the pipeline on the sample program and prints the instruction list.
 - **The mapping** (`mapping`). Folders become namespaces. A folder loaded twice, a folder inside another, a
-  folder or a file not named in snake_case, and the reserved name `Spite` are all errors. No file is read.
+  folder or a file not named in snake_case, and the reserved name `Spite` are all errors, and they reach the
+  compiler's report. No file is read. A path is resolved before it is compared, so a load written relative to
+  the program that holds it is not taken for a folder inside that program.
 - **The symbols** (`symbols`). A written name is resolved to a class file by searching the enclosing
   namespaces outwards and then each loaded root, and only that file is read, and only the classes it names
   are followed. A program that never mentions `JsonWriter` never reads `json_writer.spite`.
+- **The loads.** A program names the folders it loads in its first line, and the symbols step follows the
+  load lines: the folder is mapped, and its classes are found by name. The compiler does not go looking for
+  a library, and there is no environment variable that names one.
 - **The syntax tree** (`abstract_syntax_tree`). The lexer, the parser, the shapes, the ordering check (a
   file is ordered, a name is declared once, a constructor is not empty) and the walk.
 - **The name resolution** (`name_resolution`). Every type written in the program is resolved, the two kinds
   of dependent type (`x.class` and `$type.member`) are answered, and every generic class found is
   monomorphised: `List<Integer>` mints `List_of_Integer`, once however many times it is written.
 - **The high representation** (`high_intermediary_representation`). The program as values and control flow,
-  and the builder that lowers a class's file into it with the substitution of its instance applied.
+  and the builder that lowers a class into it with the substitution of its instance applied.
+- **The reopening.** Two files may declare the same class. Every file that declares it is kept, all of them
+  are read, and their declarations are merged: a later declaration replaces an earlier one of the same name,
+  and the names the later one does not have are kept. The class the rest of the compiler sees is one file.
 - **The high passes** (`high_optimization_passes`). `fold_constants` folds the arithmetic it can fold, and
   `drop_unreachable_functions` drops the functions and the classes nothing reaches.
 - **The low representation** (`low_intermediary_representation`). The program as a flat instruction list
@@ -216,17 +224,20 @@ run stops there.
   `ExitProcess` from `kernel32.dll`, and the program answering its entry constructor's value as the process
   exit code. The emitter writes the whole number arithmetic, the comparisons, `while`, the calls between a
   program's own functions and `return`.
+- **The decisions** (`DECISIONS.md`), one row each, in the order they were made.
 
 ### The programs that prove it
 
-`example/example.spite` sums the numbers from one to five and answers 10. `examples/exit_code/exit_code.spite`
-has a loop and a call with an argument, and answers 4072. The compiler writes each one to
-`<path>/.spite/build/<name>.exe`, and running it leaves that as the exit code.
+The tests live in `../SpiteSpec/tests`, one folder per program, and the compiler writes each one to
+`<program>/.spite/build/<name>.exe`.
 
-    spite example
-    example/.spite/build/example.exe
-    spite examples/exit_code
-    examples/exit_code/.spite/build/exit_code.exe
+| The program | What it is | What it answers |
+|---|---|---|
+| `../SpiteSpec/tests/exit_code` | whole numbers, a loop and a call with an argument | 4072 |
+| `../SpiteSpec/tests/sum` | whole numbers and a loop | 10 |
+
+    .spite/spite.exe ../SpiteSpec/tests/exit_code
+    ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
 
 ## What the original compiler has that this one does not
 

@@ -63,10 +63,11 @@ rule the old compiler enforces and the new one enforces too. `.spite/spite_compi
 folder that gives it that name; it is not part of the source.
 
 The executable is written to `<path>/.spite/build/<name>.exe`, where `<name>` is the program's folder in
-snake_case, and the program answers the value its entry constructor gives as the process exit code:
+snake_case, and the program answers the value its entry constructor gives as the process exit code. The
+programs to try it on live in the repository beside this one, `../SpiteSpec/tests`:
 
-    spite examples/exit_code
-    examples/exit_code/.spite/build/exit_code.exe
+    .spite/spite.exe ../SpiteSpec/tests/exit_code
+    ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
 
 ## What this compiler is
 
@@ -109,14 +110,15 @@ program that never mentions `JsonWriter` never reads `json_writer.spite`, and ne
 
 ## A program that runs
 
-`example/example.spite` is a whole program. The compiler reads it, monomorphises nothing in it, folds it,
-drops what nothing reaches, lowers it, and writes a Windows executable:
+`../SpiteSpec/tests/exit_code/exit_code.spite` is a whole program. The compiler reads it, monomorphises
+nothing in it, folds it, drops what nothing reaches, lowers it, and writes a Windows executable:
 
-    spite example
-    wrote example/.spite/build/example.exe
+    .spite/spite.exe ../SpiteSpec/tests/exit_code
+    wrote ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
 
-The executable is a 32-bit PE for Windows with one section, importing `ExitProcess` from `kernel32.dll`.
-It computes a sum in a loop and exits. This is the first machine code this repository has produced.
+The executable is a 32-bit PE for Windows with two sections, importing `ExitProcess` from `kernel32.dll`. It
+computes a sum in a loop, through a call with an argument, and exits with the value it computed: 4072. This
+is the first machine code this repository has produced.
 
 ## The hot reload
 
