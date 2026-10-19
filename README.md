@@ -29,8 +29,8 @@ with the old compiler's own:
     ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
 
 The first command writes the executable to `<program>/.spite/build/<name>.exe`, and the second runs it: the
-value the program answers is the exit code it leaves (4072 for `exit_code`, 10 for `sum`). `TODO.md` says
-how a test is ported, and when.
+value the program answers is the exit code it leaves (4072 for `exit_code`, 10 for `sum`, 7 for
+`two_names`). `TODO.md` says how a test is ported, and when.
 
 Two things to know about the paths. The folder is named `SpiteCompiler`, and a program folder is named in
 snake_case, so the build goes through the junction `.spite/spite_compiler`, which is this same folder under
@@ -185,8 +185,10 @@ repository were written and checked.
 - The backend lowers whole numbers only. `String`, lists, references, unions, reflection and concurrency
   are all still to come, and each needs its own value kinds in the high representation and in the low one
   before it can be lowered. The builder counts what it skips rather than dropping it.
-- A call is recorded by its simple name, so two classes with a function of one name are the same function
-  as far as the reachability pass is concerned. The high representation has no owner on a call yet.
+- A call names the class that owns the function it reaches, when the compiler can tell it. A call on an
+  instance reaches a function of the receiver's class, and the receiver's class is not known yet, so that
+  call has no owner: the reachability pass keeps every function of that name, and the emitter says the
+  call cannot say which one it means when two classes have a function of one name.
 - The compiler cannot compile itself yet: its own source is far outside the subset. It reads itself, and
   it reports what it cannot lower.
 - Caching per step, and the development memory that hot reload needs.
@@ -194,20 +196,23 @@ repository were written and checked.
 ## Where it stands
 
 The compiler builds, runs, maps its folders, reads only the classes something names, lexes, parses, checks
-that a file is ordered, and walks the tree. It reads itself and the whole standard library it uses: 133
-classes, and only those.
+that a file is ordered, and walks the tree. It reads its own source: 94 classes, and only those.
 
-Below that it resolves every type, monomorphises every generic, builds the high representation of 157
-classes, folds it, drops what nothing reaches, lowers it to instruction lists, threads its jumps, folds
-its moves, and writes the machine code and the PE file around it.
+Below that it resolves every type, monomorphises every generic, builds the high representation of those
+94 classes, folds it, drops what nothing reaches, lowers it to instruction lists, threads its jumps, folds
+its moves, and writes the machine code and the PE file around it. On its own source it stops at the
+emitter, which reports the calls it cannot resolve yet: the standard library is not loaded, a class with
+no constructor has none yet, and the class of a receiver is not known.
 
 The road from here to a released executable is:
 
 1. The rest of the language, one value kind at a time: `String`, lists, references, unions, reflection
    and concurrency. Each needs its kinds in the high representation, its kinds in the low one, and its
    instructions in the emitter.
-2. A name on a call that says which class owns the function, so the reachability pass can tell two
-   functions of one name apart.
+2. The class of a receiver, so a call on an instance says which class owns the function it reaches. A
+   call names the owner when the compiler can tell it, and a call on an instance is the one it cannot
+   tell yet: the receiver's class is not known, so the call has no owner and the reachability pass keeps
+   every function of that name.
 3. The imported standard library called out to, so a program can print and read a file. The emitter writes
    a Windows executable that calls `ExitProcess`; it needs the runtime the library asks for, and the
    library reaches the C library through `DynamicLibrary`, so the emitter must be able to call a function

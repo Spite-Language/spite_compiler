@@ -12,6 +12,11 @@ transformed one. The order of the passes is written in `spite_compiler.spite`, n
 It starts from what the program can reach: the class of its entry file, its attributes' initial values,
 and everything those call. Every function nothing reaches is dropped from the representation.
 
+A function is named by the class that owns it and its own name, `Counter.reset` and `Timer.reset` being two
+functions. A call that says which class owns the function it reaches marks that one function, so two
+functions of one name are told apart. A call whose owner is not known yet marks every function of that
+name, because the call could reach any of them.
+
 ## Why it belongs here and not later
 
 A class that nothing reaches is not a class that costs nothing: it has an entry in the instances

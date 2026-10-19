@@ -31,6 +31,24 @@ the substitution of the instance it belongs to, and answers a `HighClass`:
 The types it lowers are the whole numbers: a literal, a name, an addition or a multiplication, and a call.
 Everything else is counted as skipped until it is written.
 
+## The owner of a call
+
+A call names the function it reaches, and the class that owns it. The owner is what tells two functions of
+one name apart: `Counter.reset` and `Timer.reset` are two functions, and a call that says only "reset" says
+neither.
+
+The `Builder` fills the owner in with what the language lets it tell:
+
+- a call with no receiver reaches a function of the class the file declares, so the owner is that class;
+- a call of a class's name makes an object, so the owner is that class;
+- a call on a class's name reaches a function of that class, so the owner is that class;
+- a call on an instance reaches a function of the receiver's class, and the receiver's class is not known
+  yet, so the owner is empty.
+
+An empty owner is not a guess and not a name: it says the compiler does not know yet. The owner is what a
+pass needs to tell two functions of one name apart, and a pass that is given an empty owner falls back to
+the name alone.
+
 ## The shapes
 
 - `HighProgram` — the classes.
@@ -39,3 +57,5 @@ Everything else is counted as skipped until it is written.
 - `HighBlock` — a list of statements.
 - `HighStatement` — a union of `Declare`, `Assign`, `While`, `Call`, `Return`.
 - `HighValue` — a union of `Number`, `Name`, `Operation`, `Answer` (a call that answers a value).
+
+A `Call` and an `Answer` carry the name of the function they reach and the class that owns it.

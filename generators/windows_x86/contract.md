@@ -45,3 +45,12 @@ compiler's generated C did.
 
 The frame is the usual one: `ebp` is the frame pointer, the parameters are at `[ebp + 8]` and up, and the
 values the function made live below it, each at its own slot.
+
+## How a call finds the function it reaches
+
+A call names the function it reaches and the class that owns it, and the emitter looks the two up
+together: the class that owns it and its own name. The class of the caller is not a candidate, because a
+call on an instance reaches a function of the receiver's class and not one of the caller's.
+
+When the owner is not known yet, the emitter looks the name up on its own, and a name that two classes
+have is an error: the call cannot say which one it means, and the compiler will not guess.

@@ -37,7 +37,7 @@ computes a whole number and answers it.
 | `operation` | `first`, `second`, `third`, `text` | `third = first text second` |
 | `jump` | `to` | go to instruction `to` |
 | `jump_if_false` | `first`, `to` | go to instruction `to` when register `first` is zero |
-| `call` | `first`, `callee`, `places` | register `first` answers the call |
+| `call` | `first`, `callee`, `owner`, `places` | register `first` answers the call |
 | `return` | `first` | answer register `first` |
 
 `to` is an index into the function's own instruction list, not a name. The lowering records the index
@@ -45,6 +45,9 @@ when it emits, and a jump to the instruction after a jump is a real jump, so a p
 instruction has to renumber every target that lands after it. `peephole_jumps` does this in
 `note_where_each_lands`: it walks the list once, recording where each instruction will land, then
 retargets.
+
+A `call` names the function it reaches and the class that owns it, and the owner is empty when the
+compiler does not know it yet. The emitter reads the owner to find the function's address.
 
 ## Why one record and not a union
 
