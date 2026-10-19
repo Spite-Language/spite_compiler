@@ -30,7 +30,7 @@ with the old compiler's own:
 
 The first command writes the executable to `<program>/.spite/build/<name>.exe`, and the second runs it: the
 value the program answers is the exit code it leaves (4072 for `exit_code`, 10 for `sum`, 3 for
-`two_names`). `TODO.md` says how a test is ported, and when.
+`two_names`, 21 for `branches`). `TODO.md` says how a test is ported, and when.
 
 Two things to know about the paths. The folder is named `SpiteCompiler`, and a program folder is named in
 snake_case, so the build goes through the junction `.spite/spite_compiler`, which is this same folder under
@@ -185,6 +185,8 @@ repository were written and checked.
 - The backend lowers whole numbers only. `String`, lists, references, unions, reflection and concurrency
   are all still to come, and each needs its own value kinds in the high representation and in the low one
   before it can be lowered. The builder counts what it skips rather than dropping it.
+- The `if` statement is lowered, with or without an `else`. The narrowing of a `T?` inside a branch is a
+  proof, and the proofs are not made yet, so a value that is maybe nothing is read as if it were there.
 - A call names the class that owns the function it reaches, when the compiler can tell it. A call on an
   instance reaches a function of the receiver's class, and the class of a receiver is the class of the
   value it holds: from the type the name is declared with, from the class a constructor call makes, or from
@@ -198,19 +200,21 @@ repository were written and checked.
 ## Where it stands
 
 The compiler builds, runs, maps its folders, reads only the classes something names, lexes, parses, checks
-that a file is ordered, and walks the tree. It reads its own source: 94 classes, and only those.
+that a file is ordered, and walks the tree. It reads its own source: 95 classes, and only those.
 
 Below that it resolves every type, monomorphises every generic, builds the high representation of those
-94 classes, folds it, drops what nothing reaches, lowers it to instruction lists, threads its jumps, folds
+95 classes, folds it, drops what nothing reaches, lowers it to instruction lists, threads its jumps, folds
 its moves, and writes the machine code and the PE file around it. On its own source it stops at the
 emitter, which reports the calls it cannot resolve yet: the standard library is not loaded, a class with
-no constructor has none yet, and the class of what a call answers is not known.
+no constructor has none yet, the class of a receiver is not known when the receiver is not a name, and the
+division the emitter writes divides by an address.
 
 The road from here to a released executable is:
 
 1. The rest of the language, one value kind at a time: `String`, lists, references, unions, reflection
    and concurrency. Each needs its kinds in the high representation, its kinds in the low one, and its
-   instructions in the emitter.
+   instructions in the emitter. `switch`, `assert` and `crash` are with them, and the narrowing of a
+   `T?` is a proof, and the proofs come after.
 2. The class of what a call answers, so a receiver that is a call (`File(path).read()`) names its class
    too. The class of a receiver is known when the receiver is a name, and the answer of a call is not known
    yet.

@@ -17,7 +17,7 @@ reached" or "does this addition always overflow" has no answer on the syntax tre
 ## What is built
 
 A subset, enough to compile a program of whole numbers that calls its own functions, uses `while` and
-returns a value. Classes hold `Integer` attributes. Nothing else is lowered yet: `String`, lists,
+`if`, and returns a value. Classes hold `Integer` attributes. Nothing else is lowered yet: `String`, lists,
 references, unions, reflection and concurrency are all still to come, and each needs its own value kinds
 here first.
 
@@ -60,7 +60,10 @@ is given an empty owner falls back to the name alone.
 - `HighClass` — a name, its attributes and its functions.
 - `HighFunction` — a name, its parameters, their types, its result type and its body.
 - `HighBlock` — a list of statements.
-- `HighStatement` — a union of `Declare`, `Assign`, `While`, `Call`, `Return`.
+- `HighStatement` — a union of `Declare`, `Assign`, `If`, `While`, `Call`, `Return`.
 - `HighValue` — a union of `Number`, `Name`, `Operation`, `Answer` (a call that answers a value).
 
 A `Call` and an `Answer` carry the name of the function they reach and the class that owns it.
+
+An `If` holds a condition, a branch to run when it is true, and a branch to run when it is false. The
+branch that is false is nothing when the program wrote no `else`.

@@ -9,9 +9,10 @@ of `LowFrame`s telling where each virtual register lives, and the entry point.
 
 ## The change it makes
 
-Control flow stops being a tree. A `while` becomes a test, a jump forward, a body and a jump back. Every
-value becomes an instruction that leaves its answer in a virtual register. There is no nesting left, so a
-low pass is a pass over a list and never has to rebuild a shape.
+Control flow stops being a tree. A `while` becomes a test, a jump forward, a body and a jump back. An `if`
+becomes a test, a jump over the other branch, and the branches themselves. Every value becomes an
+instruction that leaves its answer in a virtual register. There is no nesting left, so a low pass is a pass
+over a list and never has to rebuild a shape.
 
 A virtual register is a place the machine code decides later: a stack slot, a real register, or a value
 folded away entirely. Nothing above this step may assume where one lives.
@@ -19,7 +20,7 @@ folded away entirely. Nothing above this step may assume where one lives.
 ## What is built
 
 A subset: integers, addition, subtraction, multiplication, division, remainder, negation, comparisons,
-`while`, calls between the program's own functions, and `return`. Enough to compile a program that
+`while`, `if`, calls between the program's own functions, and `return`. Enough to compile a program that
 computes a whole number and answers it.
 
 ## The shapes

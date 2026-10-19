@@ -212,7 +212,8 @@ run stops there.
 - **The high representation** (`high_intermediary_representation`). The program as values and control flow,
   and the builder that lowers a class into it with the substitution of its instance applied. A call names
   the class that owns the function it reaches, so two functions of one name are told apart, and the class
-  of a receiver comes from the type its name is declared with.
+  of a receiver comes from the type its name is declared with. An `if` is lowered, with or without an
+  `else`.
 - **The reopening.** Two files may declare the same class. Every file that declares it is kept, all of them
   are read, and their declarations are merged: a later declaration replaces an earlier one of the same name,
   and the names the later one does not have are kept. The class the rest of the compiler sees is one file.
@@ -238,6 +239,7 @@ The tests live in `../SpiteSpec/tests`, one folder per program, and the compiler
 | `../SpiteSpec/tests/exit_code` | whole numbers, a loop and a call with an argument | 4072 |
 | `../SpiteSpec/tests/sum` | whole numbers and a loop | 10 |
 | `../SpiteSpec/tests/two_names` | two classes with a function of one name, a call on an instance and the class nothing reaches | 3 |
+| `../SpiteSpec/tests/branches` | an `if` with an `else` inside a loop, and an `if` that answers | 21 |
 
     .spite/spite.exe ../SpiteSpec/tests/exit_code
     ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
