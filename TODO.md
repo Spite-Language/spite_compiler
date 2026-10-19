@@ -3,6 +3,50 @@
 What the new Spite compiler does now, what is left, and in what order. One file, kept up to date as the work
 moves. The compiler is written in Spite and is built by the old compiler until it can build itself.
 
+## Why this repository exists
+
+**The compiler is being written again, and only the compiler.** The language is decided and does not move; the
+standard library, the tests, the documentation and the decision log stay where they are
+(`D:/Projects/SpiteLanguage`) until they move to a repository of their own. What is here is the compiler, and
+nothing else.
+
+**Why again.** The old compiler got to be hard to maintain, and hard for a small model to work on, which
+is one of the goals the language has: it is one program of 277 files, and a change to one part of it means
+reading the rest. The ideas for the new one are written down in
+[`new_compiler.md`](D:/Projects/SpiteLanguage/new_compiler.md), and they are these:
+
+- **It is broken into steps, one folder each**, and a step takes the previous step's answer and hands its
+  own answer to the next one. No step reaches back into another.
+- **Each error is found by the step that owns it**, and the run stops there, so a syntax error dies at the
+  syntax tree and never reaches a later step.
+- **There is no discovery step.** The compiler maps the folders the program can use and reads only the classes
+  something names.
+- **Every step's answer is cached**, so restarting a compilation redoes only the work that changed.
+- **The compiler is responsible for the hot reload**, so it keeps the development memory it needs, and a
+  reload is as fast as it can be.
+- **It writes machine code.** There is no C in between: no C is written, no C is read, and no C compiler is
+  needed to build a program.
+- **The entrypoint sets the order up and nothing else**, so the shape of a compilation is one screen.
+
+**What is being ported, and from where.** The old compiler is the thing being ported, and it is the reference
+for every rule:
+
+| What | Where it is |
+|---|---|
+| the compiler being ported | [`D:/Projects/SpiteLanguage/compiler`](D:/Projects/SpiteLanguage/compiler) |
+| the ideas this compiler is built on | [`new_compiler.md`](D:/Projects/SpiteLanguage/new_compiler.md) |
+| the language, normative | [`specs/`](D:/Projects/SpiteLanguage/specs) |
+| the language, taught | [`docs/`](D:/Projects/SpiteLanguage/docs) |
+| the 263 programs that must fail with the same texts | [`diagnostics/`](D:/Projects/SpiteLanguage/diagnostics) |
+| the corpus the compiler must pass | [`conformance/`](D:/Projects/SpiteLanguage/conformance) |
+| the suite that says whether it does | [`check.sh`](D:/Projects/SpiteLanguage/check.sh) |
+| what the old compiler does and does not do | [the table below](#what-the-original-compiler-has-that-this-one-does-not) |
+
+**The old compiler's rules are this compiler's rules.** Every diagnostic it writes is one this compiler must
+write too, with the same words, at the same line, and the same `(in Class.Function)`. The list is in **every
+error the original reports** below, and the suite that checks them is in **what the original test suite asks
+of us**.
+
 ## Priority: `spite .` in this folder builds the compiler
 
 Asked and answered: **no, not yet.** What happens today, exactly:

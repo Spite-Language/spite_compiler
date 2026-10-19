@@ -4,6 +4,14 @@ The new Spite compiler, written in Spite. This repository is the compiler and no
 launcher, no language documentation, no standard library of its own. It reads the standard library from the
 old project.
 
+**The compiler is being written again, and only the compiler.** The language is decided and does not move:
+the standard library, the tests, the documentation and the decision log stay in
+`D:/Projects/SpiteLanguage` until they move to a repository of their own. The old compiler is the thing
+being ported, and it is the reference for every rule: every diagnostic it writes, this compiler must write
+too, with the same words, at the same line. The ideas for the new one are in
+[`new_compiler.md`](D:/Projects/SpiteLanguage/new_compiler.md), and `TODO.md` is the list of what is left, in
+the order it is done.
+
 ## Do this
 
 Three commands, in this folder. Nothing to think about, and each one says what it did.
