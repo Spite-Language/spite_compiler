@@ -20,17 +20,24 @@ folded away entirely. Nothing above this step may assume where one lives.
 ## What is built
 
 A subset: integers, addition, subtraction, multiplication, division, remainder, negation, comparisons,
-`while`, `if`, calls between the program's own functions, and `return`. Enough to compile a program that
+`and` and `or` (the right side is only reached when the left side says so), `while`, `if`, calls between
+the program's own functions, a crash, and `return`. Enough to compile a program that
 computes a whole number and answers it. A class's instance is a block of memory in the frame of the
 function that made it, and its attributes are read and written at their offsets. A value class's room is
 the first bytes of that block, and they are read and written one byte at a time, which is what the
 `buffer_read` and `buffer_write` instructions are for.
 
+**A crash stops the program.** The instruction carries the text to write, and the emitter writes it to the
+standard error, through `GetStdHandle` and `WriteFile`, and then leaves the process with `ExitProcess`
+and a code of 1. The text is built while the program is compiled, so the program carries it in its own
+data. The crash runs when the condition does not hold, which is the rule of the language: a `crash` and an
+`assert` are the same check with the other severity.
+
 ## The shapes
 
-- `LowProgram` — the functions, in the order they are written out, and the entry.
-- `LowFunction` — a name, how many slots it needs, and its instructions.
-- `Instruction` — one record with a `kind`, read here as one of:
+- `LowProgram`: the functions, in the order they are written out, and the entry.
+- `LowFunction`: a name, how many slots it needs, and its instructions.
+- `Instruction`: one record with a `kind`, read here as one of:
 
 | kind | reads | means |
 | --- | --- | --- |
@@ -51,6 +58,7 @@ the first bytes of that block, and they are read and written one byte at a time,
 | `place_address` | `first`, `second` | register `second` is the address of the place `first` |
 | `foreign_call` | `first`, `text`, `second`, `places` | register `first` answers the C function named `text`, called with the places, through the handle in register `second` |
 | `return` | `first` | answer register `first` |
+| `crash` | `text` | stop the program, and write `text` to the standard error |
 
 `to` is an index into the function's own instruction list, not a name. The lowering records the index
 when it emits, and a jump to the instruction after a jump is a real jump, so a pass that removes an

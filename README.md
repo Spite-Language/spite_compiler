@@ -220,7 +220,7 @@ and a method takes it as its first argument.
 A value class says how much room it needs with a `Buffer`, and the compiler lays that room out at the front
 of the class's block: the `Boolean` is one byte, and the compiler reads the number of bytes from the class
 itself. The value is read from the room and never through `this`: `this` is the place the room is kept,
-and the read is what says what the value is, so the `Boolean` says `_buffer.read_byte_at(0)`. The methods
+and the read is what says what the value is, so the `Boolean` says `_buffer._read_byte_at(0)`. The methods
 that read and write a byte of memory have no body, and the compiler writes them, because reading a byte of
 memory is not something Spite can say.
 
@@ -228,7 +228,7 @@ The road from here to a released executable is:
 
 1. The rest of the language, one value kind at a time: `String`, lists, references, unions, reflection
    and concurrency. Each needs its kinds in the high representation, its kinds in the low one, and its
-   instructions in the emitter. `switch`, `assert` and `crash` are with them, and the narrowing of a
+   instructions in the emitter. `switch` is with them, and the narrowing of a
    `T?` is a proof, and the proofs come after.
 2. The imported standard library called out to, so a program can print and read a file. The emitter writes
    a Windows executable that calls `ExitProcess`; it needs the runtime the library asks for, and the

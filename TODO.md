@@ -216,13 +216,14 @@ run stops there.
 - **The memory of a value.** A class that holds a `Buffer` says how many bytes it needs, the name resolution
   reads that number, and the builder lays the room out at the front of the class's block. The value is read
   from the room and never through `this`: a method of a value class is made on the address of the value, and
-  the `Boolean` reads its byte with `_buffer.read_byte_at(0)`. The methods that read and write a byte have no
+  the `Boolean` reads its byte with `_buffer._read_byte_at(0)`. The methods that read and write a byte have no
   body, and the compiler writes them.
 - **The high representation** (`high_intermediary_representation`). The program as values and control flow,
   and the builder that lowers a class into it with the substitution of its instance applied. A call names
   the class that owns the function it reaches, so two functions of one name are told apart, and the class
   of a receiver comes from the type its name is declared with or from the class a call answers, which the
-  name resolution answers for every class it reads. An `if` is lowered, with or without an `else`.
+  name resolution answers for every class it reads. An `if` is lowered, with or without an `else`. An index
+  is a call to `get_at`, and the builder writes that call.
 - **The reopening.** Two files may declare the same class. Every file that declares it is kept, all of them
   are read, and their declarations are merged: a later declaration replaces an earlier one of the same name,
   and the names the later one does not have are kept. The class the rest of the compiler sees is one file.
@@ -234,8 +235,10 @@ run stops there.
   `fold_away_moves` folds a load into the move that wrote it, when that is safe.
 - **The generator** (`generators/windows_x86`). A 32-bit PE for Windows with two sections, importing
   `ExitProcess` from `kernel32.dll`, and the program answering its entry constructor's value as the process
-  exit code. The emitter writes the whole number arithmetic, the comparisons, `while`, the calls between a
-  program's own functions and `return`. The division is a signed one, the way Go has it.
+  exit code. The emitter writes the whole number arithmetic, the comparisons, `and` and `or` with their
+  short circuits, `while`, the calls between a program's own functions and `return`. The division is a
+  signed one, the way Go has it. A program that crashes or fails an assertion writes where it stopped to
+  the standard error and leaves with a code of 1.
 - **The decisions** (`DECISIONS.md`), one row each, in the order they were made.
 
 ### The programs that prove it
@@ -255,6 +258,13 @@ The tests live in `../SpiteSpec/tests`, one folder per program, and the compiler
 | `../SpiteSpec/tests/divisions` | a whole number divided and taken the remainder of, in a loop | 210 |
 | `../SpiteSpec/tests/objects` | a class with an attribute, a constructor that makes one and a method that takes it | 6 |
 | `../SpiteSpec/tests/boolean_layout` | a `Boolean` of one byte read from its room, and a whole number beside it | 7 |
+| `../SpiteSpec/tests/and_value` | the `and` of two whole numbers | 0 |
+| `../SpiteSpec/tests/and_if` | an `if` on an `and`, and the short circuit that goes with it | 0 |
+| `../SpiteSpec/tests/or_if` | an `if` on an `or` | 1 |
+| `../SpiteSpec/tests/if_only` | an `if` on a whole number | 0 |
+| `../SpiteSpec/tests/buffer_bytes` | a buffer's bytes, read and written in both byte orders | 0 |
+| `../SpiteSpec/tests/buffer_crash` | an assertion that fails, and the program that stops with it | 1 |
+| `../SpiteSpec/tests/buffer_overflow` | a `crash` that stops the program | 1 |
 
     .spite/spite.exe ../SpiteSpec/tests/exit_code
     ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
@@ -374,7 +384,7 @@ what the imported library and the original repository's corpus, examples and doc
 - [ ] **The lists and the dictionaries**, with their templates and their member templates.
 - [ ] **The references**, the enums, the unions and the `type` shapes.
 - [ ] **The functions as values**, the variadics and the operators as functions.
-- [ ] **`if`, `switch`, `assert` and `crash`**, and the narrowing of a nullable.
+- [ ] **`switch`**, and the narrowing of a nullable.
 - [ ] **The number types** and their casts, and the overflow checks the proofs remove.
 - [ ] **The proofs.** What the compiler establishes while compiling: the ranges of the numbers, the bounds
       of the reads, the ownership, the call effects. The corpus checks both ways: a program that overflows

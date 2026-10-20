@@ -68,6 +68,21 @@ time, at an offset the program gives. Reading one adds the offset to the address
 the byte: `mov eax, [base]`, `add eax, [offset]`, `movzx eax, byte [eax]`. Writing one puts the value in
 `eax`, the address in `ecx`, adds the offset to it, and stores the low byte of the value: `mov [ecx], al`.
 
+## The crash
+
+A crash stops the program. The emitter writes the text the crash carries to the standard error, and then
+leaves the process: the handle comes from `GetStdHandle(STD_ERROR_HANDLE)`, the text goes through
+`WriteFile`, and the program leaves through `ExitProcess` with a code of 1. The text is in the program's
+own data, and the address of a slot for the count of the bytes written is in the program's data too.
+
+## The sections of the file
+
+The file holds the imports, then the data, then the code, and each section sits where the one before it
+ends: the address of a section is the address of the section before it, plus its size rounded up to the
+section alignment. The code comes last, because its size is only known once every instruction is written,
+and the imports and the data are written first, because the code needs their addresses while it is
+written.
+
 The address of a value is asked for when a method of a value class is called on it: the address of an
 attribute is the address of the object plus the attribute's offset, and the address of a place is the
 address of the frame slot, which is a `lea`.

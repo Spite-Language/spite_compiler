@@ -31,8 +31,8 @@ substitution of the instance it belongs to, and the answers the name resolution 
   block, and the value it is made with. The class's `block_size` is the size of the block they make;
 - a statement it cannot lower is counted, not dropped silently. `Builder.skipped_count` says how many.
 
-The types it lowers are the whole numbers: a literal, a name, an addition or a multiplication, and a call.
-Everything else is counted as skipped until it is written.
+The types it lowers are the whole numbers: a literal, a name, an addition or a multiplication, a
+comparison, an `and` or an `or`, and a call. Everything else is counted as skipped until it is written.
 
 ## The instance and the class
 
@@ -101,27 +101,39 @@ the builder lays the room out at the front of the class's block, so the first by
 bytes of the room. A class with a room is a value class: the room is where its value is kept.
 
 **The value is read from the room, and not from `this`.** `this` is the place the value is kept, and never
-the value itself, so a method reads its value with the buffer: `_buffer.read_byte_at(0)`. A method of a
+the value itself, so a method reads its value with the buffer: `_buffer._read_byte_at(0)`. A method of a
 value class is therefore made on the *address* of the value: the builder lowers the receiver of such a
-call to a `StorageAddress`, and the lowering finds the address of the attribute or of the place the value
+call to the value itself, and the lowering finds the address of the attribute or of the place the value
 is kept in.
 
 **The methods that read and write a byte have no body, and the compiler writes them.** Reading a byte of
 memory is not something Spite can say, so the library declares the method and the compiler writes what it
 does. `high_intermediary_representation/memory.spite` holds that knowledge: the class the methods belong
-to, and the two names. The builder writes the body of such a method: a `BufferRead` value that reads the
-byte of the receiver at an offset, or a `BufferWrite` statement that writes one.
+to, and the two names, `_read_byte_at` and `_write_byte_at`. The builder writes the body of such a
+method: a `BufferRead` value that reads the byte of the receiver at an offset, or a `BufferWrite`
+statement that writes one.
+
+**A crash and an assertion are one statement.** Both stop the program when their condition does not hold,
+which is the rule of the language: a `crash` is a guard that stops the program where an `assert` stops the
+function. The builder lowers both to a `Crash` statement, which carries the condition and the text the
+program prints when it stops. The text names the file and the line, and the program writes it to the
+standard error before it leaves.
+
+**An index is a call to `get_at`.** `a[b]` is only a shortcut for `a.get_at(b)`, so the builder lowers it
+to a call: the receiver is the value that is indexed, and the index is the argument. The class that owns
+the call is the class of the value that is indexed.
 
 ## The shapes
 
-- `HighProgram` — the classes.
-- `HighClass` — a name, its attributes, its functions, and the size of the block its instance takes.
-- `HighAttribute` — a name, how many bytes it takes, where it sits in the block, and the value it is made
+- `HighProgram`: the classes.
+- `HighClass`: a name, its attributes, its functions, and the size of the block its instance takes.
+- `HighAttribute`: a name, how many bytes it takes, where it sits in the block, and the value it is made
   with.
-- `HighFunction` — a name, its parameters, their types, its result type and its body.
-- `HighBlock` — a list of statements.
-- `HighStatement` — a union of `Declare`, `Assign`, `AssignAttribute`, `If`, `While`, `Call` and `Return`.
-- `HighValue` — a union of `Number`, `Name`, `Operation`, `Answer` (a call that answers a value) and
+- `HighFunction`: a name, its parameters, their types, its result type and its body.
+- `HighBlock`: a list of statements.
+- `HighStatement`: a union of `Declare`, `Assign`, `AssignAttribute`, `If`, `While`, `Call`, `Crash` and
+  `Return`.
+- `HighValue`: a union of `Number`, `Name`, `Operation`, `Answer` (a call that answers a value) and
   `Attribute` (an attribute read through an instance).
 
 A `Call` and an `Answer` carry the name of the function they reach and the class that owns it. The first
