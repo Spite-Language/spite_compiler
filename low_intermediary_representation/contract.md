@@ -21,7 +21,8 @@ folded away entirely. Nothing above this step may assume where one lives.
 
 A subset: integers, addition, subtraction, multiplication, division, remainder, negation, comparisons,
 `while`, `if`, calls between the program's own functions, and `return`. Enough to compile a program that
-computes a whole number and answers it.
+computes a whole number and answers it. A class's instance is a block of memory in the frame of the
+function that made it, and its attributes are read and written at their offsets.
 
 ## The shapes
 
@@ -39,6 +40,9 @@ computes a whole number and answers it.
 | `jump` | `to` | go to instruction `to` |
 | `jump_if_false` | `first`, `to` | go to instruction `to` when register `first` is zero |
 | `call` | `first`, `callee`, `owner`, `places` | register `first` answers the call |
+| `object_address` | `first`, `second` | register `second` is the address of the block at place `first` |
+| `read_attribute` | `first`, `second`, `third` | register `third` is the number at the address in register `first`, plus `second` |
+| `write_attribute` | `first`, `second`, `third` | the number in register `third` goes to the address in register `first`, plus `second` |
 | `return` | `first` | answer register `first` |
 
 `to` is an index into the function's own instruction list, not a name. The lowering records the index
@@ -48,7 +52,15 @@ instruction has to renumber every target that lands after it. `peephole_jumps` d
 retargets.
 
 A `call` names the function it reaches and the class that owns it, and the owner is empty when the
-compiler does not know it yet. The emitter reads the owner to find the function's address.
+compiler does not know it yet. The emitter reads the owner to find the function's address. The first place
+of a call is the instance the call is made on, and every function of a class takes it as its first
+argument.
+
+## The entry
+
+The entry is a function of its own, named `entry` in the entry's class: it makes the entry's instance,
+calls the entry's constructor with it, and answers what the constructor answers. The emitter calls it and
+leaves the answer as the process exit code.
 
 ## Why one record and not a union
 

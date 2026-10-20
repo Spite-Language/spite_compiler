@@ -248,6 +248,7 @@ The tests live in `../SpiteSpec/tests`, one folder per program, and the compiler
 | `../SpiteSpec/tests/whole_library` | every class of the standard library named, so the whole library is read | 0 |
 | `../SpiteSpec/tests/receivers` | a receiver that is a call of another class's function, and two classes with a function of one name | 18 |
 | `../SpiteSpec/tests/divisions` | a whole number divided and taken the remainder of, in a loop | 210 |
+| `../SpiteSpec/tests/objects` | a class with an attribute, a constructor that makes one and a method that takes it | 6 |
 
     .spite/spite.exe ../SpiteSpec/tests/exit_code
     ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
@@ -341,8 +342,11 @@ what the imported library and the original repository's corpus, examples and doc
       to be decided as the original decides it, and not only be correct.
 - [ ] **The objects.** A class is a pointer to its own block: the attributes live in the object, the methods
       take it as their first argument, and the objects are made and released. The original puts an object
-      that never leaves its function in the frame and the rest on the heap, so the first piece is the memory
-      an object takes, and the heap comes from the runtime the library asks for.
+      that never leaves its function in the frame and the rest on the heap, and the compiler decides the same
+      way, one proof at a time: each proof is a pass of its own, so the frame is the first one and the heap
+      comes when the runtime the library asks for is there. The block, the attributes and the method are
+      built ✓; the proof that an object never leaves its function, and the heap for the ones that do, are
+      not.
 - [ ] **The strings**, and the text literals with their holes.
 - [ ] **The lists and the dictionaries**, with their templates and their member templates.
 - [ ] **The references**, the enums, the unions and the `type` shapes.

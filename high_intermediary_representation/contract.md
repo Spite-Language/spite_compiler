@@ -27,10 +27,38 @@ substitution of the instance it belongs to, and the answers the name resolution 
 
 - every function with a body becomes a `HighFunction` with its parameters, their types *after* the
   substitution, its result type after the substitution, and its body lowered;
+- every attribute becomes a `HighAttribute`: its name, how many bytes it takes, where it sits in the
+  block, and the value it is made with. The class's `block_size` is the size of the block they make;
 - a statement it cannot lower is counted, not dropped silently. `Builder.skipped_count` says how many.
 
 The types it lowers are the whole numbers: a literal, a name, an addition or a multiplication, and a call.
 Everything else is counted as skipped until it is written.
+
+## The instance and the class
+
+**Every function of a class takes the instance as its first argument**, and the builder writes it: the
+parameters of a `HighFunction` start with `this`, the instance of the class the function belongs to. A
+call on an instance passes the instance first, and a call with no receiver inside a class passes `this`.
+
+**A class is a block of memory.** The attributes sit in it at the offsets the builder gave them, and the
+size of each one is the size of its type. The size of the whole numbers is known to the compiler
+(`high_intermediary_representation/sizes.spite`), and every other class is a pointer, four bytes, until
+the library says how big it is.
+
+**A call of a class's own name makes an instance.** The builder lowers it to an `Answer` whose callee and
+owner are the class's name, and the lowering makes the block, writes the attributes' defaults into it, and
+calls the constructor with the instance as its first argument. A class with no constructor is made from
+its defaults alone.
+
+**An attribute is read and written through the instance.** A name that is an attribute of the class reads
+`this.attribute` inside a function of the class, and `object.attribute` outside one. The builder lowers
+both to an `Attribute` value, or to an `AssignAttribute` statement, and the lowering finds the offset in
+the class's layout.
+
+**Where the block lives is not decided here.** The lowering makes it in the frame of the function that
+made it, which is right for an object that never leaves that function and wrong for one that does. The
+decision is a proof, and each proof is a pass of its own, so the frame is the first one and the heap comes
+with the runtime the library asks for.
 
 ## The owner of a call
 
@@ -62,13 +90,18 @@ is given an empty owner falls back to the name alone.
 ## The shapes
 
 - `HighProgram` — the classes.
-- `HighClass` — a name, its attributes and its functions.
+- `HighClass` — a name, its attributes, its functions, and the size of the block its instance takes.
+- `HighAttribute` — a name, how many bytes it takes, where it sits in the block, and the value it is made
+  with.
 - `HighFunction` — a name, its parameters, their types, its result type and its body.
 - `HighBlock` — a list of statements.
-- `HighStatement` — a union of `Declare`, `Assign`, `If`, `While`, `Call`, `Return`.
-- `HighValue` — a union of `Number`, `Name`, `Operation`, `Answer` (a call that answers a value).
+- `HighStatement` — a union of `Declare`, `Assign`, `AssignAttribute`, `If`, `While`, `Call` and `Return`.
+- `HighValue` — a union of `Number`, `Name`, `Operation`, `Answer` (a call that answers a value) and
+  `Attribute` (an attribute read through an instance).
 
-A `Call` and an `Answer` carry the name of the function they reach and the class that owns it.
+A `Call` and an `Answer` carry the name of the function they reach and the class that owns it. The first
+argument of a call is the instance it is made on: the receiver for a call on an instance, and `this` for a
+call with no receiver inside a class.
 
 An `If` holds a condition, a branch to run when it is true, and a branch to run when it is false. The
 branch that is false is nothing when the program wrote no `else`.

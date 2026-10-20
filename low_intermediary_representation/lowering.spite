@@ -18,7 +18,38 @@ func Lowering(starting_program: HighIntermediaryRepresentation.Programs.HighProg
 func lowered(): LowIntermediaryRepresentation.Programs.LowProgram {
     written = List<LowIntermediaryRepresentation.Functions.LowFunction>()
     program.classes.each(lower_class)
+    lower_the_entry()
     return LowIntermediaryRepresentation.Programs.LowProgram(written, program.entry)
+}
+
+func lower_the_entry() {
+    var class = program.class_named(program.entry)
+    if class {
+        lower_the_entry_of(class)
+    } else {
+        return
+    }
+}
+
+func lower_the_entry_of(class: HighIntermediaryRepresentation.Classes.HighClass) {
+    places = Dictionary<String, Integer>()
+    registers = List<Integer>()
+    next_place = 0
+    next_register = 0
+    label = 0
+    current = LowIntermediaryRepresentation.Functions.LowFunction("entry", 0)
+    current.class_name = program.entry
+    current.parameter_count = 0
+    var address = make_the_instance(class)
+    var answer = take_register()
+    var given = List<Integer>()
+    given.append(address)
+    var called = built.call(program.entry, program.entry, given, answer)
+    emit(called)
+    var returned = built.return_value(answer)
+    emit(returned)
+    current.slots = next_place + next_register
+    written.append(current)
 }
 
 func lower_class(own: HighIntermediaryRepresentation.Classes.HighClass) {
@@ -85,7 +116,7 @@ func declare_place(name: String) {
     if known {
         return
     } else {
-        places[name] = next_place
+        places[name] = next_place + 1
         next_place = next_place + 1
     }
 }
@@ -93,17 +124,24 @@ func declare_place(name: String) {
 func place_of(name: String): Integer {
     var known = places[name]
     if known {
-        return known
+        return known - 1
     }
     var taken = next_place + next_register
     next_register = next_register + 1
-    places[name] = taken
+    places[name] = taken + 1
     return taken
 }
 
 func take_register(): Integer {
     var taken = next_place + next_register
     next_register = next_register + 1
+    return taken
+}
+
+func take_block(size: Integer): Integer {
+    var slots = size / 4
+    var taken = next_place + next_register
+    next_register = next_register + slots
     return taken
 }
 
@@ -124,6 +162,7 @@ func lower_statement(statement: HighIntermediaryRepresentation.Statements.Statem
     switch statement {
         HighIntermediaryRepresentation.Statements.Declare: lower_declare(statement)
         HighIntermediaryRepresentation.Statements.Assign: lower_assign(statement)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: lower_assign_attribute(statement)
         HighIntermediaryRepresentation.Statements.If: lower_if(statement)
         HighIntermediaryRepresentation.Statements.While: lower_while(statement)
         HighIntermediaryRepresentation.Statements.Call: lower_call(statement)
@@ -178,11 +217,119 @@ func lower_if(branch: HighIntermediaryRepresentation.Statements.If) {
     }
 }
 
+func lower_assign_attribute(assignment: HighIntermediaryRepresentation.Statements.AssignAttribute) {
+    var object = lower_value(assignment.object)
+    var offset = offset_of(assignment.class_name, assignment.name)
+    var from = lower_value(assignment.value)
+    var added = built.write_attribute(object, offset, from)
+    emit(added)
+}
+
 func lower_call(call: HighIntermediaryRepresentation.Statements.Call) {
+    if is_a_constructor(call.callee, call.owner) {
+        lower_the_instance(call.callee, call.owner, call.arguments)
+        return
+    }
     var arguments = lower_arguments(call.arguments)
     var register = take_register()
     var added = built.call(call.callee, call.owner, arguments, register)
     emit(added)
+}
+
+func is_a_constructor(callee: String, owner: String): Boolean {
+    if callee != owner {
+        return false
+    }
+    var class = program.class_named(owner)
+    if class {
+        return true
+    } else {
+        return false
+    }
+}
+
+func lower_the_instance(
+    callee: String,
+    owner: String,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+): Integer {
+    var class = program.class_named(owner)
+    var address = make_the_instance(class)
+    var given = lower_arguments(arguments)
+    var with_the_instance = List<Integer>()
+    with_the_instance.append(address)
+    given.each(with_the_instance.append)
+    var answer = take_register()
+    if has_a_constructor(class) {
+        var called = built.call(callee, owner, with_the_instance, answer)
+        emit(called)
+    }
+    return address
+}
+
+func has_a_constructor(class: HighIntermediaryRepresentation.Classes.HighClass?): Boolean {
+    if not class {
+        return false
+    }
+    var function = class.function_named(class.name)
+    if function {
+        return true
+    } else {
+        return false
+    }
+}
+
+func make_the_instance(class: HighIntermediaryRepresentation.Classes.HighClass?): Integer {
+    var size = 0
+    if class {
+        size = class.block_size
+    }
+    var block = take_block(size)
+    var address = take_register()
+    var made = built.object_address(block, address)
+    emit(made)
+    write_the_defaults(class, address)
+    return address
+}
+
+func write_the_defaults(class: HighIntermediaryRepresentation.Classes.HighClass?, address: Integer) {
+    if class {
+        var index = 0
+        while index < class.held_attributes.count() {
+            write_one_default(class.held_attributes[index], address)
+            index = index + 1
+        }
+    } else {
+        return
+    }
+}
+
+func write_one_default(attribute: HighIntermediaryRepresentation.Classes.HighAttribute, address: Integer) {
+    if attribute.default_value {
+        var value = lower_value(attribute.default_value)
+        var written = built.write_attribute(address, attribute.offset, value)
+        emit(written)
+    } else {
+        return
+    }
+}
+
+func offset_of(class_name: String, attribute_name: String): Integer {
+    var class = program.class_named(class_name)
+    if class {
+        return the_offset_in(class, attribute_name)
+    } else {
+        return 0
+    }
+}
+
+func the_offset_in(class: HighIntermediaryRepresentation.Classes.HighClass, attribute_name: String): Integer {
+    var attribute = class.held_attribute_named(attribute_name)
+    if attribute {
+        return attribute.offset
+    } else {
+        return 0
+    }
 }
 
 func lower_arguments(given: List<HighIntermediaryRepresentation.Values.Value>): List<Integer> {
@@ -226,6 +373,10 @@ func lower_value(value: HighIntermediaryRepresentation.Values.Value?): Integer {
     if value == HighIntermediaryRepresentation.Values.Answer {
         var answer = value
         return lower_answer(answer)
+    }
+    if value == HighIntermediaryRepresentation.Values.Attribute {
+        var attribute = value
+        return lower_attribute(attribute)
     } else {
         return 0
     }
@@ -257,9 +408,21 @@ func lower_operation(value: HighIntermediaryRepresentation.Values.Operation): In
 }
 
 func lower_answer(value: HighIntermediaryRepresentation.Values.Answer): Integer {
+    if is_a_constructor(value.callee, value.owner) {
+        return lower_the_instance(value.callee, value.owner, value.arguments)
+    }
     var arguments = lower_arguments(value.arguments)
     var into = take_register()
     var added = built.call(value.callee, value.owner, arguments, into)
+    emit(added)
+    return into
+}
+
+func lower_attribute(value: HighIntermediaryRepresentation.Values.Attribute): Integer {
+    var object = lower_value(value.object)
+    var offset = offset_of(value.class_name, value.name)
+    var into = take_register()
+    var added = built.read_attribute(object, offset, into)
     emit(added)
     return into
 }

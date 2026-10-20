@@ -43,8 +43,19 @@ the stack, the caller clearing them, `eax` answering a value, `esp` holding the 
 pointer to its own block, so a method takes the instance as its first argument, exactly as the old
 compiler's generated C did.
 
-The frame is the usual one: `ebp` is the frame pointer, the parameters are at `[ebp + 8]` and up, and the
+## The frame is the usual one: `ebp` is the frame pointer, the parameters are at `[ebp + 8]` and up, and the
 values the function made live below it, each at its own slot.
+
+## The object and its attributes
+
+A class's instance is a block of memory, and the block lives in the frame of the function that made it.
+Its address is a value like any other, so it is held in a slot and passed to a method as the first
+argument.
+
+An attribute is at an offset from that address, so reading one is a load through the address in the
+register: `mov eax, [base]`, then `mov eax, [eax + offset]`. Writing one is the same with the value in
+`eax` and the address in `ecx`: `mov [ecx + offset], eax`. The block itself is addressed with `lea`, which
+is what gives the frame slot its address.
 
 The whole-number division is a signed one, the way Go has it: the quotient is truncated toward zero and
 the remainder keeps the sign of the dividend. The machine's `idiv` does exactly that, and the sign of the

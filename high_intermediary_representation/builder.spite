@@ -12,6 +12,9 @@ var built_types = List<String>()
 var current_class = ""
 var classes_of_names = Dictionary<String, String>()
 var classes_of_attributes = Dictionary<String, String>()
+var built_attributes = List<HighIntermediaryRepresentation.Classes.HighAttribute>()
+var built_size = 0
+var sizes = HighIntermediaryRepresentation.Sizes()
 
 func Builder(
     starting_file: AbstractSyntaxTree.Shapes.SourceFile,
@@ -27,8 +30,11 @@ func build(name: String): HighIntermediaryRepresentation.Classes.HighClass {
     current_class = name
     classes_of_attributes = Dictionary<String, String>()
     built_functions = List<HighIntermediaryRepresentation.Functions.HighFunction>()
+    built_attributes = List<HighIntermediaryRepresentation.Classes.HighAttribute>()
+    built_size = 0
     file.declarations.each(read_declaration)
-    return HighIntermediaryRepresentation.Classes.HighClass(name, built_functions)
+    var block_size = sizes.block_size_of(built_size)
+    return HighIntermediaryRepresentation.Classes.HighClass(name, built_functions, built_attributes, block_size)
 }
 
 func read_declaration(declaration: AbstractSyntaxTree.Shapes.Declarations.Declaration) {
@@ -46,6 +52,26 @@ func read_declaration(declaration: AbstractSyntaxTree.Shapes.Declarations.Declar
 func read_attribute(declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration) {
     var class = class_of_an_attribute(declaration)
     note_the_class_of_the_attribute(declaration.name, class)
+    lay_out_the_attribute(declaration, class)
+}
+
+func lay_out_the_attribute(declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration, class: String) {
+    var size = sizes.size_of(class)
+    var alignment = sizes.alignment_of(class)
+    var offset = aligned_offset(built_size, alignment)
+    var default_value = lower_value(declaration.value)
+    var attribute = HighIntermediaryRepresentation.Classes.HighAttribute(declaration.name, size, offset, default_value)
+    built_attributes.append(attribute)
+    built_size = offset + size
+}
+
+func aligned_offset(offset: Integer, alignment: Integer): Integer {
+    var remainder = offset % alignment
+    if remainder > 0 {
+        return offset + alignment - remainder
+    } else {
+        return offset
+    }
 }
 
 func class_of_an_attribute(declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration): String {
@@ -78,8 +104,11 @@ func read_a_function(
 ) {
     classes_of_names = Dictionary<String, String>()
     built_names = List<String>()
-    declaration.parameters.each(read_parameter)
     built_types = List<String>()
+    built_names.append("this")
+    built_types.append(current_class)
+    note_the_class_of("this", current_class)
+    declaration.parameters.each(read_parameter)
     declaration.parameters.each(read_parameter_type)
     var names = built_names
     var types = built_types
@@ -190,11 +219,31 @@ func class_of_an_expression(expression: AbstractSyntaxTree.Shapes.Expressions.Ex
         var name = expression
         return class_of_a_name(name.name)
     }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        var literal = expression
+        return class_of_a_literal(literal)
+    }
     if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
         var call = expression
         return class_of_a_call(call)
     }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var member = expression
+        return class_of_an_attribute_name(member.name)
+    }
     return ""
+}
+
+func class_of_a_literal(literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression): String {
+    if literal.kind == 'keyword_true' or literal.kind == 'keyword_false' {
+        return "Boolean"
+    }
+    switch literal.kind {
+        'integer_literal': return "Integer"
+        'decimal_literal': return "Float"
+        'text_literal': return "String"
+        _: return ""
+    }
 }
 
 func class_of_a_name(name: String): String {
@@ -228,6 +277,14 @@ func class_of_a_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression)
     return ""
 }
 
+func class_of_a_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): String {
+    if member.target {
+        return class_of_an_expression(member.target)
+    } else {
+        return ""
+    }
+}
+
 func class_of_a_callee_name(name: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression): String {
     if name.is_a_class_name {
         return name.name
@@ -257,6 +314,8 @@ func lower_assignment(statement: AbstractSyntaxTree.Shapes.Statements.Assignment
     var target = statement.target
     if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
         assign_to_name(target, statement.value)
+    } else if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        assign_to_an_attribute(target, statement.value)
     } else {
         skipped = skipped + 1
     }
@@ -267,13 +326,55 @@ func assign_to_name(
     value_expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
 ) {
     var name = target
+    if is_an_attribute_of_the_class(name.name) {
+        assign_to_the_attribute_of_the_class(name.name, value_expression)
+        return
+    }
+    assign_to_a_local(name.name, value_expression)
+}
+
+func assign_to_a_local(name: String, value_expression: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
     var value = lower_value(value_expression)
     if value {
-        var assigned = HighIntermediaryRepresentation.Statements.Assign(name.name, value)
+        var assigned = HighIntermediaryRepresentation.Statements.Assign(name, value)
         built_statements.append(assigned)
     } else {
         skipped = skipped + 1
     }
+}
+
+func assign_to_the_attribute_of_the_class(
+    name: String,
+    value_expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+) {
+    var value = lower_value(value_expression)
+    if value {
+        var object = HighIntermediaryRepresentation.Values.Name("this")
+        var assigned = HighIntermediaryRepresentation.Statements.AssignAttribute(object, current_class, name, value)
+        built_statements.append(assigned)
+    } else {
+        skipped = skipped + 1
+    }
+}
+
+func assign_to_an_attribute(
+    target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    value_expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+) {
+    var member = target
+    var object = lower_value(member.target)
+    var value = lower_value(value_expression)
+    if object and value {
+        var class = class_of_an_expression(member.target)
+        var assigned = HighIntermediaryRepresentation.Statements.AssignAttribute(object, class, member.name, value)
+        built_statements.append(assigned)
+    } else {
+        skipped = skipped + 1
+    }
+}
+
+func is_an_attribute_of_the_class(name: String): Boolean {
+    return classes_of_attributes.has(name)
 }
 
 func lower_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
@@ -339,7 +440,7 @@ func lower_held(statement: AbstractSyntaxTree.Shapes.Statements.ExpressionStatem
     var value = statement.value
     if value == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
         var call = value
-        var arguments = lower_arguments(call.arguments)
+        var arguments = lower_the_arguments(call)
         var name = call_name(call)
         var owner = call_owner(call)
         var made = HighIntermediaryRepresentation.Statements.Call(name, owner, arguments)
@@ -413,14 +514,57 @@ func owner_of_a_receiver(receiver: AbstractSyntaxTree.Shapes.Expressions.Identif
     }
 }
 
-func lower_arguments(
-    given: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+func lower_the_arguments(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
 ): List<HighIntermediaryRepresentation.Values.Value> {
+    var outer = built_values
     built_values = List<HighIntermediaryRepresentation.Values.Value>()
-    given.each(lower_argument)
+    var receiver = the_receiver_of(call)
+    if receiver {
+        built_values.append(receiver)
+    }
+    call.arguments.each(lower_argument)
     var built = built_values
-    built_values = List<HighIntermediaryRepresentation.Values.Value>()
+    built_values = outer
     return built
+}
+
+func the_receiver_of(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var identifier = callee
+        return the_receiver_of_an_identifier(identifier)
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var member = callee
+        return the_receiver_of_a_member(member)
+    }
+    return null
+}
+
+func the_receiver_of_an_identifier(
+    identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    if not identifier.is_a_class_name {
+        return HighIntermediaryRepresentation.Values.Name("this")
+    } else {
+        return null
+    }
+}
+
+func the_receiver_of_a_member(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var target = member.target
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var identifier = target
+        if not identifier.is_a_class_name {
+            return lower_value(target)
+        }
+    }
+    return null
 }
 
 func lower_argument(argument: AbstractSyntaxTree.Shapes.Expressions.Expression) {
@@ -457,6 +601,9 @@ func lower_a_value(
     if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
         return lower_call(expression)
     }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return lower_member(expression)
+    }
     return null
 }
 
@@ -473,7 +620,34 @@ func lower_literal(
 func lower_identifier(
     expression: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
 ): HighIntermediaryRepresentation.Values.Value? {
-    return HighIntermediaryRepresentation.Values.Name(expression.name)
+    if is_an_attribute_of_the_class(expression.name) {
+        var object = HighIntermediaryRepresentation.Values.Name("this")
+        return HighIntermediaryRepresentation.Values.Attribute(object, current_class, expression.name)
+    } else {
+        return HighIntermediaryRepresentation.Values.Name(expression.name)
+    }
+}
+
+func lower_member(
+    expression: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    if is_an_attribute_of_the_class(expression.name) {
+        return lower_an_attribute_of_an_object(expression)
+    } else {
+        return null
+    }
+}
+
+func lower_an_attribute_of_an_object(
+    expression: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var object = lower_value(expression.target)
+    if object {
+        var class = class_of_a_member(expression)
+        return HighIntermediaryRepresentation.Values.Attribute(object, class, expression.name)
+    } else {
+        return null
+    }
 }
 
 func lower_binary(
@@ -544,7 +718,7 @@ func lower_the_call(
     expression: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     name: String,
 ): HighIntermediaryRepresentation.Values.Value? {
-    var arguments = lower_arguments(expression.arguments)
+    var arguments = lower_the_arguments(expression)
     var owner = call_owner(expression)
     return HighIntermediaryRepresentation.Values.Answer(name, owner, arguments)
 }
