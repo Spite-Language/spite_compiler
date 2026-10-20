@@ -213,6 +213,11 @@ run stops there.
   argument at run time and the compiler cannot know it while it reads.
 - **The whole standard library reads.** A program that names every class of the library reads all 145 of
   them, with no error: 27 generic classes and 54 monomorphised instances.
+- **The memory of a value.** A class that holds a `Buffer` says how many bytes it needs, the name resolution
+  reads that number, and the builder lays the room out at the front of the class's block. The value is read
+  from the room and never through `this`: a method of a value class is made on the address of the value, and
+  the `Boolean` reads its byte with `_buffer.read_byte_at(0)`. The methods that read and write a byte have no
+  body, and the compiler writes them.
 - **The high representation** (`high_intermediary_representation`). The program as values and control flow,
   and the builder that lowers a class into it with the substitution of its instance applied. A call names
   the class that owns the function it reaches, so two functions of one name are told apart, and the class
@@ -249,6 +254,7 @@ The tests live in `../SpiteSpec/tests`, one folder per program, and the compiler
 | `../SpiteSpec/tests/receivers` | a receiver that is a call of another class's function, and two classes with a function of one name | 18 |
 | `../SpiteSpec/tests/divisions` | a whole number divided and taken the remainder of, in a loop | 210 |
 | `../SpiteSpec/tests/objects` | a class with an attribute, a constructor that makes one and a method that takes it | 6 |
+| `../SpiteSpec/tests/boolean_layout` | a `Boolean` of one byte read from its room, and a whole number beside it | 7 |
 
     .spite/spite.exe ../SpiteSpec/tests/exit_code
     ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
@@ -311,10 +317,11 @@ error the original reports**. A milestone is done when the items of it are done,
 ticked.
 
 **Where the work is now.** The whole standard library reads, the name resolution answers the class every
-function answers, and the emitter writes the whole number arithmetic, the division included. The next
-thing is the object: a class instance, its attributes, and a method that takes the instance as its first
-argument. Everything after it (the strings, the lists, the runtime the library asks for) needs an object
-to live in, so it is the one that unblocks the rest.
+function answers, and the emitter writes the whole number arithmetic, the division included. The object is
+there too: a class is a block of memory, its attributes live in it, and a method takes it as its first
+argument. A value class is one step further: it says how much room it needs with a `Buffer`, the compiler
+lays the room out, and the class reads its value from the room. What comes next is the string, because the
+text is what the rest of the library is made of, and it needs a room of its own.
 
 **The standard library has moved and is written again.** It is in `../SpiteStandardLibrary` now, and it is
 written with nothing implicit: a class that needs memory holds a `Buffer`, and the methods the compiler used
@@ -342,9 +349,12 @@ what the imported library and the original repository's corpus, examples and doc
       once, and the call through that address ✓; the bodies the compiler supplies for the `DynamicLibrary`
       itself (`open_library`, `find_symbol` and `close_library`) are not written yet, and they need the text
       a library's name is written in, which is the text the strings are made of.
-- [ ] **A library brought from elsewhere works.** The compiler names no class of the standard library, and a
-      program that loads a different one is compiled the same way. The library in the old repository is the
-      one loaded for now, and nothing about it is in the compiler.
+- [ ] **A library brought from elsewhere works.** The compiler names one class of the library, the `Buffer`,
+      and the two methods that read and write a byte, and nothing else of it, and a program that loads a
+      different one is compiled the same way. Whether the `Buffer` belongs to the language rather than to a
+      library is the open question: as it is, a library that wants memory names a class `Buffer` and the
+      compiler knows it by that name, the way the original knew `Memory.Bytes`. The library in the old
+      repository is the one loaded for now, and nothing about it is in the compiler.
 - [ ] **The memory.** The heap the library allocates from, the reference counting, the freeing of what a
       program takes, and the count the corpus checks (`allocations: N frees: N`). Twenty-seven corpus
       programs pin that count in an `allocations.txt`, so what is allocated and what lives in a frame has

@@ -77,8 +77,10 @@ programs to try it on live in the repository beside this one, `../SpiteSpec/test
   (`../SpiteStandardLibrary`) and this project does not provide it, change it or keep a copy of
   it. The compiler reads it as a program loads any other folder, and compiles it. The library is not part
   of the language: it is a regular folder a program loads, and anyone can bring their own. The compiler
-  names no class of it, and the language gives every library the same way to reach the C library and the
-  memory. The library is written again as the compiler needs it, one class at a time, and its own list is
+  names one class of it, the `Buffer`, and the two methods that read and write a byte, because the memory
+  of a value is the compiler's work and the library names it. The language gives every library the same
+  way to reach the C library and the memory.
+  The library is written again as the compiler needs it, one class at a time, and its own list is
   in [`../SpiteStandardLibrary/TODO.md`](../SpiteStandardLibrary/TODO.md).
 - **It reads what the program needs.** The mapping and the symbols read only the classes something names,
   so nothing is read that is not needed.
@@ -186,6 +188,8 @@ repository were written and checked.
 - The backend lowers whole numbers only. `String`, lists, references, unions, reflection and concurrency
   are all still to come, and each needs its own value kinds in the high representation and in the low one
   before it can be lowered. The builder counts what it skips rather than dropping it.
+- A value travels in a register, and a value class of more than four bytes has nowhere to travel yet. The
+  room of a class is laid out, and its bytes are read and written one at a time.
 - The `if` statement is lowered, with or without an `else`. The narrowing of a `T?` inside a branch is a
   proof, and the proofs are not made yet, so a value that is maybe nothing is read as if it were there.
 - A call names the class that owns the function it reaches, when the compiler can tell it. A call on an
@@ -212,6 +216,13 @@ with no constructor has none yet.
 
 A class is an object now: its attributes live in a block of memory, a call of the class's name makes one,
 and a method takes it as its first argument.
+
+A value class says how much room it needs with a `Buffer`, and the compiler lays that room out at the front
+of the class's block: the `Boolean` is one byte, and the compiler reads the number of bytes from the class
+itself. The value is read from the room and never through `this`: `this` is the place the room is kept,
+and the read is what says what the value is, so the `Boolean` says `_buffer.read_byte_at(0)`. The methods
+that read and write a byte of memory have no body, and the compiler writes them, because reading a byte of
+memory is not something Spite can say.
 
 The road from here to a released executable is:
 

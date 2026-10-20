@@ -22,7 +22,9 @@ folded away entirely. Nothing above this step may assume where one lives.
 A subset: integers, addition, subtraction, multiplication, division, remainder, negation, comparisons,
 `while`, `if`, calls between the program's own functions, and `return`. Enough to compile a program that
 computes a whole number and answers it. A class's instance is a block of memory in the frame of the
-function that made it, and its attributes are read and written at their offsets.
+function that made it, and its attributes are read and written at their offsets. A value class's room is
+the first bytes of that block, and they are read and written one byte at a time, which is what the
+`buffer_read` and `buffer_write` instructions are for.
 
 ## The shapes
 
@@ -41,8 +43,12 @@ function that made it, and its attributes are read and written at their offsets.
 | `jump_if_false` | `first`, `to` | go to instruction `to` when register `first` is zero |
 | `call` | `first`, `callee`, `owner`, `places` | register `first` answers the call |
 | `object_address` | `first`, `second` | register `second` is the address of the block at place `first` |
-| `read_attribute` | `first`, `second`, `third` | register `third` is the number at the address in register `first`, plus `second` |
-| `write_attribute` | `first`, `second`, `third` | the number in register `third` goes to the address in register `first`, plus `second` |
+| `read_attribute` | `first`, `second`, `third`, `text` | register `third` is the number of the width `text` at the address in register `first`, plus `second` |
+| `write_attribute` | `first`, `second`, `third`, `text` | the number in register `third` goes to the address in register `first`, plus `second`, in the width `text` |
+| `buffer_read` | `first`, `second`, `third` | register `third` is the byte at the address in register `first`, plus the offset in register `second` |
+| `buffer_write` | `first`, `second`, `third` | the byte in register `third` goes to the address in register `first`, plus the offset in register `second` |
+| `attribute_address` | `first`, `second`, `third` | register `third` is the address of the attribute at the offset `second` in the object in register `first` |
+| `place_address` | `first`, `second` | register `second` is the address of the place `first` |
 | `foreign_call` | `first`, `text`, `second`, `places` | register `first` answers the C function named `text`, called with the places, through the handle in register `second` |
 | `return` | `first` | answer register `first` |
 

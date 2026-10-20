@@ -57,6 +57,21 @@ register: `mov eax, [base]`, then `mov eax, [eax + offset]`. Writing one is the 
 `eax` and the address in `ecx`: `mov [ecx + offset], eax`. The block itself is addressed with `lea`, which
 is what gives the frame slot its address.
 
+An attribute of one byte is read and written as one byte, and not as a whole number, because the bytes
+beside it belong to something else: `movzx eax, byte [eax + offset]` reads one, and `mov [ecx + offset],
+al` writes one.
+
+## The room of a value
+
+The room of a value class is the first bytes of its block, and they are read and written one byte at a
+time, at an offset the program gives. Reading one adds the offset to the address of the room and loads
+the byte: `mov eax, [base]`, `add eax, [offset]`, `movzx eax, byte [eax]`. Writing one puts the value in
+`eax`, the address in `ecx`, adds the offset to it, and stores the low byte of the value: `mov [ecx], al`.
+
+The address of a value is asked for when a method of a value class is called on it: the address of an
+attribute is the address of the object plus the attribute's offset, and the address of a place is the
+address of the frame slot, which is a `lea`.
+
 The whole-number division is a signed one, the way Go has it: the quotient is truncated toward zero and
 the remainder keeps the sign of the dividend. The machine's `idiv` does exactly that, and the sign of the
 dividend is put in the high half of it with `cdq` first. The `cdq` is the byte `0x99`: the byte `0x63` is

@@ -93,6 +93,25 @@ A receiver the compiler cannot place names no owner: the answer of a call is not
 does not know yet. The owner is what a pass needs to tell two functions of one name apart, and a pass that
 is given an empty owner falls back to the name alone.
 
+## The memory of a value
+
+**The library names the memory and the compiler keeps it.** A class that holds memory holds a `Buffer`,
+and says how many bytes it needs: `var _buffer = Buffer(1)`. The name resolution reads that number and
+the builder lays the room out at the front of the class's block, so the first bytes of the block are the
+bytes of the room. A class with a room is a value class: the room is where its value is kept.
+
+**The value is read from the room, and not from `this`.** `this` is the place the value is kept, and never
+the value itself, so a method reads its value with the buffer: `_buffer.read_byte_at(0)`. A method of a
+value class is therefore made on the *address* of the value: the builder lowers the receiver of such a
+call to a `StorageAddress`, and the lowering finds the address of the attribute or of the place the value
+is kept in.
+
+**The methods that read and write a byte have no body, and the compiler writes them.** Reading a byte of
+memory is not something Spite can say, so the library declares the method and the compiler writes what it
+does. `high_intermediary_representation/memory.spite` holds that knowledge: the class the methods belong
+to, and the two names. The builder writes the body of such a method: a `BufferRead` value that reads the
+byte of the receiver at an offset, or a `BufferWrite` statement that writes one.
+
 ## The shapes
 
 - `HighProgram` — the classes.
