@@ -316,6 +316,11 @@ thing is the object: a class instance, its attributes, and a method that takes t
 argument. Everything after it (the strings, the lists, the runtime the library asks for) needs an object
 to live in, so it is the one that unblocks the rest.
 
+**The standard library has moved and is written again.** It is in `../SpiteStandardLibrary` now, and it is
+written with nothing implicit: a class that needs memory holds a `Buffer`, and the methods the compiler used
+to supply are written in the library. The classes move one at a time, as the compiler needs them, and the
+list is in [`../SpiteStandardLibrary/TODO.md`](../SpiteStandardLibrary/TODO.md).
+
 ### 1. The program runs
 
 Until this is done, only a program of whole numbers with a loop and a call can be built. Everything here is
@@ -340,6 +345,10 @@ what the imported library and the original repository's corpus, examples and doc
       program takes, and the count the corpus checks (`allocations: N frees: N`). Twenty-seven corpus
       programs pin that count in an `allocations.txt`, so what is allocated and what lives in a frame has
       to be decided as the original decides it, and not only be correct.
+- [ ] **The standard library without magic.** The library is written again, one class at a time, as the
+      compiler needs it: a class that needs memory holds a `Buffer` and says how much room it needs, and the
+      methods the compiler used to supply are written in the library. The list is in
+      [`../SpiteStandardLibrary/TODO.md`](../SpiteStandardLibrary/TODO.md).
 - [ ] **The objects.** A class is a pointer to its own block: the attributes live in the object, the methods
       take it as their first argument, and the objects are made and released. The original puts an object
       that never leaves its function in the frame and the rest on the heap, and the compiler decides the same

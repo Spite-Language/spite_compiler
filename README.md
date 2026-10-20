@@ -42,8 +42,8 @@ it, with the path relative to the program that holds the load:
 
 ```spite
 func Example(): Integer {
-    load "../../../SpiteCompiler/.spite/spite-0.0.6-windows/library"
-    load "../../../SpiteCompiler/.spite/spite-0.0.6-windows/library_windows"
+    load "../../../SpiteStandardLibrary/common"
+    load "../../../SpiteStandardLibrary/windows"
 ```
 
 The programs of the old repository do not do that yet: they relied on the launcher, which is gone. Until
@@ -74,11 +74,12 @@ programs to try it on live in the repository beside this one, `../SpiteSpec/test
 - **It writes machine code.** The low representation is printed to a Windows x86 executable. There is no C
   anywhere in this project: no C is written, no C is read, and no C compiler is needed to build a program.
 - **It imports the standard library.** The library lives in another repository
-  (`../SpiteLanguage/library`) and this project does not provide it, change it or keep a copy of
+  (`../SpiteStandardLibrary`) and this project does not provide it, change it or keep a copy of
   it. The compiler reads it as a program loads any other folder, and compiles it. The library is not part
   of the language: it is a regular folder a program loads, and anyone can bring their own. The compiler
   names no class of it, and the language gives every library the same way to reach the C library and the
-  memory.
+  memory. The library is written again as the compiler needs it, one class at a time, and its own list is
+  in [`../SpiteStandardLibrary/TODO.md`](../SpiteStandardLibrary/TODO.md).
 - **It reads what the program needs.** The mapping and the symbols read only the classes something names,
   so nothing is read that is not needed.
 
@@ -208,6 +209,9 @@ Below that it resolves every type, monomorphises every generic, builds the high 
 its moves, and writes the machine code and the PE file around it. On its own source it stops at the
 emitter, which reports the calls it cannot resolve yet: the standard library is not loaded, and a class
 with no constructor has none yet.
+
+A class is an object now: its attributes live in a block of memory, a call of the class's name makes one,
+and a method takes it as its first argument.
 
 The road from here to a released executable is:
 
