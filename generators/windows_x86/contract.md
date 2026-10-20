@@ -68,9 +68,13 @@ A foreign call is a call of a C function in a DLL, by name. The emitter looks th
 through `GetProcAddress`, which the program imports from `kernel32.dll`, and calls the address it answers
 through: `call eax`.
 
-The name of the C function is written in the program's data, in a section of its own, and the address of
-that section is the image base plus the section's address. The section is only written when the program
-has something to put in it, because a section with nothing in it is not a section the machine will load.
+The address is kept in the program's own data, one slot for each C function the program uses, so the name
+is looked up once and every later call goes straight through the address. The slot belongs to the compiler,
+like every other piece of memory a program holds: the library never says where it is.
+
+The name of the C function is written in the program's data too, in a section of its own, and the address of
+that section is the image base plus the section's address. The section is only written when the program has
+something to put in it, because a section with nothing in it is not a section the machine will load.
 
 The arguments are pushed right to left, as they are for any call, and the C library's convention is the
 one the emitter follows: the caller clears them.
