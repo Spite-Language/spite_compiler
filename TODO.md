@@ -337,7 +337,11 @@ what the imported library and the original repository's corpus, examples and doc
 - [ ] **The foreign calls.** The library reaches the C library through `DynamicLibrary`, naming the C
       function it wants (`library.fopen_as_long(path, mode)`), so a compiled program must be able to call a
       function in a DLL by name, with the calling conventions of the C library. The naming of the answer's
-      type is the language's, so any library can use it.
+      type is the language's, so any library can use it. The compiler writes the call, the name of the C
+      function in the program's data, and the call through the address `GetProcAddress` answers ✓; the
+      bodies the compiler supplies for the `DynamicLibrary` itself (`open_library`, `find_symbol` and
+      `close_library`) are not written yet, and they need the text a library's name is written in, which
+      is the text the strings are made of.
 - [ ] **A library brought from elsewhere works.** The compiler names no class of the standard library, and a
       program that loads a different one is compiled the same way. The library in the old repository is the
       one loaded for now, and nothing about it is in the compiler.

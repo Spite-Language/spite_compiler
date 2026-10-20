@@ -43,6 +43,7 @@ function that made it, and its attributes are read and written at their offsets.
 | `object_address` | `first`, `second` | register `second` is the address of the block at place `first` |
 | `read_attribute` | `first`, `second`, `third` | register `third` is the number at the address in register `first`, plus `second` |
 | `write_attribute` | `first`, `second`, `third` | the number in register `third` goes to the address in register `first`, plus `second` |
+| `foreign_call` | `first`, `text`, `second`, `places` | register `first` answers the C function named `text`, called with the places, through the handle in register `second` |
 | `return` | `first` | answer register `first` |
 
 `to` is an index into the function's own instruction list, not a name. The lowering records the index

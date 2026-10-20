@@ -55,6 +55,12 @@ its defaults alone.
 both to an `Attribute` value, or to an `AssignAttribute` statement, and the lowering finds the offset in
 the class's layout.
 
+**A call on a `DynamicLibrary` is a foreign call.** The library holds the C library it opened, and the
+name of the member is the name of the C function, with a suffix that says what the answer is
+(`_as_long`, `_as_double`, `_as_text`). The builder lowers it to a `ForeignCall` value, whose receiver is
+the library's `handle` attribute, and whose arguments are the ones the call was written with. The receiver
+is not one of them: the C function does not know about the library it came from.
+
 **Where the block lives is not decided here.** The lowering makes it in the frame of the function that
 made it, which is right for an object that never leaves that function and wrong for one that does. The
 decision is a proof, and each proof is a pass of its own, so the frame is the first one and the heap comes
