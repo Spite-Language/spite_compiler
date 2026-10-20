@@ -240,6 +240,12 @@ run stops there.
   signed one, the way Go has it. A program that crashes or fails an assertion writes where it stopped to
   the standard error and leaves with a code of 1.
 - **The decisions** (`DECISIONS.md`), one row each, in the order they were made.
+- **The new standard library.** The numbers answer their maths (`absolute`, `minimum`, `maximum`, `sum`,
+  `subtract`, `multiply`, `divide`, `remainder`) and the Boolean answers its comparisons (`equals`,
+  `less_than`, `greater_than`), every conversion between the numbers is written in the library, and the
+  `String`, the `List` and the `Dictionary` are written there too. The library is reached through the
+  junction `.spite/library`, so a program that loads it loads the new one, and the old library is only
+  still there for the old compiler.
 
 ### The programs that prove it
 
@@ -257,7 +263,7 @@ The tests live in `../SpiteSpec/tests`, one folder per program, and the compiler
 | `../SpiteSpec/tests/receivers` | a receiver that is a call of another class's function, and two classes with a function of one name | 18 |
 | `../SpiteSpec/tests/divisions` | a whole number divided and taken the remainder of, in a loop | 210 |
 | `../SpiteSpec/tests/objects` | a class with an attribute, a constructor that makes one and a method that takes it | 6 |
-| `../SpiteSpec/tests/boolean_layout` | a `Boolean` of one byte read from its room, and a whole number beside it | 7 |
+| `../SpiteSpec/tests/boolean_layout` | a `Boolean` of one byte read from its room, and a whole number beside it | 6 |
 | `../SpiteSpec/tests/and_value` | the `and` of two whole numbers | 0 |
 | `../SpiteSpec/tests/and_if` | an `if` on an `and`, and the short circuit that goes with it | 0 |
 | `../SpiteSpec/tests/or_if` | an `if` on an `or` | 1 |
@@ -265,6 +271,7 @@ The tests live in `../SpiteSpec/tests`, one folder per program, and the compiler
 | `../SpiteSpec/tests/buffer_bytes` | a buffer's bytes, read and written in both byte orders | 0 |
 | `../SpiteSpec/tests/buffer_crash` | an assertion that fails, and the program that stops with it | 1 |
 | `../SpiteSpec/tests/buffer_overflow` | a `crash` that stops the program | 1 |
+| `../SpiteSpec/tests/numbers` | the numbers that are rooms: their comparisons, their conversions and their maths | 131063 |
 
     .spite/spite.exe ../SpiteSpec/tests/exit_code
     ../SpiteSpec/tests/exit_code/.spite/build/exit_code.exe
@@ -330,8 +337,10 @@ ticked.
 function answers, and the emitter writes the whole number arithmetic, the division included. The object is
 there too: a class is a block of memory, its attributes live in it, and a method takes it as its first
 argument. A value class is one step further: it says how much room it needs with a `Buffer`, the compiler
-lays the room out, and the class reads its value from the room. What comes next is the string, because the
-text is what the rest of the library is made of, and it needs a room of its own.
+lays the room out, and the class reads its value from the room. The string is here too, made of a room of its
+own, and the list and the dictionary hold their items in a room. What the compiler still owes the library is
+the memory of a value of any type: a list of any type writes an item of any type into its room, and the
+compiler has to write the bytes of that item.
 
 **The standard library has moved and is written again.** It is in `../SpiteStandardLibrary` now, and it is
 written with nothing implicit: a class that needs memory holds a `Buffer`, and the methods the compiler used
@@ -480,6 +489,11 @@ compiler has to know the library's members and their signatures to answer them.
         names.
   - [ ] **This compiler's own entry file names the library**, the way every other program does, when the
         new compiler is the one that builds it.
+- [ ] **The memory of a value of any type.** The `List` and the `Dictionary` of the new library hold
+      their items in a room, and an item is of any type: `_read_value` and `_write_value` have no body and
+      the compiler writes them, the way it writes the two methods that read and write a byte of a room.
+      The compiler also has to monomorphise a generic class, so that `List<String>` is a class of its own
+      with the size of its item known.
 - [ ] **The cache per step**, so restarting a compilation redoes only the work that changed.
 - [ ] **The tree shaking**, and the inspectable build.
 - [ ] **The optimisation passes**, ours and not the original's: the register allocation, the folding of the
@@ -1058,8 +1072,8 @@ more and the compiler does not go looking for a library:
 
 ```spite
 func ExitCode(): Integer {
-    load "../../../SpiteCompiler/.spite/spite-0.0.6-windows/library"
-    load "../../../SpiteCompiler/.spite/spite-0.0.6-windows/library_windows"
+    load "../../../SpiteCompiler/.spite/library/common"
+    load "../../../SpiteCompiler/.spite/library/windows"
 ```
 
 **How the tests are ported.** A program is ported when the part of the language it needs works, and not

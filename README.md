@@ -42,9 +42,13 @@ it, with the path relative to the program that holds the load:
 
 ```spite
 func Example(): Integer {
-    load "../../../SpiteStandardLibrary/common"
-    load "../../../SpiteStandardLibrary/windows"
+    load "../../../SpiteCompiler/.spite/library/common"
+    load "../../../SpiteCompiler/.spite/library/windows"
 ```
+
+The junction `.spite/library` points at the standard library, so a program that loads it reads the new
+one. The path is the path of the junction and not the path of the repository, so the library can be
+read from where it is.
 
 The programs of the old repository do not do that yet: they relied on the launcher, which is gone. Until
 they name the library, the new compiler cannot read them, and `TODO.md` says so.

@@ -106,6 +106,12 @@ value class is therefore made on the *address* of the value: the builder lowers 
 call to the value itself, and the lowering finds the address of the attribute or of the place the value
 is kept in.
 
+**An argument of a value class is the address of the value, when the value is an attribute of another
+object.** The room of a value class is kept inside the object that holds it, so an argument that is an
+attribute of another object is passed as the address of that attribute, and the callee reads the room
+there. An argument that is a name of the class the code is in is a plain number of that class, and it is
+passed as the number: the callee wants the count, not the place the room is kept in.
+
 **The methods that read and write a byte have no body, and the compiler writes them.** Reading a byte of
 memory is not something Spite can say, so the library declares the method and the compiler writes what it
 does. `high_intermediary_representation/memory.spite` holds that knowledge: the class the methods belong
@@ -121,7 +127,8 @@ standard error before it leaves.
 
 **An index is a call to `get_at`.** `a[b]` is only a shortcut for `a.get_at(b)`, so the builder lowers it
 to a call: the receiver is the value that is indexed, and the index is the argument. The class that owns
-the call is the class of the value that is indexed.
+the call is the class of the value that is indexed. Writing an index is the same rule the other way
+round: `a[b] = v` is a call to `a.set_at(b, v)`, and the builder lowers it to that call.
 
 ## The shapes
 

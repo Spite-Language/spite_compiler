@@ -33,6 +33,11 @@ and a code of 1. The text is built while the program is compiled, so the program
 data. The crash runs when the condition does not hold, which is the rule of the language: a `crash` and an
 `assert` are the same check with the other severity.
 
+**An object that is returned is copied into the frame of the caller.** The block of a returned object
+belongs to the frame of the function that made it, and that frame is gone when the call returns, so the
+lowering copies the block into the frame of the caller, byte for byte, and the call answers the address
+of the copy. The copy is of the whole block: the room of the class and its attributes with it.
+
 ## The shapes
 
 - `LowProgram`: the functions, in the order they are written out, and the entry.
