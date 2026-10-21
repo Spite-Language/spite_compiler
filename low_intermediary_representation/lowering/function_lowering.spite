@@ -1,0 +1,809 @@
+var no_program = Model.ProgramModel()
+var layout = Layout(no_program)
+var program = LowIntermediaryRepresentation.LowProgram()
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var current = 0
+var terminated = false
+var locals = Dictionary<String, Integer>()
+var local_presences = Dictionary<String, Integer>()
+var scalars = Model.Scalars()
+var path = ""
+var line = 0
+var singleton_slots = Dictionary<String, Integer>()
+
+func FunctionLowering(
+    starting_layout: Layout,
+    starting_program: LowIntermediaryRepresentation.LowProgram,
+    starting_slots: Dictionary<String, Integer>,
+) {
+    layout = starting_layout
+    program = starting_program
+    singleton_slots = starting_slots
+}
+
+func lowered(
+    high: HighIntermediaryRepresentation.HighFunction,
+    starting_path: String,
+): LowIntermediaryRepresentation.LowFunction {
+    path = starting_path
+    var key = high.function.key()
+    start(key)
+    var this_register = new_register()
+    locals["this"] = this_register
+    high.function.parameters.each(take_parameter)
+    function.parameter_count = function.register_count
+    lower_block(high.body)
+    if not terminated {
+        var nothing = LowIntermediaryRepresentation.Instructions.Return(-1)
+        emit(nothing)
+    }
+    return function
+}
+
+func start(key: String) {
+    function = LowIntermediaryRepresentation.LowFunction(key, 0)
+    locals = Dictionary<String, Integer>()
+    local_presences = Dictionary<String, Integer>()
+    var first = new_block()
+    switch_to(first)
+}
+
+func take_parameter(parameter: Model.ParameterModel) {
+    var value = new_register()
+    locals[parameter.name] = value
+    if is_a_nullable_scalar(parameter.parameter_type) {
+        var presence = new_register()
+        local_presences[parameter.name] = presence
+    }
+}
+
+func new_register(): Integer {
+    var made = function.register_count
+    function.register_count = made + 1
+    return made
+}
+
+func new_block(): Integer {
+    var made = LowIntermediaryRepresentation.LowBlock()
+    function.blocks.append(made)
+    return function.blocks.count() - 1
+}
+
+func switch_to(block: Integer) {
+    current = block
+    terminated = false
+}
+
+func emit(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if terminated {
+        var unreachable = new_block()
+        switch_to(unreachable)
+    }
+    var block = function.blocks[current]
+    crash block
+    block.instructions.append(instruction)
+    var ends = instruction == LowIntermediaryRepresentation.Instructions.Jump
+    ends = ends or instruction == LowIntermediaryRepresentation.Instructions.Branch
+    ends = ends or instruction == LowIntermediaryRepresentation.Instructions.Return
+    ends = ends or instruction == LowIntermediaryRepresentation.Instructions.Stop
+    ends = ends or instruction == LowIntermediaryRepresentation.Instructions.Exit
+    terminated = ends
+}
+
+func jump_to(block: Integer) {
+    if not terminated {
+        var jump = LowIntermediaryRepresentation.Instructions.Jump(block)
+        emit(jump)
+    }
+}
+
+func constant(number: Long): Integer {
+    var target = new_register()
+    var made = LowIntermediaryRepresentation.Instructions.Constant(target, number)
+    emit(made)
+    return target
+}
+
+func data_label(bytes: Buffer): Integer {
+    program.data.append(bytes)
+    return program.data.count() - 1
+}
+
+func text_label(text: String): Integer {
+    var bytes = text.to_bytes()
+    return data_label(bytes)
+}
+
+func lower_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    crash block
+    block.statements.each(lower_statement)
+}
+
+func lower_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: lower_declare(statement)
+        HighIntermediaryRepresentation.Statements.Assign: lower_assign(statement)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: lower_assign_attribute(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: lower_evaluate(statement)
+        HighIntermediaryRepresentation.Statements.If: lower_if(statement)
+        HighIntermediaryRepresentation.Statements.While: lower_while(statement)
+        HighIntermediaryRepresentation.Statements.Return: lower_return(statement)
+        HighIntermediaryRepresentation.Statements.Stop: lower_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: lower_block(statement)
+    }
+}
+
+func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    line = declare.line
+    var value = lower_value(declare.value)
+    var register = new_register()
+    locals[declare.name] = register
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(register, value.value)
+    emit(copied)
+    if is_a_nullable_scalar(declare.declared_type) {
+        var presence = new_register()
+        local_presences[declare.name] = presence
+        var copied_presence = LowIntermediaryRepresentation.Instructions.Copy(presence, value.presence)
+        emit(copied_presence)
+    }
+}
+
+func lower_assign(assign: HighIntermediaryRepresentation.Statements.Assign) {
+    line = assign.line
+    var value = lower_value(assign.value)
+    var register = locals[assign.name]
+    crash register
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(register, value.value)
+    emit(copied)
+    var presence = local_presences[assign.name]
+    assert presence
+    var copied_presence = LowIntermediaryRepresentation.Instructions.Copy(presence, value.presence)
+    emit(copied_presence)
+}
+
+func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.AssignAttribute) {
+    line = assign.line
+    var object = lower_value(assign.object)
+    var value = lower_value(assign.value)
+    var offset = layout.offset_of(assign.attribute)
+    var width = width_of(assign.attribute.attribute_type)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(object.value, offset, value.value, width)
+    emit(stored)
+    if is_a_nullable_scalar(assign.attribute.attribute_type) {
+        var presence_offset = offset + 8
+        var stored_presence = LowIntermediaryRepresentation.Instructions.Store(
+            object.value,
+            presence_offset,
+            value.presence,
+            'bits_64',
+        )
+        emit(stored_presence)
+    }
+}
+
+func lower_evaluate(evaluate: HighIntermediaryRepresentation.Statements.Evaluate) {
+    line = evaluate.line
+    lower_value(evaluate.value)
+}
+
+func lower_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    line = branch.line
+    var condition = lower_value(branch.condition)
+    var then_block = new_block()
+    var after = new_block()
+    var else_block = after
+    if branch.else_branch {
+        else_block = new_block()
+    }
+    var test = LowIntermediaryRepresentation.Instructions.Branch(condition.value, then_block, else_block)
+    emit(test)
+    switch_to(then_block)
+    lower_block(branch.then_branch)
+    jump_to(after)
+    if branch.else_branch {
+        switch_to(else_block)
+        lower_block(branch.else_branch)
+        jump_to(after)
+    }
+    switch_to(after)
+}
+
+func lower_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    line = loop.line
+    var header = new_block()
+    var body = new_block()
+    var after = new_block()
+    jump_to(header)
+    switch_to(header)
+    var condition = lower_value(loop.condition)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(condition.value, body, after)
+    emit(test)
+    switch_to(body)
+    lower_block(loop.body)
+    jump_to(header)
+    switch_to(after)
+}
+
+func lower_return(returned: HighIntermediaryRepresentation.Statements.Return) {
+    line = returned.line
+    if not returned.value {
+        var nothing = LowIntermediaryRepresentation.Instructions.Return(-1)
+        emit(nothing)
+        return
+    }
+    var value = lower_value(returned.value)
+    var made = LowIntermediaryRepresentation.Instructions.Return(value.value)
+    made.presence = value.presence
+    emit(made)
+}
+
+func lower_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    var label = text_label("{stop.message}\n")
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+}
+
+func lower_value(value: HighIntermediaryRepresentation.Values.Value?): Lowered {
+    crash value
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return lower_whole_number(value)
+        HighIntermediaryRepresentation.Values.TextConstant: return lower_text(value)
+        HighIntermediaryRepresentation.Values.NullConstant: return lower_null()
+        HighIntermediaryRepresentation.Values.LocalRead: return lower_local(value)
+        HighIntermediaryRepresentation.Values.ThisRead: return lower_this()
+        HighIntermediaryRepresentation.Values.AttributeRead: return lower_attribute(value)
+        HighIntermediaryRepresentation.Values.Call: return lower_call(value)
+        HighIntermediaryRepresentation.Values.MakeObject: return lower_make_object(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: return lower_operation(value)
+        HighIntermediaryRepresentation.Values.Negation: return lower_negation(value)
+        HighIntermediaryRepresentation.Values.ForeignCall: return lower_foreign_call(value)
+        HighIntermediaryRepresentation.Values.ClassTest: return lower_class_test(value)
+        HighIntermediaryRepresentation.Values.PresenceTest: return lower_presence_test(value)
+        HighIntermediaryRepresentation.Values.Conversion: return lower_conversion(value)
+        HighIntermediaryRepresentation.Values.NumberRoom: return lower_number_room(value)
+        _: return unbuilt()
+    }
+}
+
+func lower_whole_number(number: HighIntermediaryRepresentation.Values.WholeNumber): Lowered {
+    var register = constant(number.number)
+    return single(register)
+}
+
+func single(register: Integer): Lowered {
+    return Lowered(register, -1)
+}
+
+func lower_null(): Lowered {
+    var zero = constant(0)
+    var absent = constant(0)
+    return Lowered(zero, absent)
+}
+
+func lower_this(): Lowered {
+    var this_register = locals["this"]
+    crash this_register
+    return single(this_register)
+}
+
+func lower_local(read: HighIntermediaryRepresentation.Values.LocalRead): Lowered {
+    var register = locals[read.name]
+    crash register
+    var presence = local_presences[read.name]
+    if presence {
+        return Lowered(register, presence)
+    }
+    return single(register)
+}
+
+func lower_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead): Lowered {
+    var object = lower_value(read.object)
+    var offset = layout.offset_of(read.attribute)
+    var attribute_type = read.attribute.attribute_type
+    var target = new_register()
+    var width = width_of(attribute_type)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(target, object.value, offset, width)
+    loaded.is_signed = is_signed(attribute_type)
+    emit(loaded)
+    if not is_a_nullable_scalar(attribute_type) {
+        return single(target)
+    }
+    var presence = new_register()
+    var presence_offset = offset + 8
+    var loaded_presence = LowIntermediaryRepresentation.Instructions.Load(
+        presence,
+        object.value,
+        presence_offset,
+        'bits_64',
+    )
+    emit(loaded_presence)
+    return Lowered(target, presence)
+}
+
+func lower_text(text: HighIntermediaryRepresentation.Values.TextConstant): Lowered {
+    var string_type = text.value_type
+    var made = make_object(string_type.name)
+    var label = text_label(text.text)
+    var bytes = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(bytes, label)
+    emit(addressed)
+    var length = text.text.length()
+    var index = 0
+    while index < length {
+        var offset_register = constant(index)
+        var code = load_byte(bytes, offset_register)
+        var arguments = List<Integer>()
+        arguments.append(made)
+        arguments.append(code)
+        var appended = LowIntermediaryRepresentation.Instructions.Call(-1, "String.append_code", arguments)
+        emit(appended)
+        index = index + 1
+    }
+    return single(made)
+}
+
+func load_byte(base: Integer, offset_register: Integer): Integer {
+    var address = address_plus(base, offset_register)
+    var target = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(target, address, 0, 'bits_8')
+    loaded.is_signed = false
+    emit(loaded)
+    return target
+}
+
+func address_plus(base: Integer, offset_register: Integer): Integer {
+    var target = new_register()
+    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(target, 'add', base, offset_register)
+    added.is_signed = false
+    added.is_checked = false
+    emit(added)
+    return target
+}
+
+func lower_make_object(made: HighIntermediaryRepresentation.Values.MakeObject): Lowered {
+    var class_key = made.value_type.name
+    var made_model = layout.program.class_named(class_key)
+    crash made_model
+    if made_model.is_singleton {
+        var singleton = singleton_of(class_key, made)
+        return single(singleton)
+    }
+    var object = make_object(class_key)
+    call_the_constructor(object, made)
+    return single(object)
+}
+
+func make_object(class_key: String): Integer {
+    var size = layout.size_of(class_key)
+    var size_register = constant(size)
+    var object = new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(object, size_register)
+    emit(allocated)
+    var class_id = layout.class_id_of(class_key)
+    var id_register = constant(class_id)
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(object, 0, id_register, 'bits_64')
+    emit(stored_id)
+    var one = constant(1)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(object, 8, one, 'bits_64')
+    emit(stored_count)
+    var arguments = List<Integer>()
+    arguments.append(object)
+    var defaults = LowIntermediaryRepresentation.Instructions.Call(-1, "{class_key}._attribute_defaults", arguments)
+    emit(defaults)
+    return object
+}
+
+func call_the_constructor(object: Integer, made: HighIntermediaryRepresentation.Values.MakeObject) {
+    assert made.constructor
+    var constructor_key = made.constructor.key()
+    var arguments = List<Integer>()
+    arguments.append(object)
+    add_arguments(arguments, made.arguments)
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, constructor_key, arguments)
+    emit(called)
+}
+
+func singleton_of(class_key: String, made: HighIntermediaryRepresentation.Values.MakeObject): Integer {
+    var label = slot_label_of(class_key)
+    var slot = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    emit(addressed)
+    var object = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(object, slot, 0, 'bits_64')
+    emit(loaded)
+    var zero = constant(0)
+    var missing = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', object, zero)
+    emit(compared)
+    var making = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, making, after)
+    emit(test)
+    switch_to(making)
+    var fresh = make_object(class_key)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 0, fresh, 'bits_64')
+    emit(stored)
+    call_the_constructor(fresh, made)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(object, fresh)
+    emit(copied)
+    jump_to(after)
+    switch_to(after)
+    return object
+}
+
+func slot_label_of(class_key: String): Integer {
+    var known = singleton_slots[class_key]
+    if known {
+        return known
+    }
+    var empty = Buffer()
+    var index = 0
+    while index < 8 {
+        empty.append(0)
+        index = index + 1
+    }
+    var label = data_label(empty)
+    singleton_slots[class_key] = label
+    return label
+}
+
+func add_arguments(arguments: List<Integer>, values: List<HighIntermediaryRepresentation.Values.Value>) {
+    var index = 0
+    while index < values.count() {
+        var value = values[index]
+        var argument_value = lower_value(value)
+        arguments.append(argument_value.value)
+        if argument_value.presence >= 0 {
+            arguments.append(argument_value.presence)
+        }
+        index = index + 1
+    }
+}
+
+func lower_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var intrinsic = Intrinsics(this)
+    if not call.function.has_a_body() {
+        return intrinsic.lowered(call)
+    }
+    var arguments = List<Integer>()
+    var receiver = lower_value(call.receiver)
+    arguments.append(receiver.value)
+    add_arguments(arguments, call.arguments)
+    var target = -1
+    if not call.value_type.is_nothing() {
+        target = new_register()
+    }
+    var function_key = call.function.key()
+    var called = LowIntermediaryRepresentation.Instructions.Call(target, function_key, arguments)
+    if is_a_nullable_scalar(call.value_type) {
+        var presence = new_register()
+        called.presence = presence
+        emit(called)
+        return Lowered(target, presence)
+    }
+    emit(called)
+    return single(target)
+}
+
+func lower_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation): Lowered {
+    if operation.operator == 'and' or operation.operator == 'or' {
+        return lower_logic(operation)
+    }
+    var left = lower_value(operation.left)
+    var right = lower_value(operation.right)
+    var target = new_register()
+    crash operation.left
+    var operand_type = operation.left.value_type
+    var comparison = comparison_of(operation.operator)
+    if comparison {
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(target, comparison, left.value, right.value)
+        compared.is_signed = is_signed(operand_type)
+        emit(compared)
+        return single(target)
+    }
+    var arithmetic_operator = arithmetic_of(operation.operator)
+    var computed = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        target,
+        arithmetic_operator,
+        left.value,
+        right.value,
+    )
+    computed.width = width_of(operand_type)
+    computed.is_signed = is_signed(operand_type)
+    computed.line = line
+    emit(computed)
+    return single(target)
+}
+
+func lower_logic(operation: HighIntermediaryRepresentation.Values.MachineOperation): Lowered {
+    var target = new_register()
+    var left = lower_value(operation.left)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, left.value)
+    emit(copied)
+    var right_block = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(left.value, right_block, after)
+    if operation.operator == 'or' {
+        test = LowIntermediaryRepresentation.Instructions.Branch(left.value, after, right_block)
+    }
+    emit(test)
+    switch_to(right_block)
+    var right = lower_value(operation.right)
+    var copied_right = LowIntermediaryRepresentation.Instructions.Copy(target, right.value)
+    emit(copied_right)
+    jump_to(after)
+    switch_to(after)
+    return single(target)
+}
+
+func comparison_of(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+): LowIntermediaryRepresentation.Comparison? {
+    switch operator {
+        'equal': return 'equal'
+        'not_equal': return 'not_equal'
+        'less': return 'less'
+        'less_or_equal': return 'less_or_equal'
+        'greater': return 'greater'
+        'greater_or_equal': return 'greater_or_equal'
+        _: return null
+    }
+}
+
+func arithmetic_of(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+): LowIntermediaryRepresentation.ArithmeticOperator {
+    switch operator {
+        'add': return 'add'
+        'subtract': return 'subtract'
+        'multiply': return 'multiply'
+        'divide': return 'divide'
+        _: return 'remainder'
+    }
+}
+
+func lower_negation(negation: HighIntermediaryRepresentation.Values.Negation): Lowered {
+    var negated = lower_value(negation.negated)
+    var zero = constant(0)
+    var target = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'equal', negated.value, zero)
+    emit(compared)
+    return single(target)
+}
+
+func lower_class_test(test: HighIntermediaryRepresentation.Values.ClassTest): Lowered {
+    var tested = lower_value(test.tested)
+    var target = new_register()
+    var zero = constant(0)
+    var present = new_register()
+    var compared_present = LowIntermediaryRepresentation.Instructions.Compare(present, 'not_equal', tested.value, zero)
+    emit(compared_present)
+    var reading = new_block()
+    var after = new_block()
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, present)
+    emit(copied)
+    var branched = LowIntermediaryRepresentation.Instructions.Branch(present, reading, after)
+    emit(branched)
+    switch_to(reading)
+    var class_id = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, tested.value, 0, 'bits_64')
+    emit(loaded)
+    var wanted = layout.class_id_of(test.member.name)
+    var wanted_register = constant(wanted)
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'equal', class_id, wanted_register)
+    emit(compared)
+    jump_to(after)
+    switch_to(after)
+    return single(target)
+}
+
+func lower_presence_test(test: HighIntermediaryRepresentation.Values.PresenceTest): Lowered {
+    var tested = lower_value(test.tested)
+    if tested.presence >= 0 {
+        return single(tested.presence)
+    }
+    var zero = constant(0)
+    var target = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'not_equal', tested.value, zero)
+    emit(compared)
+    return single(target)
+}
+
+func lower_number_room(room: HighIntermediaryRepresentation.Values.NumberRoom): Lowered {
+    var made = lower_value(room.made)
+    var number = lower_value(room.number)
+    var storage = storage_of(made.value)
+    crash room.number
+    var width = width_of(room.number.value_type)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(storage, 0, number.value, width)
+    emit(stored)
+    var buffer_model = layout.program.class_named("Buffer")
+    crash buffer_model
+    var count_attribute = buffer_model.attribute_named("item_count")
+    crash count_attribute
+    var count_offset = layout.offset_of(count_attribute)
+    var counted = constant(room.width)
+    var count_stored = LowIntermediaryRepresentation.Instructions.Store(made.value, count_offset, counted, 'bits_32')
+    emit(count_stored)
+    return made
+}
+
+func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): Lowered {
+    var converted = lower_value(conversion.converted)
+    if conversion.kind == 'nullable' {
+        return made_nullable(converted, conversion.value_type)
+    }
+    if conversion.kind == 'narrow' {
+        crash conversion.converted
+        var given = conversion.converted.value_type
+        check_the_range(converted.value, given, conversion.value_type)
+    }
+    return single(converted.value)
+}
+
+func check_the_range(value: Integer, given: Model.Type, wanted: Model.Type) {
+    var given_scalar = scalars.of(given.name)
+    var wanted_scalar = scalars.of(wanted.name)
+    crash given_scalar
+    crash wanted_scalar
+    var message = "spite: a value of {given.name} does not fit in {wanted.name}, at {path}:{line}"
+    var loses_the_sign = not wanted_scalar.is_signed or wanted_scalar.size < given_scalar.size
+    if given_scalar.is_signed and loses_the_sign {
+        var lowest = lowest_of(wanted_scalar)
+        stop_unless(value, 'greater_or_equal', lowest, true, message)
+    }
+    var wanted_bits = value_bits_of(wanted_scalar)
+    if value_bits_of(given_scalar) > wanted_bits {
+        var highest = power_of_two(wanted_bits) - 1
+        stop_unless(value, 'less_or_equal', highest, given_scalar.is_signed, message)
+    }
+}
+
+func value_bits_of(scalar: Model.Scalar): Integer {
+    if scalar.is_signed {
+        return scalar.size * 8 - 1
+    }
+    return scalar.size * 8
+}
+
+func lowest_of(scalar: Model.Scalar): Long {
+    if not scalar.is_signed {
+        return 0
+    }
+    var bits = value_bits_of(scalar)
+    var zero: Long = 0
+    return zero - power_of_two(bits)
+}
+
+func power_of_two(bits: Integer): Long {
+    var power: Long = 1
+    var index = 0
+    while index < bits {
+        power = power * 2
+        index = index + 1
+    }
+    return power
+}
+
+func stop_unless(
+    value: Integer,
+    comparison: LowIntermediaryRepresentation.Comparison,
+    limit: Long,
+    compares_signed: Boolean,
+    message: String,
+) {
+    var bound = constant(limit)
+    var fits = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(fits, comparison, value, bound)
+    compared.is_signed = compares_signed
+    emit(compared)
+    var stopping = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(fits, after, stopping)
+    emit(test)
+    switch_to(stopping)
+    var label = text_label("{message}\n")
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+    switch_to(after)
+}
+
+func made_nullable(converted: Lowered, nullable_type: Model.Type): Lowered {
+    if not is_a_nullable_scalar(nullable_type) {
+        return converted
+    }
+    var present = constant(1)
+    return Lowered(converted.value, present)
+}
+
+func lower_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall): Lowered {
+    var library = lower_value(call.library)
+    var library_model = layout.program.class_named("DynamicLibrary")
+    crash library_model
+    var handle_attribute = library_model.attribute_named("handle")
+    crash handle_attribute
+    var handle_offset = layout.offset_of(handle_attribute)
+    var handle = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(handle, library.value, handle_offset, 'bits_64')
+    emit(loaded)
+    var address = new_register()
+    var found = LowIntermediaryRepresentation.Instructions.ForeignAddress(address, handle, call.function_name)
+    emit(found)
+    var arguments = List<Integer>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var passed = foreign_argument(argument)
+        arguments.append(passed)
+        index = index + 1
+    }
+    var target = new_register()
+    var called = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments)
+    called.answers_32_bits = call.value_type.name == "Integer"
+    emit(called)
+    return single(target)
+}
+
+func foreign_argument(argument: HighIntermediaryRepresentation.Values.Value): Integer {
+    var argument_value = lower_value(argument)
+    var argument_type = argument.value_type
+    if argument_type.kind == 'object' and argument_type.name == "String" {
+        return bytes_of_text(argument_value.value)
+    }
+    if argument_type.kind == 'object' and argument_type.name == "Buffer" {
+        return storage_of(argument_value.value)
+    }
+    return argument_value.value
+}
+
+func bytes_of_text(text: Integer): Integer {
+    var string_model = layout.program.class_named("String")
+    crash string_model
+    var buffer_attribute = string_model.attribute_named("_buffer")
+    crash buffer_attribute
+    var buffer_offset = layout.offset_of(buffer_attribute)
+    var buffer = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(buffer, text, buffer_offset, 'bits_64')
+    emit(loaded)
+    return storage_of(buffer)
+}
+
+func storage_of(buffer: Integer): Integer {
+    var storage = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(storage, buffer, layout.storage_offset, 'bits_64')
+    emit(loaded)
+    return storage
+}
+
+func is_a_nullable_scalar(of_type: Model.Type): Boolean {
+    return of_type.kind == 'scalar' and of_type.is_nullable
+}
+
+func width_of(of_type: Model.Type): LowIntermediaryRepresentation.Width {
+    if of_type.kind != 'scalar' {
+        return 'bits_64'
+    }
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    switch scalar.size {
+        1: return 'bits_8'
+        2: return 'bits_16'
+        4: return 'bits_32'
+        _: return 'bits_64'
+    }
+}
+
+func is_signed(of_type: Model.Type): Boolean {
+    if of_type.kind != 'scalar' {
+        return true
+    }
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    return scalar.is_signed
+}
+
+func unbuilt(): Lowered {
+    var buildable = Validators.HighIntermediaryRepresentation.Buildable.Validator()
+    buildable.refuse(path, line, function.key)
+    return single(-1)
+}

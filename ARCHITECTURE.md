@@ -58,7 +58,8 @@ a file and never changes its input.
 - `printers/spite` prints a tree as Spite. It is the formatter, and `--final-classes` uses it on a merged class.
   The tree therefore keeps comments, blank lines and how literals were spelled.
 - `printers/diagnostics`, `printers/high_intermediary_representation`, `printers/low_intermediary_representation`,
-  `printers/optimization_report`, `printers/machine_code`.
+  `printers/optimization_report`, `printers/machine_code`. `--high-ir` and `--low-ir` write the two
+  representations next to the executable, as `<program>.high_ir.txt` and `<program>.low_ir.txt`.
 
 A text that is an identity (a type's key, an instance's name) is not printing: it belongs to the step that owns it.
 

@@ -1,0 +1,863 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var scalars = Model.Scalars()
+var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
+var temporary_count = 0
+
+func Values(starting_context: Context) {
+    context = starting_context
+}
+
+func value_of(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    expected: Model.Type?,
+): HighIntermediaryRepresentation.Values.Value {
+    crash expression
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return name_value(expression)
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return literal_value(expression, expected)
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: return text_value(expression)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return member_value(expression)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return call_value(expression)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return index_value(expression)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return binary_value(expression)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return unary_value(expression, expected)
+        AbstractSyntaxTree.Shapes.Expressions.ListLiteral: return list_value(expression, expected)
+        _: return unbuilt()
+    }
+}
+
+func fitted_value_of(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    wanted: Model.Type,
+): HighIntermediaryRepresentation.Values.Value {
+    var value = value_of(expression, wanted)
+    return fitted(value, wanted)
+}
+
+func fitted(
+    value: HighIntermediaryRepresentation.Values.Value,
+    wanted: Model.Type,
+): HighIntermediaryRepresentation.Values.Value {
+    var given = value.value_type
+    if given.is_the_same_as(wanted) {
+        return value
+    }
+    var same_base = given.kind == wanted.kind and given.name == wanted.name
+    if same_base and wanted.is_nullable {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'nullable', value)
+    }
+    if same_base and given.is_nullable {
+        var shown = context.shown(given)
+        typing.refuse_maybe_null(context, shown)
+    }
+    if wanted.kind == 'union' and is_a_member_of(given, wanted) {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_union', value)
+    }
+    if is_wider(wanted, given) {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'widen', value)
+    }
+    if are_whole_numbers(wanted, given) {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'narrow', value)
+    }
+    var shown_given = context.shown(given)
+    var shown_wanted = context.shown(wanted)
+    typing.refuse_mismatch(context, shown_given, shown_wanted)
+    return value
+}
+
+func is_a_member_of(given: Model.Type, wanted: Model.Type): Boolean {
+    var union_type = wanted.present()
+    var made = union_model_of(union_type)
+    var index = 0
+    while index < made.members.count() {
+        var member = made.members[index]
+        if member.is_the_same_as(given) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func union_model_of(union_type: Model.Type): Model.UnionModel {
+    var parts = union_type.name.split(".")
+    var last = parts.count() - 1
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = context.program.class_named(owner_key)
+    crash owner
+    var owner_length = owner_key.length()
+    var name_length = union_type.name.length()
+    var simple = union_type.name.slice(owner_length + 1, name_length)
+    var made = owner.union_named(simple)
+    crash made
+    return made
+}
+
+func is_wider(wanted: Model.Type, given: Model.Type): Boolean {
+    var both_scalars = wanted.kind == 'scalar' and given.kind == 'scalar'
+    if not both_scalars {
+        return false
+    }
+    var wanted_scalar = scalars.of(wanted.name)
+    var given_scalar = scalars.of(given.name)
+    crash wanted_scalar
+    crash given_scalar
+    var same_family = wanted_scalar.is_decimal == given_scalar.is_decimal
+    var keeps_the_sign = wanted_scalar.is_signed or not given_scalar.is_signed
+    var grows = wanted_scalar.size > given_scalar.size and given.name != "Boolean"
+    return same_family and grows and keeps_the_sign
+}
+
+func are_whole_numbers(wanted: Model.Type, given: Model.Type): Boolean {
+    var both_scalars = wanted.kind == 'scalar' and given.kind == 'scalar'
+    var neither_nullable = not wanted.is_nullable and not given.is_nullable
+    if not both_scalars or not neither_nullable {
+        return false
+    }
+    return is_a_whole_number(wanted) and is_a_whole_number(given)
+}
+
+func is_a_whole_number(of_type: Model.Type): Boolean {
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    return not scalar.is_decimal and of_type.name != "Boolean"
+}
+
+func literal_value(
+    literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression,
+    expected: Model.Type?,
+): HighIntermediaryRepresentation.Values.Value {
+    switch literal.kind {
+        'integer_literal': return whole_number_value(literal.text, expected)
+        'decimal_literal': return decimal_value(literal.text, expected)
+        'keyword_true': return boolean_value(1)
+        'keyword_false': return boolean_value(0)
+        'keyword_null': return null_value(expected)
+        'symbol_literal': return symbol_value(literal.text, expected)
+        'keyword_this': return this_value()
+        _: return unbuilt()
+    }
+}
+
+func whole_number_value(written: String, expected: Model.Type?): HighIntermediaryRepresentation.Values.Value {
+    var number = written.to_long()
+    crash number
+    var number_type = context.scalar_type("Integer")
+    if expected {
+        var wanted = expected.present()
+        if context.is_a_number(wanted) {
+            number_type = wanted
+        }
+    }
+    var largest_integer: Long = 2147483647
+    if number > largest_integer and number_type.name == "Integer" {
+        number_type = context.scalar_type("Long")
+    }
+    return HighIntermediaryRepresentation.Values.WholeNumber(number_type, number)
+}
+
+func decimal_value(written: String, expected: Model.Type?): HighIntermediaryRepresentation.Values.Value {
+    var decimal_type = context.scalar_type("Double")
+    if expected {
+        if expected.name == "Float" {
+            decimal_type = context.scalar_type("Float")
+        }
+    }
+    return HighIntermediaryRepresentation.Values.DecimalNumber(decimal_type, written)
+}
+
+func boolean_value(number: Long): HighIntermediaryRepresentation.Values.Value {
+    var boolean = context.boolean()
+    return HighIntermediaryRepresentation.Values.WholeNumber(boolean, number)
+}
+
+func null_value(expected: Model.Type?): HighIntermediaryRepresentation.Values.Value {
+    if expected {
+        if expected.is_nullable {
+            return HighIntermediaryRepresentation.Values.NullConstant(expected)
+        }
+    }
+    typing.refuse_null_without_a_type(context)
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func symbol_value(name: String, expected: Model.Type?): HighIntermediaryRepresentation.Values.Value {
+    if expected {
+        if expected.kind == 'enumeration' {
+            return enum_value(name, expected)
+        }
+    }
+    typing.refuse_symbol_without_an_enum(context, name)
+    return unbuilt()
+}
+
+func enum_value(name: String, expected: Model.Type): HighIntermediaryRepresentation.Values.Value {
+    var made = enum_model_of(expected)
+    var place = made.values.index_of(name)
+    if not place {
+        typing.refuse_not_a_value(context, name, made.name)
+    }
+    crash place
+    var number = made.numbers[place]
+    crash number
+    var present = expected.present()
+    return HighIntermediaryRepresentation.Values.WholeNumber(present, number)
+}
+
+func enum_model_of(enum_type: Model.Type): Model.EnumModel {
+    var parts = enum_type.name.split(".")
+    var last = parts.count() - 1
+    var simple = parts[last]
+    crash simple
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = context.program.class_named(owner_key)
+    crash owner
+    var made = owner.enum_named(simple)
+    crash made
+    return made
+}
+
+func this_value(): HighIntermediaryRepresentation.Values.Value {
+    var key = context.current_class.key
+    if scalars.of(key) {
+        var number = context.scalar_type(key)
+        return HighIntermediaryRepresentation.Values.ThisRead(number)
+    }
+    var own = context.current_class.type_of_an_instance()
+    return HighIntermediaryRepresentation.Values.ThisRead(own)
+}
+
+func text_value(
+    literal: AbstractSyntaxTree.Shapes.Expressions.TextLiteral,
+): HighIntermediaryRepresentation.Values.Value {
+    var joined: HighIntermediaryRepresentation.Values.Value? = null
+    var index = 0
+    while index < literal.pieces.count() {
+        var piece = literal.pieces[index]
+        if not piece.text.is_empty() or literal.pieces.count() == 1 {
+            var constant = HighIntermediaryRepresentation.Values.TextConstant(piece.text)
+            joined = joined_with(joined, constant)
+        }
+        if piece.hole {
+            var hole = hole_text_of(piece.hole)
+            joined = joined_with(joined, hole)
+        }
+        index = index + 1
+    }
+    crash joined
+    return joined
+}
+
+func hole_text_of(hole: AbstractSyntaxTree.Shapes.Expressions.Expression): HighIntermediaryRepresentation.Values.Value {
+    var value = value_of(hole, null)
+    var string_type = context.text()
+    if value.value_type.is_the_same_as(string_type) {
+        return value
+    }
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    return method_call(value, "to_string", no_arguments)
+}
+
+func joined_with(
+    joined: HighIntermediaryRepresentation.Values.Value?,
+    next: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    if not joined {
+        return next
+    }
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(next)
+    return method_call(joined, "sum", arguments)
+}
+
+func name_value(
+    identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var internal_name = context.scope.internal_name_of(identifier.name)
+    if internal_name {
+        var local_type = context.scope.type_of(internal_name)
+        crash local_type
+        return HighIntermediaryRepresentation.Values.LocalRead(local_type, internal_name)
+    }
+    var attribute = context.current_class.attribute_named(identifier.name)
+    if attribute {
+        var own = this_value()
+        if own.value_type.kind == 'scalar' {
+            return number_room(own, attribute)
+        }
+        var read = HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
+        return narrowed(read, "this.{identifier.name}")
+    }
+    var function = context.current_class.function_named(identifier.name)
+    if function {
+        return function_value(function)
+    }
+    typing.refuse_unknown_name(context, identifier.name)
+    return unbuilt()
+}
+
+func function_value(function: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value {
+    need(function)
+    var function_type = Model.Type('function', "Spite.Function")
+    var parameter_types = function.parameters.map_parameter_types()
+    function_type.parameters = parameter_types
+    function_type.answer = function.answer
+    var own = this_value()
+    return HighIntermediaryRepresentation.Values.FunctionValue(function_type, function, own)
+}
+
+func number_room(
+    number: HighIntermediaryRepresentation.Values.Value,
+    attribute: Model.AttributeModel,
+): HighIntermediaryRepresentation.Values.Value {
+    var scalar = scalars.of(number.value_type.name)
+    crash scalar
+    var room_type = attribute.attribute_type
+    var room_model = context.class_of(room_type)
+    context.need_defaults(room_model.key)
+    var constructor = constructor_of(room_model)
+    crash constructor
+    need(constructor)
+    var integer = context.scalar_type("Integer")
+    var size = HighIntermediaryRepresentation.Values.WholeNumber(integer, scalar.size)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(size)
+    var made = HighIntermediaryRepresentation.Values.MakeObject(room_type, constructor, arguments)
+    return HighIntermediaryRepresentation.Values.NumberRoom(made, number, scalar.size)
+}
+
+func narrowed(
+    value: HighIntermediaryRepresentation.Values.Value,
+    path: String,
+): HighIntermediaryRepresentation.Values.Value {
+    var narrowed_type = context.scope.narrowed_type_of(path)
+    if narrowed_type {
+        return HighIntermediaryRepresentation.Values.Conversion(narrowed_type, 'present', value)
+    }
+    return value
+}
+
+func member_value(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var target = value_of(member.target, null)
+    var owner = present_class_of(target)
+    var attribute = owner.attribute_named(member.name)
+    if not attribute {
+        var shown = context.shown(target.value_type)
+        typing.refuse_unknown_member(context, shown, member.name)
+    }
+    crash attribute
+    if target.value_type.kind == 'scalar' {
+        return number_room(target, attribute)
+    }
+    var read = HighIntermediaryRepresentation.Values.AttributeRead(target, attribute)
+    var printer = Printers.Spite.ExpressionPrinter(member)
+    var path = printer.text()
+    return narrowed(read, path)
+}
+
+func present_class_of(value: HighIntermediaryRepresentation.Values.Value): Model.ClassModel {
+    var value_type = value.value_type
+    if value_type.is_nullable {
+        var shown = context.shown(value_type)
+        typing.refuse_maybe_null(context, shown)
+    }
+    if not context.has_a_class(value_type) {
+        var shown_type = context.shown(value_type)
+        typing.refuse_no_members(context, shown_type)
+    }
+    return context.class_of(value_type)
+}
+
+func call_value(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var class_path = class_path_of(call.callee)
+    if not class_path.is_empty() {
+        return constructed(call, class_path)
+    }
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return own_call(call, callee.name)
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return member_call(call, callee)
+    }
+    return unbuilt()
+}
+
+func class_path_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): List<String> {
+    var inference = NameResolution.Inference()
+    return inference.class_path_of(expression)
+}
+
+func constructed(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    class_path: List<String>,
+): HighIntermediaryRepresentation.Values.Value {
+    var made_type = context.resolver.class_type_in(
+        class_path,
+        call.generic_arguments,
+        context.current_class,
+        context.line,
+    )
+    var made = context.class_of(made_type)
+    context.need_defaults(made.key)
+    var constructor = constructor_of(made)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    if constructor {
+        need(constructor)
+        arguments = fitted_arguments(constructor, call.arguments)
+    } else {
+        var no_parameters = List<Model.ParameterModel>()
+        arguments = arguments_for(made.shown, no_parameters, call.arguments)
+    }
+    return HighIntermediaryRepresentation.Values.MakeObject(made_type, constructor, arguments)
+}
+
+func constructor_of(made: Model.ClassModel): Model.FunctionModel? {
+    var index = 0
+    while index < made.declared_functions.count() {
+        var function = made.declared_functions[index]
+        if function.is_constructor {
+            return function
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func own_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+): HighIntermediaryRepresentation.Values.Value {
+    var internal_name = context.scope.internal_name_of(name)
+    if internal_name {
+        return function_value_call(call, name)
+    }
+    var function = context.current_class.function_named(name)
+    if not function {
+        typing.refuse_unknown_name(context, name)
+    }
+    crash function
+    var own = this_value()
+    return called(function, own, call.arguments)
+}
+
+func function_value_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+): HighIntermediaryRepresentation.Values.Value {
+    var internal_name = context.scope.internal_name_of(name)
+    crash internal_name
+    var local_type = context.scope.type_of(internal_name)
+    crash local_type
+    if local_type.kind != 'function' {
+        var shown = context.shown(local_type)
+        typing.refuse_not_callable(context, name, shown)
+    }
+    var called_value = HighIntermediaryRepresentation.Values.LocalRead(local_type, internal_name)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var wanted = local_type.parameters[index]
+        crash wanted
+        var value = fitted_value_of(argument, wanted)
+        arguments.append(value)
+        index = index + 1
+    }
+    var made = HighIntermediaryRepresentation.Values.FunctionValueCall(called_value, arguments)
+    if local_type.answer {
+        made.value_type = local_type.answer
+    }
+    return made
+}
+
+func member_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var receiver = value_of(callee.target, null)
+    var owner = present_class_of(receiver)
+    var function = owner.function_named(callee.name)
+    if not function and owner.key == "DynamicLibrary" {
+        return foreign_call(receiver, callee.name, call.arguments)
+    }
+    if not function {
+        var shown = context.shown(receiver.value_type)
+        typing.refuse_unknown_member(context, shown, callee.name)
+    }
+    crash function
+    return called(function, receiver, call.arguments)
+}
+
+func called(
+    function: Model.FunctionModel,
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value {
+    need(function)
+    var arguments = fitted_arguments(function, written)
+    return HighIntermediaryRepresentation.Values.Call(function, receiver, arguments)
+}
+
+func method_call(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+): HighIntermediaryRepresentation.Values.Value {
+    var owner = present_class_of(receiver)
+    var function = owner.function_named(name)
+    if not function {
+        var shown = context.shown(receiver.value_type)
+        typing.refuse_unknown_member(context, shown, name)
+    }
+    crash function
+    need(function)
+    var given = List<HighIntermediaryRepresentation.Values.Value>()
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        var parameter = function.parameters[index]
+        crash parameter
+        var fitted_argument = fitted(argument, parameter.parameter_type)
+        given.append(fitted_argument)
+        index = index + 1
+    }
+    return HighIntermediaryRepresentation.Values.Call(function, receiver, given)
+}
+
+func fitted_arguments(
+    function: Model.FunctionModel,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): List<HighIntermediaryRepresentation.Values.Value> {
+    var shown = "{function.owner}.{function.name}"
+    return arguments_for(shown, function.parameters, written)
+}
+
+func arguments_for(
+    shown: String,
+    parameters: List<Model.ParameterModel>,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): List<HighIntermediaryRepresentation.Values.Value> {
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var last = parameters.last()
+    var is_variadic = false
+    if last {
+        is_variadic = last.is_variadic
+    }
+    var fixed_count = parameters.count()
+    if is_variadic {
+        fixed_count = fixed_count - 1
+    }
+    var count_is_wrong = written.count() != parameters.count()
+    if is_variadic {
+        count_is_wrong = written.count() < fixed_count
+    }
+    if count_is_wrong {
+        var given_count = written.count()
+        var wanted_count = parameters.count()
+        typing.refuse_argument_count(context, shown, wanted_count, given_count)
+    }
+    var index = 0
+    while index < fixed_count {
+        var argument = written[index]
+        var parameter = parameters[index]
+        crash parameter
+        var value = fitted_value_of(argument, parameter.parameter_type)
+        arguments.append(value)
+        index = index + 1
+    }
+    if is_variadic {
+        crash last
+        var gathered = gathered_list(last.parameter_type, written, fixed_count)
+        arguments.append(gathered)
+    }
+    return arguments
+}
+
+func gathered_list(
+    list_type: Model.Type,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+    start: Integer,
+): HighIntermediaryRepresentation.Values.Value {
+    var list_model = context.class_of(list_type)
+    var element_type = list_model.bound_types["$element_type"]
+    crash element_type
+    var temporary = new_list(list_type)
+    var index = start
+    while index < written.count() {
+        var entry = written[index]
+        var value = fitted_value_of(entry, element_type)
+        append_to(temporary, value)
+        index = index + 1
+    }
+    return temporary
+}
+
+func new_list(list_type: Model.Type): HighIntermediaryRepresentation.Values.Value {
+    var list_model = context.class_of(list_type)
+    context.need_defaults(list_model.key)
+    var constructor = constructor_of(list_model)
+    if constructor {
+        need(constructor)
+    }
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var made = HighIntermediaryRepresentation.Values.MakeObject(list_type, constructor, no_arguments)
+    temporary_count = temporary_count + 1
+    var name = context.scope.declare("made_{temporary_count}", list_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, list_type, made)
+    declared.line = context.line
+    context.pending.append(declared)
+    return HighIntermediaryRepresentation.Values.LocalRead(list_type, name)
+}
+
+func append_to(list: HighIntermediaryRepresentation.Values.Value, value: HighIntermediaryRepresentation.Values.Value) {
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(value)
+    var appended = method_call(list, "append", arguments)
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(appended)
+    evaluated.line = context.line
+    context.pending.append(evaluated)
+}
+
+func list_value(
+    literal: AbstractSyntaxTree.Shapes.Expressions.ListLiteral,
+    expected: Model.Type?,
+): HighIntermediaryRepresentation.Values.Value {
+    var list_type = list_type_for(literal, expected)
+    var no_start = 0
+    return gathered_list(list_type, literal.entries, no_start)
+}
+
+func list_type_for(literal: AbstractSyntaxTree.Shapes.Expressions.ListLiteral, expected: Model.Type?): Model.Type {
+    if expected {
+        return expected.present()
+    }
+    var inference = NameResolution.Inference()
+    var written = inference.list_type_of(literal)
+    if not written {
+        typing.refuse_list_without_a_type(context)
+    }
+    crash written
+    return context.resolver.type_in(written, context.current_class, context.line)
+}
+
+func foreign_call(
+    library: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value {
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var index = 0
+    while index < written.count() {
+        var argument = written[index]
+        var value = value_of(argument, null)
+        arguments.append(value)
+        index = index + 1
+    }
+    var answer = context.scalar_type("Integer")
+    var c_name = name
+    if name.ends_with("_as_long") {
+        answer = context.scalar_type("Long")
+        var long_length = name.length() - 8
+        c_name = name.slice(0, long_length)
+    }
+    if name.ends_with("_as_double") {
+        answer = context.scalar_type("Double")
+        var double_length = name.length() - 10
+        c_name = name.slice(0, double_length)
+    }
+    return HighIntermediaryRepresentation.Values.ForeignCall(answer, library, c_name, arguments)
+}
+
+func index_value(
+    index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var target = value_of(index.target, null)
+    var owner = present_class_of(target)
+    var function = owner.function_named("get_at")
+    if not function {
+        var shown = context.shown(target.value_type)
+        typing.refuse_not_indexed(context, shown)
+    }
+    crash function
+    need(function)
+    var parameter = function.parameters[0]
+    crash parameter
+    var position = fitted_value_of(index.index, parameter.parameter_type)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(position)
+    return HighIntermediaryRepresentation.Values.Call(function, target, arguments)
+}
+
+func binary_value(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    if binary.operator == 'and' or binary.operator == 'or' {
+        return logic_value(binary)
+    }
+    var right_expression = binary.right
+    if is_a_class_test(binary) {
+        return class_test_value(binary)
+    }
+    var left = value_of(binary.left, null)
+    var right = value_of(right_expression, left.value_type)
+    var operator = operator_of(binary.operator)
+    if is_machine_comparable(left.value_type) {
+        var fitted_right = fitted(right, left.value_type)
+        var answer = answer_type_of(operator, left.value_type)
+        return HighIntermediaryRepresentation.Values.MachineOperation(answer, operator, left, fitted_right)
+    }
+    return operator_call(operator, left, right)
+}
+
+func is_machine_comparable(left_type: Model.Type): Boolean {
+    var is_a_scalar = left_type.kind == 'scalar' and not left_type.is_nullable
+    var is_an_enum = left_type.kind == 'enumeration' and not left_type.is_nullable
+    return is_a_scalar or is_an_enum
+}
+
+func answer_type_of(operator: HighIntermediaryRepresentation.Values.Operator, left_type: Model.Type): Model.Type {
+    switch operator {
+        'add': return left_type
+        'subtract': return left_type
+        'multiply': return left_type
+        'divide': return left_type
+        'remainder': return left_type
+        _: return context.boolean()
+    }
+}
+
+func operator_of(kind: AbstractSyntaxTree.Tokens.TokenKind): HighIntermediaryRepresentation.Values.Operator {
+    switch kind {
+        'plus': return 'add'
+        'minus': return 'subtract'
+        'star': return 'multiply'
+        'slash': return 'divide'
+        'percent': return 'remainder'
+        'equal_equal': return 'equal'
+        'not_equal': return 'not_equal'
+        'less': return 'less'
+        'less_or_equal': return 'less_or_equal'
+        'greater': return 'greater'
+        'greater_or_equal': return 'greater_or_equal'
+        'and': return 'and'
+        _: return 'or'
+    }
+}
+
+func operator_call(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    var name = operator_function_name(operator)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(right)
+    var answered = method_call(left, name, arguments)
+    if operator == 'not_equal' {
+        return HighIntermediaryRepresentation.Values.Negation(answered)
+    }
+    if operator == 'less_or_equal' or operator == 'greater_or_equal' {
+        return unbuilt()
+    }
+    return answered
+}
+
+func operator_function_name(operator: HighIntermediaryRepresentation.Values.Operator): String {
+    switch operator {
+        'add': return "sum"
+        'subtract': return "subtract"
+        'multiply': return "multiply"
+        'divide': return "divide"
+        'remainder': return "remainder"
+        'equal': return "equals"
+        'not_equal': return "equals"
+        'less': return "less_than"
+        'greater': return "greater_than"
+        _: return ""
+    }
+}
+
+func is_a_class_test(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
+    var compares = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    var right = class_path_of(binary.right)
+    return compares and not right.is_empty()
+}
+
+func class_test_value(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var tested = value_of(binary.left, null)
+    var path = class_path_of(binary.right)
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var member = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+    var test = HighIntermediaryRepresentation.Values.ClassTest(tested, member)
+    if binary.operator == 'not_equal' {
+        return HighIntermediaryRepresentation.Values.Negation(test)
+    }
+    return test
+}
+
+func logic_value(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var boolean = context.boolean()
+    var left = condition_of(binary.left)
+    var right = condition_of(binary.right)
+    var operator = operator_of(binary.operator)
+    return HighIntermediaryRepresentation.Values.MachineOperation(boolean, operator, left, right)
+}
+
+func condition_of(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): HighIntermediaryRepresentation.Values.Value {
+    var value = value_of(expression, null)
+    if value.value_type.is_nullable {
+        return HighIntermediaryRepresentation.Values.PresenceTest(value)
+    }
+    if not context.is_boolean(value.value_type) {
+        var shown = context.shown(value.value_type)
+        typing.refuse_not_a_condition(context, shown)
+    }
+    return value
+}
+
+func unary_value(
+    unary: AbstractSyntaxTree.Shapes.Expressions.UnaryExpression,
+    expected: Model.Type?,
+): HighIntermediaryRepresentation.Values.Value {
+    if unary.operator == 'not' {
+        var negated = condition_of(unary.operand)
+        return HighIntermediaryRepresentation.Values.Negation(negated)
+    }
+    var operand = value_of(unary.operand, expected)
+    if operand == HighIntermediaryRepresentation.Values.WholeNumber {
+        var zero: Long = 0
+        return HighIntermediaryRepresentation.Values.WholeNumber(operand.value_type, zero - operand.number)
+    }
+    var zero_value = HighIntermediaryRepresentation.Values.WholeNumber(operand.value_type, 0)
+    return HighIntermediaryRepresentation.Values.MachineOperation(operand.value_type, 'subtract', zero_value, operand)
+}
+
+func need(function: Model.FunctionModel) {
+    context.need(function)
+}
+
+func unbuilt(): HighIntermediaryRepresentation.Values.Value {
+    var buildable = Validators.HighIntermediaryRepresentation.Buildable.Validator()
+    var path = context.path()
+    buildable.refuse(path, context.line, context.current_class.key)
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}

@@ -1,11 +1,7 @@
-var console = Console()
 var program = Program()
-var report = Diagnostics.Report()
 var settings = CommandLine.Settings()
 var program_folder = ""
 var program_name = ""
-var low_functions_of_a_class = List<LowIntermediaryRepresentation.Functions.LowFunction>()
-var printed_class_name = ""
 
 func SpiteCompiler() {
     program_folder = resolved_folder(settings.folder)
@@ -19,138 +15,82 @@ func SpiteCompiler() {
     crash entry_file
     var entry_constructor = Validators.AbstractSyntaxTree.EntryConstructor.Validator()
     entry_constructor.check(entry_file, entry.simple_name)
-    var resolver = NameResolution.Resolver(symbols, report)
-    resolver.resolve_all()
-    var built = build_high(resolver, symbols, entry)
-    var high = run_the_high_passes(built)
-    var lowering = LowIntermediaryRepresentation.Lowering(high)
-    var lowered = lowering.lowered()
-    var low = run_the_low_passes(lowered)
-    write_the_intermediary_representations(high, low)
-    write_the_executable(low)
-    print_the_notes()
-}
-
-func build_high(
-    resolver: NameResolution.Resolver,
-    symbols: Symbols.SymbolTable,
-    entry: Mapping.ClassFile,
-): HighIntermediaryRepresentation.Programs.HighProgram {
-    var classes = List<HighIntermediaryRepresentation.Classes.HighClass>()
-    var buildable = resolver.buildable_classes()
-    var answers = resolver.class_answers()
-    var sizes = HighIntermediaryRepresentation.Sizes()
-    var index = 0
-    while index < buildable.count() {
-        var instance = buildable[index]
-        var file = symbols.file_for(instance.origin)
-        if file {
-            var builder = HighIntermediaryRepresentation.Builder(file, instance.substitution, answers, sizes)
-            var built = builder.build(instance.name, instance.class_name)
-            classes.append(built)
-        }
-        index = index + 1
+    var resolver = NameResolution.Resolver(symbols)
+    var model = resolver.resolve(entry)
+    var builder = HighIntermediaryRepresentation.Builder(model, resolver)
+    var high = builder.build()
+    if settings.writes_high_ir {
+        write_high_ir(high)
     }
-    return HighIntermediaryRepresentation.Programs.HighProgram(classes, entry.simple_name)
-}
-
-func run_the_high_passes(
-    built: HighIntermediaryRepresentation.Programs.HighProgram,
-): HighIntermediaryRepresentation.Programs.HighProgram {
-    var folding = HighOptimizationPasses.FoldConstants.Pass(built)
-    var folded = folding.transformed()
-    var dropping = HighOptimizationPasses.DropUnreachableFunctions.Pass(folded)
-    return dropping.transformed()
-}
-
-func run_the_low_passes(
-    lowered: LowIntermediaryRepresentation.Programs.LowProgram,
-): LowIntermediaryRepresentation.Programs.LowProgram {
-    var jumps = LowOptimizationPasses.PeepholeJumps.Pass(lowered)
-    var jumped = jumps.transformed()
-    var moves = LowOptimizationPasses.FoldAwayMoves.Pass(jumped)
-    return moves.transformed()
-}
-
-func write_the_intermediary_representations(
-    high: HighIntermediaryRepresentation.Programs.HighProgram,
-    low: LowIntermediaryRepresentation.Programs.LowProgram,
-) {
-    var high_folder = settings.high_intermediary_representation_folder
-    if not high_folder.is_empty() {
-        made_folder(high_folder)
-        high.classes.each(write_high_class)
+    var lowering = LowIntermediaryRepresentation.Lowering.Lowering(high)
+    var low = lowering.lowered()
+    if settings.writes_low_ir {
+        write_low_ir(low)
     }
-    var low_folder = settings.low_intermediary_representation_folder
-    if not low_folder.is_empty() {
-        made_folder(low_folder)
-        low_functions_of_a_class = low.held_functions
-        high.classes.each(write_low_class)
-    }
-}
-
-func write_high_class(own: HighIntermediaryRepresentation.Classes.HighClass) {
-    var printer = Printers.HighIntermediaryRepresentation.Printer(own)
-    var text = printer.text()
-    write_file("{settings.high_intermediary_representation_folder}/{own.name}.ir", text)
-}
-
-func write_low_class(own: HighIntermediaryRepresentation.Classes.HighClass) {
-    printed_class_name = own.name
-    var functions = low_functions_of_a_class.filter(belongs_to_the_printed_class)
-    var printer = Printers.LowIntermediaryRepresentation.Printer(own.name, functions)
-    var text = printer.text()
-    write_file("{settings.low_intermediary_representation_folder}/{own.name}.ir", text)
-}
-
-func belongs_to_the_printed_class(function: LowIntermediaryRepresentation.Functions.LowFunction): Boolean {
-    return function.class_name == printed_class_name
-}
-
-func write_file(path: String, text: String) {
+    var emitter = Generators.WindowsX64.Emitter(low)
+    var code = emitter.emitted()
+    var writer = Generators.WindowsX64.PortableExecutable(emitter, code)
+    var bytes = writer.written()
+    var path = executable_path()
     var file = File(path)
-    var written = file.write(text)
+    var written = file.write_bytes(bytes)
     var writable = Validators.CommandLine.WritableFile.Validator()
     writable.check(path, written)
 }
 
-func write_the_executable(lowered: LowIntermediaryRepresentation.Programs.LowProgram) {
-    var names = List<String>()
-    names.append("ExitProcess")
-    names.append("GetProcAddress")
-    names.append("GetStdHandle")
-    names.append("WriteFile")
-    var layout = Generators.WindowsX86.Layout(names)
-    var emitter = Generators.WindowsX86.Emitter(lowered, layout)
-    var code = emitter.emitted()
-    var path = executable_path()
-    var writer = Generators.WindowsX86.Pe(code, layout)
-    var data = emitter.data_bytes()
-    writer.with_data(data)
-    writer.write(path)
-    console.print("wrote {path}")
+func write_high_ir(high: HighIntermediaryRepresentation.HighProgram) {
+    var texts = List<String>()
+    var index = 0
+    while index < high.built_functions.count() {
+        var function = high.built_functions[index]
+        var printer = Printers.HighIntermediaryRepresentation.Printer(function)
+        var text = printer.text()
+        texts.append(text)
+        index = index + 1
+    }
+    var joined = texts.join("\n")
+    write_text(joined, "high_ir.txt")
 }
 
-func print_the_notes() {
-    var printer = Printers.Diagnostics.Printer(report)
-    var text = printer.text()
-    if not text.is_empty() {
-        console.error(text)
+func write_low_ir(low: LowIntermediaryRepresentation.LowProgram) {
+    var texts = List<String>()
+    var index = 0
+    while index < low.lowered_functions.count() {
+        var function = low.lowered_functions[index]
+        var printer = Printers.LowIntermediaryRepresentation.Printer(function)
+        var text = printer.text()
+        texts.append(text)
+        index = index + 1
     }
+    var joined = texts.join("\n")
+    write_text(joined, "low_ir.txt")
+}
+
+func write_text(text: String, extension: String) {
+    var build = build_folder()
+    var path = "{build}/{program_name}.{extension}"
+    var file = File(path)
+    var bytes = text.to_bytes()
+    var written = file.write_bytes(bytes)
+    var writable = Validators.CommandLine.WritableFile.Validator()
+    writable.check(path, written)
 }
 
 func executable_path(): String {
-    var build = "{program_folder}/.spite/build"
-    made_folder("{program_folder}/.spite")
-    made_folder(build)
+    var build = build_folder()
     return "{build}/{program_name}.exe"
 }
 
-func made_folder(path: String) {
-    var folder = Directory(path)
-    if not folder.exists() {
-        folder.create()
+func build_folder(): String {
+    var hidden = Directory("{program_folder}/.spite")
+    if not hidden.exists() {
+        hidden.create()
     }
+    var build = Directory("{program_folder}/.spite/build")
+    if not build.exists() {
+        build.create()
+    }
+    return "{program_folder}/.spite/build"
 }
 
 func entry_name_of(folder: String): String {

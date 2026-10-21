@@ -1,0 +1,498 @@
+var program = LowIntermediaryRepresentation.LowProgram()
+var encoder = Encoder()
+var function_offsets = Dictionary<String, Integer>()
+var block_offsets = List<Integer>()
+var block_fixups = List<Fixup>()
+var call_fixups = List<Fixup>()
+var import_fixups = List<Fixup>()
+var data_fixups = List<Fixup>()
+var slot_fixups = List<Fixup>()
+var stop_fixups = List<Fixup>()
+var foreign_names = List<String>()
+var stop_routine = 0
+var current_key = ""
+var parameter_registers = List<Integer>()
+
+func Emitter(starting_program: LowIntermediaryRepresentation.LowProgram) {
+    program = starting_program
+    parameter_registers.append(encoder.rcx)
+    parameter_registers.append(encoder.rdx)
+    parameter_registers.append(encoder.r8)
+    parameter_registers.append(encoder.r9)
+}
+
+func emitted(): Buffer {
+    emit_the_stop_routine()
+    program.lowered_functions.each(emit_function)
+    call_fixups.each(fix_a_call)
+    stop_fixups.each(fix_a_stop)
+    return encoder.code
+}
+
+func emit_the_stop_routine() {
+    stop_routine = encoder.position()
+    encoder.byte(72)
+    encoder.byte(131)
+    encoder.byte(236)
+    encoder.byte(72)
+    encoder.byte(72)
+    encoder.byte(137)
+    encoder.byte(76)
+    encoder.byte(36)
+    encoder.byte(48)
+    encoder.byte(72)
+    encoder.byte(137)
+    encoder.byte(84)
+    encoder.byte(36)
+    encoder.byte(56)
+    encoder.move_immediate(encoder.rcx, -12)
+    call_import("GetStdHandle")
+    encoder.move_register(encoder.rcx, encoder.rax)
+    encoder.byte(72)
+    encoder.byte(139)
+    encoder.byte(84)
+    encoder.byte(36)
+    encoder.byte(48)
+    encoder.byte(76)
+    encoder.byte(139)
+    encoder.byte(68)
+    encoder.byte(36)
+    encoder.byte(56)
+    encoder.byte(76)
+    encoder.byte(141)
+    encoder.byte(76)
+    encoder.byte(36)
+    encoder.byte(40)
+    encoder.byte(72)
+    encoder.byte(199)
+    encoder.byte(68)
+    encoder.byte(36)
+    encoder.byte(32)
+    encoder.dword(0)
+    call_import("WriteFile")
+    encoder.move_immediate(encoder.rcx, 1)
+    call_import("ExitProcess")
+}
+
+func call_import(name: String) {
+    var at = encoder.call_through_memory()
+    var fixup = Fixup(at, name, 0)
+    import_fixups.append(fixup)
+}
+
+func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
+    current_key = function.key
+    function_offsets[function.key] = encoder.position()
+    block_offsets = List<Integer>()
+    block_fixups = List<Fixup>()
+    var outgoing = 32 + 8 * most_arguments_of(function)
+    var frame = 8 * function.register_count + outgoing
+    var rounded = (frame + 15) / 16 * 16
+    encoder.prologue(rounded)
+    take_the_parameters(function)
+    function.blocks.each(emit_block)
+    block_fixups.each(fix_a_block)
+}
+
+func most_arguments_of(function: LowIntermediaryRepresentation.LowFunction): Integer {
+    var most = 0
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            var count = argument_count_of(instruction)
+            if count > most {
+                most = count
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return most
+}
+
+func argument_count_of(instruction: LowIntermediaryRepresentation.Instructions.Instruction?): Integer {
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        return instruction.arguments.count()
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.CallAt {
+        return instruction.arguments.count()
+    }
+    return 4
+}
+
+func take_the_parameters(function: LowIntermediaryRepresentation.LowFunction) {
+    var index = 0
+    while index < function.parameter_count {
+        if index < 4 {
+            var register = parameter_registers[index]
+            crash register
+            encoder.store_virtual(index, register)
+        } else {
+            var stack_offset = 48 + 8 * (index - 4)
+            encoder.load_slot(encoder.rax, stack_offset)
+            encoder.store_virtual(index, encoder.rax)
+        }
+        index = index + 1
+    }
+}
+
+func emit_block(block: LowIntermediaryRepresentation.LowBlock) {
+    var here = encoder.position()
+    block_offsets.append(here)
+    block.instructions.each(emit_instruction)
+}
+
+func emit_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: emit_constant(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: emit_copy(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: emit_arithmetic(instruction)
+        LowIntermediaryRepresentation.Instructions.Compare: emit_compare(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: emit_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: emit_store(instruction)
+        LowIntermediaryRepresentation.Instructions.Call: emit_call(instruction)
+        LowIntermediaryRepresentation.Instructions.CallAt: emit_call_at(instruction)
+        LowIntermediaryRepresentation.Instructions.ForeignAddress: emit_foreign_address(instruction)
+        LowIntermediaryRepresentation.Instructions.DataAddress: emit_data_address(instruction)
+        LowIntermediaryRepresentation.Instructions.Allocate: emit_allocate(instruction)
+        LowIntermediaryRepresentation.Instructions.Resize: emit_resize(instruction)
+        LowIntermediaryRepresentation.Instructions.OpenLibrary: emit_open_library(instruction)
+        LowIntermediaryRepresentation.Instructions.Jump: emit_jump(instruction)
+        LowIntermediaryRepresentation.Instructions.Branch: emit_branch(instruction)
+        LowIntermediaryRepresentation.Instructions.Return: emit_return(instruction)
+        LowIntermediaryRepresentation.Instructions.Stop: emit_stop(instruction)
+        LowIntermediaryRepresentation.Instructions.Exit: emit_exit(instruction)
+    }
+}
+
+func emit_constant(constant: LowIntermediaryRepresentation.Instructions.Constant) {
+    encoder.move_immediate(encoder.rax, constant.number)
+    encoder.store_virtual(constant.target, encoder.rax)
+}
+
+func emit_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
+    encoder.load_virtual(encoder.rax, copy.source)
+    encoder.store_virtual(copy.target, encoder.rax)
+}
+
+func emit_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    encoder.load_virtual(encoder.rax, arithmetic.left)
+    encoder.load_virtual(encoder.rcx, arithmetic.right)
+    var divides = arithmetic.operator == 'divide' or arithmetic.operator == 'remainder'
+    if divides {
+        emit_division(arithmetic)
+    } else {
+        emit_checked(arithmetic)
+    }
+    encoder.store_virtual(arithmetic.target, encoder.rax)
+}
+
+func emit_checked(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    switch arithmetic.operator {
+        'add': encoder.add_rax_rcx()
+        'subtract': encoder.subtract_rax_rcx()
+        _: encoder.multiply_rax_rcx()
+    }
+    assert arithmetic.is_checked
+    if arithmetic.width == 'bits_64' {
+        var no_overflow = 129
+        var skip = encoder.jump_if(no_overflow)
+        stop_with("the arithmetic does not fit a whole number", arithmetic.line)
+        patch_here(skip)
+        return
+    }
+    encoder.fits_back(arithmetic.width, arithmetic.is_signed)
+    encoder.compare_rdx_rax()
+    var equal = 132
+    var fits = encoder.jump_if(equal)
+    stop_with("the arithmetic does not fit its number", arithmetic.line)
+    patch_here(fits)
+}
+
+func emit_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    encoder.test_rcx()
+    var not_zero = 133
+    var divides = encoder.jump_if(not_zero)
+    stop_with("a whole number is divided by zero", arithmetic.line)
+    patch_here(divides)
+    if arithmetic.is_signed {
+        encoder.sign_extend_rax_into_rdx()
+        encoder.divide_signed_by_rcx()
+    } else {
+        encoder.clear_rdx()
+        encoder.divide_unsigned_by_rcx()
+    }
+    if arithmetic.operator == 'remainder' {
+        encoder.move_register(encoder.rax, encoder.rdx)
+    }
+}
+
+func stop_with(text: String, line: Integer) {
+    var message = "spite: {text} in {current_key} at line {line}\n"
+    var bytes = message.to_bytes()
+    program.data.append(bytes)
+    var label = program.data.count() - 1
+    load_message(label)
+}
+
+func load_message(label: Integer) {
+    var at = encoder.load_address_of(encoder.rcx)
+    var fixup = Fixup(at, "", label)
+    data_fixups.append(fixup)
+    var bytes = program.data[label]
+    crash bytes
+    var length = bytes.count()
+    encoder.move_immediate(encoder.rdx, length)
+    var call_at = encoder.call_relative()
+    var stop_fixup = Fixup(call_at, "", 0)
+    stop_fixups.append(stop_fixup)
+}
+
+func patch_here(at: Integer) {
+    var here = encoder.position()
+    encoder.patch_dword(at, here - (at + 4))
+}
+
+func emit_compare(compare: LowIntermediaryRepresentation.Instructions.Compare) {
+    encoder.load_virtual(encoder.rax, compare.left)
+    encoder.load_virtual(encoder.rcx, compare.right)
+    encoder.compare_rax_rcx()
+    var condition = condition_code(compare.comparison, compare.is_signed)
+    encoder.al_from_condition(condition)
+    encoder.zero_extend_al_into_rax()
+    encoder.store_virtual(compare.target, encoder.rax)
+}
+
+func condition_code(comparison: LowIntermediaryRepresentation.Comparison, is_signed: Boolean): Integer {
+    if is_signed {
+        return signed_code(comparison)
+    }
+    return unsigned_code(comparison)
+}
+
+func signed_code(comparison: LowIntermediaryRepresentation.Comparison): Integer {
+    switch comparison {
+        'equal': return 148
+        'not_equal': return 149
+        'less': return 156
+        'less_or_equal': return 158
+        'greater': return 159
+        'greater_or_equal': return 157
+    }
+}
+
+func unsigned_code(comparison: LowIntermediaryRepresentation.Comparison): Integer {
+    switch comparison {
+        'equal': return 148
+        'not_equal': return 149
+        'less': return 146
+        'less_or_equal': return 150
+        'greater': return 151
+        'greater_or_equal': return 147
+    }
+}
+
+func emit_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    encoder.load_virtual(encoder.rax, loaded.address)
+    encoder.load_memory(loaded.width, loaded.is_signed, loaded.offset)
+    encoder.store_virtual(loaded.target, encoder.rax)
+}
+
+func emit_store(store: LowIntermediaryRepresentation.Instructions.Store) {
+    encoder.load_virtual(encoder.rax, store.address)
+    encoder.load_virtual(encoder.rcx, store.source)
+    encoder.store_memory(store.width, store.offset)
+}
+
+func pass_arguments(arguments: List<Integer>) {
+    var index = 4
+    while index < arguments.count() {
+        var argument = arguments[index]
+        encoder.load_virtual(encoder.rax, argument)
+        encoder.store_outgoing(index)
+        index = index + 1
+    }
+    index = 0
+    while index < arguments.count() and index < 4 {
+        var argument = arguments[index]
+        var register = parameter_registers[index]
+        crash register
+        encoder.load_virtual(register, argument)
+        index = index + 1
+    }
+}
+
+func emit_call(call: LowIntermediaryRepresentation.Instructions.Call) {
+    pass_arguments(call.arguments)
+    var at = encoder.call_relative()
+    var fixup = Fixup(at, call.function, 0)
+    call_fixups.append(fixup)
+    if call.target >= 0 {
+        encoder.store_virtual(call.target, encoder.rax)
+    }
+    if call.presence >= 0 {
+        encoder.store_virtual(call.presence, encoder.rdx)
+    }
+}
+
+func emit_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
+    pass_arguments(call.arguments)
+    encoder.load_virtual(encoder.r11, call.address)
+    encoder.call_r11()
+    if call.answers_32_bits {
+        encoder.sign_extend_eax_into_rax()
+    }
+    if call.target >= 0 {
+        encoder.store_virtual(call.target, encoder.rax)
+    }
+}
+
+func emit_foreign_address(found: LowIntermediaryRepresentation.Instructions.ForeignAddress) {
+    var slot = foreign_names.count()
+    foreign_names.append(found.name)
+    var loaded = encoder.load_from_address(encoder.rax)
+    var loaded_fixup = Fixup(loaded, "", slot)
+    slot_fixups.append(loaded_fixup)
+    encoder.test_rax()
+    var not_zero = 133
+    var known = encoder.jump_if(not_zero)
+    encoder.load_virtual(encoder.rcx, found.library)
+    var name_at = encoder.load_address_of(encoder.rdx)
+    var name_fixup = Fixup(name_at, "name", slot)
+    slot_fixups.append(name_fixup)
+    call_import("GetProcAddress")
+    encoder.test_rax()
+    var found_it = encoder.jump_if(not_zero)
+    stop_with("the foreign function '{found.name}' is not in its library", 1)
+    patch_here(found_it)
+    var stored = encoder.store_at_address(encoder.rax)
+    var stored_fixup = Fixup(stored, "", slot)
+    slot_fixups.append(stored_fixup)
+    patch_here(known)
+    encoder.store_virtual(found.target, encoder.rax)
+}
+
+func emit_data_address(address: LowIntermediaryRepresentation.Instructions.DataAddress) {
+    var at = encoder.load_address_of(encoder.rax)
+    var fixup = Fixup(at, "", address.label)
+    data_fixups.append(fixup)
+    encoder.store_virtual(address.target, encoder.rax)
+}
+
+func emit_allocate(allocate: LowIntermediaryRepresentation.Instructions.Allocate) {
+    call_import("GetProcessHeap")
+    encoder.move_register(encoder.rcx, encoder.rax)
+    encoder.move_immediate(encoder.rdx, 8)
+    encoder.load_virtual(encoder.r8, allocate.size)
+    call_import("HeapAlloc")
+    check_memory()
+    encoder.store_virtual(allocate.target, encoder.rax)
+}
+
+func emit_resize(resize: LowIntermediaryRepresentation.Instructions.Resize) {
+    encoder.load_virtual(encoder.rax, resize.pointer)
+    encoder.test_rax()
+    var zero = 132
+    var fresh = encoder.jump_if(zero)
+    call_import("GetProcessHeap")
+    encoder.move_register(encoder.rcx, encoder.rax)
+    encoder.move_immediate(encoder.rdx, 8)
+    encoder.load_virtual(encoder.r8, resize.pointer)
+    encoder.load_virtual(encoder.r9, resize.size)
+    call_import("HeapReAlloc")
+    var done = encoder.jump()
+    patch_here(fresh)
+    call_import("GetProcessHeap")
+    encoder.move_register(encoder.rcx, encoder.rax)
+    encoder.move_immediate(encoder.rdx, 8)
+    encoder.load_virtual(encoder.r8, resize.size)
+    call_import("HeapAlloc")
+    patch_here(done)
+    check_memory()
+    encoder.store_virtual(resize.target, encoder.rax)
+}
+
+func check_memory() {
+    encoder.test_rax()
+    var not_zero = 133
+    var allocated = encoder.jump_if(not_zero)
+    stop_with("the program ran out of memory", 1)
+    patch_here(allocated)
+}
+
+func emit_open_library(open: LowIntermediaryRepresentation.Instructions.OpenLibrary) {
+    encoder.load_virtual(encoder.rcx, open.name)
+    call_import("LoadLibraryA")
+    encoder.test_rax()
+    var not_zero = 133
+    var opened = encoder.jump_if(not_zero)
+    stop_with("a library could not be opened", 1)
+    patch_here(opened)
+    encoder.store_virtual(open.target, encoder.rax)
+}
+
+func emit_jump(jump: LowIntermediaryRepresentation.Instructions.Jump) {
+    var at = encoder.jump()
+    var fixup = Fixup(at, "", jump.block)
+    block_fixups.append(fixup)
+}
+
+func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
+    encoder.load_virtual(encoder.rax, branch.condition)
+    encoder.test_rax()
+    var not_zero = 133
+    var taken = encoder.jump_if(not_zero)
+    var taken_fixup = Fixup(taken, "", branch.when_true)
+    block_fixups.append(taken_fixup)
+    var otherwise = encoder.jump()
+    var otherwise_fixup = Fixup(otherwise, "", branch.when_false)
+    block_fixups.append(otherwise_fixup)
+}
+
+func emit_return(returned: LowIntermediaryRepresentation.Instructions.Return) {
+    if returned.source >= 0 {
+        encoder.load_virtual(encoder.rax, returned.source)
+    }
+    if returned.presence >= 0 {
+        encoder.load_virtual(encoder.rdx, returned.presence)
+    }
+    encoder.epilogue()
+}
+
+func emit_stop(stop: LowIntermediaryRepresentation.Instructions.Stop) {
+    load_message(stop.label)
+}
+
+func emit_exit(exit: LowIntermediaryRepresentation.Instructions.Exit) {
+    encoder.load_virtual(encoder.rcx, exit.code)
+    call_import("ExitProcess")
+}
+
+func fix_a_block(fixup: Fixup) {
+    var target = block_offsets[fixup.index]
+    crash target
+    encoder.patch_dword(fixup.at, target - (fixup.at + 4))
+}
+
+func fix_a_call(fixup: Fixup) {
+    var target = function_offsets[fixup.target]
+    if not target {
+        var emittable = Validators.LowIntermediaryRepresentation.Emittable.Validator()
+        emittable.refuse('missing_function', fixup.target)
+    }
+    crash target
+    encoder.patch_dword(fixup.at, target - (fixup.at + 4))
+}
+
+func fix_a_stop(fixup: Fixup) {
+    encoder.patch_dword(fixup.at, stop_routine - (fixup.at + 4))
+}
+
+func entry_offset(): Integer {
+    var found = function_offsets[program.entry]
+    crash found
+    return found
+}

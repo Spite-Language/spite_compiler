@@ -1,0 +1,335 @@
+var file = Buffer()
+var no_program = LowIntermediaryRepresentation.LowProgram()
+var emitter = Emitter(no_program)
+var code = Buffer()
+var data = Buffer()
+var imports = [
+    "ExitProcess"
+    "GetStdHandle"
+    "WriteFile"
+    "GetProcessHeap"
+    "HeapAlloc"
+    "HeapReAlloc"
+    "LoadLibraryA"
+    "GetProcAddress"
+]
+var text_address = 4096
+var data_address = 0
+var image_base: Long = 5368709120
+var section_alignment = 4096
+var file_alignment = 512
+var header_size = 512
+var lookup_offset = 0
+var address_table_offset = 0
+var hint_offsets = List<Integer>()
+var library_name_offset = 0
+var label_offsets = List<Integer>()
+var slot_offsets = List<Integer>()
+var name_offsets = List<Integer>()
+
+func PortableExecutable(starting_emitter: Emitter, starting_code: Buffer) {
+    emitter = starting_emitter
+    code = starting_code
+}
+
+func written(): Buffer {
+    var code_count_4 = code.count()
+    var code_room = aligned(code_count_4, section_alignment)
+    data_address = text_address + code_room
+    lay_out_the_data()
+    patch_the_code()
+    write_the_headers()
+    write_padded(code)
+    write_padded(data)
+    return file
+}
+
+func aligned(size: Integer, alignment: Integer): Integer {
+    return (size + alignment - 1) / alignment * alignment
+}
+
+func lay_out_the_data() {
+    var descriptors_size = 40
+    lookup_offset = descriptors_size
+    var table_size = 8 * (imports.count() + 1)
+    address_table_offset = lookup_offset + table_size
+    var hints_start = address_table_offset + table_size
+    var offset = hints_start
+    var index = 0
+    while index < imports.count() {
+        var name = imports[index]
+        hint_offsets.append(offset)
+        var name_length = name.length()
+        offset = aligned(offset + 2 + name_length + 1, 2)
+        index = index + 1
+    }
+    library_name_offset = offset
+    offset = aligned(offset + 13, 8)
+    index = 0
+    while index < emitter.program.data.count() {
+        var bytes = emitter.program.data[index]
+        label_offsets.append(offset)
+        var bytes_count = bytes.count()
+        offset = aligned(offset + bytes_count, 8)
+        index = index + 1
+    }
+    index = 0
+    while index < emitter.foreign_names.count() {
+        slot_offsets.append(offset)
+        offset = offset + 8
+        index = index + 1
+    }
+    index = 0
+    while index < emitter.foreign_names.count() {
+        var name = emitter.foreign_names[index]
+        name_offsets.append(offset)
+        offset = offset + name.length() + 1
+        index = index + 1
+    }
+    fill_the_data(offset)
+}
+
+func fill_the_data(size: Integer) {
+    var index = 0
+    while index < size {
+        data.append(0)
+        index = index + 1
+    }
+    var library_name_address = data_address + library_name_offset
+    data.write_integer_at(0, data_address + lookup_offset)
+    data.write_integer_at(12, library_name_address)
+    data.write_integer_at(16, data_address + address_table_offset)
+    index = 0
+    while index < imports.count() {
+        var hint = hint_offsets[index]
+        var name = imports[index]
+        crash hint
+        var hint_address: Long = data_address + hint
+        data.write_long_at(lookup_offset + 8 * index, hint_address)
+        data.write_long_at(address_table_offset + 8 * index, hint_address)
+        write_text_at(hint + 2, name)
+        index = index + 1
+    }
+    write_text_at(library_name_offset, "KERNEL32.dll")
+    index = 0
+    while index < emitter.program.data.count() {
+        var bytes = emitter.program.data[index]
+        var label_offset = label_offsets[index]
+        crash label_offset
+        write_bytes_at(label_offset, bytes)
+        index = index + 1
+    }
+    index = 0
+    while index < emitter.foreign_names.count() {
+        var name = emitter.foreign_names[index]
+        var name_offset = name_offsets[index]
+        crash name_offset
+        write_text_at(name_offset, name)
+        index = index + 1
+    }
+}
+
+func write_text_at(at: Integer, text: String) {
+    var bytes = text.to_bytes()
+    write_bytes_at(at, bytes)
+}
+
+func write_bytes_at(at: Integer, bytes: Buffer) {
+    var index = 0
+    while index < bytes.count() {
+        var read = bytes[index]
+        crash read
+        data.write_byte_at(at + index, read)
+        index = index + 1
+    }
+}
+
+func patch_the_code() {
+    emitter.import_fixups.each(fix_an_import)
+    emitter.data_fixups.each(fix_a_label)
+    emitter.slot_fixups.each(fix_a_slot)
+}
+
+func relative(at: Integer, target: Integer): Integer {
+    var next = text_address + at + 4
+    return target - next
+}
+
+func fix_an_import(fixup: Fixup) {
+    var place = imports.index_of(fixup.target)
+    crash place
+    var target = data_address + address_table_offset + 8 * place
+    var distance = relative(fixup.at, target)
+    code.write_integer_at(fixup.at, distance)
+}
+
+func fix_a_label(fixup: Fixup) {
+    var label_offset = label_offsets[fixup.index]
+    crash label_offset
+    var distance = relative(fixup.at, data_address + label_offset)
+    code.write_integer_at(fixup.at, distance)
+}
+
+func fix_a_slot(fixup: Fixup) {
+    var target = slot_offsets[fixup.index]
+    if fixup.target == "name" {
+        target = name_offsets[fixup.index]
+    }
+    crash target
+    var distance = relative(fixup.at, data_address + target)
+    code.write_integer_at(fixup.at, distance)
+}
+
+func write_padded(section: Buffer) {
+    var index = 0
+    while index < section.count() {
+        var read = section[index]
+        crash read
+        file.append(read)
+        index = index + 1
+    }
+    var file_count = file.count()
+    var padded = aligned(file_count, file_alignment)
+    while file.count() < padded {
+        file.append(0)
+    }
+}
+
+func write_the_headers() {
+    word(23117)
+    var index = 2
+    while index < 60 {
+        file.append(0)
+        index = index + 1
+    }
+    dword(64)
+    dword(17744)
+    word(34404)
+    word(2)
+    dword(0)
+    dword(0)
+    dword(0)
+    word(240)
+    word(34)
+    write_the_optional_header()
+    var code_count_3 = code.count()
+    write_a_section(".text", code_count_3, text_address, 1610612768)
+    var data_count_3 = data.count()
+    write_a_section(".data", data_count_3, data_address, 3221225536)
+    while file.count() < header_size {
+        file.append(0)
+    }
+}
+
+func write_the_optional_header() {
+    var code_count_2 = code.count()
+    var code_size = aligned(code_count_2, file_alignment)
+    var data_count_2 = data.count()
+    var data_size = aligned(data_count_2, file_alignment)
+    var data_count = data.count()
+    var image_size = data_address + aligned(data_count, section_alignment)
+    var entry = text_address + emitter.entry_offset()
+    word(523)
+    file.append(14)
+    file.append(0)
+    dword(code_size)
+    dword(data_size)
+    dword(0)
+    dword(entry)
+    dword(text_address)
+    qword(image_base)
+    dword(section_alignment)
+    dword(file_alignment)
+    word(6)
+    word(0)
+    word(0)
+    word(0)
+    word(6)
+    word(0)
+    dword(0)
+    dword(image_size)
+    dword(header_size)
+    dword(0)
+    word(3)
+    word(33024)
+    qword(1048576)
+    qword(4096)
+    qword(1048576)
+    qword(4096)
+    dword(0)
+    dword(16)
+    write_the_directories()
+}
+
+func write_the_directories() {
+    var table_size = 8 * (imports.count() + 1)
+    var index = 0
+    while index < 16 {
+        if index == 1 {
+            dword(data_address)
+            dword(40)
+        } else if index == 12 {
+            dword(data_address + address_table_offset)
+            dword(table_size)
+        } else {
+            dword(0)
+            dword(0)
+        }
+        index = index + 1
+    }
+}
+
+func write_a_section(name: String, size: Integer, address: Integer, characteristics: Long) {
+    var bytes = name.to_bytes()
+    var index = 0
+    while index < 8 {
+        var read = bytes[index]
+        if read {
+            file.append(read)
+        } else {
+            file.append(0)
+        }
+        index = index + 1
+    }
+    dword(size)
+    dword(address)
+    var raw_size = aligned(size, file_alignment)
+    dword(raw_size)
+    var raw_offset = raw_offset_of(address)
+    dword(raw_offset)
+    dword(0)
+    dword(0)
+    word(0)
+    word(0)
+    var low_half = characteristics % 65536
+    var high_half = characteristics / 65536
+    var to_integer_2 = low_half.to_integer()
+    word(to_integer_2)
+    var to_integer = high_half.to_integer()
+    word(to_integer)
+}
+
+func raw_offset_of(address: Integer): Integer {
+    if address == text_address {
+        return header_size
+    }
+    var code_count = code.count()
+    return header_size + aligned(code_count, file_alignment)
+}
+
+func word(value: Integer) {
+    var low_byte = value % 256
+    var high_byte = value / 256
+    var low: Byte = low_byte.to_byte()
+    var high: Byte = high_byte.to_byte()
+    file.append(low)
+    file.append(high)
+}
+
+func dword(value: Integer) {
+    file.append_integer(value)
+}
+
+func qword(value: Long) {
+    file.append_long(value)
+}

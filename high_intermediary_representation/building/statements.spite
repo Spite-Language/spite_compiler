@@ -1,0 +1,430 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
+var built = List<HighIntermediaryRepresentation.Statements.Statement>()
+var facts_paths = List<String>()
+var facts_types = List<Model.Type>()
+
+func Statements(starting_context: Context) {
+    context = starting_context
+    values = Values(starting_context)
+}
+
+func block_of(written: AbstractSyntaxTree.Shapes.Statements.Block?): HighIntermediaryRepresentation.Statements.Block {
+    crash written
+    var outer = built
+    built = List<HighIntermediaryRepresentation.Statements.Statement>()
+    context.scope.enter()
+    written.statements.each(build)
+    context.scope.leave()
+    var made = HighIntermediaryRepresentation.Statements.Block()
+    made.statements = built
+    made.line = written.line
+    built = outer
+    return made
+}
+
+func narrowed_block_of(
+    written: AbstractSyntaxTree.Shapes.Statements.Block?,
+    paths: List<String>,
+    types: List<Model.Type>,
+): HighIntermediaryRepresentation.Statements.Block {
+    crash written
+    var outer = built
+    built = List<HighIntermediaryRepresentation.Statements.Statement>()
+    context.scope.enter()
+    narrow_all(paths, types)
+    written.statements.each(build)
+    context.scope.leave()
+    var made = HighIntermediaryRepresentation.Statements.Block()
+    made.statements = built
+    made.line = written.line
+    built = outer
+    return made
+}
+
+func narrow_all(paths: List<String>, types: List<Model.Type>) {
+    var index = 0
+    while index < paths.count() {
+        var path = paths[index]
+        var narrowed_type = types[index]
+        crash narrowed_type
+        context.scope.narrow(path, narrowed_type)
+        index = index + 1
+    }
+}
+
+func add(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    context.pending.each(add_pending)
+    context.pending = List<HighIntermediaryRepresentation.Statements.Statement>()
+    built.append(statement)
+}
+
+func add_pending(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    built.append(statement)
+}
+
+func build(statement: AbstractSyntaxTree.Shapes.Statements.Statement) {
+    context.line = statement.line
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: build_variable(statement)
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: build_assignment(statement)
+        AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: build_evaluation(statement)
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: build_return(statement)
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: build_if(statement)
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: build_while(statement)
+        AbstractSyntaxTree.Shapes.Statements.SwitchStatement: build_switch(statement)
+        AbstractSyntaxTree.Shapes.Statements.AssertStatement: build_assert(statement)
+        AbstractSyntaxTree.Shapes.Statements.CrashStatement: build_crash(statement)
+        AbstractSyntaxTree.Shapes.Statements.Block: build_inner_block(statement)
+        AbstractSyntaxTree.Shapes.Statements.LoadStatement: return
+    }
+}
+
+func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    var declared: Model.Type? = null
+    if statement.declared_type {
+        declared = context.resolver.type_in(statement.declared_type, context.current_class, statement.line)
+    }
+    var value = values.value_of(statement.value, declared)
+    var local_type = value.value_type
+    if declared {
+        value = values.fitted(value, declared)
+        local_type = declared
+    }
+    var name = context.scope.declare(statement.name, local_type)
+    var made = HighIntermediaryRepresentation.Statements.Declare(name, local_type, value)
+    made.line = statement.line
+    add(made)
+}
+
+func build_assignment(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    crash statement.target
+    assign_to(statement, statement.target)
+}
+
+func assign_to(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression,
+) {
+    switch target {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: assign_a_name(statement, target)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: assign_a_member(statement, target)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: assign_an_index(statement, target)
+        _: typing.refuse_not_assignable(context)
+    }
+}
+
+func assign_a_name(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+) {
+    var internal_name = context.scope.internal_name_of(target.name)
+    if internal_name {
+        var declared_type = context.scope.types[internal_name]
+        crash declared_type
+        var value = values.fitted_value_of(statement.value, declared_type)
+        context.scope.forget(internal_name)
+        var made = HighIntermediaryRepresentation.Statements.Assign(internal_name, value)
+        made.line = statement.line
+        add(made)
+        return
+    }
+    var attribute = context.current_class.attribute_named(target.name)
+    if not attribute {
+        typing.refuse_unknown_name(context, target.name)
+    }
+    crash attribute
+    var own = values.this_value()
+    assign_an_attribute(statement, own, attribute, "this.{target.name}")
+}
+
+func assign_a_member(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+) {
+    var object = values.value_of(target.target, null)
+    var owner = values.present_class_of(object)
+    var attribute = owner.attribute_named(target.name)
+    if not attribute {
+        var shown = context.shown(object.value_type)
+        typing.refuse_unknown_member(context, shown, target.name)
+    }
+    crash attribute
+    var printer = Printers.Spite.ExpressionPrinter(target)
+    var path = printer.text()
+    assign_an_attribute(statement, object, attribute, path)
+}
+
+func assign_an_attribute(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    object: HighIntermediaryRepresentation.Values.Value,
+    attribute: Model.AttributeModel,
+    path: String,
+) {
+    var value = values.fitted_value_of(statement.value, attribute.attribute_type)
+    context.scope.forget(path)
+    var made = HighIntermediaryRepresentation.Statements.AssignAttribute(object, attribute, value)
+    made.line = statement.line
+    add(made)
+}
+
+func assign_an_index(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+) {
+    var object = values.value_of(target.target, null)
+    var owner = values.present_class_of(object)
+    var function = owner.function_named("set_at")
+    if not function {
+        var shown = context.shown(object.value_type)
+        typing.refuse_not_indexed(context, shown)
+    }
+    crash function
+    context.need(function)
+    var index_parameter = function.parameters[0]
+    var value_parameter = function.parameters[1]
+    crash index_parameter
+    crash value_parameter
+    var position = values.fitted_value_of(target.index, index_parameter.parameter_type)
+    var value = values.fitted_value_of(statement.value, value_parameter.parameter_type)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(position)
+    arguments.append(value)
+    var call = HighIntermediaryRepresentation.Values.Call(function, object, arguments)
+    var made = HighIntermediaryRepresentation.Statements.Evaluate(call)
+    made.line = statement.line
+    add(made)
+}
+
+func build_evaluation(statement: AbstractSyntaxTree.Shapes.Statements.ExpressionStatement) {
+    var value = values.value_of(statement.value, null)
+    var made = HighIntermediaryRepresentation.Statements.Evaluate(value)
+    made.line = statement.line
+    add(made)
+}
+
+func build_return(statement: AbstractSyntaxTree.Shapes.Statements.ReturnStatement) {
+    if not context.current_function.answer {
+        if statement.value {
+            typing.refuse_answer_from_nothing(context)
+        }
+        var nothing = HighIntermediaryRepresentation.Statements.Return(null)
+        nothing.line = statement.line
+        add(nothing)
+        return
+    }
+    var answer: Model.Type = context.current_function.answer
+    if not statement.value {
+        var shown = context.shown(answer)
+        typing.refuse_missing_answer(context, shown)
+    }
+    var value = values.fitted_value_of(statement.value, answer)
+    var made = HighIntermediaryRepresentation.Statements.Return(value)
+    made.line = statement.line
+    add(made)
+}
+
+func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    var condition = values.condition_of(statement.condition)
+    read_facts(statement.condition)
+    var paths = facts_paths
+    var types = facts_types
+    var then_branch = narrowed_block_of(statement.then_branch, paths, types)
+    var else_branch: HighIntermediaryRepresentation.Statements.Block? = null
+    if statement.else_branch {
+        else_branch = block_of(statement.else_branch)
+    }
+    var made = HighIntermediaryRepresentation.Statements.If(condition, then_branch, else_branch)
+    made.line = statement.line
+    add(made)
+}
+
+func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
+    var condition = values.condition_of(statement.condition)
+    var body = block_of(statement.body)
+    var made = HighIntermediaryRepresentation.Statements.While(condition, body)
+    made.line = statement.line
+    add(made)
+}
+
+func build_inner_block(statement: AbstractSyntaxTree.Shapes.Statements.Block) {
+    var made = block_of(statement)
+    add(made)
+}
+
+func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatement) {
+    var condition = values.condition_of(statement.condition)
+    var failed = HighIntermediaryRepresentation.Statements.Block()
+    var leaving = default_return()
+    failed.statements.append(leaving)
+    var negated = HighIntermediaryRepresentation.Values.Negation(condition)
+    var made = HighIntermediaryRepresentation.Statements.If(negated, failed, null)
+    made.line = statement.line
+    add(made)
+    read_facts(statement.condition)
+    narrow_all(facts_paths, facts_types)
+}
+
+func default_return(): HighIntermediaryRepresentation.Statements.Statement {
+    if not context.current_function.answer {
+        return HighIntermediaryRepresentation.Statements.Return(null)
+    }
+    var answer: Model.Type = context.current_function.answer
+    if answer.is_nullable {
+        var nothing = HighIntermediaryRepresentation.Values.NullConstant(answer)
+        return HighIntermediaryRepresentation.Statements.Return(nothing)
+    }
+    var shown = context.shown(answer)
+    typing.refuse_default_answer(context, shown)
+    return HighIntermediaryRepresentation.Statements.Return(null)
+}
+
+func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement) {
+    var message = "spite: the program stopped at {context.path()}:{statement.line}"
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+    stopped.line = statement.line
+    if not statement.condition {
+        add(stopped)
+        return
+    }
+    var condition = values.condition_of(statement.condition)
+    var failed = HighIntermediaryRepresentation.Statements.Block()
+    failed.statements.append(stopped)
+    var negated = HighIntermediaryRepresentation.Values.Negation(condition)
+    var made = HighIntermediaryRepresentation.Statements.If(negated, failed, null)
+    made.line = statement.line
+    add(made)
+    read_facts(statement.condition)
+    narrow_all(facts_paths, facts_types)
+}
+
+func build_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement) {
+    var subject = values.value_of(statement.value, null)
+    var printer = Printers.Spite.ExpressionPrinter(statement.value)
+    var path = printer.text()
+    var chain = switch_chain(statement, subject, path, 0)
+    crash chain
+    add(chain)
+}
+
+func switch_chain(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    subject: HighIntermediaryRepresentation.Values.Value,
+    path: String,
+    index: Integer,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    var switch_case = statement.cases[index]
+    assert switch_case
+    var written = switch_case.value
+    var paths = List<String>()
+    var types = List<Model.Type>()
+    var is_the_rest = false
+    if written == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        is_the_rest = written.name == "_"
+    }
+    if is_the_rest {
+        return block_of(switch_case.body)
+    }
+    var condition = case_condition(subject, written, path, paths, types)
+    var body = narrowed_block_of(switch_case.body, paths, types)
+    var rest = switch_chain(statement, subject, path, index + 1)
+    var else_branch: HighIntermediaryRepresentation.Statements.Block? = null
+    if rest {
+        var wrapped = HighIntermediaryRepresentation.Statements.Block()
+        wrapped.statements.append(rest)
+        else_branch = wrapped
+    }
+    var made = HighIntermediaryRepresentation.Statements.If(condition, body, else_branch)
+    made.line = statement.line
+    return made
+}
+
+func case_condition(
+    subject: HighIntermediaryRepresentation.Values.Value,
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    path: String,
+    paths: List<String>,
+    types: List<Model.Type>,
+): HighIntermediaryRepresentation.Values.Value {
+    var class_path = values.class_path_of(written)
+    if not class_path.is_empty() {
+        var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+        var member = context.resolver.class_type_in(class_path, no_arguments, context.current_class, context.line)
+        paths.append(path)
+        types.append(member)
+        return HighIntermediaryRepresentation.Values.ClassTest(subject, member)
+    }
+    var expected = subject.value_type
+    var constant = values.value_of(written, expected)
+    if values.is_machine_comparable(expected) {
+        var boolean = context.boolean()
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', subject, constant)
+    }
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(constant)
+    return values.method_call(subject, "equals", arguments)
+}
+
+func read_facts(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    facts_paths = List<String>()
+    facts_types = List<Model.Type>()
+    read_a_fact(condition)
+}
+
+func read_a_fact(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    if condition == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        read_a_binary_fact(condition)
+        return
+    }
+    var is_a_path = condition == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    is_a_path = is_a_path or condition == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    assert is_a_path
+    crash condition
+    var value = values.value_of(condition, null)
+    assert value.value_type.is_nullable
+    var printer = Printers.Spite.ExpressionPrinter(condition)
+    var path = printer.text()
+    var present = value.value_type.present()
+    var fact_path = path_of(condition, path)
+    facts_paths.append(fact_path)
+    facts_types.append(present)
+}
+
+func read_a_binary_fact(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
+    if binary.operator == 'and' {
+        read_a_fact(binary.left)
+        read_a_fact(binary.right)
+        return
+    }
+    assert binary.operator == 'equal_equal'
+    var class_path = values.class_path_of(binary.right)
+    assert not class_path.is_empty()
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var member = context.resolver.class_type_in(class_path, no_arguments, context.current_class, context.line)
+    crash binary.left
+    var printer = Printers.Spite.ExpressionPrinter(binary.left)
+    var path = printer.text()
+    var fact_path = path_of(binary.left, path)
+    facts_paths.append(fact_path)
+    facts_types.append(member)
+}
+
+func path_of(written: AbstractSyntaxTree.Shapes.Expressions.Expression?, printed: String): String {
+    if written == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return identifier_path(written.name)
+    }
+    return printed
+}
+
+func identifier_path(name: String): String {
+    var internal_name = context.scope.internal_name_of(name)
+    if internal_name {
+        return internal_name
+    }
+    return "this.{name}"
+}

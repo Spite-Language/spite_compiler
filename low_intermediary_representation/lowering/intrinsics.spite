@@ -1,0 +1,99 @@
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low_program = LowIntermediaryRepresentation.LowProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
+
+func Intrinsics(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+func lowered(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var key = call.function.key()
+    switch key {
+        "Buffer._resize_room": return resize_room(call)
+        "DynamicLibrary.open_library": return open_library(call)
+        "DynamicLibrary.close_library": return close_library()
+        _: return typed_access(call, key)
+    }
+}
+
+func typed_access(call: HighIntermediaryRepresentation.Values.Call, key: String): Lowered {
+    var is_an_access = key.starts_with("Buffer._") and key.ends_with("_at")
+    if is_an_access and key.starts_with("Buffer._read_") {
+        return read_at(call)
+    }
+    if is_an_access and key.starts_with("Buffer._write_") {
+        return write_at(call)
+    }
+    return unknown(key)
+}
+
+func read_at(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var buffer = lowering.lower_value(call.receiver)
+    var at = argument(call, 0)
+    var storage = lowering.storage_of(buffer.value)
+    var address = lowering.address_plus(storage, at)
+    crash call.function.answer
+    var answer: Model.Type = call.function.answer
+    var width = lowering.width_of(answer)
+    var read = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(read, address, 0, width)
+    loaded.is_signed = lowering.is_signed(answer)
+    lowering.emit(loaded)
+    return lowering.single(read)
+}
+
+func write_at(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var buffer = lowering.lower_value(call.receiver)
+    var at = argument(call, 0)
+    var value = argument(call, 1)
+    var storage = lowering.storage_of(buffer.value)
+    var address = lowering.address_plus(storage, at)
+    var written = call.function.parameters[1]
+    crash written
+    var width = lowering.width_of(written.parameter_type)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, value, width)
+    lowering.emit(stored)
+    return lowering.single(-1)
+}
+
+func resize_room(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var buffer = lowering.lower_value(call.receiver)
+    var size = argument(call, 0)
+    var storage = lowering.storage_of(buffer.value)
+    var one = lowering.constant(1)
+    var with_an_end = lowering.address_plus(size, one)
+    var resized = lowering.new_register()
+    var made = LowIntermediaryRepresentation.Instructions.Resize(resized, storage, with_an_end)
+    lowering.emit(made)
+    var offset = lowering.layout.storage_offset
+    var stored = LowIntermediaryRepresentation.Instructions.Store(buffer.value, offset, resized, 'bits_64')
+    lowering.emit(stored)
+    return lowering.single(-1)
+}
+
+func open_library(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var name = argument(call, 0)
+    var bytes = lowering.bytes_of_text(name)
+    var handle = lowering.new_register()
+    var opened = LowIntermediaryRepresentation.Instructions.OpenLibrary(handle, bytes)
+    lowering.emit(opened)
+    return lowering.single(handle)
+}
+
+func close_library(): Lowered {
+    return lowering.single(-1)
+}
+
+func argument(call: HighIntermediaryRepresentation.Values.Call, index: Integer): Integer {
+    var value = call.arguments[index]
+    var lowered_argument = lowering.lower_value(value)
+    return lowered_argument.value
+}
+
+func unknown(key: String): Lowered {
+    var emittable = Validators.LowIntermediaryRepresentation.Emittable.Validator()
+    emittable.refuse('missing_function', key)
+    return lowering.single(-1)
+}

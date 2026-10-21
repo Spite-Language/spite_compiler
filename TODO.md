@@ -13,10 +13,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The emitter's refusals have no place (`validators/low_intermediary_representation/emittable`): each becomes a validator one level up once the high representation carries places
 - Every node carries its file, line and column, from the tree to the instructions
 - Unions and enums instead of strings in both representations (instruction kind, operator, types, call owner)
-- Typed high representation: every value carries its resolved type as an object; type rules are validators over it
 - `printers/spite` and the formatter; the tree keeps comments, blank lines and literal spelling; `--final-classes`
 - `printers/optimization_report` and `printers/machine_code`
-- 64-bit generator (`generators/windows_x64`, the Windows x64 calling convention)
 - Low representation in SSA form with basic blocks, and register allocation
 - Unit passes and program passes split by input type; every function has a stable identity for cache keys
 - Objects live on the heap until a pass proves the frame (replaces copying a returned object into the caller)
@@ -29,7 +27,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The emitter resolves a call whose class is unknown by the function's name alone, when one class has it
 - The builder ignores the `singleton` line
 - A `load` inside an `if` is refused; the language allows it when the condition reads only build settings
-- `whole_library` (a test that reads every class of the library) returns once text and `DynamicLibrary` build
 - `DictionaryLiteral` is not lowered
 - `WholeNumber.value()` answers 0 for a text that is not a number
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
@@ -37,7 +34,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ## The language
 
 - The runtime the library needs, as machine code: allocator, console, files, directories, clock, sockets, processes, dynamic library, weak references
-- `DynamicLibrary` itself: `open_library`, `find_symbol`, `close_library`
+- `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
 - The memory of a value of any type: `_read_value` and `_write_value`, and a room sized by item count times item size
 - Memory: heap, reference counting, frees, and `--debug-memory` counts equal to the original's
 - Strings and text literals with holes
@@ -45,7 +42,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - References, enums, unions and `type` shapes
 - Functions as values, variadics, operators as functions
 - `switch`, and narrowing a `T?`
-- Every number type, casts, and overflow checks
+- `Float` and `Double`: their room reads, arithmetic and checked conversions to whole numbers
+- A narrowing that does not fit halts without printing the value (`spite: 200, an Integer, does not fit in a Tiny`)
+- A number's room is a `Buffer` made on every read of `_buffer` (D33): fold a read at a known position of a fresh room into the number itself
 - Concurrency, reflection, `load` of a package, codegen values
 - Program settings: the program's own `build.spite` and `environment.spite`
 
