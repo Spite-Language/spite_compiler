@@ -1,0 +1,122 @@
+var empty_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+var class_name = ""
+var function_name = ""
+var function_line = 0
+var reads = List<String>()
+var declared = List<AbstractSyntaxTree.Shapes.Statements.VariableStatement>()
+var attribute_names = List<String>()
+var operator_names = [
+    "sum"
+    "subtract"
+    "multiply"
+    "divide"
+    "remainder"
+    "negate"
+    "equals"
+    "less_than"
+    "greater_than"
+    "get_at"
+    "set_at"
+    "get_attribute"
+    "set_attribute"
+    "run_callback"
+]
+
+func check(starting_walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String) {
+    walk = starting_walk
+    class_name = starting_class_name
+    attribute_names = walk.attribute_declarations.map_names()
+    walk.function_declarations.each(check_function)
+}
+
+func check_function(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    assert function.body
+    function_name = function.name
+    function_line = function.line
+    reads = List<String>()
+    declared = List<AbstractSyntaxTree.Shapes.Statements.VariableStatement>()
+    walk.expressions.each(read_expression)
+    walk.statements.each(read_statement)
+    declared.each(check_local)
+    assert not is_dictated(function)
+    function.parameters.each(check_parameter)
+}
+
+func read_expression(found: AbstractSyntaxTree.Walk.FoundExpression) {
+    assert found.function_name == function_name
+    var expression = found.expression
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        reads.append(expression.name)
+    }
+}
+
+func read_statement(found: AbstractSyntaxTree.Walk.FoundStatement) {
+    assert found.function_name == function_name
+    var statement = found.statement
+    if statement == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        declared.append(statement)
+    }
+    if statement == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        forget_a_written_name(statement)
+    }
+}
+
+func forget_a_written_name(assignment: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    var target = assignment.target
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        forget_one_read(target.name)
+    }
+}
+
+func forget_one_read(name: String) {
+    var place = reads.index_of(name)
+    assert place
+    reads.remove_at(place)
+}
+
+func check_local(local: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    var is_read = reads.contains(local.name)
+    if local.name.starts_with("_") and is_read {
+        refuse(
+            local.line,
+            "'{local.name}' is read, so it must not start with an underscore: only a parameter the body ignores is named that way",
+        )
+    }
+    assert not is_read
+    refuse(local.line, "'{local.name}' is never read: remove it")
+}
+
+func is_dictated(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): Boolean {
+    if operator_names.contains(function.name) {
+        return true
+    }
+    var is_a_setter = function.name.starts_with("set_") and function.parameters.count() == 1
+    if is_a_setter {
+        var name_length = function.name.length()
+        var attribute = function.name.slice(4, name_length)
+        return attribute_names.contains(attribute)
+    }
+    return false
+}
+
+func check_parameter(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
+    var is_read = reads.contains(parameter.name)
+    var is_ignored = parameter.name.starts_with("_")
+    if is_ignored and is_read {
+        refuse(
+            function_line,
+            "'{parameter.name}' is read, so it must not start with an underscore: only a parameter the body ignores is named that way",
+        )
+    }
+    assert not is_read and not is_ignored
+    refuse(
+        function_line,
+        "the parameter '{parameter.name}' is never read: remove it, or name it '_{parameter.name}' if the signature needs it",
+    )
+}
+
+func refuse(line: Integer, text: String) {
+    var failure = Validators.Failure()
+    failure.stop_inside(walk.file.path, line, class_name, function_name, text)
+}
