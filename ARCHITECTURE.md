@@ -68,3 +68,12 @@ A text that is an identity (a type's key, an instance's name) is not printing: i
 reads one function or class and is cached by the hash of its input; a reload runs only unit passes. A program
 pass needs the whole program (tree shaking, inlining across classes, placement of objects that leave their
 function). Each optimisation and each proof is a pass of its own.
+
+## Memory
+
+- An object lives on the heap and is freed by reference counting (D32); a pass that proves an object never leaves
+  its function places it in the frame instead.
+- A `Buffer`'s room is sized by the compiler (D33): a buffer proven never to grow keeps its bytes inside the
+  value that holds it, exactly `size` of them; every other buffer keeps a heap block that grows.
+- A class whose only memory is a room of at most 8 bytes, and nothing else, is a number: its value travels in a
+  register (`Integer`, `Boolean`, ...), and its room is materialised in the frame when its bytes are read.
