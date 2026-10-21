@@ -1,0 +1,230 @@
+var path = ""
+var class_name = ""
+var function_name = ""
+var line = 0
+var abbreviations = Abbreviations()
+var lowest_lower_letter = 97
+var highest_lower_letter = 122
+var lowest_upper_letter = 65
+var highest_upper_letter = 90
+var lowest_digit = 48
+var highest_digit = 57
+var underscore = 95
+
+func check(walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String) {
+    path = walk.file.path
+    class_name = starting_class_name
+    walk.file.declarations.each(check_declaration)
+    walk.statements.each(check_local)
+}
+
+func check_declaration(declaration: AbstractSyntaxTree.Shapes.Declarations.Declaration) {
+    function_name = ""
+    line = declaration.line
+    switch declaration {
+        AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration: check_enum(declaration)
+        AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration: check_type_name(declaration.name, "union")
+        AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration: check_type_name(declaration.name, "type")
+        AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration: check_attribute(declaration)
+        AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration: check_function(declaration)
+        _: return
+    }
+}
+
+func check_enum(declaration: AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration) {
+    check_type_name(declaration.name, "enum")
+    declaration.values.each(check_enum_value)
+}
+
+func check_enum_value(value: AbstractSyntaxTree.Shapes.Declarations.EnumValue) {
+    check_value_name(value.name, "enum value")
+}
+
+func check_attribute(declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration) {
+    check_value_name(declaration.name, "attribute")
+    check_reflection_name(declaration.name, "attribute")
+}
+
+func check_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    if declaration.name != class_name {
+        check_value_name(declaration.name, "function")
+        check_reflection_name(declaration.name, "function")
+    }
+    function_name = declaration.name
+    declaration.parameters.each(check_parameter)
+}
+
+func check_parameter(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
+    check_value_name(parameter.name, "parameter")
+}
+
+func check_local(found: AbstractSyntaxTree.Walk.FoundStatement) {
+    var statement = found.statement
+    if statement == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        function_name = found.function_name
+        line = statement.line
+        check_value_name(statement.name, "variable")
+    }
+}
+
+func check_value_name(name: String, what: String) {
+    var bare = name
+    if bare.starts_with("_") {
+        var bare_length = bare.length()
+        bare = bare.slice(1, bare_length)
+    }
+    if not is_a_lowercase_name(bare) {
+        refuse("the {what} '{name}' must be written in snake_case: lowercase words joined by underscores")
+    }
+    var badly_joined = bare.starts_with("_") or bare.ends_with("_") or bare.contains("__")
+    if badly_joined {
+        refuse(
+            "the {what} '{name}' must be written in snake_case: lowercase words joined by one underscore each, with at most one '_' in front to make it private",
+        )
+    }
+    if bare.length() == 1 and not is_an_axis(bare) {
+        refuse("the {what} '{name}' is a single letter: give it a name that says what it holds")
+    }
+    check_abbreviations(name)
+}
+
+func check_type_name(name: String, what: String) {
+    if not is_a_pascal_name(name) {
+        refuse("the {what} '{name}' must be written in PascalCase: capitalised words with no underscores")
+    }
+    check_abbreviations(name)
+}
+
+func check_abbreviations(name: String) {
+    var words = words_of(name)
+    var index = 0
+    while index < words.count() {
+        var word = words[index]
+        var full = abbreviations.full_word_of(word)
+        if not full.is_empty() {
+            refuse(
+                "'{name}' abbreviates: write '{full}' instead of '{word}'. Spite has no abbreviations outside its own keywords",
+            )
+        }
+        index = index + 1
+    }
+}
+
+func check_reflection_name(name: String, what: String) {
+    var member = name
+    var accessor = ""
+    if name.starts_with("get_") or name.starts_with("set_") {
+        var name_length = name.length()
+        member = name.slice(4, name_length)
+        accessor = name.slice(0, 4)
+    }
+    var meaning = reflection_meaning(member)
+    assert not meaning.is_empty()
+    var names = Mapping.Names()
+    var owner = names.snake_case_of(class_name)
+    var suggestion = "{accessor}{owner}_{member}"
+    if accessor.is_empty() {
+        refuse(
+            "the {what} '{name}' has a name reflection gives every object: {meaning}, and one of its own would hide it. Name it something else, like '{suggestion}'",
+        )
+    }
+    refuse(
+        "the {what} '{name}' is read as '{member}', a name reflection gives every object: {meaning}, and one of its own would hide it. Name it something else, like '{suggestion}'",
+    )
+}
+
+func reflection_meaning(member: String): String {
+    switch member {
+        "class": return "'value.class' is its class"
+        "attributes": return "'value.attributes' lists its attributes, and JsonReader, JsonWriter and every attribute walk read through it"
+        "functions": return "'value.functions' lists its functions"
+        "instances": return "'Monster.instances' lists every live instance of a class"
+        "memory": return "'value.memory' says where the value lives"
+        _: return ""
+    }
+}
+
+func words_of(name: String): List<String> {
+    var words = List<String>()
+    var current = ""
+    var index = 0
+    while index < name.length() {
+        var code = name.code_at(index)
+        var starts_a_word = code == underscore or is_an_upper_letter(code)
+        if starts_a_word and not current.is_empty() {
+            words.append(current)
+            current = ""
+        }
+        if code != underscore {
+            var letter = name.character_at(index)
+            var lowered = letter.lower_case()
+            current = "{current}{lowered}"
+        }
+        index = index + 1
+    }
+    if not current.is_empty() {
+        words.append(current)
+    }
+    return words
+}
+
+func is_a_lowercase_name(name: String): Boolean {
+    if name.is_empty() {
+        return false
+    }
+    var first = name.code_at(0)
+    if not is_a_lower_letter(first) {
+        return false
+    }
+    var index = 1
+    while index < name.length() {
+        var code = name.code_at(index)
+        var fits = is_a_lower_letter(code) or is_a_digit(code) or code == underscore
+        if not fits {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_pascal_name(name: String): Boolean {
+    if name.is_empty() {
+        return false
+    }
+    var first = name.code_at(0)
+    if not is_an_upper_letter(first) {
+        return false
+    }
+    var index = 1
+    while index < name.length() {
+        var code = name.code_at(index)
+        var fits = is_a_lower_letter(code) or is_an_upper_letter(code) or is_a_digit(code)
+        if not fits {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_lower_letter(code: Integer): Boolean {
+    return code >= lowest_lower_letter and code <= highest_lower_letter
+}
+
+func is_an_upper_letter(code: Integer): Boolean {
+    return code >= lowest_upper_letter and code <= highest_upper_letter
+}
+
+func is_a_digit(code: Integer): Boolean {
+    return code >= lowest_digit and code <= highest_digit
+}
+
+func is_an_axis(name: String): Boolean {
+    return name == "x" or name == "y" or name == "z" or name == "w"
+}
+
+func refuse(text: String) {
+    var failure = Validators.Failure()
+    failure.stop_inside(path, line, class_name, function_name, text)
+}
