@@ -6,7 +6,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Architecture (now)
 
-- Port the old syntax-tree rules (level 3 of `../SpiteLanguage/diagnostics`, about 60 rules: naming, abbreviations, a call inside a call, nested if, switch chain, unused names, template walks, comments, guards)
+- Rules that need types, after the typed high representation: the terminal `if` on a `T?`, template walks (`template_walk`, `vector_template_walk`, `walk_with_function`), a condition that is not a Boolean, foreign libraries and callbacks, `Environment` settings, codegen value questions (`argument_count`, `function_reflection`, `parameter_write_question`, `returned_text`), enum and union coverage of a switch, and the rest of level 5 of `../SpiteLanguage/diagnostics`
+- Rules that need name resolution (level 4 of `../SpiteLanguage/diagnostics`): a class name that reaches nothing, attributes never read (reopenings can read them), reopening rules, the parameters of a function that replaces another (exempt from the unread rule)
+- A comment inside an enum, union or type body is not refused yet (only function bodies have their closing line)
 - Port the rest of the mapping rules: a class named like a namespace, a hidden class, a class named like a library class, `spite/` folders
 - The emitter's refusals have no place (`validators/low_intermediary_representation/emittable`): each becomes a validator one level up once the high representation carries places
 - Every node carries its file, line and column, from the tree to the instructions

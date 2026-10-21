@@ -43,6 +43,8 @@ needs. The folder is named after the rule, and the validator holds every word of
 - A rule lives at the earliest level that has the facts it needs, and runs as soon as those facts exist: a file's
   rules run right after the file is parsed, before the next file is read.
 - A validator never changes what it is given.
+- A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
+  its line and function, made once. A message quotes code through `printers/spite`.
 - A rule that needs the whole program runs once the program is complete; a rule about one class runs per class,
   and a reload runs only those.
 - The message says what the old compiler's message says (`../SpiteLanguage/diagnostics`), in this compiler's
