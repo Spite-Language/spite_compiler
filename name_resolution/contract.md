@@ -13,7 +13,8 @@ It takes the `SourceFile` of every class the `symbols` step read, and answers:
 - a `ResolvedType` for every type written anywhere in the program,
 - a `Monomorphised` instance for every generic class the program writes with type arguments,
 - the class every function of every class answers, so a receiver that is a call of another class's
-  function names its class.
+  function names its class,
+- the class every generic call of every class names, so the builder lowers the call to the instance.
 
 ## The rule it follows
 
@@ -31,6 +32,14 @@ times it is written.
 The instance's own types are then resolved with the substitution in place, and *that* finds more generic
 classes, which are monomorphised in turn. The work is a queue, and it ends when no new instance is
 minted.
+
+**A generic class written in a call is monomorphised the same way.** `List<String>()` names the instance
+`List_of_String`, and the resolver publishes that name, so the builder lowers the call to the instance
+and the class the call answers is the instance too. The type `List<String>` names the same instance, and
+the builder asks the resolver for that one too. The name is published per class, because a template body
+writes the same call once and means a different instance in every instance of the template: the
+`List<$element_type>()` of the `List` template names `List_of_String` in the instance `List_of_String`
+and `List_of_Integer` in the instance `List_of_Integer`.
 
 ## The rules it enforces
 

@@ -50,6 +50,13 @@ owner are the class's name, and the lowering makes the block, writes the attribu
 calls the constructor with the instance as its first argument. A class with no constructor is made from
 its defaults alone.
 
+**A call of a generic class names the instance of that class.** `List<String>()` names the instance
+`List_of_String`, and the builder lowers the call to that name, for the callee and for the owner, so the
+call makes an instance of the class the name resolution monomorphised. A type written with arguments
+names the same instance, and the builder asks the name resolution for that one too. The constructor of an
+instance is renamed to the name of the instance, because the lowering finds the constructor by the name of
+the class it belongs to, and the class of an instance is the instance.
+
 **An attribute is read and written through the instance.** A name that is an attribute of the class reads
 `this.attribute` inside a function of the class, and `object.attribute` outside one. The builder lowers
 both to an `Attribute` value, or to an `AssignAttribute` statement, and the lowering finds the offset in
@@ -107,10 +114,11 @@ call to the value itself, and the lowering finds the address of the attribute or
 is kept in.
 
 **An argument of a value class is the address of the value, when the value is an attribute of another
-object.** The room of a value class is kept inside the object that holds it, so an argument that is an
-attribute of another object is passed as the address of that attribute, and the callee reads the room
-there. An argument that is a name of the class the code is in is a plain number of that class, and it is
-passed as the number: the callee wants the count, not the place the room is kept in.
+object.** The block of a value class is kept inside the object that holds it, the room and the attributes
+of the class with it, so an argument that is an attribute of another object is passed as the address of
+that attribute, and the callee reads the room there. An argument that is a name of the class the code is
+in is a plain number of that class, and it is passed as the number: the callee wants the count, not the
+place the room is kept in.
 
 **The methods that read and write a byte have no body, and the compiler writes them.** Reading a byte of
 memory is not something Spite can say, so the library declares the method and the compiler writes what it

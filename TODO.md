@@ -492,8 +492,11 @@ compiler has to know the library's members and their signatures to answer them.
 - [ ] **The memory of a value of any type.** The `List` and the `Dictionary` of the new library hold
       their items in a room, and an item is of any type: `_read_value` and `_write_value` have no body and
       the compiler writes them, the way it writes the two methods that read and write a byte of a room.
-      The compiler also has to monomorphise a generic class, so that `List<String>` is a class of its own
-      with the size of its item known.
+      A generic class is monomorphised now, so `List<String>` is a class of its own, and both the type
+      `List<String>` and the call `List<String>()` name it, but the two methods that read and write an
+      item are not written yet, and the room of the items is still a fixed number of bytes: it has to be
+      the count of the items times the size of an item, and the compiler has to know the size of an item
+      of the class it monomorphised.
 - [ ] **The cache per step**, so restarting a compilation redoes only the work that changed.
 - [ ] **The tree shaking**, and the inspectable build.
 - [ ] **The optimisation passes**, ours and not the original's: the register allocation, the folding of the
