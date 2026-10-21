@@ -47,6 +47,73 @@ write too, with the same words, at the same line, and the same `(in Class.Functi
 error the original reports** below, and the suite that checks them is in **what the original test suite asks
 of us**.
 
+## Priority: the architecture, before the language grows
+
+[`ARCHITECTURE.md`](ARCHITECTURE.md) is the shape the compiler is built to: steps build, passes transform,
+validators decide every error (D28), printers write every text (D29), and a step marks what it could not build
+instead of failing (D30). Each item below is cheaper now than once the language is in, so it comes first:
+
+- [x] **The representations hold data only.** Every function that writes a representation as text moves into
+      a printer (`written()` on the tokens, the expressions, the types, `ResolvedType`, `TypeUse` and `Instance`;
+      the `summary()`s and `notes_text()`; `Problem.written()` and `Report.written()`; `Describe`; the entry's
+      `high_shape`). A text used as an identity becomes an identity of the step that owns it.
+- [x] **The printers of the report and the two representations**: `printers/diagnostics`,
+      `printers/high_intermediary_representation` (`--high-ir=folder`) and `printers/low_intermediary_representation`
+      (`--low-ir=folder`), one `<Class>.ir` per class. `spite low-ir` and its sample program are gone, and so are the
+      counts the entry printed.
+- [ ] **The printers still to write**: `optimization_report` (`--optimization-report`), `machine_code`, and
+      `spite` (below, with the formatter).
+- [ ] **The validators**, one rule per folder under `validators/<level>/<rule>/`, each with its
+      `contract.md`. The errors the steps write today move into them: 11 in the mapping, 10 in the emitter, 9 in
+      the ordering, 7 in the lexer, 4 in the name resolution, 2 in the symbols, 1 in the parser and 1 in the
+      walk. A validator reads one unit or the whole program, and its input type says which.
+- [ ] **The markers.** The lexer, the parser, the mapping, the name resolution, the builder and the lowering mark
+      what they cannot build, and the validator of that level refuses the mark. The builder's `skipped` count
+      goes: today the executable is written without the statements it skipped, which fails silently.
+- [ ] **The emitter's errors have a place.** Each of the ten is written at `"", 0, 0`; each becomes a marker or
+      a validator one level up, and the emitter keeps only the crash for a marker it is given.
+- [ ] **Every node carries its file, line and column**, from the tree down to the instructions.
+- [ ] **Unions and enums instead of strings** in both representations: an instruction's `kind`, an operation's
+      `operator`, a parameter's type, a call's owner.
+- [ ] **The typed high representation.** Every value carries its resolved type as an object, answered while the
+      builder builds, and the type rules are validators over it (proposed by Claude, unconfirmed).
+- [ ] **The Spite printer and the formatter** (`printers/spite`). The tree keeps its comments, its blank lines
+      and the spelling of its literals; every compile prints each file, writes back what changed and reads it
+      again; printing twice gives the same text and parsing the print gives the same tree. `--final-classes` is
+      the same printer given the merged class.
+- [ ] **The 64-bit generator** (`generators/windows_x64`, the Windows x64 calling convention), superseding the
+      32 bits of D3 (proposed by Claude, unconfirmed).
+- [ ] **The low representation in SSA form, in basic blocks**, so the register allocation, the inlining and the
+      proofs have something to stand on (proposed by Claude, unconfirmed).
+- [ ] **Unit passes and program passes**, split by the type of their input as the validators are, with a stable
+      identity for every function so the caches have keys (proposed by Claude, unconfirmed).
+- [ ] **An object lives on the heap until a pass proves the frame**, superseding D26's copy of a returned
+      object, which leaves a pointer to a dead frame wherever the object was kept (proposed by Claude,
+      unconfirmed).
+- [ ] **An argument is passed by its parameter's type only**, superseding D25, where the function called cannot
+      tell an address from a number (proposed by Claude, unconfirmed).
+- [ ] **The language decisions made here go to Mortaro and the language**: D8 to D11 and D17 to D27 are
+      unconfirmed, and D10 says a type argument is given at run time, which contradicts the monomorphisation.
+
+### Faults found on the way, and what is left of each
+
+- [ ] **A statement the builder cannot lower is still left out of the executable.** It is a note on the error
+      output now (`the builder could not lower N statements, and the executable runs without them`), so it is no
+      longer silent, but the program still builds: the markers above make it an error.
+- [ ] **A dictionary literal is its own shape now**, `DictionaryLiteral` (it was a `ListLiteral` with a flag nothing
+      read, so `{ key: value }` was taken for a list). Nothing lowers it yet.
+- [x] **The `?` of a type was dropped** by the name resolution, so `Integer?` resolved as `Integer` and
+      `List<Integer?>` minted the same instance as `List<Integer>`. It is kept now.
+- [ ] **A type written after a class that is not generic is dropped with a note** (`'X' is not a generic class, so
+      the type written after it is dropped`). It is an error, and its validator writes it.
+- [ ] **The error for a parameter with no type is missing its opening quote** (`name' has no type`), in
+      `ordering.spite`; its validator fixes it.
+- [ ] **`WholeNumber.value()` answers 0 for a text that is not a number**, a default the caller cannot tell from
+      a real 0. The number is parsed once, by the builder, and a text that is not a number is a marker.
+- [ ] **A union switch with two cases that do the same thing must use `_:`** (a rule of the language), and `_:`
+      answers for any member added to the union later, so a new shape can slip past a walk without an error.
+      Mortaro decides whether a walk over a representation may name every member.
+
 ## Priority: `spite .` in this folder builds the compiler
 
 Asked and answered: **no, not yet.** What happens today, exactly:
@@ -187,13 +254,14 @@ Step 1 holds today. Step 2 is what the list below is for, in the order it is don
     write the bytes and the file                 (generators/windows_x86)
 
 Each step takes the previous step's answer as its input and hands its own answer to the next one. No step
-reaches back into another. Each error is written down as soon as the step that owns it finds it, and the
-run stops there.
+reaches back into another. Each error is found by the validators of the earliest level that can see it, run
+right after the step that builds that level, and the run stops there (D28). The pipeline this is moving to is
+in [`ARCHITECTURE.md`](ARCHITECTURE.md#the-entry).
 
 ## Done
 
-- **The command line.** `spite <path>`, always with the path written. `spite low-ir` runs the back half of
-  the pipeline on the sample program and prints the instruction list.
+- **The command line** (`command_line`). `spite <path>`, always with the path written, and `--high-ir=folder`
+  and `--low-ir=folder`, which write each class's representation through its printer. Any other flag is refused.
 - **The mapping** (`mapping`). Folders become namespaces. A folder loaded twice, a folder inside another, a
   folder or a file not named in snake_case, and the reserved name `Spite` are all errors, and they reach the
   compiler's report. No file is read. A path is resolved before it is compared, so a load written relative to
@@ -205,7 +273,7 @@ run stops there.
   load lines: the folder is mapped, and its classes are found by name. The compiler does not go looking for
   a library, and there is no environment variable that names one.
 - **The syntax tree** (`abstract_syntax_tree`). The lexer, the parser, the shapes, the ordering check (a
-  file is ordered, a name is declared once, a constructor is not empty) and the walk.
+  file is ordered, a name is declared once, a constructor is not empty).
 - **The name resolution** (`name_resolution`). Every type written in the program is resolved, the two kinds
   of dependent type (`x.class` and `$type.member`) are answered, and every generic class found is
   monomorphised: `List<Integer>` mints `List_of_Integer`, once however many times it is written. A member
@@ -283,7 +351,7 @@ that this compiler does not have yet, and what this compiler does instead.
 
 | The original | What it has | What this compiler has instead |
 |---|---|---|
-| `source/syntax/` | The lexer, the parser, the printer, and the **formatter** (the compiler rewrites every file in the one style and reads the program again) | The lexer, the parser and the ordering check. No printer and no formatter yet. |
+| `source/syntax/` | The lexer, the parser, the printer, and the **formatter** (the compiler rewrites every file in the one style and reads the program again) | The lexer, the parser and the ordering check. No printer and no formatter yet: both are `printers/spite` (D29). |
 | `source/analysis/` | The class, function, field, parameter, enum, union, template and type information of every class | The name resolution, which answers the types, mints the instances, and answers the class every function of every class answers. The class, function and field information is missing. |
 | `source/discovery/` | The whole program discovered before anything is written, `load` from a git repository pinned to a commit, the paths, the versions | The mapping and the symbols, which read only the classes something names. No `load`, no packages, no versions. |
 | `source/intermediate/` | The intermediate representation and its passes: the layout and the placements, the ownership and the reference counts, the reachability, the proofs, the reflection lowering, the statement and expression lowering | The high and the low representation, with two passes. The layout, the ownership, the proofs and the reflection are missing. |
@@ -753,269 +821,271 @@ saw. Each line below is one of them, named by the program that checks it.
 
 ### The programs under `diagnostics/`
 
-- [ ] address_forms — a File reads bytes into a Buffer, not into memory at an address: 'read_bytes_at(position, count)' answers a 'Buffer?' of up to 'count' bytes from 'position', and 'read_bytes()' the whole file
-- [ ] allocator_after_use — 'spark' was already used, so its allocator can no longer change: an object's allocator is set on the line right after it is made. To move it, copy it and set the copy's: 'var moved = spark.copy()' and then 'moved.memory.allocator = ...'
-- [ ] allocator_reads — only an object has an allocator of its own, and this is a value of type Integer, which the compiler places itself
-- [ ] allocator_resizes — 'place' is borrowed from 'store.positions', and 'names.append()' on line 12 may move the items of 'store.positions', so 'place' is not read after it: read 'store.positions[index]' again after that line, or keep 'place.copy()', an independent object
-- [ ] argument_class — 'Mender.mend' takes 1 arguments, so it has no parameter 1 for 'argument_class' to name: parameters are counted from 0
-- [ ] argument_class_name — 'argument_class("repair", 0)' names the class of a parameter of 'Mender.repair', and 'Mender' has no function 'repair'
-- [ ] argument_count — '$system_type.argument_count(...)' is decided while compiling, so the name it asks for is written as a literal: '$system_type.argument_count("update_each")', or a pattern such as "<phase>_each"
-- [ ] atomic_misuse — 'crash $value_type == Number and $value_type != Float and $value_type != Double or $value_type == Boolean' always halts in Atomic<Float>: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks
-- [ ] bitwise_on_float — a Float has no function 'shifted_right': the bitwise functions are on the whole numbers, Tiny to UnsignedLong. Cast it first, like 'var whole: Long = value'
-- [ ] blank_line — formatted diagnostics/blank_line/blank_line.spite
-- [x] borrowed_name — diagnostics/borrowed_name/borrowed_name.spite:4:9: 'none' cannot name a variable, because Spite reads the word as a mistake anywhere it is used: the empty value is written 'null'
-- [x] borrowed_new — diagnostics/borrowed_new/borrowed_new.spite:4:18: there is no 'new' in Spite: a class is made by calling its own name, like 'Creature("rat")'
-- [ ] borrowed_operators — Spite writes 'and' and 'or' as words: there is no '&&' or '||'
-- [ ] borrowed_syntax — Spite has no '+=': write 'count = count + value'
-- [x] borrowed_this — diagnostics/borrowed_this/borrowed_this.spite:5:19: a class reads its own attributes by name: write 'name', not 'this.name'
-- [ ] bound_proofs_undone — 'spans[at + 2]' may be missing, since every '[ ]' answers a 'T?' (this one is an Integer?), but a Printable is needed: narrow it first with 'crash spans[at + 2]', 'assert spans[at + 2]' or 'if spans[at + 2] { }', or read it where a bound proves it, inside 'while at + 2 < spans.count()'
-- [ ] branch_undoes_proof — this value may be null (it is a Target?), so 'name' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
-- [ ] build_setting_type — error: '--workers=many' was given to the compiler, but 'Build.workers' is an Integer: a whole number, like --workers=3
-- [ ] bulk_removal — 'remove_where' removes from the collection it is called on, and 'names.filter(is_short)' makes a new one that nothing keeps: call it on the collection itself, with one test that says everything to remove
-- [ ] byte_reads — this value may be null (it is an Integer?), so '*' cannot use it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
-- [ ] call_as_argument — 'count_words(source)' is called inside an argument of 'console.print': compute it first into a named 'var' and pass the name
-- [ ] call_undoes_proof — this value may be null (it is a Monster?), so 'name' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
-- [ ] cast_by_name — there is no 'Float.from_integer()': a conversion belongs to the value converted, so write 'value.to_float()' on an Integer, or cast by assignment: 'var converted: Float = value'
-- [ ] check_proves_nothing — 'tracker' is already narrowed by 'assert tracker' on line 8: remove this check
-- [ ] class_and_namespace — diagnostics/class_and_namespace/engine/renderer.spite: error: 'Engine.Renderer' is this class and also the namespace of the folder 'diagnostics/class_and_namespace/engine/renderer': a dotted name means one thing, so rename the file or the folder
-- [ ] class_as_value — 'Health' is a class, not a value: write 'Health()' to make one, and give it a name with 'var ... = '; for the class itself, pass it where a 'Spite.Class' is wanted
-- [ ] class_keyword — diagnostics/class_keyword/class_keyword.spite:1:1: there is no 'class' keyword: a file is a class, named after the file, and its attributes and functions are written at the top level of that file
-- [ ] codegen_values — this class has no 'generic $other_type' line, so '$other_type' cannot be used as a type
-- [ ] comment_broken_link — this comment links to 'notes.md#a-heading-that-does-not-exist', but that file has no heading with that anchor
-- [ ] comment_inside_function — a comment may not appear inside a function or a declaration body: a line that needs explaining becomes a named function instead. a comment is one line holding only a link to a markdown section, like '# docs/memory.md#cycles', and only outside functions. Ask whether the note is needed: if a reader could work it out from the code, delete it; if it is lasting knowledge, write the section first and link to it; if it warns against a change, a test or a compile error pushes harder than prose
-- [ ] comment_missing_file — this comment links to 'nowhere/missing.md', which does not exist (the path is relative to the folder of the file the comment is in, like load)
-- [ ] comment_prose_comment — this comment is not a link: a comment is one line holding only a link to a markdown section, like '# docs/memory.md#cycles', and only outside functions. Ask whether the note is needed: if a reader could work it out from the code, delete it; if it is lasting knowledge, write the section first and link to it; if it warns against a change, a test or a compile error pushes harder than prose
-- [ ] comment_slash_comment — Spite has no '//' or '/* */' comments: a comment is one line holding only a link to a markdown section, like '# docs/memory.md#cycles', and only outside functions. Ask whether the note is needed: if a reader could work it out from the code, delete it; if it is lasting knowledge, write the section first and link to it; if it warns against a change, a test or a compile error pushes harder than prose
-- [ ] common_mistakes — 'Pet' has no attribute 'missing' to assign to
-- [ ] computed_receiver — diagnostics/computed_receiver/computed_receiver.spite:6:44: '(start + offset).maximum(...)' calls a function on a value computed in place: name it first ('var named = start + offset') and call 'named.maximum(...)', since only a name calls a function
-- [ ] conditions_and_returns — the condition of 'if' is an Integer, but it must be a Boolean: compare it with something, like 'count > 0' or 'name != ""'
-- [ ] console_flush — 'Console' does not define 'flush'
-- [ ] constructor_as_argument — 'CounterButton(screen.id)' is constructed inside an argument of 'screen.add': a constructor call is never an argument, so make it first on a line of its own, 'var counter_button = CounterButton(screen.id)', and pass 'counter_button'
-- [ ] constructor_codegen_list — diagnostics/constructor_codegen_list/weapon.spite:3:12: a function no longer lists codegen values between '<' and '>': declare each at the top of the file on its own line ('generic $damage_type', 'generic $is_magic'), and write 'func Weapon(' here
-- [ ] copy_to_narrow — 'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('assert tracker') and use it directly
-- [ ] copy_to_narrow_conditions — 'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('assert tracker') and use it directly
-- [ ] count_proves_no_key — 'names[0]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), so 'upper_case' cannot be called on it yet: narrow it first with 'crash names[0]', 'assert names[0]' or 'if names[0] { }'
-- [ ] count_undoes_proof — this value may be null (it is a String?), but a Printable is needed: narrow it first with 'if value { }', 'assert value' or 'crash value'
-- [ ] declaration_one_per_line — diagnostics/declaration_one_per_line/declaration_one_per_line.spite:2:13: enum declarations separate their entries by lines, not commas: delete the ','
-- [ ] declaration_order — a variable comes after the constructor here, but a file is ordered: the singleton line, generic lines, enums, unions, types, variables, the constructor, then functions
-- [ ] declaration_walk — 'describe' takes a 'Spite.Attribute', an attribute bound to an instance, and 'health' here is a declaration of 'Monster', which has no value: declare the parameter 'Spite.AttributeDeclaration', or walk an instance's attributes
-- [ ] default_answer — this 'assert' would answer a default Integer (0) that a caller cannot tell from a real one: return a value ('if entity >= rows.count() { return -1 }'), make the result 'Integer?', or 'crash entity < rows.count()' if this is a developer mistake
-- [ ] default_guard — this 'if' only returns the default 'null', which is how a guard is written: write 'assert not missing' and let the rest run unindented
-- [ ] dictionary_type_arguments — a Dictionary names two types, its keys' and then its values', as in 'Dictionary<String, Integer>', and this one names 1
-- [ ] dispatched_resizes — 'Position' fits a Vector, so the items of 'Column<Position>().values' are borrowed: 'place' is borrowed from 'Column<Position>().values', and 'console.print()' on line 12 may move the items of 'Column<Position>().values', so 'place' is not read after it: ask for the item again after that line, or keep 'place.copy()', an independent object
-- [ ] division_by_constant_zero — 'total / 0' divides by zero, which always halts the program: a whole number cannot be divided by zero, so divide by something else, or leave the step out
-- [ ] doubled_underscore — the function '__strike' must be written in snake_case: lowercase words joined by one underscore each, with at most one '_' in front to make it private
-- [ ] dropped_construction — 'Report("the door opens")' makes a 'Report' and drops it: a constructed object must be kept and used, so a class whose construction is the whole point should be a function instead; turn 'Report' into a function of the class that needs it, or keep the object in a variable that is read
-- [ ] duplicate_function — 'DuplicateFunction' declares 'twice' twice: a later file may reopen a class and replace a function, but one file declares each name once
-- [ ] empty_collection_guard — this 'if' only returns the default 'List<String>()', which is how a guard is written: write 'assert not text.is_empty()' and let the rest run unindented
-- [ ] empty_constructor — formatted diagnostics/empty_constructor/holder.spite
-- [ ] empty_folder_range — 'add_system_wave' is 'add_system' for a class 'system_wave', but the folders named for 'System' hold only 'system_greet'
-- [ ] endless_locked_loop — 'Window.run' holds Window's lock for the whole call, since a Parallel reaches Window, and this loop never ends, so every other call on Window would wait forever: move the loop into a class that is not a singleton, and call Window from it
-- [ ] endless_parallel_work — 'Parallel(counter.count_forever)' runs 'Counter.count_forever' on the thread pool, and this loop never ends and never waits, so the work never finishes and keeps its thread for good: return from the loop once the work is done, or run the loop on the program's own thread
-- [ ] entry_class_reopened — diagnostics/entry_class_reopened/bundle/entry_class_reopened.spite: error: 'EntryClassReopened' is the program's entry class (diagnostics/entry_class_reopened/entry_class_reopened.spite), so no other file may be a class of that name: rename this file, or the program's folder and its entry file
-- [ ] entry_constructor_arguments — 'EntryConstructorArguments' is the entry constructor, and it takes no arguments: a program reads its run-time settings through Environment() (declared in its environment.spite, given on the command line beside the compiler's flags), what its build decided through Build(), and the raw command line through Arguments(), anywhere
-- [ ] enum_from_text — text is not a Mood until it is read as one, and text that names none of its values has none to give: read it with 'to_mood()', which answers 'Mood?', null when the text names none of its values, and narrow it, or declare the value 'Mood?'
-- [ ] enum_numbers — 'user' and 'guest' both have the number 8 in enum 'Role': a value's number is its identity, so give one of them another
-- [ ] enum_reopening_replaces — 'fog' is not a value of this enum
-- [ ] enum_value_templates — 'filter_draft' could read 'stage' or 'review', whose enums both list 'draft': write the comparison as a Boolean member of Post, or pass a function
-- [ ] environment_setting — 'Environment.workers' is a setting, read from the program's command line (--workers=value) or its environment (WORKERS), so it is declared with only a literal default, and the literal is its type: 'var workers = false' (Boolean), 'var workers = 0' (Integer) or 'var workers = ""' (String)
-- [ ] equals_keys — a Dictionary keyed by 'Badge' finds each key by identity, one object one key, but 'Badge' declares 'equals', so an equal 'Badge' would not be found: key the dictionary by what 'equals' compares, a number or a String
-- [ ] every_attribute — 'count_attributes' calls 'count_attribute' once for every attribute, so 'count_attribute' has to return nothing
-- [ ] failed_constructor — there is no generic class 'Asset.Pak' here: a name is looked up in this class's own namespace, its folder, each parent folder, then the whole program
-- [ ] falling_end — 'sign_of' answers a String, but when 'value < 0' is false (line 28, an 'if' with no 'else') it reaches its end without a 'return', so a caller would get a String nobody wrote: end that path with 'return <value>', or with 'crash' if it cannot happen
-- [ ] file_scope_statement — diagnostics/file_scope_statement/file_scope_statement.spite:3:1: a file holds declarations and nothing else: move this statement into a function, or into the class's constructor
-- [ ] flag_given_twice — error: '--optimized' is given twice: a flag or a setting is given once
-- [ ] flag_value — error: '--optimized=maybe' was given to the compiler, but 'Build.optimized' is a Boolean: --optimized, --optimized=true or --optimized=false
-- [ ] folded_build_crash — 'crash build.serve' always halts: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks
-- [ ] folded_crash — 'crash $slot_type.fits_vector()' always halts in Slot<List<String>>: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks
-- [ ] folder_name — diagnostics/folder_name: error: the folder 'BadFolder' is not named in snake_case: every folder of a program, a package's own folder included, is lowercase words joined by '_', so rename it 'bad_folder'
-- [ ] foreign_call_mistakes — a Console cannot cross into C: a foreign function takes numbers, Boolean, enum values, text and a type whose attributes are all numbers
-- [ ] foreign_callback_mistakes — 'named' is called by C, which passes numbers and addresses: 'argument 1' is a String, so take it as a number, a Boolean or a Memory.Address (text C passes is read with 'terminated_text()')
-- [ ] foreign_library_mistakes — 'fixture' has no extension: name the library file exactly as it is on disk, like "user32.dll" or "libc.so.6" (a wrapper for another platform names that platform's file)
-- [ ] format_flag — error: '--format' is not a compiler option: every compile formats the program's own files first, and nothing turns that off: '--check' formats and checks a program without building it
-- [ ] format_setting — 'Build.format' cannot be declared: every compile formats the program's own files first, and nothing turns that off: '--check' formats and checks a program without building it
-- [ ] found_item_borrows — 'found' is borrowed from 'velocities', and 'velocities.append()' on line 9 may move the items of 'velocities', so 'found' is not read after it: read 'velocities[index]' again after that line, or keep 'found.copy()', an independent object
-- [ ] from_conversion — 'Celsius.from_integer' makes a Celsius from another value, and a conversion belongs to the value converted: declare 'to_celsius()' on the class it converts from, or take the value in the constructor
-- [ ] function_owner — 'Spite.Function<String, String>' has no attribute 'owner'
-- [ ] function_reflection — '$system_type.has_function(...)' is decided while compiling, so the name it asks for is written as a literal: '$system_type.has_function("run_each")', or a pattern such as "<phase>_each"
-- [ ] function_shape_default — 'held' is a Weapon, a type that requires the function 'strike', so '= null' has no default to make: no object can supply a function it does not have. Make its type nullable, with a '?', and narrow it before use, or give it a real object in the constructor
-- [ ] function_value_mistakes — a Spite.Function<Nothing> cannot be used where a Spite.Function<String, String> is needed
-- [ ] function_waits_paradox — whether 'Looper.update_each' can wait was answered false here, before the functions that ask 'function_waits' were compiled, and it is true once they are: it reaches one of them, or a function value made in one, so its answer would decide itself, so ask from a function that 'Looper.update_each' does not reach
-- [ ] generic_class_in_comparison — diagnostics/generic_class_in_comparison/generic_class_in_comparison.spite:5:15: expected ':' followed by the field's value but found '='
-- [ ] generic_constraint_not_a_type — '$count_type' is constrained by 'Integer', which is not a 'type': a constraint names a 'type' the class given must fit, like 'generic $count_type: Printable'
-- [ ] generic_constraints — 'Pet' does not fit type 'Printable', which 'Shelf' requires of $item_type: it has no function 'to_string'
-- [ ] grouped_operand_text — '2.0 * (first + second)' is a multiplication in Float, since arithmetic takes the left side's type, and the right side is a Double, which would be cut to fit: write the Double first ('(first + second) * 2.0'), or store the right side in a Float first if it fits one
-- [ ] hand_copy_of_library — 'Matrix4.set_product', added by this reopening, rewrites this Matrix4 from two Matrix4 values, which the library's '*' already answers: write 'target = left * right' (the answer is built in target's place)
-- [ ] hidden_class — diagnostics/hidden_class/physics/plugin.spite: error: the class 'Physics.Plugin' hides the class 'Plugin' (diagnostics/hidden_class/plugin.spite): inside 'Physics' the name 'Plugin' would mean this class, so give one of them a clearer name
-- [ ] hole_values — the hole '<stage>' of '<stage>_all' matches only the values of an enum named for it, and there is no enum 'Stage': declare 'enum Stage' listing the names it may match, one per line
-- [ ] index_reads — 'names[0]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), so 'upper_case' cannot be called on it yet: narrow it first with 'crash names[0]', 'assert names[0]' or 'if names[0] { }', or prove the count first, 'crash names.count() > 0'
-- [ ] indexable_unproven — 'ruler[index]' may be missing, since every '[ ]' answers a 'T?' (this one is an Integer?), but an Integer is needed: narrow it first with 'crash ruler[index]', 'assert ruler[index]' or 'if ruler[index] { }'
-- [ ] inline_singleton — 'Build' is a singleton: bind it once beside the attributes, 'var build = Build()', and use 'build.target_operating_system'
-- [ ] inline_singleton_attribute — 'Build' is a singleton: bind it once beside the attributes, 'var build = Build()', and use 'build.target_operating_system'
-- [ ] internal_class — diagnostics/internal_class/spite/internal/floor.spite: error: Spite.Internal.Floor is internal to Spite and cannot be used outside the standard library: read bytes with Buffer or BinaryReader, describe foreign data with a plain type, and leave threads to the compiler
-- [ ] internal_use — Spite.Internal.Memory is internal to Spite and cannot be used outside the standard library: read bytes with Buffer or BinaryReader, describe foreign data with a plain type, and leave threads to the compiler
-- [ ] io_system_writes_row — 'crash not $system_type.function_writes_parameter("last_each", 1)' always halts in Runner<Quitter>: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks; 'Quitter.last_each' writes its parameter 'quitting' at diagnostics/io_system_writes_row/quitter.spite:5: 'quitting.quit.requested = true'
-- [ ] items_borrows — 'Velocity' fits a Vector, so the items of 'velocities' are borrowed: 'velocity' is borrowed from 'velocities', and 'velocities.append()' on line 13 may move the items of 'velocities', so 'velocity' is not read after it: read 'velocities[index]' again after that line, or keep 'velocity.copy()', an independent object
-- [ ] items_nullable_unproven — 'names[index]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), so 'upper_case' cannot be called on it yet: narrow it first with 'crash names[index]', 'assert names[index]' or 'if names[index] { }', or read it where a bound proves it, inside 'while index < names.count()'
-- [ ] joined_maybe_boolean — this is a Boolean? used by a condition, which would only test that it is there, not that it is true: prove it is there first ('crash index < flags.count()' proves 'flags[index]') or switch over it
-- [ ] joined_text — diagnostics/joined_text/joined_text.spite:5:34: text written down is not joined with '+': put the value inside it, like "hello {name}". Two values are still joined with '+'
-- [ ] json_key — 'MeshRecord.json_key_maximum_distance' would name the JSON key of 'maximum_distance', and JsonReader and JsonWriter do not read a function for it: a key that is not an attribute's name is given to the serializer in a map keyed by the attribute, '{MeshRecord.attributes['maximum_distance']: "..."}'
-- [ ] json_split — there is no 'Json': it is two classes, 'JsonWriter<T>()' whose 'write(value)' makes the text, and 'JsonReader<T>()' whose 'read(text)' answers a 'T?'
-- [ ] json_unwritable — JsonWriter cannot write 'Owner': 'Owner.pet' is the union Pet, and JSON does not say which member a value is. JsonWriter handles classes, lists, dictionaries, enums, Symbols, numbers, Boolean, String and 'T?', so keep what it sees to those, or give it a class of its own that holds only them
-- [ ] known_fact_checked — 'first' is already narrowed by 'crash first' on line 7: remove this check
-- [ ] left_over_after_block — diagnostics/left_over_after_block/left_over_after_block.spite:12:7: 'console' is left over after the '}' that closes this statement: a statement ends with its line, so remove it, or put it on a line of its own if it is a statement
-- [ ] left_over_after_return — diagnostics/left_over_after_return/left_over_after_return.spite:10:22: 'attribute' is left over after the end of the statement: a statement ends with its line, so remove it, or put it on a line of its own if it is a statement
-- [ ] lent_arguments — 'streamed_rows' is the plural of 'streamed_row', but 'streamed_row' walks nothing: its 'argument' is not a word of its name, so it is a helper compiled for the one symbol passed to it, not a template with a plural. Name it 'streamed_argument' and call 'streamed_arguments(...)'
-- [ ] lent_element_guard — this 'assert' would answer a default Layout (an object with every attribute at its default) that a caller cannot tell from a real one: return a value ('if row >= column.values.count() { return Layout() }'), make the result 'Layout?', or 'crash row < column.values.count()' if this is a developer mistake
-- [ ] lent_escapes — 'Justify' fits a Vector, so the items of 'Column<Justify>().values' are borrowed: 'justify' is borrowed from 'Column<Justify>().values' and cannot be kept in the attribute 'kept': keep 'justify.copy()', an independent object
-- [ ] lent_results — 'Layout' fits a Vector, so the items of 'Column<Layout>().values' are borrowed: 'layout' is borrowed from 'Column<Layout>().values' and cannot be kept in the attribute 'kept': keep 'layout.copy()', an independent object
-- [ ] lent_to_calls — 'mouse' is borrowed from 'mice' and lent to 'grow' for its call, and 'input.grow()' on line 21 may move the items of 'mice': a function lent a borrowed item may not append to or remove from the collection it is borrowed from, directly or through what it calls; change the size of 'mice' before or after the call
-- [ ] library_class_namespace — diagnostics/library_class_namespace/color/palette.spite: error: 'Color' is a class of the standard library and also the namespace of the folder 'diagnostics/library_class_namespace/color': a dotted name means one thing, so rename the folder
-- [ ] library_function_mistakes — 'sort_by(counts.get_at)': 'counts.get_at' returns an Integer?, but 'sort_by' needs it to return something ordered, a number or a String, and a value that may be null has no place in the order: pass a function of your own that narrows it and returns the plain value
-- [ ] literal_does_not_fit — 300 does not fit in a Byte, whose numbers run from 0 to 255: store it in a wider type, or use a number that fits
-- [ ] load_as_value — diagnostics/load_as_value/load_as_value.spite:2:18: 'load' is a keyword that starts a line of its own, like 'load "folder"': it is not a function, and it has no value
-- [ ] load_folder_name — diagnostics/load_folder_name/load_folder_name.spite: error: the folder 'Engine-Plugin' is not named in snake_case: every folder of a program, a package's own folder included, is lowercase words joined by '_', so rename it 'engine_plugin'
-- [ ] load_function — diagnostics/load_function/load_function.spite:7:6: 'load' is a keyword and cannot name a function: give it a name that says what it loads, like 'load_texture'
-- [ ] load_parentheses — diagnostics/load_parentheses/load_parentheses.spite:2:9: 'load' is a keyword, not a function: write it without parentheses, 'load "level"'
-- [ ] load_unknown_condition — this 'if' holds a 'load', so the compiler decides it, and it cannot decide this condition: around a 'load' a condition reads only Build fields (through 'var build = Build()' beside the attributes), text, whole numbers, true and false, joined by ==, !=, and, or and not
-- [ ] loaded_folder_namespace — unknown identifier 'Garnish'
-- [ ] local_singleton — 'Build' is a singleton, bound here as a local: bind it once beside the attributes, 'var build = Build()', so every singleton the class uses is at the top of its file
-- [ ] locked_wait — 'Columns.despawn_all' waits for 'Parallel(remover.run)' while it holds Columns's lock, since a Parallel reaches Columns, and what 'remover.run' runs calls 'Columns.remove_row', which takes that lock: each would wait for the other forever. Wait for the Parallel outside Columns's functions, or do not call Columns from its work
-- [ ] lone_hole — '"{counter.click_count.clicks}"' is a text of one value and nothing else: assign the value directly, 'counter.label.text = counter.click_count.clicks'
-- [ ] long_line_construction — 'CounterButton("a label long enough to carry this line past the formatter width")' is constructed inside an argument of 'world.create_entity_from_bundle': a constructor call is never an argument, so make it first on a line of its own, 'var counter_button = CounterButton("a label long enough to carry this line past the formatter width")', and pass 'counter_button'
-- [ ] lost_writes — 'resized.width' is written here and 'resized' is never read after it: 'resized' is a 'Layout' only this function holds, so the write is lost when it is let go. Use what was written, return 'resized', keep it in an attribute or a list, or drop the write
-- [ ] maths_constant_assigned — 'Float.pi' is a constant, and a constant is get-only: nothing can assign it
-- [ ] maths_constant_on_value — 'pi' is a constant of the class Float, not of a value: write 'Float.pi'
-- [ ] maths_other_spellings — Float has no function 'sqrt': Spite spells it 'square_root', since no name is abbreviated
-- [ ] maybe_boolean_conditions — this is a Boolean? used by a condition, which would only test that it is there, not that it is true: prove it is there first ('crash index < flags.count()' proves 'flags[index]') or switch over it
-- [ ] maybe_in_arithmetic — 'scores[position]' may be missing, since every '[ ]' answers a 'T?' (this one is an Integer?), so '+' cannot use it yet: narrow it first with 'crash scores[position]', 'assert scores[position]' or 'if scores[position] { }', or read it where a bound proves it, inside 'while position < scores.count()'
-- [ ] member_template_mistakes — 'sum_name': the member 'name' of 'Repository' is a String, but 'sum_' needs it to return a numeric type
-- [ ] memory_access — 'write_long' reads or writes the memory at an address, which only library/ does: use a class of the standard library, or 'TypedMemory<T>' for values of any type
-- [ ] missing_switch_case — this switch over 'Held' has no case for File: a switch over a union covers every member, so a member added later cannot be forgotten; add the cases, or end with '_:' for the rest
-- [ ] named_like_library — diagnostics/named_like_library/geometry/vector3.spite: error: the class 'Geometry.Vector3' is named like the standard library's class 'Vector3': use 'Vector3', reopening it to add what it lacks, or give this class a clearer name
-- [ ] namespace_nullable — 'ns' only copies 'NamespaceNullable.namespace' so it can be narrowed: narrow 'NamespaceNullable.namespace' itself ('assert NamespaceNullable.namespace') and use it directly
-- [ ] naming — the enum 'job_kind' must be written in PascalCase: capitalised words with no underscores
-- [ ] narrowed_name_reassigned — this value may be null (it is a Box?), so 'label' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
-- [ ] nested_if_else — this 'if'/'else' is inside a branch of another 'if'/'else': move it into a function named for what it decides, or, when both test which member of a union or which value of an enum a value is, use one 'switch'
-- [ ] new_spite_class — diagnostics/new_spite_class/spite/gadget.spite: error: 'Spite' holds the standard library's own classes, so a file in a 'spite' folder may only reopen one of them: 'Spite.Gadget' is not one, and a new class of your own belongs in a namespace of your own
-- [ ] null_comparison — 'null' is not a value to compare against or pass around: narrow the value instead, with 'if value { } else { }', 'assert value', 'crash value' or 'switch value { <Type>: ... Null: ... }'
-- [ ] null_default_locals — the variable 'count' is declared 'Integer', not 'Integer?', so '= null' would make a default Integer rather than nothing: write 'var count: Integer? = null' for none yet, narrowed before use, or 'var count = 0' for a default
-- [ ] null_defaults — the attribute 'target' is declared 'Monster', not 'Monster?', so '= null' would make a default Monster rather than nothing: write 'var target: Monster? = null' for none yet, narrowed before use, or 'var target = Monster()' for a default, or keep '= null' and assign it at the top of the constructor
-- [ ] number_memory — 'Integer' declares 8 bytes of memory, and the compiler lays it out as int32_t, which is 4
-- [ ] number_memory_read — '_memory' is the memory Integer is kept in, and the compiler keeps the value itself there: write 'this'
-- [ ] number_memory_spelling — a value states its size as 'var _memory = Memory.Bytes(bytes)', with the bytes written out: the compiler places that memory, and a number's is a register
-- [ ] number_type_mistakes — 'Boolean' does not fit type 'Number', which 'Summer' requires of $number_type: it has no function 'sum'
-- [ ] old_ampersand — Spite has no '&' operator: bits are functions on the whole numbers, write 'value.bits_and(mask)' (and 'and' for a condition)
-- [ ] old_break — diagnostics/old_break/old_break.spite:7:13: Spite has no 'break': a loop stops in its own condition, like 'while index < count and not found', and a step it skips sits under an 'if'
-- [ ] old_declaration_equal — diagnostics/old_declaration_equal/old_declaration_equal.spite:1:10: a declaration takes no '=': write 'enum Job {' with one entry on each line
-- [x] old_do — diagnostics/old_do/old_do.spite:5:15: Spite has no 'do': an 'if' on a value that may be null narrows it in place, 'if value { ... } else { ... }', and inside the block 'value' is the value itself
-- [ ] old_let — diagnostics/old_let/old_let.spite:4:5: Spite has no 'let': a variable is declared 'var name = value', always with a default, and there is no 'const'
-- [ ] old_list_names — List has no method 'add', which does not say where: write 'append' to add at the end, or 'prepend' at the start
-- [ ] old_nullable_spelling — diagnostics/old_nullable_spelling/old_nullable_spelling.spite:1:31: 'Nullable<T>' was replaced by a '?' suffix: write 'Monster?' for a value that may be null
-- [ ] old_reference_type — Spite has no '&Type': every class, list and text is passed by reference already, so write the type alone
-- [ ] old_shift — diagnostics/old_shift/old_shift.spite:5:26: Spite has no '<<': bits are functions on the whole numbers, write 'value.shifted_left(count)'
-- [ ] old_type_spellings — 'Int' is spelled 'Integer'
-- [ ] operator_function_call — 'set_height' is what writing 'height' calls: write 'point.height = 4'
-- [ ] overlapping_load — 'load "kingdom/physics"' and the load at diagnostics/overlapping_load/overlapping_load.spite:4 both reach the files of 'diagnostics/overlapping_load/kingdom/physics', which lies inside 'diagnostics/overlapping_load/kingdom', so those files would be loaded twice: load only 'diagnostics/overlapping_load/kingdom', whose subfolders are already its namespaces
-- [ ] own_template_borrows — 'values.item_at(items, best)' is borrowed from 'values' and cannot be returned: return 'values.item_at(items, best).copy()', an independent object
-- [ ] package_attributes — the attribute 'color' is never read: remove it
-- [ ] parallel_function_reach — 'Parallel(tally.count_up)' runs 'record' on another thread, so it may reach only the attributes of its own 'Tally' that hold values, its locals and singletons: 'marks' holds a List<Integer>, which another thread may share. Give the work what it needs as numbers or text of its own, or make an object for the work alone that nothing else holds or touches after 'Parallel(...)'
-- [ ] parallel_handover — 'crafter' was handed to 'Parallel(crafter.craft)', which keeps its 'recipe_ids' on another thread, so it is not used after that line: make another 'Crafter' for what follows, or read the task's result
-- [ ] parallel_reach — 'parallel_each_follow' runs 'follow' on many elements at once, so it may reach only its own 'Boid' attributes that hold values, and its locals: 'leader' holds a 'Boid?', which another element may share. Copy what the pass needs into a number or text attribute first, or write 'each_follow' to run it on one thread
-- [ ] parallel_shared_value_writes — 'Parallel(add_one)' writes 'total' of this 'ParallelSharedValueWrites' on another thread while this thread may write it too, so one write would be lost: move the work into a class of its own and hand a new one over ('var worker = Worker(...)' then 'Parallel(worker.work)'), answer the value from the work and read the task's result, or keep it in a singleton, which is made safe for threads
-- [ ] parallel_shared_writes — 'counter' was handed to 'Parallel(counter.bump)', which writes its 'count' on another thread, so it is not used after that line: make another 'Counter' for what follows, or read the task's result
-- [ ] parameter_write_question — 'Mover.move' takes 2 arguments, so it has no parameter 2 to ask about: 'function_writes_parameter' counts parameters from 0
-- [ ] passed_functions — there is no 'map(function)': collect a member of each element with 'map_<member>()', and a value computed from each element by giving the element's class a read-only attribute (a 'get_<name>()' with no setter) and writing 'map_<name>()'
-- [ ] passed_symbol — 'announce' is compiled once for each 'phase' of 'Symbol<$system_type.phase_all>', so its 'phase' can only be the symbol of a template over that same range, passed by name from inside it, as in 'announce(phase)'
-- [ ] path_narrow_assignment — this value may be null (it is a Box?), so 'label' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
-- [ ] path_narrow_else — this value may be null (it is a Namespace?), so 'name' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
-- [ ] path_narrow_loop — assigning to 'outer.inner' inside this loop undoes a narrowing made before the loop, and the next pass would read it unproven: narrow it inside the loop instead
-- [ ] plain_get_at — 'get_at' answers 'Integer', but it is what '[ ]' calls, and every '[ ]' answers a 'T?' that is narrowed before use: declare it to answer 'Integer?', and answer null when nothing is at the index
-- [ ] plain_items — 'Vector<Integer>' holds plain values, and a List keeps numbers, Boolean, enums and Memory.Address flat just as it did, so a list of them has one spelling: write 'List<Integer>'
-- [ ] plain_symbol_on_list — 'total_member' is a template on List, whose own attributes are its buffer, so a plain 'Symbol' answers nothing: write 'member: Symbol<$element_type>' to name a member of the element
-- [ ] plural_templates — 'collect_name' answers every 'name', so it is written in the plural: 'collect_names'
-- [ ] print_without_to_string — 'Crate' does not fit type 'Printable': it has no function 'to_string'
-- [ ] proven_element — 'codes[index]' is already proven by the loop condition 'index < codes.count()', so this 'crash' proves nothing: remove it
-- [ ] proven_index_check — 'skipped[index]' is already proven by the loop condition 'index < skipped.count()', so this 'crash' proves nothing: remove it
-- [ ] read_only_attribute — 'number' is read-only: 'Badge' answers it through get_number() and has no set_number(value)
-- [ ] receiver_call_undoes_proof — 'names[0]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), but a Printable is needed: narrow it first with 'crash names[0]', 'assert names[0]' or 'if names[0] { }', or prove the count first, 'crash names.count() > 0'
-- [ ] reflection_names — the function 'functions' has a name reflection gives every object: 'value.functions' lists its functions, and one of its own would hide it. Name it something else, like 'table_functions'
-- [ ] reflection_read_only — 'name' is read-only: 'Class' answers it through get_name() and has no set_name(value)
-- [ ] removed_executable_flag — error: '--executable' is not a compiler option: 'spite program --build' builds the executable without running it, and 'spite program' builds it and runs it
-- [ ] removed_run_flag — error: '--run' is not a compiler option: 'spite program' builds the program and runs it, 'spite program --check' only checks that it compiles, and 'spite program --build' builds it without running it
-- [ ] removed_translation_units_flag — error: '--translation-units' is not a compiler option: the compiler chooses how many C files it compiles a program from
-- [ ] removed_tuning_flag — error: '--tune-for-this-machine' is not a compiler option: a default or --hot-reload build is tuned for the machine that builds it, and an --optimized build, the one shipped, runs on any machine
-- [ ] reopened_vector_borrows — 'first' is borrowed from 'other', and 'other.append()' on line 4 may move the items of 'other', so 'first' is not read after it: read 'other[index]' again after that line, or keep 'first.copy()', an independent object
-- [ ] repeated_branch_call — 'source.slice(0, end_index)' is computed in both branches: compute it once before the 'if'
-- [ ] replaced_items — 'layout' was read from 'layouts[0]', so assigning it here changes only 'layout', and nothing reads 'layout' after: 'layouts' still holds the old item. Write 'layouts[0] = made' to replace the item, or give the new value a 'var' of its own
-- [ ] reserved_signature — 'drop' is called by the compiler when the last reference to an object goes, so it is declared exactly 'func drop()'
-- [ ] reserved_spite_namespace — diagnostics/reserved_spite_namespace/reserved_spite_namespace.spite: error: 'spite' is reserved for the built-in Spite namespace: name the folder something else
-- [ ] return_type_colon — diagnostics/return_type_colon/return_type_colon.spite:5:30: a return type is written '(): Integer': add the ':' after the parameter list
-- [ ] returned_local — 'whole' is declared only to be returned on the next line: write 'return scaled.round()', since 'return' already makes the value the function's Integer
-- [ ] returned_text — '$value_type.returned_text("json_key_level")' reads the text a function of 'Label' returns, and it has no function 'json_key_level': ask '$value_type.has_function("json_key_level")' first, and read the text only in the branch where it is true
-- [ ] returning_guard — this 'if' only returns: write 'assert not name.is_empty()' and let the rest run unindented
-- [ ] same_named_types — a List<Recipes.CookTask.Buildable> cannot be used where a List<Recipes.Cookbook.Buildable> is needed
-- [ ] separator_flag — error: '--' is not a separator: a program's settings are given beside the compiler's flags, kebab-case like them: spite program --optimized --player-name=Bob
-- [ ] setting_named_like_flag — 'Environment.optimized' and 'Build.optimized' are both '--optimized' on the command line: a program's settings and the compiler's flags share one set of names, so one of them needs another name
-- [ ] setting_value — error: '--volume=loud' was given, but 'Environment.volume' is an Integer: a whole number, like --volume=3
-- [ ] several_mistakes — this class has no function 'missing_function'
-- [ ] shadowed_function — the attribute 'greeting' has the name of a function of this class, and a function is a value passed by its name: give the attribute a name of its own
-- [ ] shape_function_mismatch — 'Silent' does not fit type 'Renderable': it has no function 'render'
-- [ ] shape_mismatch — formatted diagnostics/shape_mismatch/shape_mismatch.spite
-- [ ] shape_parameter_name — diagnostics/shape_parameter_name/shape_parameter_name.spite:2:19: a shape names the types it needs, not the names they are given: write 'Integer' where 'scale: ...' is, since a class satisfies it whatever it calls its parameters
-- [ ] singleton_arguments — 'starting_name' is not a literal: a singleton's arguments are literals the compiler reads, because each distinct argument list is its own instance of 'Registry', made the first time it is asked for
-- [ ] singleton_circle — singleton 'Columns' binds 'World', which binds 'Column<Entity>', which binds 'Columns': singletons initialise each other in a circle, so one of them has to reach the other some other way, such as by binding it in the class that uses both
-- [ ] singleton_function — a class says it is a singleton with a 'singleton' line at the top of its file, not with a function: delete 'is_singleton()' and write 'singleton' as the file's first line
-- [ ] snapshot_argument_writes — 'crash not $system_type.function_writes_parameter("<phase>_each", argument.index) or not argument.class.any_attribute_fits_vector(Entity)' always halts in Refuser<Mover>: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks; 'Mover.update_each' writes its parameter 'moving' at diagnostics/snapshot_argument_writes/mover.spite:7: 'moving.position.left = moving.position.left + moving.entity.id'
-- [ ] sparse_rows — 'row' borrows items from 'Column<Position>().values' for the call it is passed to, and 'keeper.spawn_while_moving()' on line 11 may move the items of 'Column<Position>().values': a function that is handed a row may not append to or remove from the vectors it borrows from, directly or through what it calls
-- [ ] spinning_loop — this 'while true' never ends: nothing inside it returns, asserts or crashes, and it calls nothing, so the program would spin here for good: leave it with a 'return' ('if done { return }'), or loop 'while' a condition
-- [ ] spite_link_outside_final — this comment links to 'helper.spite', a .spite file, and only a file '--final-classes' wrote may link one, to name the file that supplied a declaration: anywhere else a comment links a markdown section
-- [ ] store_through_nullable — 'boxes[3]' may be missing, since every '[ ]' answers a 'T?' (this one is a Box?), so 'label' cannot be assigned through it yet: narrow it first with 'crash boxes[3]', 'assert boxes[3]' or 'if boxes[3] { }', or prove the count first, 'crash boxes.count() > 3'
-- [ ] structural_index_undone — 'glyphs[code - 32]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), so 'upper_case' cannot be called on it yet: narrow it first with 'crash glyphs[code - 32]', 'assert glyphs[code - 32]' or 'if glyphs[code - 32] { }', or read it where a bound proves it, inside 'while code - 32 < glyphs.count()'
-- [ ] switch_chain — these 3 'if's each compare 'index' with a value and return, which is what a 'switch' says: write 'switch index { 0: return "monday"  1: return "tuesday"  2: return "wednesday"  _: return "later" }'
-- [ ] switch_rest_case — the cases 'Cat' and 'Dog' do the same thing: write it once, as the last case '_:'
-- [ ] switch_single_case — this switch only asks what class 'creature' is: write 'return creature == Fish'
-- [ ] symbol_for_text — 'world' in single quotes is a symbol, and text is wanted here: text is always written in double quotes, so write "world"
-- [ ] target_in_build — 'Build.target_operating_system' cannot be declared by a program: the standard library for the target system is loaded before the program, so the target is given to the compiler, --target-operating-system=linux (or windows, or mac), and is the system doing the compiling otherwise
-- [ ] target_operating_system — error: '--target-operating-system=beos' names no operating system the library has a folder for: windows, linux or mac
-- [ ] template_attribute_spelling — 'attribute: Spite.Attribute<...>' would be bound to one instance, and a template is made once for each member of the class, with the instance as its own argument: write 'attribute: Spite.AttributeDeclaration<...>'
-- [ ] template_function_clash — the template 'store_attribute' makes 'store_row' for the attribute 'row' of 'RowView', which is already a function of 'Row': rename the function or the template
-- [ ] template_walk — this 'while' walks every element of 'items' only to call 'restock' on each: write 'items.each_restock()'
-- [ ] terminal_if — this 'if' is the last thing the function does and has no 'else', so it only checks that 'maybe_name' is there: write 'assert maybe_name' and let the rest of the function run unindented
-- [ ] text_is_to_string — Integer turns into text with 'to_string()', a cast like 'to_integer()': write 'to_string()'
-- [ ] text_items_passed — 'each' passes each item to a function, which a Vector never does: keep the values in a 'List<String>' to pass them on
-- [ ] text_to_number — text is not an Integer until it is read as one, and text that is not a number has none to give: read it with 'to_integer()', which answers 'Integer?', null when the text is not a number that fits, and narrow it, or declare the value 'Integer?'
-- [ ] type_mistakes — this value may be null (it is a Pet?), so 'name' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
-- [ ] type_size_mistakes — 'Labelled.size' is the size of the C struct a type is at a foreign call, and only a type whose attributes are all numbers is one
-- [ ] unclosed_text — this text never closes: a piece of text is written on one line, and a line break inside it is written as the two characters backslash and n
-- [ ] underscore_flag — error: '--repl_port' is written '--repl-port': flags and settings are kebab-case on the command line, and the field they set is 'repl_port'
-- [ ] underscore_setting — error: '--player_name' is written '--player-name': flags and settings are kebab-case on the command line, and the field they set is 'player_name'
-- [ ] union_value_members — 'String' cannot be a member of union 'Message': a union holds objects whose class a switch tests, and a String is a value; make the member a class of your own that keeps it in an attribute
-- [ ] unkeyable_types — a Dictionary cannot be keyed by 'Integer?': a key is a number, a Boolean, a String, an enum value or an object of a class
-- [ ] unknown_compiler_flag — error: '--serve' is not a compiler option, and this program declares no setting 'serve' (its Build declares check, build, executable_path, c_source, c_path, final_classes, optimization_report, high_level_report, high_ir, optimized, development, repl, repl_port, hot_reload, debug_memory, trace_asserts, operating_system, target_operating_system, program). To decide it when compiling, reopen Build in the program's build.spite with 'var serve = ...'; to read it when the program runs, declare it in environment.spite with 'var serve = ...'
-- [ ] unknown_type_in_shape — unknown type 'Server.Component.Eye': did you mean 'Component.Eye'?
-- [ ] unknown_type_suggestion — unknown type 'Eye': did you mean 'Component.Eye'?
-- [ ] unstepped_poll — this loop reads 'napping.finished' and calls nothing, so nothing steps 'napping' between two reads and it never finishes: read its value instead ('var done: T = napping' waits for it), or call something that waits in the loop
-- [ ] unused_attributes — the attribute 'forgotten' is never read: remove it
-- [ ] unused_names — formatted diagnostics/unused_names/unused_names.spite
-- [ ] upper_is_upper_case — text has no 'upper()': write 'upper_case()', which names what it does without abbreviating
-- [ ] value_switch — this switch over 'light' has no case for 'amber': a switch over an enum covers every value, so a value added later cannot be forgotten; add the cases, or end with '_:' for the rest
-- [ ] variadic_mistakes — this call passes a whole List<String>, but the last parameter is written with '...', so it takes the values one by one: pass the elements themselves, separated by commas
-- [ ] variadic_not_last — diagnostics/variadic_not_last/variadic_not_last.spite:7:34: '...lines' takes every argument from here on, so it is the last parameter: move it to the end
-- [ ] vector_borrows — 'velocity' is borrowed from 'velocities', and 'velocities.append()' on line 11 may move the items of 'velocities', so 'velocity' is not read after it: read 'velocities[index]' again after that line, or keep 'velocity.copy()', an independent object
-- [ ] vector_items — 'Holder' cannot be an item of a Vector: its attribute 'scores' is a List<Integer>, and a Vector holds each item inline, so every attribute is a number, a Boolean, an enum or a String (keep 'Holder' in a 'List<Holder>', or keep 'scores' somewhere else)
-- [ ] vector_reserve_borrows — 'velocity' is borrowed from 'velocities', and 'velocities.reserve()' on line 11 may move the items of 'velocities', so 'velocity' is not read after it: read 'velocities[index]' again after that line, or keep 'velocity.copy()', an independent object
-- [ ] vector_rows — 'row' borrows items from 'world.positions' for the call it is passed to, and 'keeper.spawn_while_moving()' on line 14 may move the items of 'world.positions': a function that is handed a row may not append to or remove from the vectors it borrows from, directly or through what it calls
-- [ ] vector_template_walk — this 'while' walks every element of 'crates' only to call 'seal' on each: write 'crates.each_seal()'
-- [ ] walk_with_function — this 'while' walks every element of 'names' only to call 'say_hello' with each: write 'names.each(say_hello)'
-- [ ] walked_rows — 'row' borrows items from 'world.position' for the call it is passed to, and 'keeper.spawn_while_moving()' on line 11 may move the items of 'world.position': a function that is handed a row may not append to or remove from the vectors it borrows from, directly or through what it calls
-- [ ] weak_across_threads — 'Parallel(tree.grow)' runs on another thread, and what it runs reaches 'Branch', which is a Weak or is held by one: a Weak is kept in one table that is not shared between threads, so a Weak and the objects it holds stay on the program's own thread. Hold the object itself in the work, or keep the Weak out of what the Parallel reaches
-- [ ] whole_number_rotation — an Integer has no function 'square_root'
-- [ ] wider_bitwise_operand — 'flags.bits_and(mask)' works in a Byte, since a bitwise function takes its receiver's type, and 'mask' is a Long, which would be cut to fit: store the receiver in a Long first ('var wide: Long = flags'), or store 'mask' in a Byte first if it fits one
-- [ ] wider_comparison — 'count < total' compares in Integer, since a comparison takes the left side's type, and the right side is a Long, which would be cut to fit: write the Long first ('total > count'), or store the right side in an Integer first if it fits one
-- [ ] wider_right_operand — 'count * total' is a multiplication in Integer, since arithmetic takes the left side's type, and the right side is a Long, which would be cut to fit: write the Long first ('total * count'), or store the right side in an Integer first if it fits one
-- [ ] written_handle_type — the type of a 'Parallel' handle is never written: it is worked out from the function it runs, so write 'var total = Parallel(count)'
-- [ ] written_not_read — 'total' is never read: remove it
+- [ ] address_forms: a File reads bytes into a Buffer, not into memory at an address: 'read_bytes_at(position, count)' answers a 'Buffer?' of up to 'count' bytes from 'position', and 'read_bytes()' the whole file
+- [ ] allocator_after_use: 'spark' was already used, so its allocator can no longer change: an object's allocator is set on the line right after it is made. To move it, copy it and set the copy's: 'var moved = spark.copy()' and then 'moved.memory.allocator = ...'
+- [ ] allocator_reads: only an object has an allocator of its own, and this is a value of type Integer, which the compiler places itself
+- [ ] allocator_resizes: 'place' is borrowed from 'store.positions', and 'names.append()' on line 12 may move the items of 'store.positions', so 'place' is not read after it: read 'store.positions[index]' again after that line, or keep 'place.copy()', an independent object
+- [ ] argument_class: 'Mender.mend' takes 1 arguments, so it has no parameter 1 for 'argument_class' to name: parameters are counted from 0
+- [ ] argument_class_name: 'argument_class("repair", 0)' names the class of a parameter of 'Mender.repair', and 'Mender' has no function 'repair'
+- [ ] argument_count: '$system_type.argument_count(...)' is decided while compiling, so the name it asks for is written as a literal: '$system_type.argument_count("update_each")', or a pattern such as "<phase>_each"
+- [ ] atomic_misuse: 'crash $value_type == Number and $value_type != Float and $value_type != Double or $value_type == Boolean' always halts in Atomic<Float>: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks
+- [ ] bitwise_on_float: a Float has no function 'shifted_right': the bitwise functions are on the whole numbers, Tiny to UnsignedLong. Cast it first, like 'var whole: Long = value'
+- [ ] blank_line: formatted diagnostics/blank_line/blank_line.spite
+- [x] borrowed_name: diagnostics/borrowed_name/borrowed_name.spite:4:9: 'none' cannot name a variable, because Spite reads the word as a mistake anywhere it is used: the empty value is written 'null'
+- [x] borrowed_new: diagnostics/borrowed_new/borrowed_new.spite:4:18: there is no 'new' in Spite: a class is made by calling its own name, like 'Creature("rat")'
+- [ ] borrowed_operators: Spite writes 'and' and 'or' as words: there is no '&&' or '||'
+- [ ] borrowed_syntax: Spite has no '+=': write 'count = count + value'
+- [x] borrowed_this: diagnostics/borrowed_this/borrowed_this.spite:5:19: a class reads its own attributes by name: write 'name', not 'this.name'
+- [ ] bound_proofs_undone: 'spans[at + 2]' may be missing, since every '[ ]' answers a 'T?' (this one is an Integer?), but a Printable is needed: narrow it first with 'crash spans[at + 2]', 'assert spans[at + 2]' or 'if spans[at + 2] { }', or read it where a bound proves it, inside 'while at + 2 < spans.count()'
+- [ ] branch_undoes_proof: this value may be null (it is a Target?), so 'name' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
+- [ ] build_setting_type: error: '--workers=many' was given to the compiler, but 'Build.workers' is an Integer: a whole number, like --workers=3
+- [ ] bulk_removal: 'remove_where' removes from the collection it is called on, and 'names.filter(is_short)' makes a new one that nothing keeps: call it on the collection itself, with one test that says everything to remove
+- [ ] byte_reads: this value may be null (it is an Integer?), so '*' cannot use it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
+- [ ] call_as_argument: 'count_words(source)' is called inside an argument of 'console.print': compute it first into a named 'var' and pass the name
+- [ ] call_undoes_proof: this value may be null (it is a Monster?), so 'name' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
+- [ ] cast_by_name: there is no 'Float.from_integer()': a conversion belongs to the value converted, so write 'value.to_float()' on an Integer, or cast by assignment: 'var converted: Float = value'
+- [ ] check_proves_nothing: 'tracker' is already narrowed by 'assert tracker' on line 8: remove this check
+- [ ] class_and_namespace: diagnostics/class_and_namespace/engine/renderer.spite: error: 'Engine.Renderer' is this class and also the namespace of the folder 'diagnostics/class_and_namespace/engine/renderer': a dotted name means one thing, so rename the file or the folder
+- [ ] class_as_value: 'Health' is a class, not a value: write 'Health()' to make one, and give it a name with 'var ... = '; for the class itself, pass it where a 'Spite.Class' is wanted
+- [ ] class_keyword: diagnostics/class_keyword/class_keyword.spite:1:1: there is no 'class' keyword: a file is a class, named after the file, and its attributes and functions are written at the top level of that file
+- [ ] codegen_values: this class has no 'generic $other_type' line, so '$other_type' cannot be used as a type
+- [ ] comment_broken_link: this comment links to 'notes.md#a-heading-that-does-not-exist', but that file has no heading with that anchor
+- [ ] comment_inside_function: a comment may not appear inside a function or a declaration body: a line that needs explaining becomes a named function instead. a comment is one line holding only a link to a markdown section, like '# docs/memory.md#cycles', and only outside functions. Ask whether the note is needed: if a reader could work it out from the code, delete it; if it is lasting knowledge, write the section first and link to it; if it warns against a change, a test or a compile error pushes harder than prose
+- [ ] comment_missing_file: this comment links to 'nowhere/missing.md', which does not exist (the path is relative to the folder of the file the comment is in, like load)
+- [ ] comment_prose_comment: this comment is not a link: a comment is one line holding only a link to a markdown section, like '# docs/memory.md#cycles', and only outside functions. Ask whether the note is needed: if a reader could work it out from the code, delete it; if it is lasting knowledge, write the section first and link to it; if it warns against a change, a test or a compile error pushes harder than prose
+- [ ] comment_slash_comment: Spite has no '//' or '/* */' comments: a comment is one line holding only a link to a markdown section, like '# docs/memory.md#cycles', and only outside functions. Ask whether the note is needed: if a reader could work it out from the code, delete it; if it is lasting knowledge, write the section first and link to it; if it warns against a change, a test or a compile error pushes harder than prose
+- [ ] common_mistakes: 'Pet' has no attribute 'missing' to assign to
+- [ ] computed_receiver: diagnostics/computed_receiver/computed_receiver.spite:6:44: '(start + offset).maximum(...)' calls a function on a value computed in place: name it first ('var named = start + offset') and call 'named.maximum(...)', since only a name calls a function
+- [ ] conditions_and_returns: the condition of 'if' is an Integer, but it must be a Boolean: compare it with something, like 'count > 0' or 'name != ""'
+- [ ] console_flush: 'Console' does not define 'flush'
+- [ ] constructor_as_argument: 'CounterButton(screen.id)' is constructed inside an argument of 'screen.add': a constructor call is never an argument, so make it first on a line of its own, 'var counter_button = CounterButton(screen.id)', and pass 'counter_button'
+- [ ] constructor_codegen_list: diagnostics/constructor_codegen_list/weapon.spite:3:12: a function no longer lists codegen values between '<' and '>': declare each at the top of the file on its own line ('generic $damage_type', 'generic $is_magic'), and write 'func Weapon(' here
+- [ ] copy_to_narrow: 'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('assert tracker') and use it directly
+- [ ] copy_to_narrow_conditions: 'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('assert tracker') and use it directly
+- [ ] count_proves_no_key: 'names[0]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), so 'upper_case' cannot be called on it yet: narrow it first with 'crash names[0]', 'assert names[0]' or 'if names[0] { }'
+- [ ] count_undoes_proof: this value may be null (it is a String?), but a Printable is needed: narrow it first with 'if value { }', 'assert value' or 'crash value'
+- [ ] declaration_one_per_line: diagnostics/declaration_one_per_line/declaration_one_per_line.spite:2:13: enum declarations separate their entries by lines, not commas: delete the ','
+- [ ] declaration_order: a variable comes after the constructor here, but a file is ordered: the singleton line, generic lines, enums, unions, types, variables, the constructor, then functions
+- [ ] declaration_walk: 'describe' takes a 'Spite.Attribute', an attribute bound to an instance, and 'health' here is a declaration of 'Monster', which has no value: declare the parameter 'Spite.AttributeDeclaration', or walk an instance's attributes
+- [ ] default_answer: this 'assert' would answer a default Integer (0) that a caller cannot tell from a real one: return a value ('if entity >= rows.count() { return -1 }'), make the result 'Integer?', or 'crash entity < rows.count()' if this is a developer mistake
+- [ ] default_guard: this 'if' only returns the default 'null', which is how a guard is written: write 'assert not missing' and let the rest run unindented
+- [ ] dictionary_type_arguments: a Dictionary names two types, its keys' and then its values', as in 'Dictionary<String, Integer>', and this one names 1
+- [ ] dispatched_resizes: 'Position' fits a Vector, so the items of 'Column<Position>().values' are borrowed: 'place' is borrowed from 'Column<Position>().values', and 'console.print()' on line 12 may move the items of 'Column<Position>().values', so 'place' is not read after it: ask for the item again after that line, or keep 'place.copy()', an independent object
+- [ ] division_by_constant_zero: 'total / 0' divides by zero, which always halts the program: a whole number cannot be divided by zero, so divide by something else, or leave the step out
+- [ ] doubled_underscore: the function '__strike' must be written in snake_case: lowercase words joined by one underscore each, with at most one '_' in front to make it private
+- [ ] dropped_construction: 'Report("the door opens")' makes a 'Report' and drops it: a constructed object must be kept and used, so a class whose construction is the whole point should be a function instead; turn 'Report' into a function of the class that needs it, or keep the object in a variable that is read
+- [ ] duplicate_function: 'DuplicateFunction' declares 'twice' twice: a later file may reopen a class and replace a function, but one file declares each name once
+- [ ] empty_collection_guard: this 'if' only returns the default 'List<String>()', which is how a guard is written: write 'assert not text.is_empty()' and let the rest run unindented
+- [ ] empty_constructor: formatted diagnostics/empty_constructor/holder.spite
+- [ ] empty_folder_range: 'add_system_wave' is 'add_system' for a class 'system_wave', but the folders named for 'System' hold only 'system_greet'
+- [ ] endless_locked_loop: 'Window.run' holds Window's lock for the whole call, since a Parallel reaches Window, and this loop never ends, so every other call on Window would wait forever: move the loop into a class that is not a singleton, and call Window from it
+- [ ] endless_parallel_work: 'Parallel(counter.count_forever)' runs 'Counter.count_forever' on the thread pool, and this loop never ends and never waits, so the work never finishes and keeps its thread for good: return from the loop once the work is done, or run the loop on the program's own thread
+- [ ] entry_class_reopened: diagnostics/entry_class_reopened/bundle/entry_class_reopened.spite: error: 'EntryClassReopened' is the program's entry class (diagnostics/entry_class_reopened/entry_class_reopened.spite), so no other file may be a class of that name: rename this file, or the program's folder and its entry file
+- [ ] entry_constructor_arguments: 'EntryConstructorArguments' is the entry constructor, and it takes no arguments: a program reads its run-time settings through Environment() (declared in its environment.spite, given on the command line beside the compiler's flags), what its build decided through Build(), and the raw command line through Arguments(), anywhere
+- [ ] enum_from_text: text is not a Mood until it is read as one, and text that names none of its values has none to give: read it with 'to_mood()', which answers 'Mood?', null when the text names none of its values, and narrow it, or declare the value 'Mood?'
+- [ ] enum_numbers: 'user' and 'guest' both have the number 8 in enum 'Role': a value's number is its identity, so give one of them another
+- [ ] enum_reopening_replaces: 'fog' is not a value of this enum
+- [ ] enum_value_templates: 'filter_draft' could read 'stage' or 'review', whose enums both list 'draft': write the comparison as a Boolean member of Post, or pass a function
+- [ ] environment_setting: 'Environment.workers' is a setting, read from the program's command line (--workers=value) or its environment (WORKERS), so it is declared with only a literal default, and the literal is its type: 'var workers = false' (Boolean), 'var workers = 0' (Integer) or 'var workers = ""' (String)
+- [ ] equals_keys: a Dictionary keyed by 'Badge' finds each key by identity, one object one key, but 'Badge' declares 'equals', so an equal 'Badge' would not be found: key the dictionary by what 'equals' compares, a number or a String
+- [ ] every_attribute: 'count_attributes' calls 'count_attribute' once for every attribute, so 'count_attribute' has to return nothing
+- [ ] failed_constructor: there is no generic class 'Asset.Pak' here: a name is looked up in this class's own namespace, its folder, each parent folder, then the whole program
+- [ ] falling_end: 'sign_of' answers a String, but when 'value < 0' is false (line 28, an 'if' with no 'else') it reaches its end without a 'return', so a caller would get a String nobody wrote: end that path with 'return <value>', or with 'crash' if it cannot happen
+- [ ] file_scope_statement: diagnostics/file_scope_statement/file_scope_statement.spite:3:1: a file holds declarations and nothing else: move this statement into a function, or into the class's constructor
+- [ ] flag_given_twice: error: '--optimized' is given twice: a flag or a setting is given once
+- [ ] flag_value: error: '--optimized=maybe' was given to the compiler, but 'Build.optimized' is a Boolean: --optimized, --optimized=true or --optimized=false
+- [ ] folded_build_crash: 'crash build.serve' always halts: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks
+- [ ] folded_crash: 'crash $slot_type.fits_vector()' always halts in Slot<List<String>>: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks
+- [ ] folder_name: diagnostics/folder_name: error: the folder 'BadFolder' is not named in snake_case: every folder of a program, a package's own folder included, is lowercase words joined by '_', so rename it 'bad_folder'
+- [ ] foreign_call_mistakes: a Console cannot cross into C: a foreign function takes numbers, Boolean, enum values, text and a type whose attributes are all numbers
+- [ ] foreign_callback_mistakes: 'named' is called by C, which passes numbers and addresses: 'argument 1' is a String, so take it as a number, a Boolean or a Memory.Address (text C passes is read with 'terminated_text()')
+- [ ] foreign_library_mistakes: 'fixture' has no extension: name the library file exactly as it is on disk, like "user32.dll" or "libc.so.6" (a wrapper for another platform names that platform's file)
+- [ ] format_flag: error: '--format' is not a compiler option: every compile formats the program's own files first, and nothing turns that off: '--check' formats and checks a program without building it
+- [ ] format_setting: 'Build.format' cannot be declared: every compile formats the program's own files first, and nothing turns that off: '--check' formats and checks a program without building it
+- [ ] found_item_borrows: 'found' is borrowed from 'velocities', and 'velocities.append()' on line 9 may move the items of 'velocities', so 'found' is not read after it: read 'velocities[index]' again after that line, or keep 'found.copy()', an independent object
+- [ ] from_conversion: 'Celsius.from_integer' makes a Celsius from another value, and a conversion belongs to the value converted: declare 'to_celsius()' on the class it converts from, or take the value in the constructor
+- [ ] function_owner: 'Spite.Function<String, String>' has no attribute 'owner'
+- [ ] function_reflection: '$system_type.has_function(...)' is decided while compiling, so the name it asks for is written as a literal: '$system_type.has_function("run_each")', or a pattern such as "<phase>_each"
+- [ ] function_shape_default: 'held' is a Weapon, a type that requires the function 'strike', so '= null' has no default to make: no object can supply a function it does not have. Make its type nullable, with a '?', and narrow it before use, or give it a real object in the constructor
+- [ ] function_value_mistakes: a Spite.Function<Nothing> cannot be used where a Spite.Function<String, String> is needed
+- [ ] function_waits_paradox: whether 'Looper.update_each' can wait was answered false here, before the functions that ask 'function_waits' were compiled, and it is true once they are: it reaches one of them, or a function value made in one, so its answer would decide itself, so ask from a function that 'Looper.update_each' does not reach
+- [ ] generic_class_in_comparison: diagnostics/generic_class_in_comparison/generic_class_in_comparison.spite:5:15: expected ':' followed by the field's value but found '='
+- [ ] generic_constraint_not_a_type: '$count_type' is constrained by 'Integer', which is not a 'type': a constraint names a 'type' the class given must fit, like 'generic $count_type: Printable'
+- [ ] generic_constraints: 'Pet' does not fit type 'Printable', which 'Shelf' requires of $item_type: it has no function 'to_string'
+- [ ] grouped_operand_text: '2.0 * (first + second)' is a multiplication in Float, since arithmetic takes the left side's type, and the right side is a Double, which would be cut to fit: write the Double first ('(first + second) * 2.0'), or store the right side in a Float first if it fits one
+- [ ] hand_copy_of_library: 'Matrix4.set_product', added by this reopening, rewrites this Matrix4 from two Matrix4 values, which the library's '*' already answers: write 'target = left * right' (the answer is built in target's place)
+- [ ] hidden_class: diagnostics/hidden_class/physics/plugin.spite: error: the class 'Physics.Plugin' hides the class 'Plugin' (diagnostics/hidden_class/plugin.spite): inside 'Physics' the name 'Plugin' would mean this class, so give one of them a clearer name
+- [ ] hole_values: the hole '<stage>' of '<stage>_all' matches only the values of an enum named for it, and there is no enum 'Stage': declare 'enum Stage' listing the names it may match, one per line
+- [ ] index_reads: 'names[0]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), so 'upper_case' cannot be called on it yet: narrow it first with 'crash names[0]', 'assert names[0]' or 'if names[0] { }', or prove the count first, 'crash names.count() > 0'
+- [ ] indexable_unproven: 'ruler[index]' may be missing, since every '[ ]' answers a 'T?' (this one is an Integer?), but an Integer is needed: narrow it first with 'crash ruler[index]', 'assert ruler[index]' or 'if ruler[index] { }'
+- [ ] inline_singleton: 'Build' is a singleton: bind it once beside the attributes, 'var build = Build()', and use 'build.target_operating_system'
+- [ ] inline_singleton_attribute: 'Build' is a singleton: bind it once beside the attributes, 'var build = Build()', and use 'build.target_operating_system'
+- [ ] internal_class: diagnostics/internal_class/spite/internal/floor.spite: error: Spite.Internal.Floor is internal to Spite and cannot be used outside the standard library: read bytes with Buffer or BinaryReader, describe foreign data with a plain type, and leave threads to the compiler
+- [ ] internal_use: Spite.Internal.Memory is internal to Spite and cannot be used outside the standard library: read bytes with Buffer or BinaryReader, describe foreign data with a plain type, and leave threads to the compiler
+- [ ] io_system_writes_row: 'crash not $system_type.function_writes_parameter("last_each", 1)' always halts in Runner<Quitter>: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks; 'Quitter.last_each' writes its parameter 'quitting' at diagnostics/io_system_writes_row/quitter.spite:5: 'quitting.quit.requested = true'
+- [ ] items_borrows: 'Velocity' fits a Vector, so the items of 'velocities' are borrowed: 'velocity' is borrowed from 'velocities', and 'velocities.append()' on line 13 may move the items of 'velocities', so 'velocity' is not read after it: read 'velocities[index]' again after that line, or keep 'velocity.copy()', an independent object
+- [ ] items_nullable_unproven: 'names[index]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), so 'upper_case' cannot be called on it yet: narrow it first with 'crash names[index]', 'assert names[index]' or 'if names[index] { }', or read it where a bound proves it, inside 'while index < names.count()'
+- [ ] joined_maybe_boolean: this is a Boolean? used by a condition, which would only test that it is there, not that it is true: prove it is there first ('crash index < flags.count()' proves 'flags[index]') or switch over it
+- [ ] joined_text: diagnostics/joined_text/joined_text.spite:5:34: text written down is not joined with '+': put the value inside it, like "hello {name}". Two values are still joined with '+'
+- [ ] json_key: 'MeshRecord.json_key_maximum_distance' would name the JSON key of 'maximum_distance', and JsonReader and JsonWriter do not read a function for it: a key that is not an attribute's name is given to the serializer in a map keyed by the attribute, '{MeshRecord.attributes['maximum_distance']: "..."}'
+- [ ] json_split: there is no 'Json': it is two classes, 'JsonWriter<T>()' whose 'write(value)' makes the text, and 'JsonReader<T>()' whose 'read(text)' answers a 'T?'
+- [ ] json_unwritable: JsonWriter cannot write 'Owner': 'Owner.pet' is the union Pet, and JSON does not say which member a value is. JsonWriter handles classes, lists, dictionaries, enums, Symbols, numbers, Boolean, String and 'T?', so keep what it sees to those, or give it a class of its own that holds only them
+- [ ] known_fact_checked: 'first' is already narrowed by 'crash first' on line 7: remove this check
+- [ ] left_over_after_block: diagnostics/left_over_after_block/left_over_after_block.spite:12:7: 'console' is left over after the '}' that closes this statement: a statement ends with its line, so remove it, or put it on a line of its own if it is a statement
+- [ ] left_over_after_return: diagnostics/left_over_after_return/left_over_after_return.spite:10:22: 'attribute' is left over after the end of the statement: a statement ends with its line, so remove it, or put it on a line of its own if it is a statement
+- [ ] lent_arguments: 'streamed_rows' is the plural of 'streamed_row', but 'streamed_row' walks nothing: its 'argument' is not a word of its name, so it is a helper compiled for the one symbol passed to it, not a template with a plural. Name it 'streamed_argument' and call 'streamed_arguments(...)'
+- [ ] lent_element_guard: this 'assert' would answer a default Layout (an object with every attribute at its default) that a caller cannot tell from a real one: return a value ('if row >= column.values.count() { return Layout() }'), make the result 'Layout?', or 'crash row < column.values.count()' if this is a developer mistake
+- [ ] lent_escapes: 'Justify' fits a Vector, so the items of 'Column<Justify>().values' are borrowed: 'justify' is borrowed from 'Column<Justify>().values' and cannot be kept in the attribute 'kept': keep 'justify.copy()', an independent object
+- [ ] lent_results: 'Layout' fits a Vector, so the items of 'Column<Layout>().values' are borrowed: 'layout' is borrowed from 'Column<Layout>().values' and cannot be kept in the attribute 'kept': keep 'layout.copy()', an independent object
+- [ ] lent_to_calls: 'mouse' is borrowed from 'mice' and lent to 'grow' for its call, and 'input.grow()' on line 21 may move the items of 'mice': a function lent a borrowed item may not append to or remove from the collection it is borrowed from, directly or through what it calls; change the size of 'mice' before or after the call
+- [ ] library_class_namespace: diagnostics/library_class_namespace/color/palette.spite: error: 'Color' is a class of the standard library and also the namespace of the folder 'diagnostics/library_class_namespace/color': a dotted name means one thing, so rename the folder
+- [ ] library_function_mistakes: 'sort_by(counts.get_at)': 'counts.get_at' returns an Integer?, but 'sort_by' needs it to return something ordered, a number or a String, and a value that may be null has no place in the order: pass a function of your own that narrows it and returns the plain value
+- [ ] literal_does_not_fit: 300 does not fit in a Byte, whose numbers run from 0 to 255: store it in a wider type, or use a number that fits
+- [ ] load_as_value: diagnostics/load_as_value/load_as_value.spite:2:18: 'load' is a keyword that starts a line of its own, like 'load "folder"': it is not a function, and it has no value
+- [ ] load_folder_name: diagnostics/load_folder_name/load_folder_name.spite: error: the folder 'Engine-Plugin' is not named in snake_case: every folder of a program, a package's own folder included, is lowercase words joined by '_', so rename it 'engine_plugin'
+- [ ] load_function: diagnostics/load_function/load_function.spite:7:6: 'load' is a keyword and cannot name a function: give it a name that says what it loads, like 'load_texture'
+- [ ] load_parentheses: diagnostics/load_parentheses/load_parentheses.spite:2:9: 'load' is a keyword, not a function: write it without parentheses, 'load "level"'
+- [ ] load_unknown_condition: this 'if' holds a 'load', so the compiler decides it, and it cannot decide this condition: around a 'load' a condition reads only Build fields (through 'var build = Build()' beside the attributes), text, whole numbers, true and false, joined by ==, !=, and, or and not
+- [ ] loaded_folder_namespace: unknown identifier 'Garnish'
+- [ ] local_singleton: 'Build' is a singleton, bound here as a local: bind it once beside the attributes, 'var build = Build()', so every singleton the class uses is at the top of its file
+- [ ] locked_wait: 'Columns.despawn_all' waits for 'Parallel(remover.run)' while it holds Columns's lock, since a Parallel reaches Columns, and what 'remover.run' runs calls 'Columns.remove_row', which takes that lock: each would wait for the other forever. Wait for the Parallel outside Columns's functions, or do not call Columns from its work
+- [ ] lone_hole: '"{counter.click_count.clicks}"' is a text of one value and nothing else: assign the value directly, 'counter.label.text = counter.click_count.clicks'
+- [ ] long_line_construction: 'CounterButton("a label long enough to carry this line past the formatter width")' is constructed inside an argument of 'world.create_entity_from_bundle': a constructor call is never an argument, so make it first on a line of its own, 'var counter_button = CounterButton("a label long enough to carry this line past the formatter width")', and pass 'counter_button'
+- [ ] lost_writes: 'resized.width' is written here and 'resized' is never read after it: 'resized' is a 'Layout' only this function holds, so the write is lost when it is let go. Use what was written, return 'resized', keep it in an attribute or a list, or drop the write
+- [ ] maths_constant_assigned: 'Float.pi' is a constant, and a constant is get-only: nothing can assign it
+- [ ] maths_constant_on_value: 'pi' is a constant of the class Float, not of a value: write 'Float.pi'
+- [ ] maths_other_spellings: Float has no function 'sqrt': Spite spells it 'square_root', since no name is abbreviated
+- [ ] maybe_boolean_conditions: this is a Boolean? used by a condition, which would only test that it is there, not that it is true: prove it is there first ('crash index < flags.count()' proves 'flags[index]') or switch over it
+- [ ] maybe_in_arithmetic: 'scores[position]' may be missing, since every '[ ]' answers a 'T?' (this one is an Integer?), so '+' cannot use it yet: narrow it first with 'crash scores[position]', 'assert scores[position]' or 'if scores[position] { }', or read it where a bound proves it, inside 'while position < scores.count()'
+- [ ] member_template_mistakes: 'sum_name': the member 'name' of 'Repository' is a String, but 'sum_' needs it to return a numeric type
+- [ ] memory_access: 'write_long' reads or writes the memory at an address, which only library/ does: use a class of the standard library, or 'TypedMemory<T>' for values of any type
+- [ ] missing_switch_case: this switch over 'Held' has no case for File: a switch over a union covers every member, so a member added later cannot be forgotten; add the cases, or end with '_:' for the rest
+- [ ] named_like_library: diagnostics/named_like_library/geometry/vector3.spite: error: the class 'Geometry.Vector3' is named like the standard library's class 'Vector3': use 'Vector3', reopening it to add what it lacks, or give this class a clearer name
+- [ ] namespace_nullable: 'ns' only copies 'NamespaceNullable.namespace' so it can be narrowed: narrow 'NamespaceNullable.namespace' itself ('assert NamespaceNullable.namespace') and use it directly
+- [ ] naming: the enum 'job_kind' must be written in PascalCase: capitalised words with no underscores
+- [ ] narrowed_name_reassigned: this value may be null (it is a Box?), so 'label' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
+- [ ] nested_if_else: this 'if'/'else' is inside a branch of another 'if'/'else': move it into a function named for what it decides, or, when both test which member of a union or which value of an enum a value is, use one 'switch'
+- [ ] new_spite_class: diagnostics/new_spite_class/spite/gadget.spite: error: 'Spite' holds the standard library's own classes, so a file in a 'spite' folder may only reopen one of them: 'Spite.Gadget' is not one, and a new class of your own belongs in a namespace of your own
+- [ ] null_comparison: 'null' is not a value to compare against or pass around: narrow the value instead, with 'if value { } else { }', 'assert value', 'crash value' or 'switch value { <Type>: ... Null: ... }'
+- [ ] null_default_locals: the variable 'count' is declared 'Integer', not 'Integer?', so '= null' would make a default Integer rather than nothing: write 'var count: Integer? = null' for none yet, narrowed before use, or 'var count = 0' for a default
+- [ ] null_defaults: the attribute 'target' is declared 'Monster', not 'Monster?', so '= null' would make a default Monster rather than nothing: write 'var target: Monster? = null' for none yet, narrowed before use, or 'var target = Monster()' for a default, or keep '= null' and assign it at the top of the constructor
+- [ ] number_memory: 'Integer' declares 8 bytes of memory, and the compiler lays it out as int32_t, which is 4
+- [ ] number_memory_read: '_memory' is the memory Integer is kept in, and the compiler keeps the value itself there: write 'this'
+- [ ] number_memory_spelling: a value states its size as 'var _memory = Memory.Bytes(bytes)', with the bytes written out: the compiler places that memory, and a number's is a register
+- [ ] number_type_mistakes: 'Boolean' does not fit type 'Number', which 'Summer' requires of $number_type: it has no function 'sum'
+- [ ] old_ampersand: Spite has no '&' operator: bits are functions on the whole numbers, write 'value.bits_and(mask)' (and 'and' for a condition)
+- [ ] old_break: diagnostics/old_break/old_break.spite:7:13: Spite has no 'break': a loop stops in its own condition, like 'while index < count and not found', and a step it skips sits under an 'if'
+- [ ] old_declaration_equal: diagnostics/old_declaration_equal/old_declaration_equal.spite:1:10: a declaration takes no '=': write 'enum Job {' with one entry on each line
+- [x] old_do: diagnostics/old_do/old_do.spite:5:15: Spite has no 'do': an 'if' on a value that may be null narrows it in place, 'if value { ... } else { ... }', and inside the block 'value' is the value itself
+- [ ] old_let: diagnostics/old_let/old_let.spite:4:5: Spite has no 'let': a variable is declared 'var name = value', always with a default, and there is no 'const'
+- [ ] old_list_names: List has no method 'add', which does not say where: write 'append' to add at the end, or 'prepend' at the start
+- [ ] old_nullable_spelling: diagnostics/old_nullable_spelling/old_nullable_spelling.spite:1:31: 'Nullable<T>' was replaced by a '?' suffix: write 'Monster?' for a value that may be null
+- [ ] old_reference_type: Spite has no '&Type': every class, list and text is passed by reference already, so write the type alone
+- [ ] old_shift: diagnostics/old_shift/old_shift.spite:5:26: Spite has no '<<': bits are functions on the whole numbers, write 'value.shifted_left(count)'
+- [ ] old_type_spellings: 'Int' is spelled 'Integer'
+- [ ] operator_function_call: 'set_height' is what writing 'height' calls: write 'point.height = 4'
+- [ ] overlapping_load: 'load "kingdom/physics"' and the load at diagnostics/overlapping_load/overlapping_load.spite:4 both reach the files of 'diagnostics/overlapping_load/kingdom/physics', which lies inside 'diagnostics/overlapping_load/kingdom', so those files would be loaded twice: load only 'diagnostics/overlapping_load/kingdom', whose subfolders are already its namespaces
+- [ ] own_template_borrows: 'values.item_at(items, best)' is borrowed from 'values' and cannot be returned: return 'values.item_at(items, best).copy()', an independent object
+- [ ] package_attributes: the attribute 'color' is never read: remove it
+- [ ] parallel_function_reach: 'Parallel(tally.count_up)' runs 'record' on another thread, so it may reach only the attributes of its own 'Tally' that hold values, its locals and singletons: 'marks' holds a List<Integer>, which another thread may share. Give the work what it needs as numbers or text of its own, or make an object for the work alone that nothing else holds or touches after 'Parallel(...)'
+- [ ] parallel_handover: 'crafter' was handed to 'Parallel(crafter.craft)', which keeps its 'recipe_ids' on another thread, so it is not used after that line: make another 'Crafter' for what follows, or read the task's result
+- [ ] parallel_reach: 'parallel_each_follow' runs 'follow' on many elements at once, so it may reach only its own 'Boid' attributes that hold values, and its locals: 'leader' holds a 'Boid?', which another element may share. Copy what the pass needs into a number or text attribute first, or write 'each_follow' to run it on one thread
+- [ ] parallel_shared_value_writes: 'Parallel(add_one)' writes 'total' of this 'ParallelSharedValueWrites' on another thread while this thread may write it too, so one write would be lost: move the work into a class of its own and hand a new one over ('var worker = Worker(...)' then 'Parallel(worker.work)'), answer the value from the work and read the task's result, or keep it in a singleton, which is made safe for threads
+- [ ] parallel_shared_writes: 'counter' was handed to 'Parallel(counter.bump)', which writes its 'count' on another thread, so it is not used after that line: make another 'Counter' for what follows, or read the task's result
+- [ ] parameter_write_question: 'Mover.move' takes 2 arguments, so it has no parameter 2 to ask about: 'function_writes_parameter' counts parameters from 0
+- [ ] passed_functions: there is no 'map(function)': collect a member of each element with 'map_<member>()', and a value computed from each element by giving the element's class a read-only attribute (a 'get_<name>()' with no setter) and writing 'map_<name>()'
+- [ ] passed_symbol: 'announce' is compiled once for each 'phase' of 'Symbol<$system_type.phase_all>', so its 'phase' can only be the symbol of a template over that same range, passed by name from inside it, as in 'announce(phase)'
+- [ ] path_narrow_assignment: this value may be null (it is a Box?), so 'label' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
+- [ ] path_narrow_else: this value may be null (it is a Namespace?), so 'name' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
+- [ ] path_narrow_loop: assigning to 'outer.inner' inside this loop undoes a narrowing made before the loop, and the next pass would read it unproven: narrow it inside the loop instead
+- [ ] plain_get_at: 'get_at' answers 'Integer', but it is what '[ ]' calls, and every '[ ]' answers a 'T?' that is narrowed before use: declare it to answer 'Integer?', and answer null when nothing is at the index
+- [ ] plain_items: 'Vector<Integer>' holds plain values, and a List keeps numbers, Boolean, enums and Memory.Address flat just as it did, so a list of them has one spelling: write 'List<Integer>'
+- [ ] plain_symbol_on_list: 'total_member' is a template on List, whose own attributes are its buffer, so a plain 'Symbol' answers nothing: write 'member: Symbol<$element_type>' to name a member of the element
+- [ ] plural_templates: 'collect_name' answers every 'name', so it is written in the plural: 'collect_names'
+- [ ] print_without_to_string: 'Crate' does not fit type 'Printable': it has no function 'to_string'
+- [ ] proven_element: 'codes[index]' is already proven by the loop condition 'index < codes.count()', so this 'crash' proves nothing: remove it
+- [ ] proven_index_check: 'skipped[index]' is already proven by the loop condition 'index < skipped.count()', so this 'crash' proves nothing: remove it
+- [ ] read_only_attribute: 'number' is read-only: 'Badge' answers it through get_number() and has no set_number(value)
+- [ ] receiver_call_undoes_proof: 'names[0]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), but a Printable is needed: narrow it first with 'crash names[0]', 'assert names[0]' or 'if names[0] { }', or prove the count first, 'crash names.count() > 0'
+- [ ] reflection_names: the function 'functions' has a name reflection gives every object: 'value.functions' lists its functions, and one of its own would hide it. Name it something else, like 'table_functions'
+- [ ] reflection_read_only: 'name' is read-only: 'Class' answers it through get_name() and has no set_name(value)
+- [ ] removed_executable_flag: error: '--executable' is not a compiler option: 'spite program --build' builds the executable without running it, and 'spite program' builds it and runs it
+- [ ] removed_run_flag: error: '--run' is not a compiler option: 'spite program' builds the program and runs it, 'spite program --check' only checks that it compiles, and 'spite program --build' builds it without running it
+- [ ] removed_translation_units_flag: error: '--translation-units' is not a compiler option: the compiler chooses how many C files it compiles a program from
+- [ ] removed_tuning_flag: error: '--tune-for-this-machine' is not a compiler option: a default or --hot-reload build is tuned for the machine that builds it, and an --optimized build, the one shipped, runs on any machine
+- [ ] reopened_vector_borrows: 'first' is borrowed from 'other', and 'other.append()' on line 4 may move the items of 'other', so 'first' is not read after it: read 'other[index]' again after that line, or keep 'first.copy()', an independent object
+- [ ] repeated_branch_call: 'source.slice(0, end_index)' is computed in both branches: compute it once before the 'if'
+- [ ] replaced_items: 'layout' was read from 'layouts[0]', so assigning it here changes only 'layout', and nothing reads 'layout' after: 'layouts' still holds the old item. Write 'layouts[0] = made' to replace the item, or give the new value a 'var' of its own
+- [ ] reserved_signature: 'drop' is called by the compiler when the last reference to an object goes, so it is declared exactly 'func drop()'
+- [ ] reserved_spite_namespace: diagnostics/reserved_spite_namespace/reserved_spite_namespace.spite: error: 'spite' is reserved for the built-in Spite namespace: name the folder something else
+- [ ] return_type_colon: diagnostics/return_type_colon/return_type_colon.spite:5:30: a return type is written '(): Integer': add the ':' after the parameter list
+- [ ] returned_local: 'whole' is declared only to be returned on the next line: write 'return scaled.round()', since 'return' already makes the value the function's Integer
+- [ ] returned_text: '$value_type.returned_text("json_key_level")' reads the text a function of 'Label' returns, and it has no function 'json_key_level': ask '$value_type.has_function("json_key_level")' first, and read the text only in the branch where it is true
+- [ ] returning_guard: this 'if' only returns: write 'assert not name.is_empty()' and let the rest run unindented
+- [ ] same_named_types: a List<Recipes.CookTask.Buildable> cannot be used where a List<Recipes.Cookbook.Buildable> is needed
+- [ ] separator_flag: error: '--' is not a separator: a program's settings are given beside the compiler's flags, kebab-case like them: spite program --optimized --player-name=Bob
+- [ ] setting_named_like_flag: 'Environment.optimized' and 'Build.optimized' are both '--optimized' on the command line: a program's settings and the compiler's flags share one set of names, so one of them needs another name
+- [ ] setting_value: error: '--volume=loud' was given, but 'Environment.volume' is an Integer: a whole number, like --volume=3
+- [ ] several_mistakes: this class has no function 'missing_function'
+- [ ] shadowed_function: the attribute 'greeting' has the name of a function of this class, and a function is a value passed by its name: give the attribute a name of its own
+- [ ] shape_function_mismatch: 'Silent' does not fit type 'Renderable': it has no function 'render'
+- [ ] shape_mismatch: formatted diagnostics/shape_mismatch/shape_mismatch.spite
+- [ ] shape_parameter_name: diagnostics/shape_parameter_name/shape_parameter_name.spite:2:19: a shape names the types it needs, not the names they are given: write 'Integer' where 'scale: ...' is, since a class satisfies it whatever it calls its parameters
+- [ ] singleton_arguments: 'starting_name' is not a literal: a singleton's arguments are literals the compiler reads, because each distinct argument list is its own instance of 'Registry', made the first time it is asked for
+- [ ] singleton_circle: singleton 'Columns' binds 'World', which binds 'Column<Entity>', which binds 'Columns': singletons initialise each other in a circle, so one of them has to reach the other some other way, such as by binding it in the class that uses both
+- [ ] singleton_function: a class says it is a singleton with a 'singleton' line at the top of its file, not with a function: delete 'is_singleton()' and write 'singleton' as the file's first line
+- [ ] snapshot_argument_writes: 'crash not $system_type.function_writes_parameter("<phase>_each", argument.index) or not argument.class.any_attribute_fits_vector(Entity)' always halts in Refuser<Mover>: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks; 'Mover.update_each' writes its parameter 'moving' at diagnostics/snapshot_argument_writes/mover.spite:7: 'moving.position.left = moving.position.left + moving.entity.id'
+- [ ] sparse_rows: 'row' borrows items from 'Column<Position>().values' for the call it is passed to, and 'keeper.spawn_while_moving()' on line 11 may move the items of 'Column<Position>().values': a function that is handed a row may not append to or remove from the vectors it borrows from, directly or through what it calls
+- [ ] spinning_loop: this 'while true' never ends: nothing inside it returns, asserts or crashes, and it calls nothing, so the program would spin here for good: leave it with a 'return' ('if done { return }'), or loop 'while' a condition
+- [ ] spite_link_outside_final: this comment links to 'helper.spite', a .spite file, and only a file '--final-classes' wrote may link one, to name the file that supplied a declaration: anywhere else a comment links a markdown section
+- [ ] store_through_nullable: 'boxes[3]' may be missing, since every '[ ]' answers a 'T?' (this one is a Box?), so 'label' cannot be assigned through it yet: narrow it first with 'crash boxes[3]', 'assert boxes[3]' or 'if boxes[3] { }', or prove the count first, 'crash boxes.count() > 3'
+- [ ] structural_index_undone: 'glyphs[code - 32]' may be missing, since every '[ ]' answers a 'T?' (this one is a String?), so 'upper_case' cannot be called on it yet: narrow it first with 'crash glyphs[code - 32]', 'assert glyphs[code - 32]' or 'if glyphs[code - 32] { }', or read it where a bound proves it, inside 'while code - 32 < glyphs.count()'
+- [ ] switch_chain_or: these 4 'if's each compare 'word' with a value and return, which is what a 'switch' says: write 'switch word { "byte": return 1  "tiny": return 1  "short": return 2  ...  _: return 0 }' (D625 of the language, a link joined by `or`)
+- [ ] list_of_bytes: 'List<Byte>' is not a type a program writes: a run of bytes is a 'Buffer', which reads and writes the numbers in it: write 'Buffer(size)'; and, for a list the compiler would make of bytes, this makes a 'List<Byte>', and a run of bytes is a 'Buffer': make one with 'Buffer(size)' and 'append' each byte (D626 of the language)
+- [ ] switch_chain: these 3 'if's each compare 'index' with a value and return, which is what a 'switch' says: write 'switch index { 0: return "monday"  1: return "tuesday"  2: return "wednesday"  _: return "later" }'
+- [ ] switch_rest_case: the cases 'Cat' and 'Dog' do the same thing: write it once, as the last case '_:'
+- [ ] switch_single_case: this switch only asks what class 'creature' is: write 'return creature == Fish'
+- [ ] symbol_for_text: 'world' in single quotes is a symbol, and text is wanted here: text is always written in double quotes, so write "world"
+- [ ] target_in_build: 'Build.target_operating_system' cannot be declared by a program: the standard library for the target system is loaded before the program, so the target is given to the compiler, --target-operating-system=linux (or windows, or mac), and is the system doing the compiling otherwise
+- [ ] target_operating_system: error: '--target-operating-system=beos' names no operating system the library has a folder for: windows, linux or mac
+- [ ] template_attribute_spelling: 'attribute: Spite.Attribute<...>' would be bound to one instance, and a template is made once for each member of the class, with the instance as its own argument: write 'attribute: Spite.AttributeDeclaration<...>'
+- [ ] template_function_clash: the template 'store_attribute' makes 'store_row' for the attribute 'row' of 'RowView', which is already a function of 'Row': rename the function or the template
+- [ ] template_walk: this 'while' walks every element of 'items' only to call 'restock' on each: write 'items.each_restock()'
+- [ ] terminal_if: this 'if' is the last thing the function does and has no 'else', so it only checks that 'maybe_name' is there: write 'assert maybe_name' and let the rest of the function run unindented
+- [ ] text_is_to_string: Integer turns into text with 'to_string()', a cast like 'to_integer()': write 'to_string()'
+- [ ] text_items_passed: 'each' passes each item to a function, which a Vector never does: keep the values in a 'List<String>' to pass them on
+- [ ] text_to_number: text is not an Integer until it is read as one, and text that is not a number has none to give: read it with 'to_integer()', which answers 'Integer?', null when the text is not a number that fits, and narrow it, or declare the value 'Integer?'
+- [ ] type_mistakes: this value may be null (it is a Pet?), so 'name' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
+- [ ] type_size_mistakes: 'Labelled.size' is the size of the C struct a type is at a foreign call, and only a type whose attributes are all numbers is one
+- [ ] unclosed_text: this text never closes: a piece of text is written on one line, and a line break inside it is written as the two characters backslash and n
+- [ ] underscore_flag: error: '--repl_port' is written '--repl-port': flags and settings are kebab-case on the command line, and the field they set is 'repl_port'
+- [ ] underscore_setting: error: '--player_name' is written '--player-name': flags and settings are kebab-case on the command line, and the field they set is 'player_name'
+- [ ] union_value_members: 'String' cannot be a member of union 'Message': a union holds objects whose class a switch tests, and a String is a value; make the member a class of your own that keeps it in an attribute
+- [ ] unkeyable_types: a Dictionary cannot be keyed by 'Integer?': a key is a number, a Boolean, a String, an enum value or an object of a class
+- [ ] unknown_compiler_flag: error: '--serve' is not a compiler option, and this program declares no setting 'serve' (its Build declares check, build, executable_path, c_source, c_path, final_classes, optimization_report, high_level_report, high_ir, optimized, development, repl, repl_port, hot_reload, debug_memory, trace_asserts, operating_system, target_operating_system, program). To decide it when compiling, reopen Build in the program's build.spite with 'var serve = ...'; to read it when the program runs, declare it in environment.spite with 'var serve = ...'
+- [ ] unknown_type_in_shape: unknown type 'Server.Component.Eye': did you mean 'Component.Eye'?
+- [ ] unknown_type_suggestion: unknown type 'Eye': did you mean 'Component.Eye'?
+- [ ] unstepped_poll: this loop reads 'napping.finished' and calls nothing, so nothing steps 'napping' between two reads and it never finishes: read its value instead ('var done: T = napping' waits for it), or call something that waits in the loop
+- [ ] unused_attributes: the attribute 'forgotten' is never read: remove it
+- [ ] unused_names: formatted diagnostics/unused_names/unused_names.spite
+- [ ] upper_is_upper_case: text has no 'upper()': write 'upper_case()', which names what it does without abbreviating
+- [ ] value_switch: this switch over 'light' has no case for 'amber': a switch over an enum covers every value, so a value added later cannot be forgotten; add the cases, or end with '_:' for the rest
+- [ ] variadic_mistakes: this call passes a whole List<String>, but the last parameter is written with '...', so it takes the values one by one: pass the elements themselves, separated by commas
+- [ ] variadic_not_last: diagnostics/variadic_not_last/variadic_not_last.spite:7:34: '...lines' takes every argument from here on, so it is the last parameter: move it to the end
+- [ ] vector_borrows: 'velocity' is borrowed from 'velocities', and 'velocities.append()' on line 11 may move the items of 'velocities', so 'velocity' is not read after it: read 'velocities[index]' again after that line, or keep 'velocity.copy()', an independent object
+- [ ] vector_items: 'Holder' cannot be an item of a Vector: its attribute 'scores' is a List<Integer>, and a Vector holds each item inline, so every attribute is a number, a Boolean, an enum or a String (keep 'Holder' in a 'List<Holder>', or keep 'scores' somewhere else)
+- [ ] vector_reserve_borrows: 'velocity' is borrowed from 'velocities', and 'velocities.reserve()' on line 11 may move the items of 'velocities', so 'velocity' is not read after it: read 'velocities[index]' again after that line, or keep 'velocity.copy()', an independent object
+- [ ] vector_rows: 'row' borrows items from 'world.positions' for the call it is passed to, and 'keeper.spawn_while_moving()' on line 14 may move the items of 'world.positions': a function that is handed a row may not append to or remove from the vectors it borrows from, directly or through what it calls
+- [ ] vector_template_walk: this 'while' walks every element of 'crates' only to call 'seal' on each: write 'crates.each_seal()'
+- [ ] walk_with_function: this 'while' walks every element of 'names' only to call 'say_hello' with each: write 'names.each(say_hello)'
+- [ ] walked_rows: 'row' borrows items from 'world.position' for the call it is passed to, and 'keeper.spawn_while_moving()' on line 11 may move the items of 'world.position': a function that is handed a row may not append to or remove from the vectors it borrows from, directly or through what it calls
+- [ ] weak_across_threads: 'Parallel(tree.grow)' runs on another thread, and what it runs reaches 'Branch', which is a Weak or is held by one: a Weak is kept in one table that is not shared between threads, so a Weak and the objects it holds stay on the program's own thread. Hold the object itself in the work, or keep the Weak out of what the Parallel reaches
+- [ ] whole_number_rotation: an Integer has no function 'square_root'
+- [ ] wider_bitwise_operand: 'flags.bits_and(mask)' works in a Byte, since a bitwise function takes its receiver's type, and 'mask' is a Long, which would be cut to fit: store the receiver in a Long first ('var wide: Long = flags'), or store 'mask' in a Byte first if it fits one
+- [ ] wider_comparison: 'count < total' compares in Integer, since a comparison takes the left side's type, and the right side is a Long, which would be cut to fit: write the Long first ('total > count'), or store the right side in an Integer first if it fits one
+- [ ] wider_right_operand: 'count * total' is a multiplication in Integer, since arithmetic takes the left side's type, and the right side is a Long, which would be cut to fit: write the Long first ('total * count'), or store the right side in an Integer first if it fits one
+- [ ] written_handle_type: the type of a 'Parallel' handle is never written: it is worked out from the function it runs, so write 'var total = Parallel(count)'
+- [ ] written_not_read: 'total' is never read: remove it
 
 ### The compiler's own errors
 
@@ -1108,7 +1178,8 @@ Everything the old compiler enforces is enforced here too:
 ## The decisions this repository has made
 
 - **The generator is 32-bit x86 for Windows** and writes a PE file directly. There is no C in between, and
-  no C compiler is needed to build a program.
+  no C compiler is needed to build a program. [`ARCHITECTURE.md`](ARCHITECTURE.md#what-else-has-to-change)
+  proposes 64 bits instead.
 - **The standard library is imported**, not provided. It lives in another repository and this project holds
   no copy of it and changes nothing in it.
 - **The standard library is not part of the language.** It is a regular folder a program loads, and anyone

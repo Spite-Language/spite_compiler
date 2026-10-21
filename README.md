@@ -154,37 +154,41 @@ in turn.
 
 The compiler compiling itself reads 97 classes, and it finds no generic class of its own yet.
 
-## Running the pipeline without a program to compile
+## Reading what the compiler made
 
-    spite low-ir
+    spite ../SpiteSpec/tests/exit_code --high-ir=.spite/high --low-ir=.spite/low
 
-runs the whole of the back half on a sample program written by
-`high_intermediary_representation/sample.spite`, printing each step's answer and finally the instruction
-list. It is the fastest way to see what a change to a pass did, and it is how the four passes in this
-repository were written and checked.
+writes the high representation and the low one of every class the program keeps, one `<Class>.ir` file per class
+in each folder, after the passes have run. It is the fastest way to see what a change to a pass did. Each file
+is written by its printer, `printers/high_intermediary_representation` and
+`printers/low_intermediary_representation`; nothing else in the compiler turns a representation into text.
 
 ## The steps
 
-- `diagnostics` — one `Report` per run. Every problem carries its file, line and column, and the run
+- `command_line`: the `Settings` a run is given: the program's folder, `--high-ir` and `--low-ir`. Any other
+  flag is refused.
+- `diagnostics`: one `Report` per run, data only. Every problem carries its file, line and column, and the run
   stops at the first step that has one.
-- `mapping` — `FolderMap` turns folders into namespaces and refuses a folder loaded twice or a folder
+- `mapping`: `FolderMap` turns folders into namespaces and refuses a folder loaded twice or a folder
   lying inside another. It reads no file contents.
-- `symbols` — `SymbolTable` resolves a written name to a class file by searching the enclosing
+- `symbols`: `SymbolTable` resolves a written name to a class file by searching the enclosing
   namespaces outwards and then each loaded root, reads that one file, and follows only the classes that
   file names.
-- `abstract_syntax_tree` — `Lexer`, `Parser`, the `Shapes` classes, `Ordering` (a file is ordered, a name
-  is declared once, a constructor is not empty) and `Walk`.
-- `name_resolution` — finds every type written in the program, resolves it, and mints a monomorphised
+- `abstract_syntax_tree`: `Lexer`, `Parser`, the `Shapes` classes, `Ordering` (a file is ordered, a name
+  is declared once, a constructor is not empty).
+- `name_resolution`: finds every type written in the program, resolves it, and mints a monomorphised
   instance for every generic class it finds. It also answers the two kinds of dependent type, `x.class`
   and `$type.member`, and the class every function of every class answers.
-- `high_intermediary_representation` — the program as values and control flow: `Value` of `WholeNumber`,
+- `high_intermediary_representation`: the program as values and control flow: `Value` of `WholeNumber`,
   `Name`, `Operation` and `Answer`, and `Statement` of `Declare`, `Assign`, `While`, `Call` and `Return`.
   `Builder` lowers a class's file into it, with the substitution of its instance applied.
-- `high_optimization_passes` — `fold_constants` and `drop_unreachable_functions`.
-- `low_intermediary_representation` — the program as a flat instruction list over virtual registers,
-  `Lowering` to build it from the high representation, and `Describe` to print it.
-- `low_optimization_passes` — `peephole_jumps` and `fold_away_moves`.
-- `generators/windows_x86` — `emitter.spite` turns each instruction into bytes, `pe.spite` lays the file
+- `high_optimization_passes`: `fold_constants` and `drop_unreachable_functions`.
+- `low_intermediary_representation`: the program as a flat instruction list over virtual registers,
+  and `Lowering` to build it from the high representation.
+- `low_optimization_passes`: `peephole_jumps` and `fold_away_moves`.
+- `printers`: every text the compiler writes from a representation: `diagnostics` (the report in the error
+  format), `high_intermediary_representation` and `low_intermediary_representation` (`--high-ir`, `--low-ir`).
+- `generators/windows_x86`: `emitter.spite` turns each instruction into bytes, `pe.spite` lays the file
   out around them, `layout.spite` owns every address in it, `registers.spite` owns the frame.
 
 ## What is not built yet
@@ -209,7 +213,7 @@ repository were written and checked.
 ## Where it stands
 
 The compiler builds, runs, maps its folders, reads only the classes something names, lexes, parses, checks
-that a file is ordered, and walks the tree. It reads its own source: 97 classes, and only those. It reads
+that a file is ordered. It reads its own source: 97 classes, and only those. It reads
 the whole standard library too: 145 classes, every one of them, with no error.
 
 Below that it resolves every type, monomorphises every generic, builds the high representation of those

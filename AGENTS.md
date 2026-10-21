@@ -16,20 +16,25 @@ Each step of the pipeline is a folder, and each folder holds one class per file:
 | `diagnostics/` | one `Report` per run, and the `Problem` it holds |
 | `mapping/` | the folders a program can use, and the namespace each becomes |
 | `symbols/` | the class file a written name reaches, and the reading of it |
-| `abstract_syntax_tree/` | the lexer, the parser, the shapes, the ordering check and the walk |
+| `command_line/` | the settings a run is given |
+| `abstract_syntax_tree/` | the lexer, the parser, the shapes and the ordering check |
 | `name_resolution/` | every type written, and the instance every generic is minted as |
 | `high_intermediary_representation/` | the program as values and control flow, and the builder that makes it |
 | `high_optimization_passes/` | `fold_constants` and `drop_unreachable_functions` |
 | `low_intermediary_representation/` | the program as a flat instruction list, and the lowering that makes it |
 | `low_optimization_passes/` | `peephole_jumps` and `fold_away_moves` |
 | `generators/windows_x86/` | the machine code, and the PE file around it |
+| `validators/` | every error, one rule per folder, each reading one representation (D28) |
+| `printers/` | every text written from a representation: the formatter, the reports, the IR listings (D29) |
 
 Each folder holds a `contract.md`: what the step takes, what it answers, and what it does not do. A change
 to what a step owns changes its contract in the same commit. The entrypoint, `spite_compiler.spite`, sets the
 order of the steps up and nothing else, so the shape of a compilation is one screen.
 
-The other documents are `TODO.md` (what is left) and `HOT_RELOAD.md` (how the hot reload has to work, and
-what can go wrong with it).
+The other documents are `ARCHITECTURE.md` (the four kinds of folder: steps, passes, validators and printers,
+and what has to change to get there), `TODO.md` (what is left) and `HOT_RELOAD.md` (how the hot reload has to
+work, and what can go wrong with it). A step never writes an error and a representation never writes text:
+the first is a validator's job and the second a printer's.
 
 ## The rules the language holds
 

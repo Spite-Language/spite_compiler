@@ -89,24 +89,22 @@ member is answered when the class is compiled.
 - A template that nothing instantiates is never checked. That is deliberate: the same rule as everywhere
   else in this compiler, that what is not used is not read. It does mean a broken generic class is only
   found when something writes it.
-- The high representation is not built from these instances yet. `high_intermediary_representation/sample.spite`
-  writes its program by hand, so the monomorphised instances are not yet compiled into anything.
 
 ## The files
 
-- `resolved_type.spite` — a type that has been resolved: a path, its arguments, whether it is nullable,
+- `resolved_type.spite`: a type that has been resolved: a path, its arguments, whether it is nullable,
   and whether it is a class, a type parameter, a dependent member or a codegen value.
-- `types.spite` — the builder for the above. A class cannot be called in Spite, so the ways of making
+- `types.spite`: the builder for the above. A class cannot be called in Spite, so the ways of making
   one live here.
-- `substitution.spite` — what a type parameter is bound to, and the applying of it to a type.
-- `instance.spite` — a monomorphised class: where it came from, its name, the parameters it binds, the
+- `substitution.spite`: what a type parameter is bound to, and the applying of it to a type.
+- `instance.spite`: a monomorphised class: where it came from, its name, the parameters it binds, the
   arguments it was given, and its substitution.
-- `mangle.spite` — the name of an instance: `List_of_Integer`.
-- `type_use.spite` — a type as it is written in a file, before it is resolved.
-- `finder.spite` — the walk over a file that finds every type written in it, in declarations, in
+- `mangle.spite`: the name of an instance: `List_of_Integer`.
+- `type_use.spite`: a type as it is written in a file, before it is resolved.
+- `finder.spite`: the walk over a file that finds every type written in it, in declarations, in
   statements and in the type arguments of a call.
-- `resolver.spite` — the work: find the types, resolve them, mint the instances, and mint the instances
+- `resolver.spite`: the work: find the types, resolve them, mint the instances, and mint the instances
   the instances need.
-- `class_name.spite` — the class a type names: the class of a named type, of a type parameter, and of a
+- `class_name.spite`: the class a type names: the class of a named type, of a type parameter, and of a
   type that is dependent on another.
-- `answers.spite` — the class every function of every class answers.
+- `answers.spite`: the class every function of every class answers.

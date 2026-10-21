@@ -1,64 +1,49 @@
 var console = Console()
 var program = Program()
-var counted = 0
+var report = Diagnostics.Report()
+var settings = CommandLine.Settings()
 var skipped = 0
 var program_folder = ""
 var program_name = ""
+var low_functions_of_a_class = List<LowIntermediaryRepresentation.Functions.LowFunction>()
+var printed_class_name = ""
 
 func SpiteCompiler() {
-    var report = Diagnostics.Report()
-    var arguments = Arguments()
-    var named = named_folder(arguments)
-    if named.is_empty() {
-        console.error("usage: spite <path>")
-        program.exit(1)
-        return
-    }
-    var folder = resolved_folder(named)
-    if folder == "low-ir" {
-        show_the_low_representation()
-        return
-    }
-    program_folder = folder
-    program_name = entry_name_of(folder)
+    read_the_command_line()
     var map = Mapping.FolderMap(report)
-    map.add_root(folder, "spite {named}")
-    if report.has_error() {
-        give_up(report)
-        return
-    }
+    map.add_root(program_folder, "spite {settings.folder}")
+    stop_on_errors()
     var symbols = Symbols.SymbolTable(map, report)
-    var entry = symbols.entry_class(folder)
-    if report.has_error() {
-        give_up(report)
-        return
-    }
+    var entry = symbols.entry_class(program_folder)
+    stop_on_errors()
     symbols.read_class(entry)
-    if report.has_error() {
-        give_up(report)
-        return
-    }
-    var read = symbols.summary()
-    console.print("{symbols.file_count()} classes read, starting at {entry.simple_name}")
-    console.print(read)
+    stop_on_errors()
     var resolver = NameResolution.Resolver(symbols, report)
     resolver.resolve_all()
-    if report.has_error() {
-        give_up(report)
-        return
+    stop_on_errors()
+    var built = build_high(resolver, symbols, entry)
+    var high = run_the_high_passes(built)
+    var lowering = LowIntermediaryRepresentation.Lowering(high)
+    var lowered = lowering.lowered()
+    var low = run_the_low_passes(lowered)
+    write_the_intermediary_representations(high, low)
+    write_the_executable(low)
+    print_the_notes()
+}
+
+func read_the_command_line() {
+    if settings.folder.is_empty() {
+        console.error("usage: spite <path>")
+        program.exit(1)
     }
-    console.print("{resolver.templates_count()} generic classes, {resolver.instances_count()} monomorphised instances")
-    var instances = resolver.summary()
-    console.print(instances)
-    var notes = resolver.notes_text()
-    if not notes.is_empty() {
-        console.print(notes)
-    }
-    var high = build_high(resolver, symbols, entry)
-    var shape = high_shape(high)
-    console.print(shape)
-    console.print("statements the builder could not lower: {skipped}")
-    run_the_passes(high)
+    settings.unknown_flags.each(report_unknown_flag)
+    stop_on_errors()
+    program_folder = resolved_folder(settings.folder)
+    program_name = entry_name_of(program_folder)
+}
+
+func report_unknown_flag(flag: String) {
+    report.at("", 0, 0, "'{flag}' is not a compiler option")
 }
 
 func build_high(
@@ -85,32 +70,67 @@ func build_high(
     return HighIntermediaryRepresentation.Programs.HighProgram(classes, entry.simple_name)
 }
 
-func run_the_passes(high: HighIntermediaryRepresentation.Programs.HighProgram) {
-    var folding = HighOptimizationPasses.FoldConstants.Pass(high)
+func run_the_high_passes(
+    built: HighIntermediaryRepresentation.Programs.HighProgram,
+): HighIntermediaryRepresentation.Programs.HighProgram {
+    var folding = HighOptimizationPasses.FoldConstants.Pass(built)
     var folded = folding.transformed()
-    console.print("fold_constants folded {folding.folded_count()} values")
     var dropping = HighOptimizationPasses.DropUnreachableFunctions.Pass(folded)
-    var kept = dropping.transformed()
-    console.print(
-        "drop_unreachable_functions dropped {dropping.dropped_function_count()} functions and {dropping.dropped_class_count()} classes",
-    )
-    var lowering = LowIntermediaryRepresentation.Lowering(kept)
-    var lowered = lowering.lowered()
-    console.print("{lowered.held_functions.count()} functions lowered")
+    return dropping.transformed()
+}
+
+func run_the_low_passes(
+    lowered: LowIntermediaryRepresentation.Programs.LowProgram,
+): LowIntermediaryRepresentation.Programs.LowProgram {
     var jumps = LowOptimizationPasses.PeepholeJumps.Pass(lowered)
     var jumped = jumps.transformed()
-    console.print("peephole_jumps removed {jumps.removed_count()}, shortened {jumps.shortened_count()}")
     var moves = LowOptimizationPasses.FoldAwayMoves.Pass(jumped)
-    var moved = moves.transformed()
-    console.print("fold_away_moves folded away {moves.removed_count()} moves")
-    var described = LowIntermediaryRepresentation.Describe(moved)
-    var written = described.text()
-    console.print(written)
-    write_the_executable(moved)
+    return moves.transformed()
+}
+
+func write_the_intermediary_representations(
+    high: HighIntermediaryRepresentation.Programs.HighProgram,
+    low: LowIntermediaryRepresentation.Programs.LowProgram,
+) {
+    var high_folder = settings.high_intermediary_representation_folder
+    if not high_folder.is_empty() {
+        made_folder(high_folder)
+        high.classes.each(write_high_class)
+    }
+    var low_folder = settings.low_intermediary_representation_folder
+    if not low_folder.is_empty() {
+        made_folder(low_folder)
+        low_functions_of_a_class = low.held_functions
+        high.classes.each(write_low_class)
+    }
+}
+
+func write_high_class(own: HighIntermediaryRepresentation.Classes.HighClass) {
+    var printer = Printers.HighIntermediaryRepresentation.Printer(own)
+    var text = printer.text()
+    write_file("{settings.high_intermediary_representation_folder}/{own.name}.ir", text)
+}
+
+func write_low_class(own: HighIntermediaryRepresentation.Classes.HighClass) {
+    printed_class_name = own.name
+    var functions = low_functions_of_a_class.filter(belongs_to_the_printed_class)
+    var printer = Printers.LowIntermediaryRepresentation.Printer(own.name, functions)
+    var text = printer.text()
+    write_file("{settings.low_intermediary_representation_folder}/{own.name}.ir", text)
+}
+
+func belongs_to_the_printed_class(function: LowIntermediaryRepresentation.Functions.LowFunction): Boolean {
+    return function.class_name == printed_class_name
+}
+
+func write_file(path: String, text: String) {
+    var file = File(path)
+    if not file.write(text) {
+        report.at("", 0, 0, "could not write '{path}'")
+    }
 }
 
 func write_the_executable(lowered: LowIntermediaryRepresentation.Programs.LowProgram) {
-    var report = Diagnostics.Report()
     var names = List<String>()
     names.append("ExitProcess")
     names.append("GetProcAddress")
@@ -119,10 +139,7 @@ func write_the_executable(lowered: LowIntermediaryRepresentation.Programs.LowPro
     var layout = Generators.WindowsX86.Layout(names)
     var emitter = Generators.WindowsX86.Emitter(lowered, layout, report)
     var code = emitter.emitted()
-    if report.has_error() {
-        give_up(report)
-        return
-    }
+    stop_on_errors()
     var path = executable_path()
     var writer = Generators.WindowsX86.Pe(code, layout)
     var data = emitter.data_bytes()
@@ -131,63 +148,35 @@ func write_the_executable(lowered: LowIntermediaryRepresentation.Programs.LowPro
     console.print("wrote {path}")
 }
 
+func print_the_notes() {
+    if skipped > 0 {
+        report.once("the builder could not lower {skipped} statements, and the executable runs without them")
+    }
+    var printer = Printers.Diagnostics.Printer(report)
+    var text = printer.text()
+    if not text.is_empty() {
+        console.error(text)
+    }
+}
+
 func executable_path(): String {
-    var hidden = "{program_folder}/.spite"
-    var hidden_folder = Directory(hidden)
-    if not hidden_folder.exists() {
-        hidden_folder.create()
-    }
-    var build = "{hidden}/build"
-    var build_folder = Directory(build)
-    if not build_folder.exists() {
-        build_folder.create()
-    }
+    var build = "{program_folder}/.spite/build"
+    made_folder("{program_folder}/.spite")
+    made_folder(build)
     return "{build}/{program_name}.exe"
+}
+
+func made_folder(path: String) {
+    var folder = Directory(path)
+    if not folder.exists() {
+        folder.create()
+    }
 }
 
 func entry_name_of(folder: String): String {
     var names = Mapping.Names()
     var segment = names.last_segment(folder)
     return names.snake_case_of(segment)
-}
-
-func show_the_low_representation() {
-    var sample = HighIntermediaryRepresentation.Sample()
-    var starting = sample.program()
-    var folding = HighOptimizationPasses.FoldConstants.Pass(starting)
-    var folded = folding.transformed()
-    console.print("fold_constants folded {folding.folded_count()} values")
-    var folded_note = high_shape(folded)
-    console.print(folded_note)
-    var dropping = HighOptimizationPasses.DropUnreachableFunctions.Pass(folded)
-    var kept = dropping.transformed()
-    console.print(
-        "drop_unreachable_functions dropped {dropping.dropped_function_count()} functions and {dropping.dropped_class_count()} classes",
-    )
-    var kept_note = high_shape(kept)
-    console.print(kept_note)
-    var lowering = LowIntermediaryRepresentation.Lowering(kept)
-    var lowered = lowering.lowered()
-    console.print("{lowered.held_functions.count()} functions lowered")
-    var jumps = LowOptimizationPasses.PeepholeJumps.Pass(lowered)
-    var jumped = jumps.transformed()
-    console.print("peephole_jumps removed {jumps.removed_count()}, shortened {jumps.shortened_count()}")
-    var moves = LowOptimizationPasses.FoldAwayMoves.Pass(jumped)
-    var moved = moves.transformed()
-    console.print("fold_away_moves folded away {moves.removed_count()} moves")
-    var described = LowIntermediaryRepresentation.Describe(moved)
-    var written = described.text()
-    console.print(written)
-}
-
-func high_shape(given: HighIntermediaryRepresentation.Programs.HighProgram): String {
-    counted = 0
-    given.classes.each(count_class)
-    return "{given.classes.count()} classes, {counted} functions, entry {given.entry}"
-}
-
-func count_class(own: HighIntermediaryRepresentation.Classes.HighClass) {
-    counted = counted + own.held_functions.count()
 }
 
 func resolved_folder(named: String): String {
@@ -197,20 +186,10 @@ func resolved_folder(named: String): String {
     return named
 }
 
-func give_up(report: Diagnostics.Report) {
-    var written = report.written()
-    console.error(written)
+func stop_on_errors() {
+    assert report.has_error()
+    var printer = Printers.Diagnostics.Printer(report)
+    var text = printer.text()
+    console.error(text)
     program.exit(1)
-}
-
-func named_folder(arguments: Arguments): String {
-    var index = 0
-    while index < arguments.count() {
-        var argument = arguments.get(index)
-        if not argument.starts_with("-") {
-            return argument
-        }
-        index = index + 1
-    }
-    return ""
 }
