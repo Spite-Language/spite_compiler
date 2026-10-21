@@ -27,27 +27,26 @@ A representation is data only: no function on it writes text or decides an error
     generators/windows_x64
     outputs                                each through its printer
 
-The run stops after the first validators that find an error. No step reaches back into an earlier one.
+No step reaches back into an earlier one.
 
-## Steps never fail
+## The first error stops the run
 
-A step that cannot build something puts a marker there and goes on. The validator of that level turns the marker
-into the error. A generator given a marker crashes, naming the compiler's fault. So every error text lives in a
-validator, nothing is dropped, and one file reports all its syntax errors at once.
+A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
+file), it hands it to the validator of that rule at once. The validator lets it pass, or reports the problem
+and ends the compile through `Validators.Failure`. Nothing runs after the first error.
 
 ## Validators
 
-`validators/<level>/<rule>/validator.spite` holds a class `Validator(input)` answering
-`problems(): List<Diagnostics.Problem>`, and `contract.md` holds the rule, its exact error texts, and the
-`../SpiteSpec/conformance` test that proves it.
+`validators/<level>/<rule>/validator.spite` holds a class `Validator()` whose `check(...)` takes the data the rule
+needs. The folder is named after the rule, and the validator holds every word of its error.
 
-- A rule lives at the earliest level that has the facts it needs.
-- A validator reads one representation and never changes it.
-- The validators of one level do not depend on each other.
-- A unit validator reads one class and is cached with it (a reload runs it); a program validator needs the whole
-  program. Their input types differ, so one cannot be run as the other.
-- A `Problem` is data: file, line, column, rule, text, and the class and function it is in.
-- The low representation's validators find faults of the compiler, not of the program.
+- A rule lives at the earliest level that has the facts it needs, and runs as soon as those facts exist: a file's
+  rules run right after the file is parsed, before the next file is read.
+- A validator never changes what it is given.
+- A rule that needs the whole program runs once the program is complete; a rule about one class runs per class,
+  and a reload runs only those.
+- The message says what the old compiler's message says (`../SpiteLanguage/diagnostics`), in this compiler's
+  words, and a `../SpiteSpec/conformance` test pins it.
 
 ## Printers
 

@@ -6,9 +6,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Architecture (now)
 
-- Validators: `validators/<level>/<rule>/` for every error the steps write today (mapping 11, emitter 10, ordering 9, lexer 7, name resolution 4, symbols 2, parser 1)
-- Markers: lexer, parser, mapping, name resolution, builder and lowering mark what they cannot build; the builder's `skipped` count goes
-- The emitter's ten errors have no place (`"", 0, 0`): each becomes a marker or a validator one level up
+- Port the old syntax-tree rules (level 3 of `../SpiteLanguage/diagnostics`, about 60 rules: naming, abbreviations, a call inside a call, nested if, switch chain, unused names, template walks, comments, guards)
+- Port the rest of the mapping rules: a class named like a namespace, a hidden class, a class named like a library class, `spite/` folders
+- The emitter's refusals have no place (`validators/low_intermediary_representation/emittable`): each becomes a validator one level up once the high representation carries places
 - Every node carries its file, line and column, from the tree to the instructions
 - Unions and enums instead of strings in both representations (instruction kind, operator, types, call owner)
 - Typed high representation: every value carries its resolved type as an object; type rules are validators over it
@@ -23,10 +23,12 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found
 
-- A statement the builder cannot lower is left out of the executable (a note says so; the markers make it an error)
+- A class name that reaches no file is collected in `SymbolTable.unknown_names` and never reported
+- The emitter resolves a call whose class is unknown by the function's name alone, when one class has it
+- The builder ignores the `singleton` line
+- A `load` inside an `if` is refused; the language allows it when the condition reads only build settings
+- `whole_library` (a test that reads every class of the library) returns once text and `DynamicLibrary` build
 - `DictionaryLiteral` is not lowered
-- A type written after a class that is not generic is dropped with a note; it must be an error
-- The error for a parameter with no type misses its opening quote (`ordering.spite`)
 - `WholeNumber.value()` answers 0 for a text that is not a number
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 

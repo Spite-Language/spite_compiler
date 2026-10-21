@@ -22,7 +22,7 @@ owns it, not to a printer.
 
 | Folder | It takes | It writes |
 |---|---|---|
-| `diagnostics` | a `Diagnostics.Report` | each problem as `file:line: error: text`, then each note as `note: text` |
+| `diagnostics` | a `Diagnostics.Report` | each problem as `file:line: error: text (in Class.function)`, and each note as `note: text` |
 | `high_intermediary_representation` | one `HighClass` | the class, its attributes and its functions, one statement a line (`--high-ir=folder`) |
 | `low_intermediary_representation` | the name of a class and its `LowFunction`s | each function and its instructions, one a line (`--low-ir=folder`) |
 

@@ -41,16 +41,13 @@ writes the same call once and means a different instance in every instance of th
 `List<$element_type>()` of the `List` template names `List_of_String` in the instance `List_of_String`
 and `List_of_Integer` in the instance `List_of_Integer`.
 
-## The rules it enforces
+## The rules it hands to validators
 
-- A generic class written with no argument is an error naming the class and the line.
-- A generic class written with the wrong number of arguments is an error.
-- A class that is not generic written with an argument is a **note**, not an error. The old compiler
-  drops the argument silently; the note says so once per class. `Spite.AttributeDeclaration<$value_type>`
-  is such a case in the standard library: the class holds no type parameter, so the argument means
-  nothing and is dropped.
-- A type parameter that is not bound is an error.
-- A name that answers to nothing is collected and reported at the end of the run.
+- The count of types in `<>` against a class's `generic` lines: `validators/name_resolution/generic_arguments`.
+- A type parameter with no `generic` line: `validators/name_resolution/codegen_line`.
+- A member of a type that is not there: `validators/name_resolution/type_member`.
+
+A class name that reaches no file is collected and not reported yet (`TODO.md`).
 
 ## The two kinds of dependent type
 

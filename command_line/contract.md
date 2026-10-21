@@ -8,7 +8,8 @@ The settings a run is given. `Settings()` reads the arguments of the compiler's 
 - `high_intermediary_representation_folder`: from `--high-ir=folder`, where the high representation of each class
   is written.
 - `low_intermediary_representation_folder`: from `--low-ir=folder`, the same for the low representation.
-- `unknown_flags`: every other flag, which the entry refuses: `'--flag' is not a compiler option`.
+Any other flag stops the run (`validators/command_line/known_flag`), and so does a run that names no
+program (`validators/command_line/program_named`).
 
 ## What it does not do yet
 

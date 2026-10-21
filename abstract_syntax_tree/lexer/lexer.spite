@@ -1,28 +1,29 @@
 var path = ""
 var source = ""
-var report = Diagnostics.Report()
 var found = List<AbstractSyntaxTree.Tokens.Token>()
 var keywords = Dictionary<String, AbstractSyntaxTree.Tokens.TokenKind>()
-var refused_words = Dictionary<String, String>()
-var refusals = 0
+var borrowed = Validators.AbstractSyntaxTree.BorrowedWord.Validator()
+var spelling = Validators.AbstractSyntaxTree.Spelling.Validator()
 var position = 0
 var line = 1
 var column = 1
+var equals_sign = 61
+var plus_sign = 43
+var minus_sign = 45
+var ampersand = 38
+var vertical_bar = 124
+var line_break = 10
 
-func Lexer(starting_path: String, starting_source: String, starting_report: Diagnostics.Report) {
+func Lexer(starting_path: String, starting_source: String, starting_line: Integer) {
     path = starting_path
     source = starting_source
-    report = starting_report
+    line = starting_line
     learn_keywords()
-    learn_refused_words()
 }
 
 func tokens_of(): List<AbstractSyntaxTree.Tokens.Token> {
     read_all_tokens()
     record('end_of_file', "", "", line, column)
-    if refusals >= 20 {
-        report.once("the compiler stopped naming the spelling it refuses after 20 in {path}")
-    }
     return found
 }
 
@@ -81,7 +82,7 @@ func read_token() {
         46: read_dot()
         36: read_generic_name()
         37: simple('percent')
-        43: simple('plus')
+        43: read_plus()
         45: read_minus()
         61: read_equals()
         47: read_slash()
@@ -89,11 +90,11 @@ func read_token() {
         60: read_less()
         62: read_greater()
         33: read_not()
-        59: refuse("';'", "';' is not something Spite reads: a statement is one line")
-        38: refuse("&", "Spite has no '&': bits are functions on the whole numbers, 'bits_and(mask)'")
-        124: refuse("|", "Spite has no '|': bits are functions on the whole numbers, 'bits_or(mask)'")
-        94: refuse("^", "Spite has no '^': bits are functions on the whole numbers, 'bits_exclusive_or(mask)'")
-        126: refuse("~", "Spite has no '~': bits are functions on the whole numbers, 'bits_inverted()'")
+        59: refuse("';'")
+        38: read_ampersand()
+        124: read_vertical_bar()
+        94: refuse("^")
+        126: refuse("~")
         _: read_anything_else(code)
     }
 }
@@ -108,7 +109,7 @@ func read_anything_else(code: Integer) {
         return
     }
     var written = source.character_at(position)
-    refuse(written, "this is not something Spite reads: write it in words, or tell the compiler what it is")
+    refuse(written)
 }
 
 func read_name() {
@@ -127,11 +128,7 @@ func read_name() {
         record(keyword, word, word, start, column_here)
         return
     }
-    var refusal = refused_words[word]
-    if refusal {
-        refuse_from(word, refusal)
-        return
-    }
+    borrowed.check(path, start, word)
     var kind: AbstractSyntaxTree.Tokens.TokenKind = 'name'
     var first = word.code_at(0)
     if is_upper_letter(first) {
@@ -181,7 +178,7 @@ func read_symbol() {
         code = code_here()
     }
     if code != 39 {
-        report.at(path, start, column_here, "this symbol is never closed: write its closing \"'\"")
+        spelling.refuse(path, start, 'unclosed_symbol', word)
         record('symbol_literal', word, word, start, column_here)
         return
     }
@@ -202,12 +199,7 @@ func read_generic_name() {
         code = code_here()
     }
     if word == "$" {
-        report.at(
-            path,
-            start,
-            column_here,
-            "'$' is written before a name, as in '$name': what is replaced at code generation is a hole, never a value",
-        )
+        spelling.refuse(path, start, 'bare_codegen_mark', word)
         record('generic_name', word, word, start, column_here)
         return
     }
@@ -222,6 +214,9 @@ func read_text() {
     while not at_end() {
         var code = code_here()
         var closes = code == 34
+        if code == line_break {
+            spelling.refuse(path, start, 'unclosed_text', content)
+        }
         switch code {
             34: close_text(start, column_here, content)
             92: content = read_escape_pair(content)
@@ -234,7 +229,7 @@ func read_text() {
             keep_reading()
         }
     }
-    report.at(path, start, column_here, "this text is never closed: write its closing '\"'")
+    spelling.refuse(path, start, 'unclosed_text', content)
     record('text_literal', content, content, start, column_here)
 }
 
@@ -254,8 +249,7 @@ func read_escape_pair(content: String): String {
         move_to(position + 2)
         return "{content}{pair}"
     }
-    var message = escape_message()
-    report.at(path, line, column, message)
+    spelling.refuse(path, line, 'escape', "")
     var alone = source.slice(position, position + 1)
     move_to(position + 1)
     return "{content}{alone}"
@@ -306,17 +300,12 @@ func read_escape(): String {
     var start_column = column
     var after = code_after(1)
     if not is_escape_code(after) {
-        var message = escape_message()
-        report.at(path, start_line, start_column, message)
+        spelling.refuse(path, start_line, 'escape', "")
     }
     var pair = source.slice(start, start + 2)
     position = start + 2
     column = start_column + 2
     return pair
-}
-
-func escape_message(): String {
-    return "this is not something Spite reads in a text: write the two characters backslash and n, t or r for a line end, a tab or a return, and backslash and the character for a quote or a brace"
 }
 
 func is_escape_code(code: Integer): Boolean {
@@ -373,31 +362,71 @@ func read_equals() {
 func read_minus() {
     var next_code = code_after(1)
     if next_code == 62 {
-        refuse("->", "Spite has no '->': there are no lambdas, so pass a function by name")
+        refuse("->")
         return
     }
+    refuse_a_compound(next_code, "-")
+    if next_code == minus_sign {
+        refuse("--")
+    }
     simple('minus')
+}
+
+func read_plus() {
+    var next_code = code_after(1)
+    refuse_a_compound(next_code, "+")
+    if next_code == plus_sign {
+        refuse("++")
+    }
+    simple('plus')
+}
+
+func refuse_a_compound(next_code: Integer, operator: String) {
+    if next_code == equals_sign {
+        refuse("{operator}=")
+    }
+}
+
+func read_ampersand() {
+    var next_code = code_after(1)
+    if next_code == ampersand {
+        refuse("&&")
+    }
+    if is_upper_letter(next_code) {
+        refuse("&Type")
+    }
+    refuse("&")
+}
+
+func read_vertical_bar() {
+    var next_code = code_after(1)
+    if next_code == vertical_bar {
+        refuse("||")
+    }
+    refuse("|")
 }
 
 func read_star() {
     var next_code = code_after(1)
     if next_code == 42 {
-        refuse("**", "Spite has no '**': write 'base.power(exponent)'")
+        refuse("**")
         return
     }
+    refuse_a_compound(next_code, "*")
     simple('star')
 }
 
 func read_slash() {
     var next_code = code_after(1)
     if next_code == 47 {
-        refuse("//", "Spite has no '//': a comment is one line starting with '#' and holding a link to a heading")
+        refuse("//")
         return
     }
     if next_code == 42 {
-        refuse("/*", "Spite has no '/* */': a comment is one line starting with '#' and holding a link to a heading")
+        refuse("/*")
         return
     }
+    refuse_a_compound(next_code, "/")
     simple('slash')
 }
 
@@ -425,7 +454,7 @@ func read_not() {
         written_run('not_equal', 2)
         return
     }
-    refuse("!", "Spite writes 'not' as a word")
+    refuse("!")
 }
 
 func simple(kind: AbstractSyntaxTree.Tokens.TokenKind) {
@@ -450,22 +479,8 @@ func written_run(kind: AbstractSyntaxTree.Tokens.TokenKind, count: Integer) {
     record(kind, written, written, start, column_here)
 }
 
-func refuse(written: String, message: String) {
-    refuse_from(written, message)
-}
-
-func refuse_from(written: String, message: String) {
-    var start = line
-    var column_here = column
-    var index = 0
-    while index < written.length() and not at_end() {
-        advance()
-        index = index + 1
-    }
-    if refusals < 20 {
-        refusals = refusals + 1
-        report.at(path, start, column_here, message)
-    }
+func refuse(written: String) {
+    spelling.refuse(path, line, 'unreadable', written)
 }
 
 func record(
@@ -574,28 +589,4 @@ func learn_keywords() {
     keywords["and"] = 'and'
     keywords["or"] = 'or'
     keywords["not"] = 'not'
-}
-
-func learn_refused_words() {
-    refused_words["for"] = "Spite has no 'for': Spite has only the 'while' loop. Write 'while', or the member templates 'each_<member>()', 'map_<member>()' and 'filter_<member>()'"
-    refused_words["foreach"] = "Spite has no 'foreach': Spite has only the 'while' loop. Write 'while', or the member templates 'each_<member>()' and 'filter_<member>()'"
-    refused_words["do"] = "Spite has no 'do': an 'if' on a value that may be null narrows it in place, 'if value \{ ... } else \{ ... }', and inside the block 'value' is the value itself"
-    refused_words["elif"] = "Spite writes 'else if'"
-    refused_words["let"] = "Spite has no 'let': a variable is declared 'var name = value'"
-    refused_words["const"] = "Spite has no 'const': every variable is declared 'var name = value' and may be written again"
-    refused_words["new"] = "there is no 'new' in Spite: a class is made by calling its own name, like 'Creature(\"rat\")'"
-    refused_words["self"] = "Spite has no 'self': a class reads its own attributes and calls its own functions by name"
-    refused_words["nil"] = "'nil' is not a value in Spite: write 'null'"
-    refused_words["none"] = "'none' cannot name a variable, because Spite reads the word as a mistake anywhere it is used: the empty value is written 'null'"
-    refused_words["undefined"] = "'undefined' is not a value in Spite: every function answers, or it answers 'T?' and is narrowed"
-    refused_words["import"] = "there are no imports: 'load \"folder\"' inside a function brings a folder into the program, and everything shares one namespace"
-    refused_words["require"] = "there are no imports: 'load \"folder\"' inside a function brings a folder into the program, and everything shares one namespace"
-    refused_words["break"] = "Spite has no 'break': a loop stops in its own condition"
-    refused_words["continue"] = "Spite has no 'continue': a loop goes on in its own condition"
-    refused_words["fn"] = "a function is declared 'func', not 'fn'"
-    refused_words["def"] = "a function is declared 'func', not 'def'"
-    refused_words["struct"] = "there is no 'struct': a file is a class, so every class is already one object with its own fields"
-    refused_words["interface"] = "there is no 'interface': a 'type' declares a shape a value matches"
-    refused_words["match"] = "there is no 'match': a 'switch' covers every member of a union, every value of an enum or every case of a text or a number"
-    refused_words["this"] = "a class reads its own attributes by name: write 'name', not 'this.name'"
 }
