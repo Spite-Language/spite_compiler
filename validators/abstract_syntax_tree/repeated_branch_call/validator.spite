@@ -1,0 +1,193 @@
+var path = ""
+var class_name = ""
+var function_name = ""
+var branch_calls = List<String>()
+var branch_names = List<String>()
+var call_names = List<String>()
+
+func check(walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String) {
+    path = walk.file.path
+    class_name = starting_class_name
+    walk.statements.each(check_found)
+}
+
+func check_found(found: AbstractSyntaxTree.Walk.FoundStatement) {
+    function_name = found.function_name
+    var statement = found.statement
+    if statement == AbstractSyntaxTree.Shapes.Statements.IfStatement {
+        check_chain(statement)
+    }
+}
+
+func check_chain(first: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    var branches = List<AbstractSyntaxTree.Shapes.Statements.Block>()
+    var current: AbstractSyntaxTree.Shapes.Statements.IfStatement? = first
+    var has_a_last_else = false
+    while current {
+        crash current.then_branch
+        branches.append(current.then_branch)
+        var else_branch = current.else_branch
+        current = null
+        if else_branch {
+            current = next_link(else_branch)
+            has_a_last_else = not else_branch.is_an_else_if
+            add_the_last_else(branches, else_branch)
+        }
+    }
+    assert has_a_last_else
+    var shared = calls_of(branches[0])
+    var index = 1
+    while index < branches.count() {
+        var others = calls_of(branches[index])
+        shared = kept_in(shared, others)
+        index = index + 1
+    }
+    assert not shared.is_empty()
+    var repeated = shared[0]
+    var where = "every branch"
+    if branches.count() == 2 {
+        where = "both branches"
+    }
+    var text = "'{repeated}' is computed in {where}: compute it once before the 'if'"
+    var failure = Validators.Failure()
+    failure.stop_inside(path, first.line, class_name, function_name, text)
+}
+
+func add_the_last_else(
+    branches: List<AbstractSyntaxTree.Shapes.Statements.Block>,
+    else_branch: AbstractSyntaxTree.Shapes.Statements.Block,
+) {
+    if not else_branch.is_an_else_if {
+        branches.append(else_branch)
+    }
+}
+
+func next_link(
+    else_branch: AbstractSyntaxTree.Shapes.Statements.Block,
+): AbstractSyntaxTree.Shapes.Statements.IfStatement? {
+    assert else_branch.is_an_else_if
+    var inner = else_branch.statements[0]
+    if inner == AbstractSyntaxTree.Shapes.Statements.IfStatement {
+        return inner
+    }
+    return null
+}
+
+func calls_of(branch: AbstractSyntaxTree.Shapes.Statements.Block?): List<String> {
+    branch_calls = List<String>()
+    branch_names = List<String>()
+    crash branch
+    branch.statements.each(read_statement)
+    return branch_calls
+}
+
+func read_statement(statement: AbstractSyntaxTree.Shapes.Statements.Statement) {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: read_held(statement.value)
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: read_variable(statement)
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: read_expression(statement.value)
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: read_expression(statement.value)
+        _: return
+    }
+}
+
+func read_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    read_expression(statement.value)
+    branch_names.append(statement.name)
+}
+
+func read_held(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        expression.arguments.each(read_present)
+        return
+    }
+    read_expression(expression)
+}
+
+func read_present(expression: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    read_expression(expression)
+}
+
+func read_expression(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    assert expression
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: read_call(expression)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: read_binary(expression)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: read_expression(expression.operand)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: read_expression(expression.target)
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: expression.pieces.each(read_piece)
+        _: return
+    }
+}
+
+func read_binary(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
+    read_expression(binary.left)
+    read_expression(binary.right)
+}
+
+func read_piece(piece: AbstractSyntaxTree.Shapes.Expressions.TextPiece) {
+    read_expression(piece.hole)
+}
+
+func read_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    call_names = List<String>()
+    read_names(call)
+    var local = reads_a_branch_name()
+    if not local {
+        var printer = Printers.Spite.ExpressionPrinter(call)
+        var written = printer.text()
+        branch_calls.append(written)
+    }
+    call.arguments.each(read_present)
+}
+
+func read_names(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    assert expression
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: call_names.append(expression.name)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: read_call_names(expression)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: read_binary_names(expression)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: read_names(expression.operand)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: read_names(expression.target)
+        _: return
+    }
+}
+
+func read_call_names(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    read_names(call.callee)
+    call.arguments.each(read_present_names)
+}
+
+func read_present_names(expression: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    read_names(expression)
+}
+
+func read_binary_names(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
+    read_names(binary.left)
+    read_names(binary.right)
+}
+
+func kept_in(shared: List<String>, others: List<String>): List<String> {
+    var kept = List<String>()
+    var index = 0
+    while index < shared.count() {
+        var call = shared[index]
+        if others.contains(call) {
+            kept.append(call)
+        }
+        index = index + 1
+    }
+    return kept
+}
+
+func reads_a_branch_name(): Boolean {
+    var index = 0
+    while index < call_names.count() {
+        var name = call_names[index]
+        if branch_names.contains(name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
