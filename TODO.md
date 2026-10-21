@@ -763,11 +763,11 @@ saw. Each line below is one of them, named by the program that checks it.
 - [ ] atomic_misuse — 'crash $value_type == Number and $value_type != Float and $value_type != Double or $value_type == Boolean' always halts in Atomic<Float>: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks
 - [ ] bitwise_on_float — a Float has no function 'shifted_right': the bitwise functions are on the whole numbers, Tiny to UnsignedLong. Cast it first, like 'var whole: Long = value'
 - [ ] blank_line — formatted diagnostics/blank_line/blank_line.spite
-- [ ] borrowed_name — diagnostics/borrowed_name/borrowed_name.spite:4:9: 'none' cannot name a variable, because Spite reads the word as a mistake anywhere it is used: the empty value is written 'null'
-- [ ] borrowed_new — diagnostics/borrowed_new/borrowed_new.spite:4:18: there is no 'new' in Spite: a class is made by calling its own name, like 'Creature("rat")'
+- [x] borrowed_name — diagnostics/borrowed_name/borrowed_name.spite:4:9: 'none' cannot name a variable, because Spite reads the word as a mistake anywhere it is used: the empty value is written 'null'
+- [x] borrowed_new — diagnostics/borrowed_new/borrowed_new.spite:4:18: there is no 'new' in Spite: a class is made by calling its own name, like 'Creature("rat")'
 - [ ] borrowed_operators — Spite writes 'and' and 'or' as words: there is no '&&' or '||'
 - [ ] borrowed_syntax — Spite has no '+=': write 'count = count + value'
-- [ ] borrowed_this — diagnostics/borrowed_this/borrowed_this.spite:5:19: a class reads its own attributes by name: write 'name', not 'this.name'
+- [x] borrowed_this — diagnostics/borrowed_this/borrowed_this.spite:5:19: a class reads its own attributes by name: write 'name', not 'this.name'
 - [ ] bound_proofs_undone — 'spans[at + 2]' may be missing, since every '[ ]' answers a 'T?' (this one is an Integer?), but a Printable is needed: narrow it first with 'crash spans[at + 2]', 'assert spans[at + 2]' or 'if spans[at + 2] { }', or read it where a bound proves it, inside 'while at + 2 < spans.count()'
 - [ ] branch_undoes_proof — this value may be null (it is a Target?), so 'name' cannot be read from it yet: narrow it first with 'if value { }', 'assert value' or 'crash value'
 - [ ] build_setting_type — error: '--workers=many' was given to the compiler, but 'Build.workers' is an Integer: a whole number, like --workers=3
@@ -908,7 +908,7 @@ saw. Each line below is one of them, named by the program that checks it.
 - [ ] old_ampersand — Spite has no '&' operator: bits are functions on the whole numbers, write 'value.bits_and(mask)' (and 'and' for a condition)
 - [ ] old_break — diagnostics/old_break/old_break.spite:7:13: Spite has no 'break': a loop stops in its own condition, like 'while index < count and not found', and a step it skips sits under an 'if'
 - [ ] old_declaration_equal — diagnostics/old_declaration_equal/old_declaration_equal.spite:1:10: a declaration takes no '=': write 'enum Job {' with one entry on each line
-- [ ] old_do — diagnostics/old_do/old_do.spite:5:15: Spite has no 'do': an 'if' on a value that may be null narrows it in place, 'if value { ... } else { ... }', and inside the block 'value' is the value itself
+- [x] old_do — diagnostics/old_do/old_do.spite:5:15: Spite has no 'do': an 'if' on a value that may be null narrows it in place, 'if value { ... } else { ... }', and inside the block 'value' is the value itself
 - [ ] old_let — diagnostics/old_let/old_let.spite:4:5: Spite has no 'let': a variable is declared 'var name = value', always with a default, and there is no 'const'
 - [ ] old_list_names — List has no method 'add', which does not say where: write 'append' to add at the end, or 'prepend' at the start
 - [ ] old_nullable_spelling — diagnostics/old_nullable_spelling/old_nullable_spelling.spite:1:31: 'Nullable<T>' was replaced by a '?' suffix: write 'Monster?' for a value that may be null
