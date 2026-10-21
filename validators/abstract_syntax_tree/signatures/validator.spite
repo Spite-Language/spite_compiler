@@ -1,0 +1,133 @@
+var empty_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+var class_name = ""
+
+func check(starting_walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String) {
+    walk = starting_walk
+    class_name = starting_class_name
+    walk.function_declarations.each(check_function)
+    walk.statements.each(check_return)
+}
+
+func check_function(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    var parameter_count = function.parameters.count()
+    var result = result_text(function)
+    var takes_nothing = parameter_count == 0
+    var answers_nothing = result.is_empty()
+    if function.name == "drop" {
+        var is_exact = takes_nothing and answers_nothing
+        check_exact(
+            function,
+            is_exact,
+            "is called by the compiler when the last reference to an object goes, so it is declared exactly 'func drop()'",
+        )
+    }
+    if function.name == "equals" {
+        var takes_its_class = parameter_count == 1 and first_parameter_type(function) == class_name
+        var is_exact = takes_its_class and result == "Boolean"
+        check_exact(
+            function,
+            is_exact,
+            "is called by the compiler for '==' and '!=', so it is declared exactly 'func equals(other: {class_name}): Boolean'",
+        )
+    }
+    if function.name == "to_string" {
+        var is_exact = takes_nothing and result == "String"
+        check_exact(
+            function,
+            is_exact,
+            "is called by the compiler wherever the object is used as text, so it is declared exactly 'func to_string(): String'",
+        )
+    }
+    if function.name == "get_at" {
+        check_get_at(function, result)
+    }
+    check_conversion(function)
+}
+
+func check_exact(
+    function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    is_exact: Boolean,
+    rule: String,
+) {
+    assert not is_exact
+    refuse(function.line, "'{function.name}' {rule}")
+}
+
+func check_get_at(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration, result: String) {
+    assert not result.is_empty() and not result.ends_with("?")
+    refuse(
+        function.line,
+        "'get_at' answers '{result}', but it is what '[ ]' calls, and every '[ ]' answers a 'T?' that is narrowed before use: declare it to answer '{result}?', and answer null when nothing is at the index",
+    )
+}
+
+func check_conversion(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    assert function.name.starts_with("from_")
+    var name_length = function.name.length()
+    var source = function.name.slice(5, name_length)
+    var names = Mapping.Names()
+    var own = names.snake_case_of(class_name)
+    refuse(
+        function.line,
+        "'{class_name}.{function.name}' makes a {class_name} from another value, and a conversion belongs to the value converted: declare 'to_{own}()' on the class it converts from, the {source}, or take the value in the constructor",
+    )
+}
+
+func check_return(found: AbstractSyntaxTree.Walk.FoundStatement) {
+    var statement = found.statement
+    if statement == AbstractSyntaxTree.Shapes.Statements.ReturnStatement {
+        check_return_value(found, statement)
+    }
+}
+
+func check_return_value(
+    found: AbstractSyntaxTree.Walk.FoundStatement,
+    returned: AbstractSyntaxTree.Shapes.Statements.ReturnStatement,
+) {
+    assert not returned.value
+    var function = walk.function_named(found.function_name)
+    crash function
+    var result = result_text(function)
+    assert not result.is_empty()
+    assert function.name != class_name
+    var failure = Validators.Failure()
+    failure.stop_inside(
+        walk.file.path,
+        returned.line,
+        class_name,
+        function.name,
+        "'{function.name}' returns {article_of(result)} {result}, so 'return' needs a value",
+    )
+}
+
+func result_text(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): String {
+    if function.result {
+        var printer = Printers.Spite.TypePrinter(function.result)
+        return printer.text()
+    }
+    return ""
+}
+
+func first_parameter_type(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): String {
+    var first = function.parameters[0]
+    crash first
+    crash first.declared_type
+    var printer = Printers.Spite.TypePrinter(first.declared_type)
+    return printer.text()
+}
+
+func refuse(line: Integer, text: String) {
+    var failure = Validators.Failure()
+    failure.stop_at(walk.file.path, line, class_name, text)
+}
+
+func article_of(word: String): String {
+    var first = word.slice(0, 1)
+    var lowered = first.lower_case()
+    var vowels = "aeiou"
+    if vowels.contains(lowered) {
+        return "an"
+    }
+    return "a"
+}
