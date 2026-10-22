@@ -6,6 +6,7 @@ var context = Context(no_program, no_resolver)
 var values = Values(context)
 var statements = List<HighIntermediaryRepresentation.Statements.Statement>()
 var local_count = 0
+var stand_in: HighIntermediaryRepresentation.Values.Value? = null
 
 func Reflection(starting_context: Context, starting_values: Values) {
     context = starting_context
@@ -27,8 +28,7 @@ func class_object(described: String): HighIntermediaryRepresentation.Values.Valu
     }
     context.reflected.append(known)
     need_the_making(class_type)
-    var fill = fill_of_a_class(described)
-    context.synthetic_functions.append(fill)
+    context.unfilled.append(known)
     return made
 }
 
@@ -45,9 +45,55 @@ func namespace_object(described: String): HighIntermediaryRepresentation.Values.
     }
     context.reflected.append(known)
     need_the_making(namespace_type)
-    var fill = fill_of_a_namespace(described)
-    context.synthetic_functions.append(fill)
+    context.unfilled.append(known)
     return made
+}
+
+func fill(known: String): HighIntermediaryRepresentation.HighFunction {
+    var class_prefix = "Spite.Class:"
+    var namespace_prefix = "Spite.Namespace:"
+    var known_length = known.length()
+    if known.starts_with(class_prefix) {
+        var class_length = class_prefix.length()
+        var described_class = known.slice(class_length, known_length)
+        return fill_of_a_class(described_class)
+    }
+    if known.starts_with(namespace_prefix) {
+        var namespace_length = namespace_prefix.length()
+        var described_namespace = known.slice(namespace_length, known_length)
+        return fill_of_a_namespace(described_namespace)
+    }
+    var functions_prefix = "Functions:"
+    crash known.starts_with(functions_prefix)
+    var functions_length = functions_prefix.length()
+    var described = known.slice(functions_length, known_length)
+    return fill_of_a_function_list(described)
+}
+
+func features(): String {
+    var found = ""
+    var lists = wants("Spite.Class.get_functions") or wants("Spite.Class.has_function") or wants("Spite.Class.argument_count")
+    if lists or wants("Spite.Class.function_waits") {
+        found = "{found}f"
+    }
+    if wants("Spite.Function.get_is_resumable") or wants("Spite.Class.function_waits") {
+        found = "{found}w"
+    }
+    if wants("Spite.Argument.get_is_mutated") {
+        found = "{found}m"
+    }
+    if wants("Spite.Function.get_accesses") {
+        found = "{found}a"
+    }
+    return found
+}
+
+func wants(key: String): Boolean {
+    return context.queued.contains(key)
+}
+
+func has_feature(feature: String): Boolean {
+    return context.fill_features.contains(feature)
 }
 
 func need_the_making(reflection: Model.Type) {
@@ -137,7 +183,14 @@ func fill_from_the_model(
     if not is_stored_by_the_compiler and not element {
         add_the_attributes(own, class_model, model)
     }
-    add_the_functions(own, class_model, model)
+    assert has_feature("f")
+    if model.key == context.program.entry {
+        set_flag(own, class_model, "_has_no_stand_in", true)
+    } else {
+        var listed = read_attribute(own, class_model, "_functions")
+        var makes_a_stand_in = belongs_to_the_program(model) and not model.is_singleton and not is_stored_by_the_compiler
+        add_the_functions(listed, model, null, makes_a_stand_in, true)
+    }
 }
 
 func fill_an_enum(own: HighIntermediaryRepresentation.Values.Value, class_model: Model.ClassModel, described: String) {
@@ -256,32 +309,247 @@ func add_the_attributes(
 }
 
 func add_the_functions(
-    own: HighIntermediaryRepresentation.Values.Value,
-    class_model: Model.ClassModel,
+    listed: HighIntermediaryRepresentation.Values.Value,
     model: Model.ClassModel,
+    receiver: HighIntermediaryRepresentation.Values.Value?,
+    makes_a_stand_in: Boolean,
+    with_accesses: Boolean,
 ) {
     var function_type = reflection_type("Spite.Function")
-    var function_model = context.class_of(function_type)
     need_the_making(function_type)
     var argument_type = reflection_type("Spite.Argument")
     need_the_making(argument_type)
-    var listed = read_attribute(own, class_model, "_functions")
+    stand_in = receiver
     var index = 0
     while index < model.declared_functions.count() {
         var declared = model.declared_functions[index]
-        var is_listed = not declared.is_constructor and not declared.is_a_member_template
-        if is_listed {
-            var name = text(declared.name)
-            var no_more = List<HighIntermediaryRepresentation.Values.Value>()
-            var made = made_from(function_type, name, no_more)
-            var local = kept(made, function_type)
-            add_the_arguments(local, function_model, declared, argument_type)
-            add_the_answer(local, function_model, declared)
-            add_the_returned_literal(local, function_model, declared)
-            appended(listed, local)
+        if is_listed(declared) {
+            add_a_function_object(listed, declared, model, makes_a_stand_in, with_accesses)
         }
         index = index + 1
     }
+}
+
+func is_listed(declared: Model.FunctionModel): Boolean {
+    if declared.is_constructor or declared.is_a_member_template or declared.is_a_walk_copy {
+        return false
+    }
+    if not declared.number_copy_of.is_empty() {
+        return false
+    }
+    return not declared.name.starts_with("_")
+}
+
+func can_be_built(declared: Model.FunctionModel): Boolean {
+    if declared.is_a_member_template or not declared.has_a_body() {
+        return false
+    }
+    var index = 0
+    while index < declared.parameters.count() {
+        var parameter = declared.parameters[index]
+        var parameter_type = parameter.parameter_type
+        if parameter_type.kind == 'object' and parameter_type.name.starts_with("Spite.") {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func add_a_function_object(
+    listed: HighIntermediaryRepresentation.Values.Value,
+    declared: Model.FunctionModel,
+    model: Model.ClassModel,
+    makes_a_stand_in: Boolean,
+    with_accesses: Boolean,
+) {
+    var function_type = reflection_type("Spite.Function")
+    var function_model = context.class_of(function_type)
+    var argument_type = reflection_type("Spite.Argument")
+    var name = text(declared.name)
+    var no_more = List<HighIntermediaryRepresentation.Values.Value>()
+    var made = made_from(function_type, name, no_more)
+    var local = kept(made, function_type)
+    var has_facts = belongs_to_the_program(model) and can_be_built(declared)
+    add_the_arguments(local, function_model, declared, argument_type, has_facts)
+    add_the_answer(local, function_model, declared)
+    add_the_returned_literal(local, function_model, declared)
+    if has_facts {
+        set_flag(local, function_model, "_has_facts", true)
+    }
+    if has_facts and has_feature("w") {
+        var waits = fact("waits", declared, "")
+        set_value(local, function_model, "_is_resumable", waits)
+    }
+    if has_facts and with_accesses and has_feature("a") {
+        add_the_accesses(local, function_model, declared, model)
+        set_flag(local, function_model, "_has_accesses", true)
+    }
+    var called = call_value_of(declared, model, function_model, makes_a_stand_in)
+    if called {
+        set_value(local, function_model, "_called", called)
+    }
+    appended(listed, local)
+}
+
+func fact(
+    question: String,
+    declared: Model.FunctionModel,
+    slot: String,
+): HighIntermediaryRepresentation.Values.FunctionFact {
+    var functions = List<Model.FunctionModel>()
+    functions.append(declared)
+    var boolean = context.boolean()
+    var made = HighIntermediaryRepresentation.Values.FunctionFact(boolean, question, functions)
+    made.slot = slot
+    context.facts_asked.append(made)
+    context.need(declared)
+    return made
+}
+
+func call_value_of(
+    declared: Model.FunctionModel,
+    model: Model.ClassModel,
+    function_model: Model.ClassModel,
+    makes_a_stand_in: Boolean,
+): HighIntermediaryRepresentation.Values.Value? {
+    if not stand_in and makes_a_stand_in {
+        stand_in = made_stand_in(model)
+    }
+    assert stand_in
+    var receiver: HighIntermediaryRepresentation.Values.Value = stand_in
+    var called_attribute = function_model.attribute_named("_called")
+    crash called_attribute
+    var wanted = called_attribute.attribute_type.present()
+    var wrapper = declared
+    if not declared.parameters.is_empty() {
+        wrapper = stopping_wrapper(model, declared)
+    } else if declared.answer {
+        wrapper = discarding_wrapper(model, declared)
+    } else {
+        context.need(declared)
+    }
+    return HighIntermediaryRepresentation.Values.FunctionValue(wanted, wrapper, receiver)
+}
+
+func made_stand_in(model: Model.ClassModel): HighIntermediaryRepresentation.Values.Value {
+    var instance_type = model.type_of_an_instance()
+    context.need_defaults(model.key)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var made = HighIntermediaryRepresentation.Values.MakeObject(instance_type, null, no_arguments)
+    return kept(made, instance_type)
+}
+
+func stopping_wrapper(model: Model.ClassModel, declared: Model.FunctionModel): Model.FunctionModel {
+    var name = "_cannot_call_{declared.name}"
+    var known = model.function_named(name)
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel(name, model.key)
+    made.is_synthetic = true
+    model.declared_functions.append(made)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    var message = "spite: call_function() cannot call '{declared.name}': it takes arguments, and call_function() passes none"
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+    body.statements.append(stopped)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func discarding_wrapper(model: Model.ClassModel, declared: Model.FunctionModel): Model.FunctionModel {
+    var name = "_call_{declared.name}"
+    var known = model.function_named(name)
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel(name, model.key)
+    made.is_synthetic = true
+    model.declared_functions.append(made)
+    context.need(declared)
+    var instance_type = model.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(instance_type)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var call = HighIntermediaryRepresentation.Values.Call(declared, own, no_arguments)
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(call)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements.append(evaluated)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func add_the_accesses(
+    function: HighIntermediaryRepresentation.Values.Value,
+    function_model: Model.ClassModel,
+    declared: Model.FunctionModel,
+    model: Model.ClassModel,
+) {
+    var access_type = reflection_type("Spite.Access")
+    need_the_making(access_type)
+    var attribute_type = reflection_type("Spite.Attribute")
+    var attribute_model = context.class_of(attribute_type)
+    need_the_making(attribute_type)
+    var argument_type = reflection_type("Spite.Argument")
+    var argument_model = context.class_of(argument_type)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var attribute_name = text(attribute.name)
+        var attribute_index = whole(index)
+        var made_attribute = made_with(attribute_type, attribute_name, attribute_index)
+        var attribute_local = kept(made_attribute, attribute_type)
+        var attribute_class = class_object_of_type(attribute.attribute_type)
+        if attribute_class {
+            set_value(attribute_local, attribute_model, "_class", attribute_class)
+        }
+        add_an_access(function, function_model, attribute_local, attribute.name, declared, "a:{attribute.name}")
+        index = index + 1
+    }
+    var parameter_index = 0
+    while parameter_index < declared.parameters.count() {
+        var parameter = declared.parameters[parameter_index]
+        var parameter_name = text(parameter.name)
+        var place = whole(parameter_index)
+        var made_argument = made_with(argument_type, parameter_name, place)
+        var argument_local = kept(made_argument, argument_type)
+        var argument_class = class_object_of_type(parameter.parameter_type)
+        if argument_class {
+            set_value(argument_local, argument_model, "_class", argument_class)
+        }
+        add_an_access(function, function_model, argument_local, parameter.name, declared, "p:{parameter.name}")
+        parameter_index = parameter_index + 1
+    }
+}
+
+func add_an_access(
+    function: HighIntermediaryRepresentation.Values.Value,
+    function_model: Model.ClassModel,
+    target: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    declared: Model.FunctionModel,
+    slot: String,
+) {
+    var access_type = reflection_type("Spite.Access")
+    var access_model = context.class_of(access_type)
+    var constructor = values.constructor_of(access_model)
+    crash constructor
+    var target_parameter = constructor.parameters[0]
+    crash target_parameter
+    var fitted_target = values.fitted(target, target_parameter.parameter_type)
+    var read_fact = fact("reads", declared, slot)
+    var written_fact = fact("written", declared, slot)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(fitted_target)
+    arguments.append(read_fact)
+    arguments.append(written_fact)
+    var made = HighIntermediaryRepresentation.Values.MakeObject(access_type, constructor, arguments)
+    var accesses = read_attribute(function, function_model, "_accesses")
+    appended(accesses, made)
+    var names = read_attribute(function, function_model, "_accessed_names")
+    var named = text(name)
+    appended(names, named)
 }
 
 func add_the_arguments(
@@ -289,6 +557,7 @@ func add_the_arguments(
     function_model: Model.ClassModel,
     declared: Model.FunctionModel,
     argument_type: Model.Type,
+    has_facts: Boolean,
 ) {
     var argument_model = context.class_of(argument_type)
     var listed = read_attribute(function, function_model, "_arguments")
@@ -303,6 +572,13 @@ func add_the_arguments(
         if described {
             set_value(local, argument_model, "_class", described)
         }
+        if has_facts {
+            set_flag(local, argument_model, "_has_facts", true)
+        }
+        if has_facts and has_feature("m") {
+            var mutated = fact("writes", declared, "p:{parameter.name}")
+            set_value(local, argument_model, "_is_mutated", mutated)
+        }
         appended(listed, local)
         index = index + 1
     }
@@ -313,11 +589,62 @@ func add_the_answer(
     function_model: Model.ClassModel,
     declared: Model.FunctionModel,
 ) {
-    assert declared.answer
-    var answer: Model.Type = declared.answer
-    var described = class_object_of_type(answer)
+    var described: HighIntermediaryRepresentation.Values.Value? = class_object("Nothing")
+    if declared.answer {
+        var answer: Model.Type = declared.answer
+        described = class_object_of_type(answer)
+    }
     assert described
     set_value(function, function_model, "_returns", described)
+}
+
+func belongs_to_the_program(model: Model.ClassModel): Boolean {
+    var entry = context.program.class_named(context.program.entry)
+    crash entry
+    var folder = folder_of(entry.file.path)
+    var path_length = model.file.path.length()
+    var folder_length = folder.length()
+    var rest = model.file.path.slice(folder_length, path_length)
+    return model.file.path.starts_with(folder) and not rest.contains("..")
+}
+
+func fill_of_a_function_list(described: String): HighIntermediaryRepresentation.HighFunction {
+    var outer = statements
+    statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var model = context.program.class_named(described)
+    crash model
+    var made = model.function_named("_function_list")
+    crash made
+    var function_type = reflection_type("Spite.Function")
+    var list_type = context.resolver.list_type_of(function_type)
+    var made_list = values.made_list(list_type)
+    var listed = kept(made_list, list_type)
+    var instance_type = model.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(instance_type)
+    add_the_functions(listed, model, own, false, false)
+    var answered = HighIntermediaryRepresentation.Statements.Return(listed)
+    statements.append(answered)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements = statements
+    statements = outer
+    return HighIntermediaryRepresentation.HighFunction(made, body)
+}
+
+func function_list_of(model: Model.ClassModel): Model.FunctionModel {
+    var known = model.function_named("_function_list")
+    if known {
+        return known
+    }
+    var function_type = reflection_type("Spite.Function")
+    var list_type = context.resolver.list_type_of(function_type)
+    var made = Model.FunctionModel("_function_list", model.key)
+    made.is_synthetic = true
+    made.answer = list_type
+    model.declared_functions.append(made)
+    var known_list = "Functions:{model.key}"
+    context.reflected.append(known_list)
+    context.unfilled.append(known_list)
+    return made
 }
 
 func add_the_returned_literal(
@@ -357,6 +684,32 @@ func add_a_literal(
     assert not piece.hole
     var written = values.unescaped(piece.text)
     set_text(function, function_model, "_returned_literal", written)
+}
+
+func arguments_of(declared: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value {
+    statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var argument_type = reflection_type("Spite.Argument")
+    var argument_model = context.class_of(argument_type)
+    need_the_making(argument_type)
+    var list_type = context.resolver.list_type_of(argument_type)
+    var made_list = values.made_list(list_type)
+    var listed = kept_in_scope(made_list, list_type)
+    var index = 0
+    while index < declared.parameters.count() {
+        var parameter = declared.parameters[index]
+        var name = text(parameter.name)
+        var index_value = whole(index)
+        var made = made_with(argument_type, name, index_value)
+        var local = kept_in_scope(made, argument_type)
+        var described = class_object_of_type(parameter.parameter_type)
+        if described {
+            set_value(local, argument_model, "_class", described)
+        }
+        appended(listed, local)
+        index = index + 1
+    }
+    statements.each(context.pending.append)
+    return listed
 }
 
 func attributes_of_an_object(
