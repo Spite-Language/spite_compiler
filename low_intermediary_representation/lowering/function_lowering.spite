@@ -12,6 +12,10 @@ var line = 0
 var singleton_slots = Dictionary<String, Integer>()
 var scopes = List<List<Integer>>()
 var pending_releases = List<Integer>()
+var waits: Waits? = null
+var makes_work = false
+var resumable_mode = false
+var resume_blocks = List<Integer>()
 
 func FunctionLowering(
     starting_layout: Layout,
@@ -29,7 +33,13 @@ func lowered(
 ): LowIntermediaryRepresentation.LowFunction {
     path = starting_path
     var key = high.function.key()
+    if resumable_mode {
+        key = "{key}$step"
+    }
     start(key)
+    function.is_resumable = resumable_mode
+    resume_blocks = List<Integer>()
+    var dispatch = current
     var this_register = new_register()
     locals["this"] = this_register
     scopes = List<List<Integer>>()
@@ -37,6 +47,11 @@ func lowered(
     scopes.append(held)
     high.function.parameters.each(take_parameter)
     function.parameter_count = function.register_count
+    var body = current
+    if resumable_mode {
+        body = new_block()
+        switch_to(body)
+    }
     high.function.parameters.each(hold_a_parameter)
     lower_block(high.body)
     if not terminated {
@@ -44,7 +59,89 @@ func lowered(
         var nothing = LowIntermediaryRepresentation.Instructions.Return(-1)
         emit(nothing)
     }
+    if resumable_mode {
+        dispatch_the_resumes(dispatch, body)
+    }
     return function
+}
+
+func dispatch_the_resumes(dispatch: Integer, body: Integer) {
+    switch_to(dispatch)
+    var frame = new_register()
+    var found = LowIntermediaryRepresentation.Instructions.FrameAddress(frame)
+    emit(found)
+    var resumed = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(resumed, frame, 0, 'bits_64')
+    emit(loaded)
+    var index = 0
+    while index < resume_blocks.count() {
+        var target = resume_blocks[index]
+        var number = constant(index + 1)
+        var matches = new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', resumed, number)
+        emit(compared)
+        var next = new_block()
+        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, target, next)
+        emit(test)
+        switch_to(next)
+        index = index + 1
+    }
+    jump_to(body)
+}
+
+func resume_point(): Integer {
+    var block = new_block()
+    jump_to(block)
+    switch_to(block)
+    resume_blocks.append(block)
+    return resume_blocks.count()
+}
+
+func suspend_unless(holds: Integer, point: Integer) {
+    var waiting = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(holds, after, waiting)
+    emit(test)
+    switch_to(waiting)
+    suspend_at(point)
+    switch_to(after)
+}
+
+func suspend_at(point: Integer) {
+    var frame = new_register()
+    var found = LowIntermediaryRepresentation.Instructions.FrameAddress(frame)
+    emit(found)
+    var number = constant(point)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(frame, 0, number, 'bits_64')
+    emit(stored)
+    var zero = constant(0)
+    var returned = LowIntermediaryRepresentation.Instructions.Return(zero)
+    returned.is_a_suspension = true
+    emit(returned)
+}
+
+func is_locked_here(): Boolean {
+    if not waits {
+        return false
+    }
+    return waits.is_locked(function.key)
+}
+
+func is_resumable(key: String): Boolean {
+    if not waits {
+        return false
+    }
+    return waits.is_resumable(key)
+}
+
+func lowered_call_arguments(call: HighIntermediaryRepresentation.Values.Call): List<Integer> {
+    var arguments = List<Integer>()
+    var receiver = lower_value(call.receiver)
+    crash call.receiver
+    release_later(receiver, call.receiver.value_type)
+    arguments.append(receiver.value)
+    add_arguments(arguments, call.arguments)
+    return arguments
 }
 
 func start(key: String) {
@@ -75,9 +172,7 @@ func hold_a_parameter(parameter: Model.ParameterModel) {
 func is_a_pointer(of_type: Model.Type): Boolean {
     var kind = of_type.kind
     if kind == 'handle' {
-        crash of_type.answer
-        var answer: Model.Type = of_type.answer
-        return is_a_pointer(answer)
+        return true
     }
     return kind == 'object' or kind == 'union' or kind == 'shape' or kind == 'function'
 }
@@ -747,6 +842,20 @@ func lower_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     if not call.function.has_a_body() {
         return intrinsic.lowered(call)
     }
+    if not call.number_positions.is_empty() {
+        return lower_number_dispatch(call)
+    }
+    var called_key = call.function.key()
+    var working = Working(this)
+    if resumable_mode and is_resumable(called_key) {
+        return working.waiting_call(call)
+    }
+    if resumable_mode and called_key == "Program.sleep" {
+        return working.waiting_sleep(call)
+    }
+    if makes_work and called_key == "Program.sleep" and not is_locked_here() {
+        return working.plain_sleep(call)
+    }
     var outer = pending_releases
     pending_releases = List<Integer>()
     var arguments = List<Integer>()
@@ -759,6 +868,115 @@ func lower_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     release_the_pending()
     pending_releases = outer
     return answer
+}
+
+func lower_number_dispatch(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var outer = pending_releases
+    pending_releases = List<Integer>()
+    var receiver = lower_value(call.receiver)
+    crash call.receiver
+    release_later(receiver, call.receiver.value_type)
+    var registers = List<Integer>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var lowered_argument = lower_value(argument)
+        release_later(lowered_argument, argument.value_type)
+        registers.append(lowered_argument.value)
+        index = index + 1
+    }
+    var target = -1
+    if not call.value_type.is_nothing() {
+        target = new_register()
+    }
+    var after = new_block()
+    var chosen = List<String>()
+    call.number_types.each(chosen.append)
+    dispatch_a_number(call, receiver.value, registers, chosen, 0, target, after)
+    switch_to(after)
+    release_the_pending()
+    pending_releases = outer
+    if is_a_pointer(call.value_type) {
+        return owned(target)
+    }
+    return single(target)
+}
+
+func dispatch_a_number(
+    call: HighIntermediaryRepresentation.Values.Call,
+    receiver: Integer,
+    registers: List<Integer>,
+    chosen: List<String>,
+    position_index: Integer,
+    target: Integer,
+    after: Integer,
+) {
+    if position_index == call.number_positions.count() {
+        call_a_number_copy(call, receiver, registers, chosen, target)
+        jump_to(after)
+        return
+    }
+    var position = call.number_positions[position_index]
+    crash position
+    var boxed = registers[position]
+    crash boxed
+    var class_id = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, boxed, 0, 'bits_64')
+    emit(loaded)
+    var fillers = layout.program.fillers_of("Number")
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        var wanted = layout.class_id_of(filler.name)
+        var wanted_register = constant(wanted)
+        var matches = new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', class_id, wanted_register)
+        emit(compared)
+        var calling = new_block()
+        var next = new_block()
+        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, calling, next)
+        emit(test)
+        switch_to(calling)
+        var unboxed = new_register()
+        var read = LowIntermediaryRepresentation.Instructions.Load(unboxed, boxed, 16, 'bits_64')
+        emit(read)
+        var given = List<Integer>()
+        registers.each(given.append)
+        given[position] = unboxed
+        var picked = List<String>()
+        chosen.each(picked.append)
+        picked[position] = filler.name
+        dispatch_a_number(call, receiver, given, picked, position_index + 1, target, after)
+        switch_to(next)
+        index = index + 1
+    }
+    var label = text_label("spite: no number class fills 'Number' here, at {path}:{line}\n")
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+}
+
+func call_a_number_copy(
+    call: HighIntermediaryRepresentation.Values.Call,
+    receiver: Integer,
+    registers: List<Integer>,
+    chosen: List<String>,
+    target: Integer,
+) {
+    var name = call.function.number_copy_name(chosen)
+    var key = "{call.function.owner}.{name}"
+    var arguments = List<Integer>()
+    arguments.append(receiver)
+    registers.each(arguments.append)
+    var answered = -1
+    if target >= 0 {
+        answered = new_register()
+    }
+    var called = LowIntermediaryRepresentation.Instructions.Call(answered, key, arguments)
+    emit(called)
+    if target >= 0 {
+        var copied = LowIntermediaryRepresentation.Instructions.Copy(target, answered)
+        emit(copied)
+    }
 }
 
 func finished_call(call: HighIntermediaryRepresentation.Values.Call, arguments: List<Integer>): Lowered {
@@ -842,9 +1060,6 @@ func decimal_operation(
         return single(target)
     }
     var arithmetic_operator = arithmetic_of(operation.operator)
-    if arithmetic_operator == 'remainder' {
-        return unbuilt()
-    }
     var computed = LowIntermediaryRepresentation.Instructions.DecimalArithmetic(
         target,
         arithmetic_operator,
@@ -974,6 +1189,14 @@ func lower_number_room(room: HighIntermediaryRepresentation.Values.NumberRoom): 
 }
 
 func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): Lowered {
+    if conversion.kind == 'into_handle' {
+        var starting = Working(this)
+        return starting.started(conversion)
+    }
+    if conversion.kind == 'join' {
+        var joining = Working(this)
+        return joining.joined(conversion)
+    }
     var converted = lower_value(conversion.converted)
     if conversion.kind == 'nullable' {
         return made_nullable(converted, conversion.value_type)

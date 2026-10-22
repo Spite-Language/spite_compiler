@@ -107,6 +107,10 @@ func fitted(
     if given.is_the_same_as(wanted) {
         return value
     }
+    var cast_to_text = cast_text_of(value, wanted)
+    if cast_to_text {
+        return fitted(cast_to_text, wanted)
+    }
     var same_base = given.kind == wanted.kind and given.name == wanted.name
     if same_base and wanted.is_nullable {
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'nullable', value)
@@ -191,6 +195,10 @@ func refill_a_shape(given: Model.Type, wanted: Model.Type) {
 }
 
 func filled_shape(given: Model.Type, wanted: Model.Type) {
+    if given.kind == 'union' {
+        fill_with_the_members(given, wanted)
+        return
+    }
     var shape = context.program.shape_keyed(wanted.name)
     crash shape
     var shown = context.shown(given)
@@ -212,6 +220,16 @@ func filled_shape(given: Model.Type, wanted: Model.Type) {
     if not known {
         var present = given.present()
         fillers.append(present)
+    }
+}
+
+func fill_with_the_members(given: Model.Type, wanted: Model.Type) {
+    var united = union_model_of(given)
+    var index = 0
+    while index < united.members.count() {
+        var member = united.members[index]
+        filled_shape(member, wanted)
+        index = index + 1
     }
 }
 
@@ -599,6 +617,24 @@ func hole_text_of(hole: AbstractSyntaxTree.Shapes.Expressions.Expression): HighI
     return method_call(value, "to_string", no_arguments)
 }
 
+func cast_text_of(
+    value: HighIntermediaryRepresentation.Values.Value,
+    wanted: Model.Type,
+): HighIntermediaryRepresentation.Values.Value? {
+    var given = value.value_type
+    var wants_text = wanted.kind == 'object' and wanted.name == "String"
+    assert wants_text and not given.is_nullable and given.name != "String"
+    if given.kind == 'enumeration' {
+        return enum_text(value)
+    }
+    var has_text = given.kind == 'scalar' or given.kind == 'object'
+    assert has_text
+    var model = context.class_of(given)
+    assert model.function_named("to_string")
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    return method_call(value, "to_string", no_arguments)
+}
+
 func joined_with(
     joined: HighIntermediaryRepresentation.Values.Value?,
     next: HighIntermediaryRepresentation.Values.Value,
@@ -620,6 +656,12 @@ func name_value(
         crash local_type
         var declared_type = context.scope.types[internal_name]
         crash declared_type
+        var narrows_a_handle = declared_type.kind == 'handle' and local_type.kind != 'handle'
+        if narrows_a_handle {
+            var handle_read = HighIntermediaryRepresentation.Values.LocalRead(declared_type, internal_name)
+            var joined_read = result_of_handle(handle_read)
+            return HighIntermediaryRepresentation.Values.Conversion(local_type, 'present', joined_read)
+        }
         var is_boxed = declared_type.kind == 'shape' and is_held_in_a_box(local_type)
         if is_boxed {
             var boxed = HighIntermediaryRepresentation.Values.LocalRead(declared_type, internal_name)
@@ -1361,15 +1403,49 @@ func handle_value(
 ): HighIntermediaryRepresentation.Values.Value {
     var work = call.arguments[0]
     var done = work_of(work)
-    var handle_type = Model.Type('handle', name)
-    handle_type.answer = done.value_type
-    if done.value_type.is_nothing() {
-        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(done)
-        evaluated.line = context.line
-        context.pending.append(evaluated)
-        return HighIntermediaryRepresentation.Values.WholeNumber(handle_type, 0)
-    }
+    var handle_type = context.resolver.handle_of(name, done.value_type)
+    need_the_scheduler(handle_type)
     return HighIntermediaryRepresentation.Values.Conversion(handle_type, 'into_handle', done)
+}
+
+func need_the_scheduler(handle_type: Model.Type) {
+    context.makes_work = true
+    var work_type = Model.Type('object', handle_type.carrier)
+    var work_model = context.class_of(work_type)
+    context.need_defaults(work_model.key)
+    need_every_function(work_model)
+    var running = context.resolver.class_model_named("Spite.Internal.Running")
+    crash running
+    context.need_defaults(running.key)
+    need_every_function(running)
+    var scheduler = context.resolver.class_model_named("Spite.Internal.Scheduler")
+    crash scheduler
+    context.need_defaults(scheduler.key)
+    need_every_function(scheduler)
+}
+
+func need_every_function(model: Model.ClassModel) {
+    var index = 0
+    while index < model.declared_functions.count() {
+        var function = model.declared_functions[index]
+        if function.has_a_body() {
+            need(function)
+        }
+        index = index + 1
+    }
+}
+
+func work_call(
+    handle: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+): HighIntermediaryRepresentation.Values.Value {
+    var work_type = Model.Type('object', handle.value_type.carrier)
+    var work_model = context.class_of(work_type)
+    var function = work_model.function_named(name)
+    crash function
+    need(function)
+    var no_values = List<HighIntermediaryRepresentation.Values.Value>()
+    return HighIntermediaryRepresentation.Values.Call(function, handle, no_values)
 }
 
 func work_of(work: AbstractSyntaxTree.Shapes.Expressions.Expression?): HighIntermediaryRepresentation.Values.Value {
@@ -1614,9 +1690,7 @@ func member_call(
     }
     var written_receiver = value_of(callee.target, null)
     if written_receiver.value_type.kind == 'handle' and callee.name == "finished_value" {
-        var result = result_of_handle(written_receiver)
-        var nullable = result.value_type.nullable()
-        return HighIntermediaryRepresentation.Values.Conversion(nullable, 'nullable', result)
+        return work_call(written_receiver, "finished_value")
     }
     var receiver = result_of_handle(written_receiver)
     if receiver.value_type.kind == 'shape' {
@@ -1631,6 +1705,10 @@ func member_call(
     var is_an_enum = receiver.value_type.kind == 'enumeration' and not receiver.value_type.is_nullable
     if is_an_enum and callee.name == "to_string" and call.arguments.is_empty() {
         return enum_text(receiver)
+    }
+    if is_an_enum and callee.name == "to_debug" and call.arguments.is_empty() {
+        var debugging = Debugging(context, this)
+        return debugging.debug_text_of(receiver)
     }
     var read_enum = enum_read_from(receiver, callee.name, call.arguments)
     if read_enum {
@@ -2131,8 +2209,7 @@ func handle_member(
     name: String,
 ): HighIntermediaryRepresentation.Values.Value {
     if name == "finished" {
-        var boolean = context.boolean()
-        return HighIntermediaryRepresentation.Values.WholeNumber(boolean, 1)
+        return work_call(handle, "get_finished")
     }
     var result = result_of_handle(handle)
     var no_written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
@@ -2223,9 +2300,159 @@ func called(
     receiver: HighIntermediaryRepresentation.Values.Value,
     written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ): HighIntermediaryRepresentation.Values.Value {
+    if takes_numbers(function) and written.count() == function.parameters.count() {
+        return number_call(function, receiver, written)
+    }
     need(function)
     var arguments = fitted_arguments(function, written)
     return HighIntermediaryRepresentation.Values.Call(function, receiver, arguments)
+}
+
+func takes_numbers(function: Model.FunctionModel): Boolean {
+    if not function.has_a_body() or not function.number_copy_of.is_empty() {
+        return false
+    }
+    if not function.declaration {
+        return false
+    }
+    return writes_a_number(function.declaration)
+}
+
+func writes_a_number(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): Boolean {
+    var index = 0
+    while index < declaration.parameters.count() {
+        var parameter = declaration.parameters[index]
+        if is_written_number(parameter.declared_type) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func is_written_number(written: AbstractSyntaxTree.Shapes.Types.Type?): Boolean {
+    if written == AbstractSyntaxTree.Shapes.Types.NamedType {
+        var path = written.path.join(".")
+        return path == "Number"
+    }
+    return false
+}
+
+func is_the_number_shape(of_type: Model.Type): Boolean {
+    return of_type.kind == 'shape' and of_type.name == "Number" and not of_type.is_nullable
+}
+
+func number_call(
+    function: Model.FunctionModel,
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value {
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var type_names = List<String>()
+    var positions = List<Integer>()
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var argument = written[index]
+        if is_the_number_shape(parameter.parameter_type) {
+            add_a_number(argument, parameter, index, arguments, type_names, positions)
+        } else {
+            var fitted_argument = fitted_value_of(argument, parameter.parameter_type)
+            type_names.append(parameter.parameter_type.name)
+            arguments.append(fitted_argument)
+        }
+        index = index + 1
+    }
+    if positions.is_empty() {
+        var copy = number_copy(function, type_names)
+        return HighIntermediaryRepresentation.Values.Call(copy, receiver, arguments)
+    }
+    var dispatched = HighIntermediaryRepresentation.Values.Call(function, receiver, arguments)
+    dispatched.number_positions = positions
+    dispatched.number_types = type_names
+    context.number_dispatches.append(dispatched)
+    copies_for(dispatched)
+    return dispatched
+}
+
+func add_a_number(
+    argument: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    parameter: Model.ParameterModel,
+    index: Integer,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+    type_names: List<String>,
+    positions: List<Integer>,
+) {
+    var given = value_of(argument, null)
+    var given_type = given.value_type
+    if given_type.kind == 'scalar' and not given_type.is_nullable {
+        type_names.append(given_type.name)
+        arguments.append(given)
+        return
+    }
+    var shaped = fitted(given, parameter.parameter_type)
+    type_names.append("")
+    positions.append(index)
+    arguments.append(shaped)
+}
+
+func copies_for(dispatched: HighIntermediaryRepresentation.Values.Call) {
+    var chosen = List<String>()
+    dispatched.number_types.each(chosen.append)
+    copies_from(dispatched, chosen, 0)
+}
+
+func copies_from(
+    dispatched: HighIntermediaryRepresentation.Values.Call,
+    chosen: List<String>,
+    position_index: Integer,
+) {
+    if position_index == dispatched.number_positions.count() {
+        number_copy(dispatched.function, chosen)
+        return
+    }
+    var position = dispatched.number_positions[position_index]
+    crash position
+    var fillers = context.program.fillers_of("Number")
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        var picked = List<String>()
+        chosen.each(picked.append)
+        picked[position] = filler.name
+        copies_from(dispatched, picked, position_index + 1)
+        index = index + 1
+    }
+}
+
+func number_copy(function: Model.FunctionModel, type_names: List<String>): Model.FunctionModel {
+    var owner = context.program.class_named(function.owner)
+    crash owner
+    var name = function.number_copy_name(type_names)
+    var known = owner.function_named(name)
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel(name, function.owner)
+    made.declaration = function.declaration
+    made.answer = function.answer
+    made.number_copy_of = function.name
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var parameter_type = parameter.parameter_type
+        if is_the_number_shape(parameter_type) {
+            var type_name = type_names[index]
+            crash type_name
+            parameter_type = Model.Type('scalar', type_name)
+        }
+        var copied = Model.ParameterModel(parameter.name, parameter_type, parameter.is_variadic)
+        made.parameters.append(copied)
+        index = index + 1
+    }
+    owner.declared_functions.append(made)
+    need(made)
+    return made
 }
 
 func method_call(
@@ -2993,8 +3220,28 @@ func refuse_a_cut_conversion(
     assert cuts
     var printer = Printers.Spite.ExpressionPrinter(binary)
     var shown = printer.text()
+    var function = context.current_function
+    if not function.number_copy_of.is_empty() {
+        var left_article = article_for(left_type.name)
+        var right_article = article_for(right_type.name)
+        var path = context.path()
+        var message = "spite: '{shown}' works in {left_article} {left_type.name}, the class of its left side, and its right side is {right_article} {right_type.name}, which would be cut to fit, at {path}:{context.line} in {function.owner}.{function.number_copy_of}"
+        var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+        stopped.line = context.line
+        context.pending.append(stopped)
+        return
+    }
     var operation = operation_name_of(binary.operator)
     typing.refuse_cut_operand(context, shown, operation, left_type.name, right_type.name)
+}
+
+func article_for(name: String): String {
+    var first = name.slice(0, 1)
+    var vowels = ["A", "E", "I", "O", "U"]
+    if vowels.contains(first) {
+        return "an"
+    }
+    return "a"
 }
 
 func operation_name_of(kind: AbstractSyntaxTree.Tokens.TokenKind): String {
@@ -3270,6 +3517,10 @@ func condition_of(
     expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
 ): HighIntermediaryRepresentation.Values.Value {
     var written_value = value_of(expression, null)
+    var is_a_maybe_handle = written_value.value_type.kind == 'handle' and written_value.value_type.is_nullable
+    if is_a_maybe_handle {
+        return HighIntermediaryRepresentation.Values.PresenceTest(written_value)
+    }
     var value = result_of_handle(written_value)
     var present_type = value.value_type.present()
     if value.value_type.is_nullable and context.is_boolean(present_type) {

@@ -13,6 +13,9 @@ var stop_routine = 0
 var text_writer = 0
 var number_writer = 0
 var current_key = ""
+var current_is_resumable = false
+var current_outgoing = 0
+var current_header = 0
 var parameter_registers = List<Integer>()
 
 func Emitter(starting_program: LowIntermediaryRepresentation.LowProgram) {
@@ -239,10 +242,17 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     block_offsets = List<Integer>()
     block_fixups = List<Fixup>()
     var outgoing = 32 + 8 * most_arguments_of(function)
-    var frame = 8 * function.register_count + outgoing
-    var rounded = (frame + 15) / 16 * 16
-    encoder.prologue(rounded)
-    take_the_parameters(function)
+    current_is_resumable = function.is_resumable
+    if function.is_resumable {
+        current_outgoing = (outgoing + 15) / 16 * 16
+        current_header = 0 - 48 - 8 * function.register_count
+        encoder.resumable_prologue(0 - current_header, current_outgoing)
+    } else {
+        var frame = 8 * function.register_count + outgoing
+        var rounded = (frame + 15) / 16 * 16
+        encoder.prologue(rounded)
+        take_the_parameters(function)
+    }
     function.blocks.each(emit_block)
     block_fixups.each(fix_a_block)
 }
@@ -322,6 +332,7 @@ func emit_instruction(instruction: LowIntermediaryRepresentation.Instructions.In
         LowIntermediaryRepresentation.Instructions.Jump: emit_jump(instruction)
         LowIntermediaryRepresentation.Instructions.Branch: emit_branch(instruction)
         LowIntermediaryRepresentation.Instructions.Return: emit_return(instruction)
+        LowIntermediaryRepresentation.Instructions.FrameAddress: emit_frame_address(instruction)
         LowIntermediaryRepresentation.Instructions.Stop: emit_stop(instruction)
         LowIntermediaryRepresentation.Instructions.Exit: emit_exit(instruction)
     }
@@ -426,6 +437,7 @@ func emit_decimal_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructi
         'subtract': encoder.decimal_operation(92, arithmetic.is_double)
         'multiply': encoder.decimal_operation(89, arithmetic.is_double)
         'divide': encoder.decimal_operation(94, arithmetic.is_double)
+        'remainder': encoder.decimal_remainder(arithmetic.is_double)
         _: encoder.decimal_square_root(arithmetic.is_double)
     }
     encoder.rax_from_the_first_decimal_register(arithmetic.is_double)
@@ -859,7 +871,25 @@ func emit_return(returned: LowIntermediaryRepresentation.Instructions.Return) {
     if returned.presence >= 0 {
         encoder.load_virtual(encoder.rdx, returned.presence)
     }
-    encoder.epilogue()
+    if not current_is_resumable {
+        encoder.epilogue()
+        return
+    }
+    if returned.is_a_suspension {
+        encoder.move_immediate(encoder.rax, 0)
+        encoder.resumable_epilogue(current_outgoing)
+        return
+    }
+    encoder.store_slot(current_header + 16, encoder.rax)
+    encoder.store_slot(current_header + 24, encoder.rdx)
+    encoder.move_immediate(encoder.rax, 1)
+    encoder.store_slot(current_header + 8, encoder.rax)
+    encoder.resumable_epilogue(current_outgoing)
+}
+
+func emit_frame_address(found: LowIntermediaryRepresentation.Instructions.FrameAddress) {
+    encoder.slot_address(encoder.rax, current_header)
+    encoder.store_virtual(found.target, encoder.rax)
 }
 
 func emit_stop(stop: LowIntermediaryRepresentation.Instructions.Stop) {

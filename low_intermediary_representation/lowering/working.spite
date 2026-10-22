@@ -1,0 +1,270 @@
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low = LowIntermediaryRepresentation.LowProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low, no_slots)
+var scheduler_key = "Spite.Internal.Scheduler"
+var running_key = "Spite.Internal.Running"
+
+func Working(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+func started(conversion: HighIntermediaryRepresentation.Values.Conversion): Lowered {
+    return started_from(conversion.converted, conversion.value_type.carrier)
+}
+
+func started_from(work: HighIntermediaryRepresentation.Values.Value?, carrier: String): Lowered {
+    crash work
+    if work == HighIntermediaryRepresentation.Values.Call {
+        return started_call(work, carrier)
+    }
+    return finished_at_once(work, carrier)
+}
+
+func started_call(work: HighIntermediaryRepresentation.Values.Call, carrier: String): Lowered {
+    var key = work.function.key()
+    if lowering.is_resumable(key) {
+        return started_in_a_frame(work, carrier)
+    }
+    return finished_at_once(work, carrier)
+}
+
+func started_in_a_frame(work: HighIntermediaryRepresentation.Values.Call, carrier: String): Lowered {
+    var outer = lowering.pending_releases
+    lowering.pending_releases = List<Integer>()
+    var arguments = lowering.lowered_call_arguments(work)
+    var frame = lowering.new_register()
+    var work_key = work.function.key()
+    var made_frame = LowIntermediaryRepresentation.Instructions.Call(frame, "{work_key}$frame", arguments)
+    lowering.emit(made_frame)
+    lowering.release_the_pending()
+    lowering.pending_releases = outer
+    var running = lowering.make_object(running_key)
+    var running_arguments = List<Integer>()
+    running_arguments.append(running)
+    running_arguments.append(frame)
+    call_by_name(running_key, "Running", running_arguments)
+    var scheduler = scheduler_object()
+    var start_arguments = List<Integer>()
+    start_arguments.append(scheduler)
+    start_arguments.append(running)
+    call_by_name(scheduler_key, "start", start_arguments)
+    var made = lowering.make_object(carrier)
+    var work_arguments = List<Integer>()
+    work_arguments.append(made)
+    work_arguments.append(running)
+    call_by_name(carrier, "Work", work_arguments)
+    lowering.release(running)
+    return lowering.owned(made)
+}
+
+func finished_at_once(work: HighIntermediaryRepresentation.Values.Value, carrier: String): Lowered {
+    var value = lowering.lower_value(work)
+    var made = lowering.make_object(carrier)
+    var no_running = lowering.constant(0)
+    var work_arguments = List<Integer>()
+    work_arguments.append(made)
+    work_arguments.append(no_running)
+    call_by_name(carrier, "Work", work_arguments)
+    if not work.value_type.is_nothing() {
+        var finishing = List<Integer>()
+        finishing.append(made)
+        finishing.append(value.value)
+        if value.presence >= 0 {
+            finishing.append(value.presence)
+        }
+        call_by_name(carrier, "finished_with", finishing)
+        if value.owned and lowering.is_a_pointer(work.value_type) {
+            lowering.release(value.value)
+        }
+    }
+    return lowering.owned(made)
+}
+
+func joined(conversion: HighIntermediaryRepresentation.Values.Conversion): Lowered {
+    crash conversion.converted
+    var handle = lowering.lower_value(conversion.converted)
+    var carrier = conversion.converted.value_type.carrier
+    if lowering.resumable_mode {
+        wait_until_finished(handle.value, carrier)
+    }
+    var arguments = List<Integer>()
+    arguments.append(handle.value)
+    var model = lowering.layout.program.class_named(carrier)
+    crash model
+    var settled = model.function_named("_settled")
+    crash settled
+    crash settled.answer
+    var answer = lowering.new_register()
+    var settled_key = settled.key()
+    var called = LowIntermediaryRepresentation.Instructions.Call(answer, settled_key, arguments)
+    var presence = -1
+    if lowering.is_a_nullable_scalar(settled.answer) {
+        presence = lowering.new_register()
+        called.presence = presence
+    }
+    lowering.emit(called)
+    if handle.owned {
+        lowering.release(handle.value)
+    }
+    var kept_presence = -1
+    if lowering.is_a_nullable_scalar(conversion.value_type) {
+        kept_presence = presence
+    }
+    var made = Lowered(answer, kept_presence)
+    made.owned = lowering.is_a_pointer(conversion.value_type)
+    return made
+}
+
+func wait_until_finished(handle: Integer, carrier: String) {
+    var point = lowering.resume_point()
+    var arguments = List<Integer>()
+    arguments.append(handle)
+    var finished = lowering.new_register()
+    var asked = LowIntermediaryRepresentation.Instructions.Call(finished, "{carrier}.get_finished", arguments)
+    lowering.emit(asked)
+    lowering.suspend_unless(finished, point)
+}
+
+func waiting_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var outer = lowering.pending_releases
+    lowering.pending_releases = List<Integer>()
+    var arguments = lowering.lowered_call_arguments(call)
+    var frame = lowering.new_register()
+    var call_key = call.function.key()
+    var made_frame = LowIntermediaryRepresentation.Instructions.Call(frame, "{call_key}$frame", arguments)
+    lowering.emit(made_frame)
+    var point = lowering.resume_point()
+    var stepping = List<Integer>()
+    stepping.append(frame)
+    var done = lowering.new_register()
+    var stepped = LowIntermediaryRepresentation.Instructions.Call(done, "{call_key}$step", stepping)
+    lowering.emit(stepped)
+    lowering.suspend_unless(done, point)
+    var answer = -1
+    var presence = -1
+    if not call.value_type.is_nothing() {
+        answer = lowering.new_register()
+        var loaded = LowIntermediaryRepresentation.Instructions.Load(answer, frame, 16, 'bits_64')
+        lowering.emit(loaded)
+    }
+    if lowering.is_a_nullable_scalar(call.value_type) {
+        presence = lowering.new_register()
+        var loaded_presence = LowIntermediaryRepresentation.Instructions.Load(presence, frame, 24, 'bits_64')
+        lowering.emit(loaded_presence)
+    }
+    var freed = LowIntermediaryRepresentation.Instructions.Free(frame)
+    lowering.emit(freed)
+    lowering.release_the_pending()
+    lowering.pending_releases = outer
+    var made = Lowered(answer, presence)
+    made.owned = lowering.is_a_pointer(call.value_type)
+    return made
+}
+
+func waiting_sleep(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var milliseconds_value = call.arguments[0]
+    crash milliseconds_value
+    var milliseconds = lowering.lower_value(milliseconds_value)
+    var scheduler = scheduler_object()
+    var now = ticks(scheduler)
+    var deadline = lowering.new_register()
+    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(deadline, 'add', now, milliseconds.value)
+    added.is_checked = false
+    lowering.emit(added)
+    var point = lowering.resume_point()
+    var later_scheduler = scheduler_object()
+    var later = ticks(later_scheduler)
+    var due = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(due, 'greater_or_equal', later, deadline)
+    compared.is_signed = true
+    lowering.emit(compared)
+    var waiting = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(due, after, waiting)
+    lowering.emit(test)
+    lowering.switch_to(waiting)
+    var noting = List<Integer>()
+    noting.append(later_scheduler)
+    noting.append(deadline)
+    call_by_name(scheduler_key, "note_deadline", noting)
+    lowering.suspend_at(point)
+    lowering.switch_to(after)
+    return Lowered(-1, -1)
+}
+
+func plain_sleep(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var milliseconds_value = call.arguments[0]
+    crash milliseconds_value
+    var milliseconds = lowering.lower_value(milliseconds_value)
+    var scheduler = scheduler_object()
+    var arguments = List<Integer>()
+    arguments.append(scheduler)
+    arguments.append(milliseconds.value)
+    call_by_name(scheduler_key, "sleep", arguments)
+    return Lowered(-1, -1)
+}
+
+func drain() {
+    var scheduler = scheduler_object()
+    var arguments = List<Integer>()
+    arguments.append(scheduler)
+    call_by_name(scheduler_key, "drain", arguments)
+}
+
+func ticks(scheduler: Integer): Integer {
+    var arguments = List<Integer>()
+    arguments.append(scheduler)
+    var now = lowering.new_register()
+    var called = LowIntermediaryRepresentation.Instructions.Call(now, "{scheduler_key}.ticks", arguments)
+    lowering.emit(called)
+    return now
+}
+
+func scheduler_object(): Integer {
+    var scheduler_type = Model.Type('object', scheduler_key)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var made = HighIntermediaryRepresentation.Values.MakeObject(scheduler_type, null, no_arguments)
+    return lowering.singleton_of(scheduler_key, made)
+}
+
+func call_by_name(class_key: String, name: String, arguments: List<Integer>) {
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, "{class_key}.{name}", arguments)
+    lowering.emit(called)
+}
+
+func frame_function(
+    step: LowIntermediaryRepresentation.LowFunction,
+    key: String,
+): LowIntermediaryRepresentation.LowFunction {
+    lowering.start("{key}$frame")
+    var count = step.parameter_count
+    var index = 0
+    while index < count {
+        lowering.new_register()
+        index = index + 1
+    }
+    lowering.function.parameter_count = count
+    var header = 48
+    var slots = 8 * step.register_count
+    var size = lowering.constant(header + slots)
+    var frame = lowering.new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(frame, size)
+    lowering.emit(allocated)
+    var parameter = 0
+    while parameter < count {
+        var offset = header + 8 * (step.register_count - 1 - parameter)
+        var stored = LowIntermediaryRepresentation.Instructions.Store(frame, offset, parameter, 'bits_64')
+        lowering.emit(stored)
+        parameter = parameter + 1
+    }
+    var address = lowering.new_register()
+    var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(address, "{key}$step")
+    lowering.emit(found)
+    var kept = LowIntermediaryRepresentation.Instructions.Store(frame, 32, address, 'bits_64')
+    lowering.emit(kept)
+    var returned = LowIntermediaryRepresentation.Instructions.Return(frame)
+    lowering.emit(returned)
+    return lowering.function
+}

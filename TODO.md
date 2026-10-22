@@ -47,11 +47,16 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A template's compiler-supplied functions (`BinaryWriter.schema()`); `deep_copy()` through a union or a shape, of a `Dictionary`, and of a graph with cycles (today a cycle recurses until the stack runs out); a copy runs the attribute defaults before it overwrites them; a walked row declared `var row: $row_type = null` when `$row_type` is a `type`
 - Vector and Items keep their items inline: today they hold references, so changing a found item changes the one in the list
 - Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`), filled in by the compiler and folded where constant (D37): still missing are `.attributes` on an `Anything`, `function.arguments.each(f)` with an answer typed by the argument (`argument.class`), `Spite.Class.function_waits`, `source_files` and `call_function`, folding of constant reads, `Spite.Call`, `.accesses`, enums as classes, and a function value being the same object as its `Spite.Function`
-- `Parallel` and `Concurrent` run their work in order, at once, when the handle is made: the state machines that let a `Concurrent` wait, the thread pool behind `Parallel`, the program waiting for its `Concurrent`s at exit, locks for singletons, `Atomic`, `Lock`, `Scheduler` and `ThreadPool` (D36); a handle of a nullable number loses its presence when it is stored
+- `Parallel` runs its work at once, when the handle is made, on the program's thread: the thread pool behind it, atomic counts once a thread exists, and thread-safe singletons (D36)
+- `Concurrent` runs as a resumable frame only for a function called by name: a wait through a function value, a union's or a `type`'s function, a constructor that waits, and a wait inside a condition after its first part are not resumable yet; file, console and socket reads block instead of waiting on a helper thread; `run_ready()` and `resume_only_when_asked()`; a join halting when two `Concurrent`s wait for each other names neither (it stops at a line of the scheduler); a poll that never steps anything does not halt
 - `foreign_callbacks` and `ipv6_addresses` still use `Memory.Address` and `Memory.Heap`: rewrite them with `Buffer` when foreign callbacks and sockets come (D36)
 - Allocation tests (frame objects, lent buffers, kept buffer addresses, the memory floor) come back as `--debug-memory` counts with the passes that place memory (D35)
 
 ## Faults found while porting
+
+- A program can name `Spite.Internal` classes: refuse it outside the standard library (`conformance/internal_use`)
+
+- A decimal `%` is computed as `x - trunc(x / y) * y`, which loses digits once the quotient passes 2^53: compute it exactly, as `fmod` does
 
 - A singleton circle closed at run time halts with the message for one singleton; it should name the chain (`singleton 'Registry' binds 'Catalog', which binds 'Registry'`), and the compile-time circle check is not built
 - A list of `Parallel` handles read with a proven index stops as if the item were missing (`singleton_function_values`)
