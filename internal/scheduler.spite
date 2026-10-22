@@ -1,0 +1,194 @@
+singleton
+
+var kernel = DynamicLibrary("kernel32.dll", 'identity', "")
+var _first_thread = 0
+var _first_loop = Spite.Internal.SchedulerLoop()
+var _threads = List<Integer>()
+var _loops = List<Spite.Internal.SchedulerLoop>()
+var _guard = Buffer(8)
+
+func Scheduler() {
+    _first_thread = kernel.GetCurrentThreadId()
+    _guard.append_long_little_endian(0)
+}
+
+func start(running: Spite.Internal.Running) {
+    step(running)
+    if not running.done {
+        var loop = loop_here()
+        loop.alive.append(running)
+    }
+}
+
+func step(running: Spite.Internal.Running): Boolean {
+    var loop = loop_here()
+    loop.enter(running)
+    running.stepping = true
+    running.waits_for = null
+    var finished = _step(running.frame)
+    running.stepping = false
+    loop.leave()
+    if finished {
+        running.done = true
+    } else {
+        stop_in_a_circle(running, loop)
+    }
+    return finished
+}
+
+func run_once(): Integer {
+    var loop = loop_here()
+    loop.depth = loop.depth + 1
+    loop.nearest = -1
+    var finished = 0
+    var index = 0
+    while index < loop.alive.count() {
+        var running = loop.alive[index]
+        var is_ready = not running.stepping and not running.done
+        if is_ready and step(running) {
+            finished = finished + 1
+        }
+        index = index + 1
+    }
+    loop.depth = loop.depth - 1
+    if loop.depth == 0 {
+        loop.alive.remove_where_done()
+    }
+    return finished
+}
+
+func wait_for(running: Spite.Internal.Running) {
+    if running.on_a_thread {
+        joined(running)
+        return
+    }
+    while not running.done {
+        var finished = run_once()
+        if not running.done and finished == 0 {
+            pause()
+        }
+    }
+}
+
+func joined(running: Spite.Internal.Running) {
+    assert not running.done
+    _join_thread(running.frame)
+    running.done = true
+}
+
+func wait_for_a_helper(frame: Long) {
+    while not _frame_done(frame) {
+        var finished = run_once()
+        if finished == 0 {
+            kernel.Sleep(1)
+        }
+    }
+}
+
+func drain() {
+    while any_running() {
+        var finished = run_once()
+        if finished == 0 and any_running() {
+            pause()
+        }
+    }
+}
+
+func stop_in_a_circle(running: Spite.Internal.Running, loop: Spite.Internal.SchedulerLoop) {
+    var steps = loop.alive.count() + 1
+    var frame = running.frame
+    if running.reaches(frame, steps) {
+        every_concurrent_waits_for_another()
+    }
+}
+
+func pause() {
+    var loop = loop_here()
+    var nearest = loop.nearest
+    if nearest < 0 {
+        every_concurrent_waits_for_another()
+    }
+    var now = ticks()
+    if nearest > now {
+        kernel.Sleep(nearest - now)
+    }
+}
+
+func every_concurrent_waits_for_another() {
+    crash
+}
+
+func waits_on(running: Spite.Internal.Running) {
+    var loop = loop_here()
+    loop.note_waiting_for(running)
+}
+
+func sleep(milliseconds: Integer) {
+    var deadline = ticks() + milliseconds
+    var now = ticks()
+    while now < deadline {
+        var finished = run_once()
+        note_deadline(deadline)
+        if finished == 0 {
+            pause()
+        }
+        now = ticks()
+    }
+}
+
+func any_running(): Boolean {
+    var loop = loop_here()
+    var index = 0
+    while index < loop.alive.count() {
+        var running = loop.alive[index]
+        if not running.done {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func note_deadline(at: Long) {
+    var loop = loop_here()
+    if loop.nearest < 0 or at < loop.nearest {
+        loop.nearest = at
+    }
+}
+
+func loop_here(): Spite.Internal.SchedulerLoop {
+    var thread = kernel.GetCurrentThreadId()
+    if thread == _first_thread {
+        return _first_loop
+    }
+    kernel.AcquireSRWLockExclusive(_guard)
+    var found = loop_of(thread)
+    kernel.ReleaseSRWLockExclusive(_guard)
+    return found
+}
+
+func loop_of(thread: Integer): Spite.Internal.SchedulerLoop {
+    var index = 0
+    while index < _threads.count() {
+        if _threads[index] == thread {
+            var known = _loops[index]
+            crash known
+            return known
+        }
+        index = index + 1
+    }
+    var made = Spite.Internal.SchedulerLoop()
+    _threads.append(thread)
+    _loops.append(made)
+    return made
+}
+
+func ticks(): Long {
+    return kernel.GetTickCount64_as_long()
+}
+
+func _step(frame: Long): Boolean
+
+func _join_thread(frame: Long)
+
+func _frame_done(frame: Long): Boolean

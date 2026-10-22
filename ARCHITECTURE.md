@@ -29,6 +29,17 @@ A representation is data only: no function on it writes text or decides an error
 
 No step reaches back into an earlier one.
 
+## The compiler's own Spite classes
+
+`internal/` holds the Spite classes the compiler adds to the programs it compiles (the scheduler and its work and
+running frames, the assert ring, the fault report, the debug-text guard, the REPL prompt, the copy table, the null
+stand-in). They are not part of the compiler: `spite_compiler.spite` names the folder in a `load` no build takes, so
+the compiler that builds this one leaves it out. When a program that loads the library first names a
+`Spite.Internal` class (the library's own code, or a lookup by name in a step), `mapping/internal_folder.spite`
+finds `internal/` beside the running executable, or one folder up (`.spite/spite.exe` finds this folder's), and the
+folder map maps its files as `Spite.Internal.<Class>` with the library's rights. No program loads that folder or
+names `Spite.Internal`, in an expression or a written type, and a class of its own in `spite/internal/` is refused.
+
 ## The first error stops the run
 
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
