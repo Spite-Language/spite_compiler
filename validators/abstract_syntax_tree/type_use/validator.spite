@@ -1,0 +1,222 @@
+var path = ""
+var class_name = ""
+var line = 0
+var function_name = ""
+var found_line = 0
+var found_function = ""
+var found_text = ""
+var number_names = [
+    "Tiny"
+    "Short"
+    "Integer"
+    "Long"
+    "Byte"
+    "UnsignedShort"
+    "UnsignedInteger"
+    "UnsignedLong"
+    "Float"
+    "Double"
+]
+var value_names = [
+    "Tiny"
+    "Short"
+    "Integer"
+    "Long"
+    "Byte"
+    "UnsignedShort"
+    "UnsignedInteger"
+    "UnsignedLong"
+    "Float"
+    "Double"
+    "Boolean"
+    "String"
+]
+
+func check(walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String) {
+    path = walk.file.path
+    class_name = starting_class_name
+    found_line = 0
+    found_function = ""
+    found_text = ""
+    walk.file.declarations.each(check_declaration)
+    walk.function_declarations.each(check_function)
+    walk.statements.each(check_found_statement)
+    walk.expressions.each(check_found_expression)
+    assert found_line > 0
+    var failure = Validators.Failure()
+    failure.stop_inside(path, found_line, class_name, found_function, found_text)
+}
+
+func note(text: String) {
+    var is_earlier = found_line == 0 or line < found_line
+    assert is_earlier
+    found_line = line
+    found_function = function_name
+    found_text = text
+}
+
+func check_declaration(declaration: AbstractSyntaxTree.Shapes.Declarations.Declaration) {
+    line = declaration.line
+    function_name = ""
+    switch declaration {
+        AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration: check_type(declaration.declared_type)
+        AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration: check_generic(declaration)
+        _: return
+    }
+}
+
+func check_generic(declaration: AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration) {
+    assert declaration.bound
+    var written = written_name(declaration.bound)
+    assert value_names.contains(written)
+    var text = "'{declaration.name}' is constrained by '{written}', which is not a 'type': a constraint names a 'type' the class given must fit, like 'generic {declaration.name}: Printable'"
+    note(text)
+}
+
+func check_function(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    line = function.line
+    function_name = function.name
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        check_type(parameter.declared_type)
+        index = index + 1
+    }
+    check_type(function.result)
+}
+
+func check_found_statement(found: AbstractSyntaxTree.Walk.FoundStatement) {
+    var statement = found.statement
+    if statement == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        line = statement.line
+        function_name = found.function_name
+        check_type(statement.declared_type)
+    }
+}
+
+func check_found_expression(found: AbstractSyntaxTree.Walk.FoundExpression) {
+    var expression = found.expression
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        line = found.line
+        function_name = found.function_name
+        check_call(expression)
+    }
+}
+
+func check_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        check_class_name(callee.name)
+        check_generic_use(callee.name, call.generic_arguments)
+    }
+}
+
+func check_type(declared: AbstractSyntaxTree.Shapes.Types.Type?) {
+    assert declared
+    if declared == AbstractSyntaxTree.Shapes.Types.NamedType {
+        check_named(declared)
+    }
+}
+
+func check_named(named: AbstractSyntaxTree.Shapes.Types.NamedType) {
+    var written = named.path.join(".")
+    if named.path.count() == 1 {
+        check_class_name(written)
+    }
+    check_generic_use(written, named.arguments)
+}
+
+func check_class_name(name: String) {
+    if name == "Json" {
+        note(
+            "there is no 'Json': it is two classes, 'JsonWriter<T>()' whose 'write(value)' makes the text, and 'JsonReader<T>()' whose 'read(text)' answers a 'T?'",
+        )
+        return
+    }
+    var spelled = new_spelling(name)
+    assert not spelled.is_empty()
+    note("'{name}' is spelled '{spelled}'")
+}
+
+func new_spelling(name: String): String {
+    var old_names = ["Int", "UnsignedInt", "Bool", "LocalDate", "LocalTime", "LocalDateTime"]
+    var new_names = ["Integer", "UnsignedInteger", "Boolean", "Date", "Time", "DateTime"]
+    var index = 0
+    while index < old_names.count() {
+        if old_names[index] == name {
+            crash new_names[index]
+            return new_names[index]
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func check_generic_use(name: String, arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>) {
+    if name == "Dictionary" {
+        check_dictionary(arguments)
+    }
+    var is_flat_list = name == "Vector" or name == "Items"
+    if is_flat_list {
+        check_plain_items(name, arguments)
+    }
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        if argument.is_type {
+            check_type(argument.type_reference)
+        }
+        index = index + 1
+    }
+}
+
+func check_dictionary(arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>) {
+    var given = arguments.count()
+    assert given > 0
+    if given != 2 {
+        note(
+            "a Dictionary names two types, its keys' and then its values', as in 'Dictionary<String, Integer>', and this one names {given}",
+        )
+        return
+    }
+    crash arguments[0]
+    var key = arguments[0]
+    assert key.is_type
+    var key_type = key.type_reference
+    if key_type == AbstractSyntaxTree.Shapes.Types.NamedType {
+        check_key(key_type)
+    }
+}
+
+func check_key(key_type: AbstractSyntaxTree.Shapes.Types.NamedType) {
+    assert key_type.is_nullable
+    var shown = written_name(key_type)
+    note(
+        "a Dictionary cannot be keyed by '{shown}': a key is a number, a Boolean, a String, an enum value or an object of a class",
+    )
+}
+
+func check_plain_items(name: String, arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>) {
+    assert arguments.count() == 1
+    var item = arguments[0]
+    assert item.is_type
+    var item_type = item.type_reference
+    if item_type == AbstractSyntaxTree.Shapes.Types.NamedType {
+        check_plain_item(name, item_type)
+    }
+}
+
+func check_plain_item(name: String, item_type: AbstractSyntaxTree.Shapes.Types.NamedType) {
+    var item_name = item_type.path.join(".")
+    var is_plain = number_names.contains(item_name) or item_name == "Boolean" or item_name == "Memory.Address"
+    assert is_plain
+    var label = written_name(item_type)
+    note(
+        "'{name}<{label}>' holds plain values, and a List keeps numbers, Boolean, enums and Memory.Address flat just as it did, so a list of them has one spelling: write 'List<{label}>'",
+    )
+}
+
+func written_name(declared: AbstractSyntaxTree.Shapes.Types.Type): String {
+    var printer = Printers.Spite.TypePrinter(declared)
+    return printer.text()
+}
