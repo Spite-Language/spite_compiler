@@ -185,7 +185,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The text, the numbers and the collections
 
-- Short text lives inside the `String` (D271): a text the compiler makes (a written text, a join, an append's first text) is one allocation; a `String()` the library makes (a `slice`, a number's `to_string()`, `split`'s pieces) is still a `String` and a `Buffer` apart, each one allocation, and every allocation is the system heap's (`HeapAlloc`, about 60 ns a call on Mortaro's machine), so making many short texts still costs what Python's own allocator does not
+- Short text lives inside the `String` (D271): every text is one allocation, but every allocation is the system heap's (`HeapAlloc` and `HeapFree`, about 60 ns a call on Mortaro's machine), so making many short texts still costs what Python's own small-object allocator does not; a text whose `String` keeps other attributes is still two
 - A slice shares its source's bytes where the source outlives it and neither changes (texts can change in place through `append_code` and an append, so it needs that proven first)
 - `List.join` copies every `String` item with `to_string()` before it appends it, one allocation per item that an append of the item itself would not need
 - Short symbols are inline text

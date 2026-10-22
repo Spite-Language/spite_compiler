@@ -285,11 +285,12 @@ the text's room, which can be up to twice its length.
 ## Short text lives inside its `String`
 
 A `String` is a 32-byte object that holds its length and a `Buffer` of its bytes, and a `Buffer` holds a pointer
-to its storage. A text the compiler makes itself (a written text, a join, an append's first text) is one
-allocation: the `String`, then its `Buffer`, then the bytes, with room for 47 bytes or for the whole join if that
-is longer. Every other `Buffer` (one `Buffer(n)` or `String()` makes) has room for 47 bytes inside itself too, so a
-short buffer is one allocation and not two. When the bytes outgrow the room, they move to storage of their own,
-and the room inside is not used again.
+to its storage. Every text is one allocation: the `String`, then its `Buffer`, then the bytes. A written text, a
+join and an append's first text get room for 47 bytes or for the whole text if that is longer; a `String()` (what
+`slice`, `split`, a number's `to_string()` and the rest of the library start from) gets the room its default
+`Buffer(16)` asks for, at least 47 bytes. Every other `Buffer` (one `Buffer(n)` makes) has room for 47 bytes inside
+itself too, so a short buffer is one allocation and not two. When the bytes outgrow the room, they move to storage
+of their own, and the room inside is not used again.
 
 ```
 func labels(count: Integer): List<String> {
@@ -310,7 +311,8 @@ padding (the unused upper bytes of the 32-bit length and count slots) that they 
 
 When it does not apply: a program whose `String` keeps an attribute other than `_buffer` and `_length` in its
 objects, or whose `String` or `Buffer` has a `drop()` or is held back by a cycle, makes the `String` and its
-`Buffer` apart (still with the room inside the `Buffer`). What a user can observe: one allocation per text, 48
+`Buffer` apart (still with the room inside the `Buffer`), and so does a `String()` whose reopened defaults are
+anything but `_buffer = Buffer(n)` with a number written out and `_length = 0`. What a user can observe: one allocation per text, 48
 more bytes per `Buffer`, and the time.
 
 ## Bytes are copied in one block
@@ -353,8 +355,9 @@ What a user can observe: no allocation for `_value()`, and the time.
 
 Letting go of an object whose class is not known while compiling calls `_release`, which counts down and, at
 zero, finds the object's free function from its class number by a binary search (a few compares, not one per
-class). Where the class is known (an attribute or a list's item whose declared type is a class), the count is
-taken down in place and the class's free function is called directly, with no search.
+class). Where the class is known (an attribute or a list's item whose declared type is a class of the program or
+the library), the count is taken down in place and the class's free function is called directly, with no search.
+A `Spite` class (`Spite.Function`, which holds a function value of another class) is let go through `_release`.
 
 ```
 func Lists() {
