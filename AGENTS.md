@@ -19,7 +19,7 @@ is decided; `../SpiteLanguage/specs` is the rule when anything disagrees.
 
 ## Work
 
-- Branch `next`; `master` is the release.
+- Work on `master`; there is no other branch.
 - Build once per batch of changes (about two minutes), then run `../SpiteSpec` (see `README.md`).
 - Every feature or fixed error gets a test in `../SpiteSpec`: `tests/<name>` must pass, `conformance/<name>`
   must fail with the old compiler's exact error text.
