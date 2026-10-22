@@ -30,7 +30,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A `load` inside an `if` is refused; the language allows it when the condition reads only build settings
 - `WholeNumber.value()` answers 0 for a text that is not a number
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
-- A `Symbol` passed through a `type` (`Debuggable`) is dispatched as the `String` it is at run time, so `to_debug()` prints `"wing"` instead of `'wing'` (`debug_values`)
 
 ## The language
 
@@ -44,10 +43,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Crash reports: a crash line shows only the whole numbers its condition names (texts, decimals, enums, `T?` and the function's other locals and attributes are not shown yet), an `assert` of several parts keeps one site for all of them, the ring allocates its 32 lines as they first fill, halts other than `crash` (overflow, a missing item) and native faults do not print the ring, and the `<program>.crashes` map is not written
 - A number's room is a `Buffer` made on every read of `_buffer` (D33): fold a read at a known position of a fresh room into the number itself
 
-- `Symbol` is text marked as a symbol: `symbol.class` is not yet `Symbol`, `Symbol(text)` is not built (`json_symbols`), and `Symbol<T>` outside a template parameter is a symbol whose class is not checked; `Anything`, and `Null` and `Number` as type names outside a `$T ==` test (D35)
+- `Symbol` is text marked as a symbol: `symbol.class` is not yet `Symbol`, `Symbol(text)` finds only the names written in single quotes that were compiled (not the names reflection answers), and `Symbol<T>` outside a template parameter is a symbol whose class is not checked; `Anything`, and `Null` and `Number` as type names outside a `$T ==` test (D35)
 - `Build` reads are not folded, so both branches of `if build.serve` are compiled; a `load` under an `if` on a `Build` field
 - Arithmetic and functions through `Number` (`value + value` on a `Number`)
-- `deep_copy()` through a union or a shape, and of a graph with cycles (today a cycle recurses until the stack runs out); a copy runs the attribute defaults before it overwrites them; a walked row declared `var row: $row_type = null` when `$row_type` is a `type`
+- `deep_copy()` of a graph with cycles (today a cycle recurses until the stack runs out), and through a shape some number, text, enum or singleton fills (refused as not fitting); a copy runs the attribute defaults before it overwrites them; a walked row declared `var row: $row_type = null` when `$row_type` is a `type`
 - Vector and Items keep their items inline: today each write stores a copy of the item by reference (one allocation and one copy per write, and every move inside the library copies again), not its attributes in the block
 - Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`, `Spite.Access`), filled in by the compiler and folded where constant (D37, D50 to D55): still missing are `function.arguments.each(f)` with an answer typed by the argument (`argument.class`, `reflection_walks`), folding of constant reads (a constant list's `[]`, `filter`, `each` and member templates, so `hurt.arguments[1]` needs no run-time check, D53), the `if` on a late answer (`function_waits`, `function_writes_parameter`) dropping its other branch, `Spite.Call`, enums as classes, `Symbol<Spite.Class>` and the `Spite` namespace by name (`class_walk`), stand-ins for singletons, a function value known only at run time answering its `Spite.Function` (`.name` of a parameter, `function_value_in_frame`; one the compiler knows is looked up by name), `is_stateful` following the singletons a class binds, and `attribute.class()` and `Spite.Debug<attribute.class>` at run time (`specialised_elsewhere`)
 - A `Parallel`'s reach (`ThreadReach`) follows calls only to the work's own class, attributes and locals made by a constructor; work that never finishes counts as never waiting only when it calls nothing but the console; a singleton's lock is assumed for every function that names one of its attributes (not the four forms); `Weak` is an unknown type, so `weak_across_threads` stops before its check
@@ -94,7 +93,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - `lent_to_calls` stops with heap corruption (0xC0000374): bisect it
 - A temporary the builder declares for a comparison (`call() == true`) can be read before its declaration in some branch; plain reads avoid it today
-- Building a text by appending to it copies it each time (`text_building` takes minutes)
 - Two `Concurrent`s that wait for each other loop forever instead of halting (`concurrent_wait_cycle`), since the work runs in order
 
 ## The errors
@@ -173,7 +171,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The text, the numbers and the collections
 
-- Appending to text in place
 - Text joined in one piece
 - A number joined into text is written in place
 - Short text lives inside the `String`

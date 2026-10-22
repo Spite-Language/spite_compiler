@@ -1705,7 +1705,47 @@ func lower_class_of_value(made: HighIntermediaryRepresentation.Values.ClassOfVal
     return single(target)
 }
 
+func lower_symbol_from_text(read: HighIntermediaryRepresentation.Values.EnumFromText): Lowered {
+    var text = lower_value(read.text)
+    var target = new_register()
+    var zero = constant(0)
+    var cleared = LowIntermediaryRepresentation.Instructions.Copy(target, zero)
+    emit(cleared)
+    var after = new_block()
+    var index = 0
+    while index < read.enumeration.values.count() {
+        var name = read.enumeration.values[index]
+        var named = HighIntermediaryRepresentation.Values.TextConstant(name)
+        var lowered_name = lower_text(named)
+        var arguments = List<Integer>()
+        arguments.append(text.value)
+        arguments.append(lowered_name.value)
+        var matches = new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Call(matches, "String.equals", arguments)
+        emit(compared)
+        var answering = new_block()
+        var next = new_block()
+        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, answering, next)
+        emit(test)
+        switch_to(answering)
+        var copied = LowIntermediaryRepresentation.Instructions.Copy(target, lowered_name.value)
+        emit(copied)
+        jump_to(after)
+        switch_to(next)
+        release(lowered_name.value)
+        index = index + 1
+    }
+    jump_to(after)
+    switch_to(after)
+    crash read.text
+    discard(text, read.text.value_type)
+    return owned(target)
+}
+
 func lower_enum_from_text(read: HighIntermediaryRepresentation.Values.EnumFromText): Lowered {
+    if read.value_type.is_symbol {
+        return lower_symbol_from_text(read)
+    }
     var text = lower_value(read.text)
     var target = new_register()
     var presence = new_register()
@@ -1800,6 +1840,9 @@ func boxed_into_a_shape(converted: Lowered, boxed: Model.Type): Lowered {
 }
 
 func boxed_into_a_maybe(converted: Lowered, boxed: Model.Type): Lowered {
+    if boxed.is_symbol {
+        return symbol_into_a_maybe(converted, boxed)
+    }
     if is_a_pointer(boxed) {
         return carried(converted)
     }
@@ -1821,6 +1864,33 @@ func boxed_into_a_maybe(converted: Lowered, boxed: Model.Type): Lowered {
     switch_to(missing)
     var nothing = constant(0)
     var copied_nothing = LowIntermediaryRepresentation.Instructions.Copy(target, nothing)
+    emit(copied_nothing)
+    jump_to(after)
+    switch_to(after)
+    return owned(target)
+}
+
+func symbol_into_a_maybe(converted: Lowered, boxed: Model.Type): Lowered {
+    var zero = constant(0)
+    var missing = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', converted.value, zero)
+    emit(compared)
+    var target = new_register()
+    var boxing = new_block()
+    var nothing_held = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, nothing_held, boxing)
+    emit(test)
+    switch_to(boxing)
+    var present_type = boxed.present()
+    var present = Lowered(converted.value, -1)
+    present.owned = converted.owned
+    var made = present_boxed(present, present_type)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, made.value)
+    emit(copied)
+    jump_to(after)
+    switch_to(nothing_held)
+    var copied_nothing = LowIntermediaryRepresentation.Instructions.Copy(target, zero)
     emit(copied_nothing)
     jump_to(after)
     switch_to(after)
@@ -1863,6 +1933,13 @@ func maybe_boxed(converted: Lowered, boxed: Model.Type): Lowered {
 }
 
 func present_boxed(converted: Lowered, boxed: Model.Type): Lowered {
+    if boxed.is_symbol {
+        kept(converted, boxed)
+        var symbol_box = small_object("Spite.SymbolBox", 24)
+        var stored_symbol = LowIntermediaryRepresentation.Instructions.Store(symbol_box, 16, converted.value, 'bits_64')
+        emit(stored_symbol)
+        return owned(symbol_box)
+    }
     if boxed.kind == 'enumeration' {
         var enum_box = small_object(boxed.name, 24)
         var stored_enum = LowIntermediaryRepresentation.Instructions.Store(enum_box, 16, converted.value, 'bits_64')
@@ -1941,7 +2018,8 @@ func call_a_filler(
     presence: Integer,
     after: Integer,
 ) {
-    var wanted = layout.class_id_of(filler.name)
+    var filler_key = layout.box_key_of(filler)
+    var wanted = layout.class_id_of(filler_key)
     var wanted_register = constant(wanted)
     var matches = new_register()
     var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', class_id, wanted_register)
@@ -1952,13 +2030,14 @@ func call_a_filler(
     emit(test)
     switch_to(calling)
     var own = receiver
-    var is_boxed = filler.kind == 'scalar' or filler.kind == 'enumeration'
+    var is_boxed = filler.kind == 'scalar' or filler.kind == 'enumeration' or filler.is_symbol
     if is_boxed {
         own = new_register()
         var unboxed = LowIntermediaryRepresentation.Instructions.Load(own, receiver, 16, 'bits_64')
         emit(unboxed)
     }
-    var lists_no_attributes = filler.kind == 'enumeration' and call.member.name == "_attribute_list"
+    var is_named = filler.kind == 'enumeration' or filler.is_symbol
+    var lists_no_attributes = is_named and call.member.name == "_attribute_list"
     if lists_no_attributes {
         var nothing_held = constant(0)
         var none_given = List<Integer>()
@@ -1969,6 +2048,19 @@ func call_a_filler(
             none_given,
         )
         emit(listed)
+        jump_to(after)
+        switch_to(next)
+        return
+    }
+    if filler.is_symbol {
+        retain(own)
+        var symbol_name = Lowered(own, -1)
+        symbol_name.owned = true
+        if call.member.name == "to_debug" {
+            symbol_name = quoted_enum_text(symbol_name)
+        }
+        var copied_symbol = LowIntermediaryRepresentation.Instructions.Copy(target, symbol_name.value)
+        emit(copied_symbol)
         jump_to(after)
         switch_to(next)
         return
@@ -2089,7 +2181,8 @@ func stop_on_another_class(
     other: Model.Type,
     argument_class: Integer,
 ) {
-    var other_id = layout.class_id_of(other.name)
+    var other_key = layout.box_key_of(other)
+    var other_id = layout.class_id_of(other_key)
     var other_register = constant(other_id)
     var same = new_register()
     var compared = LowIntermediaryRepresentation.Instructions.Compare(same, 'equal', argument_class, other_register)

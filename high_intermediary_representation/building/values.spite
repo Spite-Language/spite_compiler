@@ -265,7 +265,7 @@ func filled_shape(given: Model.Type, wanted: Model.Type) {
     var shape = context.program.shape_keyed(wanted.name)
     crash shape
     var shown = context.shown(given)
-    if given.kind == 'enumeration' {
+    if given.kind == 'enumeration' or given.is_symbol {
         fits_as_an_enum(shape, shown)
     } else {
         fits_as_a_class(shape, given, shown)
@@ -275,7 +275,7 @@ func filled_shape(given: Model.Type, wanted: Model.Type) {
     var index = 0
     while index < fillers.count() {
         var filling = fillers[index]
-        if filling.name == given.name {
+        if filling.name == given.name and filling.is_symbol == given.is_symbol {
             known = true
         }
         index = index + 1
@@ -357,6 +357,9 @@ func need_a_filling_function(
         reflection.attribute_list_of(filler)
     }
     var function = filler.function_named(member.name)
+    if not function and is_a_copy_name(member.name) {
+        function = made_copy(filler, member.name, 0)
+    }
     var is_open = shape.key == "Anything" or shape.key == "Number"
     if not function and is_open and member.name == "to_string" {
         function = filler.function_named("to_debug")
@@ -619,6 +622,7 @@ func symbol_value(name: String, expected: Model.Type?): HighIntermediaryRepresen
         }
         if expected.is_symbol {
             need_text_constants()
+            context.note_a_symbol(name)
             var made = HighIntermediaryRepresentation.Values.TextConstant(name)
             made.value_type = expected.present()
             return made
@@ -630,6 +634,7 @@ func symbol_value(name: String, expected: Model.Type?): HighIntermediaryRepresen
 }
 
 func enum_value(name: String, expected: Model.Type): HighIntermediaryRepresentation.Values.Value {
+    context.note_a_symbol(name)
     var made = enum_model_of(expected)
     var place = made.values.index_of(name)
     if not place {
@@ -1607,6 +1612,9 @@ func call_value(
 ): HighIntermediaryRepresentation.Values.Value {
     var maker = call.callee
     if maker == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        if is_the_symbol_maker(maker.name) and call.arguments.count() == 1 {
+            return symbol_from_text(call)
+        }
         if is_a_handle_maker(maker.name) and call.arguments.count() == 1 {
             return handle_value(maker.name, call)
         }
@@ -1656,6 +1664,30 @@ func made_from_a_bound_type(
         arguments = fitted_arguments(constructor, call.arguments)
     }
     return HighIntermediaryRepresentation.Values.MakeObject(made_type, constructor, arguments)
+}
+
+func is_the_symbol_maker(name: String): Boolean {
+    if context.current_class.function_named(name) {
+        return false
+    }
+    return name == "Symbol"
+}
+
+func symbol_from_text(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var written = call.arguments[0]
+    crash written
+    need_text_constants()
+    var text_type = context.text()
+    var read = fitted_value_of(written, text_type)
+    var string_model = context.class_of(text_type)
+    var equals = string_model.function_named("equals")
+    crash equals
+    need(equals)
+    var symbol_type = context.resolver.symbol_type()
+    var answer_type = symbol_type.nullable()
+    return HighIntermediaryRepresentation.Values.EnumFromText(answer_type, context.symbol_table, read)
 }
 
 func is_a_handle_maker(name: String): Boolean {
@@ -3580,6 +3612,9 @@ func union_shape_of(union_type: Model.Type, name: String): Model.ShapeModel {
     if known {
         return known
     }
+    if is_a_copy_name(name) {
+        return union_copy_shape(union_type, united, key, name, shown)
+    }
     var made = Model.ShapeModel(key, united.name)
     var fillers = context.program.fillers_of(key)
     var member: Model.FunctionModel? = null
@@ -3598,6 +3633,79 @@ func union_shape_of(union_type: Model.Type, name: String): Model.ShapeModel {
     made.members.append(member)
     context.program.shapes[key] = made
     return made
+}
+
+func union_copy_shape(
+    union_type: Model.Type,
+    united: Model.UnionModel,
+    key: String,
+    name: String,
+    shown: String,
+): Model.ShapeModel {
+    var made = Model.ShapeModel(key, united.name)
+    var copying = Model.FunctionModel(name, key)
+    copying.answer = union_type.present()
+    made.members.append(copying)
+    context.program.shapes[key] = made
+    var fillers = context.program.fillers_of(key)
+    var index = 0
+    while index < united.members.count() {
+        var held = united.members[index]
+        fillers.append(held)
+        need_a_copy(held, name, shown, made)
+        index = index + 1
+    }
+    return made
+}
+
+func is_a_copy_name(name: String): Boolean {
+    return name == "copy" or name == "deep_copy"
+}
+
+func copy_member_of(shape: Model.ShapeModel, answer: Model.Type, name: String, shown: String): Model.FunctionModel {
+    var known = shape.member_named(name)
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel(name, shape.key)
+    made.answer = answer
+    shape.members.append(made)
+    var fillers = context.program.fillers_of(shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        need_a_copy(filler, name, shown, shape)
+        index = index + 1
+    }
+    return made
+}
+
+func need_a_copy(filler: Model.Type, name: String, shown: String, shape: Model.ShapeModel) {
+    var is_copied = filler.kind == 'object' and filler.name != "String" and not filler.is_symbol
+    if not is_copied {
+        typing.refuse_not_a_fit(context, shown, shape.name, name)
+    }
+    var model = context.class_of(filler)
+    var function = model.function_named(name)
+    if not function {
+        function = made_copy(model, name, 0)
+    }
+    if not function {
+        typing.refuse_not_a_fit(context, model.shown, shape.name, name)
+    }
+    crash function
+    need(function)
+}
+
+func union_method_call(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+): HighIntermediaryRepresentation.Values.Value {
+    var through = union_shape_of(receiver.value_type, name)
+    var as_shape = Model.Type('shape', through.key)
+    var shaped = HighIntermediaryRepresentation.Values.Conversion(as_shape, 'proven', receiver)
+    return shape_method_call(shaped, name, arguments)
 }
 
 func member_answered_by(model: Model.ClassModel, name: String, shown: String): Model.FunctionModel {
@@ -3721,6 +3829,10 @@ func shape_call(
     var shape = context.program.shape_keyed(receiver.value_type.name)
     crash shape
     var member = shape.member_named(name)
+    if not member and is_a_copy_name(name) and written.is_empty() {
+        var own_type = receiver.value_type.present()
+        member = copy_member_of(shape, own_type, name, shown)
+    }
     if not member {
         typing.refuse_unknown_member(context, shown, name)
     }
@@ -3941,6 +4053,9 @@ func method_call(
     if receiver.value_type.kind == 'shape' {
         return shape_method_call(receiver, name, arguments)
     }
+    if receiver.value_type.kind == 'union' and not receiver.value_type.is_nullable {
+        return union_method_call(receiver, name, arguments)
+    }
     var owner = present_class_of(receiver)
     var function = owner.function_named(name)
     if not function {
@@ -3980,9 +4095,13 @@ func shape_method_call(
 ): HighIntermediaryRepresentation.Values.Value {
     var shape = context.program.shape_keyed(receiver.value_type.name)
     crash shape
+    var shown = context.shown(receiver.value_type)
     var member = shape.member_named(name)
+    if not member and is_a_copy_name(name) and arguments.is_empty() {
+        var own_type = receiver.value_type.present()
+        member = copy_member_of(shape, own_type, name, shown)
+    }
     if not member {
-        var shown = context.shown(receiver.value_type)
         typing.refuse_unknown_member(context, shown, name)
     }
     crash member
