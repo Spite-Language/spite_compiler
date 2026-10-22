@@ -323,6 +323,36 @@ func build_evaluation(statement: AbstractSyntaxTree.Shapes.Statements.Expression
     var made = HighIntermediaryRepresentation.Statements.Evaluate(value)
     made.line = statement.line
     add(made)
+    forget_what_the_call_writes(statement.value)
+}
+
+func forget_what_the_call_writes(written: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    if written == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        forget_after_a_call(written)
+    }
+}
+
+func forget_after_a_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        forget_after_an_own_call(callee.name)
+    }
+}
+
+func forget_after_an_own_call(called: String) {
+    var function = context.current_class.function_named(called)
+    assert function
+    assert function.declaration
+    var reader = WrittenAttributes()
+    var names = reader.of(function.declaration)
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        if not context.scope.internal_name_of(name) {
+            context.scope.forget_mentions(name)
+        }
+        index = index + 1
+    }
 }
 
 func build_return(statement: AbstractSyntaxTree.Shapes.Statements.ReturnStatement) {
@@ -591,7 +621,7 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     var message = "spite: the program stopped at {context.path()}:{statement.line} in {context.current_function.owner}.{context.current_function.name}"
     var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
     stopped.line = statement.line
-    if not statement.condition {
+    if always_stops(statement.condition) {
         add(stopped)
         return
     }
@@ -606,10 +636,20 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     narrow_all(facts_paths, facts_types)
 }
 
+func always_stops(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if condition == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return condition.kind == 'keyword_false'
+    }
+    return not condition
+}
+
 func build_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement) {
     var subject = values.value_of(statement.value, null)
     var printer = Printers.Spite.ExpressionPrinter(statement.value)
     var path = printer.text()
+    if is_closed(subject.value_type) {
+        check_the_cover(statement, subject.value_type, path)
+    }
     var chain = switch_chain(statement, subject, path, 0)
     crash chain
     add(chain)
@@ -635,6 +675,10 @@ func switch_chain(
     }
     var condition = case_condition(subject, written, path, paths, types)
     var body = narrowed_block_of(switch_case.body, paths, types)
+    var is_the_last = index == statement.cases.count() - 1
+    if is_the_last and is_closed(subject.value_type) {
+        return body
+    }
     var rest = switch_chain(statement, subject, path, index + 1)
     var else_branch: HighIntermediaryRepresentation.Statements.Block? = null
     if rest {
@@ -645,6 +689,60 @@ func switch_chain(
     var made = HighIntermediaryRepresentation.Statements.If(condition, body, else_branch)
     made.line = statement.line
     return made
+}
+
+func check_the_cover(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    subject_type: Model.Type,
+    path: String,
+) {
+    var written = List<String>()
+    var index = 0
+    while index < statement.cases.count() {
+        var switch_case = statement.cases[index]
+        var printer = Printers.Spite.ExpressionPrinter(switch_case.value)
+        var text = printer.text()
+        var segments = text.split(".")
+        var last = segments.count() - 1
+        var simple = segments[last]
+        crash simple
+        written.append(simple)
+        index = index + 1
+    }
+    var every = List<String>()
+    var is_an_enum = subject_type.kind == 'enumeration'
+    var subject = path
+    if is_an_enum {
+        var enumeration = values.enum_model_of(subject_type)
+        var value_index = 0
+        while value_index < enumeration.values.count() {
+            var value = enumeration.values[value_index]
+            every.append("'{value}'")
+            value_index = value_index + 1
+        }
+    } else {
+        var united = values.union_model_of(subject_type)
+        subject = united.name
+        var member_index = 0
+        while member_index < united.members.count() {
+            var member = united.members[member_index]
+            var member_segments = member.name.split(".")
+            var member_last = member_segments.count() - 1
+            var member_name = member_segments[member_last]
+            crash member_name
+            every.append(member_name)
+            member_index = member_index + 1
+        }
+    }
+    var cover = Validators.HighIntermediaryRepresentation.SwitchCover.Validator()
+    cover.check(context, subject, is_an_enum, every, written)
+}
+
+func is_closed(subject_type: Model.Type): Boolean {
+    if subject_type.is_nullable {
+        return false
+    }
+    return subject_type.kind == 'enumeration' or subject_type.kind == 'union'
 }
 
 func case_condition(

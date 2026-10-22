@@ -31,6 +31,36 @@ func value_of(
     }
 }
 
+func refuse_another_signature(given: Model.Type, wanted: Model.Type) {
+    assert not same_signature(given, wanted)
+    var shown_given = context.shown(given)
+    var shown_wanted = context.shown(wanted)
+    typing.refuse_mismatch(context, shown_given, shown_wanted)
+}
+
+func same_signature(given: Model.Type, wanted: Model.Type): Boolean {
+    if given.parameters.count() != wanted.parameters.count() {
+        return false
+    }
+    var index = 0
+    while index < given.parameters.count() {
+        var given_parameter = given.parameters[index]
+        var wanted_parameter = wanted.parameters[index]
+        crash wanted_parameter
+        if not given_parameter.is_the_same_as(wanted_parameter) {
+            return false
+        }
+        index = index + 1
+    }
+    if not given.answer {
+        return not wanted.answer
+    }
+    if not wanted.answer {
+        return false
+    }
+    return given.answer.is_the_same_as(wanted.answer)
+}
+
 func fitted_value_of(
     expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
     wanted: Model.Type,
@@ -48,6 +78,9 @@ func fitted(
         return fitted(result, wanted)
     }
     var given = value.value_type
+    if given.kind == 'function' and wanted.kind == 'function' {
+        refuse_another_signature(given, wanted)
+    }
     if given.is_the_same_as(wanted) {
         return value
     }
@@ -374,10 +407,39 @@ func null_value(expected: Model.Type?): HighIntermediaryRepresentation.Values.Va
         if expected.is_nullable {
             return HighIntermediaryRepresentation.Values.NullConstant(expected)
         }
+        var made = default_of_a_type(expected)
+        if made {
+            return made
+        }
     }
     typing.refuse_null_without_a_type(context)
     var nothing = Model.Type('nothing', "")
     return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func default_of_a_type(wanted: Model.Type): HighIntermediaryRepresentation.Values.Value? {
+    if wanted.kind == 'object' and wanted.name == "String" {
+        return described_text("")
+    }
+    if wanted.kind == 'scalar' {
+        var is_a_decimal = wanted.name == "Float" or wanted.name == "Double"
+        if is_a_decimal {
+            return HighIntermediaryRepresentation.Values.DecimalNumber(wanted, "0.0")
+        }
+        return HighIntermediaryRepresentation.Values.WholeNumber(wanted, 0)
+    }
+    assert wanted.kind == 'object'
+    var made = context.class_of(wanted)
+    context.need_defaults(made.key)
+    var constructor = constructor_of(made)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    if constructor {
+        if not constructor.parameters.is_empty() {
+            return HighIntermediaryRepresentation.Values.MakeObject(wanted, null, arguments)
+        }
+        need(constructor)
+    }
+    return HighIntermediaryRepresentation.Values.MakeObject(wanted, constructor, arguments)
 }
 
 func symbol_value(name: String, expected: Model.Type?): HighIntermediaryRepresentation.Values.Value {
@@ -578,6 +640,18 @@ func function_value(function: Model.FunctionModel): HighIntermediaryRepresentati
     return HighIntermediaryRepresentation.Values.FunctionValue(function_type, function, own)
 }
 
+func bound_function_value(
+    function: Model.FunctionModel,
+    receiver: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    need(function)
+    var function_type = Model.Type('function', "Spite.Function")
+    var parameter_types = function.parameters.map_parameter_types()
+    function_type.parameters = parameter_types
+    function_type.answer = function.answer
+    return HighIntermediaryRepresentation.Values.FunctionValue(function_type, function, receiver)
+}
+
 func number_room(
     number: HighIntermediaryRepresentation.Values.Value,
     attribute: Model.AttributeModel,
@@ -668,6 +742,12 @@ func member_value(
     }
     if not attribute and owner.key == "Arguments" {
         return named_argument(target, owner, member.name)
+    }
+    if not attribute and target.value_type.kind == 'object' {
+        var named_function = owner.function_named(member.name)
+        if named_function {
+            return bound_function_value(named_function, target)
+        }
     }
     if not attribute {
         var shown = context.shown(target.value_type)
@@ -1252,6 +1332,9 @@ func specialized_for(owner: Model.ClassModel, template: Model.FunctionModel, nam
     if owner_type.kind == 'shape' {
         return specialized_over_a_shape(owner, template, owner_type, name, match)
     }
+    if owner_type.kind == 'namespace' {
+        return specialized_over_a_namespace(owner, template, name, match)
+    }
     assert context.has_a_class(owner_type) and not owner_type.is_nullable
     var element_class = context.class_of(owner_type)
     var match_parts = match.split("|")
@@ -1299,6 +1382,23 @@ func specialized_over_a_shape(
     var member_type = answer_or_nothing(member)
     var made = context.resolver.specialized(template, name, written, member_type, false, owner)
     made.bound_shape = shape.key
+    owner.declared_functions.append(made)
+    return made
+}
+
+func specialized_over_a_namespace(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var parts = match.split("|")
+    var written = parts[0]
+    crash written
+    var model = context.resolver.class_model_named(written)
+    assert model
+    var member_type = Model.Type('object', model.key)
+    var made = context.resolver.specialized(template, name, model.shown, member_type, false, owner)
     owner.declared_functions.append(made)
     return made
 }
@@ -1411,6 +1511,9 @@ func walked_word(template: Model.FunctionModel): String {
 
 func walked_names(member_owner: Model.Type): List<String> {
     var names = List<String>()
+    if member_owner.kind == 'namespace' {
+        return classes_of_a_namespace(member_owner.name)
+    }
     var is_walked = member_owner.kind == 'object' or member_owner.kind == 'shape'
     if member_owner.is_nullable or not is_walked {
         return names
@@ -1436,6 +1539,22 @@ func walked_names(member_owner: Model.Type): List<String> {
     while index < model.declared_attributes.count() {
         var attribute = model.declared_attributes[index]
         names.append(attribute.name)
+        index = index + 1
+    }
+    return names
+}
+
+func classes_of_a_namespace(namespace: String): List<String> {
+    var names = List<String>()
+    var folder = context.resolver.symbols.namespace_folder(namespace)
+    crash folder
+    var index = 0
+    while index < folder.files.count() {
+        var file = folder.files[index]
+        var model = context.resolver.class_model_named(file.namespace)
+        if model {
+            names.append(model.shown)
+        }
         index = index + 1
     }
     return names
@@ -2030,13 +2149,13 @@ func binary_value(
     crash left
     crash right
     var operator = operator_of(binary.operator)
-    var compares_a_maybe = left.value_type.is_nullable and left.value_type.kind == 'scalar' and not right.value_type.is_nullable
-    if compares_a_maybe and binary.operator == 'equal_equal' {
-        return maybe_equal(left, right)
-    }
-    if compares_a_maybe and binary.operator == 'not_equal' {
+    var asks_if_equal = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    if asks_if_equal and compares_a_maybe(left, right) {
         var equal_maybe = maybe_equal(left, right)
-        return HighIntermediaryRepresentation.Values.Negation(equal_maybe)
+        if binary.operator == 'not_equal' {
+            return HighIntermediaryRepresentation.Values.Negation(equal_maybe)
+        }
+        return equal_maybe
     }
     var compares_a_shape = left.value_type.kind == 'shape' and right.value_type.kind != 'shape'
     var asks_equality = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
@@ -2114,28 +2233,87 @@ func is_the_class(bound: Model.Type, written: String): Boolean {
     return described.name == bound.name and described.kind == bound.kind
 }
 
+func compares_a_maybe(
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+): Boolean {
+    var left_type = left.value_type
+    var right_type = right.value_type
+    if left_type.kind == 'shape' or right_type.kind == 'shape' {
+        return false
+    }
+    if left_type.kind == 'nothing' or right_type.kind == 'nothing' {
+        return false
+    }
+    return left_type.is_nullable or right_type.is_nullable
+}
+
 func maybe_equal(
     left: HighIntermediaryRepresentation.Values.Value,
     right: HighIntermediaryRepresentation.Values.Value,
 ): HighIntermediaryRepresentation.Values.Value {
-    var local = left
-    var is_a_plain_read = left == HighIntermediaryRepresentation.Values.LocalRead
-    is_a_plain_read = is_a_plain_read or left == HighIntermediaryRepresentation.Values.AttributeRead
-    if not is_a_plain_read {
-        temporary_count = temporary_count + 1
-        var name = context.scope.declare("compared_{temporary_count}", left.value_type)
-        var declared = HighIntermediaryRepresentation.Statements.Declare(name, left.value_type, left)
-        declared.line = context.line
-        context.pending.append(declared)
-        local = HighIntermediaryRepresentation.Values.LocalRead(left.value_type, name)
+    if not left.value_type.is_nullable {
+        return maybe_equal(right, left)
     }
-    var present_type = left.value_type.present()
-    var present = HighIntermediaryRepresentation.Values.Conversion(present_type, 'present', local)
     var boolean = context.boolean()
-    var fitted_right = fitted(right, present_type)
-    var equal = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', present, fitted_right)
-    var tested = HighIntermediaryRepresentation.Values.PresenceTest(local)
-    return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', tested, equal)
+    var held_left = held_once(left)
+    var present_type = left.value_type.present()
+    var present_left = HighIntermediaryRepresentation.Values.Conversion(present_type, 'present', held_left)
+    var left_is_there = HighIntermediaryRepresentation.Values.PresenceTest(held_left)
+    if not right.value_type.is_nullable {
+        var fitted_right = fitted(right, present_type)
+        var equal = present_equal(present_left, fitted_right)
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', left_is_there, equal)
+    }
+    var held_right = held_once(right)
+    var right_present_type = right.value_type.present()
+    var present_right = HighIntermediaryRepresentation.Values.Conversion(right_present_type, 'present', held_right)
+    var right_is_there = HighIntermediaryRepresentation.Values.PresenceTest(held_right)
+    var fitted_present_right = fitted(present_right, present_type)
+    var both_equal = present_equal(present_left, fitted_present_right)
+    var both_there = HighIntermediaryRepresentation.Values.MachineOperation(
+        boolean,
+        'and',
+        left_is_there,
+        right_is_there,
+    )
+    var there_and_equal = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', both_there, both_equal)
+    var left_missing = HighIntermediaryRepresentation.Values.Negation(left_is_there)
+    var right_missing = HighIntermediaryRepresentation.Values.Negation(right_is_there)
+    var both_missing = HighIntermediaryRepresentation.Values.MachineOperation(
+        boolean,
+        'and',
+        left_missing,
+        right_missing,
+    )
+    return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'or', both_missing, there_and_equal)
+}
+
+func held_once(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
+    var is_a_plain_read = value == HighIntermediaryRepresentation.Values.LocalRead
+    is_a_plain_read = is_a_plain_read or value == HighIntermediaryRepresentation.Values.AttributeRead
+    if is_a_plain_read {
+        return value
+    }
+    temporary_count = temporary_count + 1
+    var name = context.scope.declare("compared_{temporary_count}", value.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, value.value_type, value)
+    declared.line = context.line
+    context.pending.append(declared)
+    return HighIntermediaryRepresentation.Values.LocalRead(value.value_type, name)
+}
+
+func present_equal(
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    var boolean = context.boolean()
+    if is_machine_comparable(left.value_type) or compares_identity(left) {
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', left, right)
+    }
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(right)
+    return method_call(left, "equals", arguments)
 }
 
 func shape_equal(
@@ -2144,6 +2322,11 @@ func shape_equal(
 ): HighIntermediaryRepresentation.Values.Value {
     var boolean = context.boolean()
     var right_type = right.value_type.present()
+    if right_type.kind == 'object' and right_type.name == "Spite.Class" {
+        var reflection = Reflection(context, this)
+        var class_of_left = reflection.class_of_value(left)
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', class_of_left, right)
+    }
     if not is_held_in_a_box(right_type) {
         return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', left, right)
     }
@@ -2260,6 +2443,15 @@ func operator_call(
     left: HighIntermediaryRepresentation.Values.Value,
     right: HighIntermediaryRepresentation.Values.Value,
 ): HighIntermediaryRepresentation.Values.Value {
+    var asks_equality = operator == 'equal' or operator == 'not_equal'
+    if asks_equality and compares_identity(left) {
+        var boolean = context.boolean()
+        var same = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', left, right)
+        if operator == 'not_equal' {
+            return HighIntermediaryRepresentation.Values.Negation(same)
+        }
+        return same
+    }
     var name = operator_function_name(operator)
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
     arguments.append(right)
@@ -2269,6 +2461,23 @@ func operator_call(
         return HighIntermediaryRepresentation.Values.Negation(answered)
     }
     return answered
+}
+
+func compares_identity(left: HighIntermediaryRepresentation.Values.Value): Boolean {
+    var left_type = left.value_type
+    if left_type.kind != 'object' or left_type.is_nullable {
+        return false
+    }
+    var model = context.class_of(left_type)
+    var equals = model.function_named("equals")
+    if not equals {
+        return true
+    }
+    var parameter = equals.parameters[0]
+    if not parameter {
+        return true
+    }
+    return parameter.parameter_type.kind != 'object'
 }
 
 func operator_function_name(operator: HighIntermediaryRepresentation.Values.Operator): String {
