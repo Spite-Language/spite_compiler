@@ -23,7 +23,7 @@ func value_of(
         AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return member_value(expression)
         AbstractSyntaxTree.Shapes.Expressions.CallExpression: return call_value(expression)
         AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return index_value(expression)
-        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return binary_value(expression)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return binary_value_expecting(expression, expected)
         AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return unary_value(expression, expected)
         AbstractSyntaxTree.Shapes.Expressions.ListLiteral: return list_value(expression, expected)
         AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: return dictionary_value(expression, expected)
@@ -5474,6 +5474,81 @@ func symbol_name_of(
     return made
 }
 
+func binary_value_expecting(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    expected: Model.Type?,
+): HighIntermediaryRepresentation.Values.Value {
+    if not is_a_decimal_constant(binary) {
+        return binary_value(binary)
+    }
+    var computed = double_constant(binary)
+    var wants_a_double = false
+    if expected {
+        wants_a_double = expected.name == "Double"
+    }
+    if wants_a_double {
+        return computed
+    }
+    var float_type = context.scalar_type("Float")
+    return HighIntermediaryRepresentation.Values.Conversion(float_type, 'narrow_decimal', computed)
+}
+
+func is_a_decimal_constant(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
+    var arithmetic = is_decimal_arithmetic(binary.operator)
+    return arithmetic and is_a_literal_tree(binary.left) and is_a_literal_tree(binary.right) and holds_a_decimal(binary)
+}
+
+func is_decimal_arithmetic(kind: AbstractSyntaxTree.Tokens.TokenKind): Boolean {
+    return kind == 'plus' or kind == 'minus' or kind == 'star' or kind == 'slash'
+}
+
+func is_a_literal_tree(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        return is_a_decimal_constant(expression)
+    }
+    return is_a_number_literal(expression)
+}
+
+func holds_a_decimal(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return expression.kind == 'decimal_literal'
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression {
+        return holds_a_decimal(expression.operand)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        return holds_either_decimal(expression)
+    }
+    return false
+}
+
+func holds_either_decimal(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
+    return holds_a_decimal(binary.left) or holds_a_decimal(binary.right)
+}
+
+func double_constant(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var double_type = context.scalar_type("Double")
+    var left = constant_operand(binary.left, double_type)
+    var right = constant_operand(binary.right, double_type)
+    var operator = operator_of(binary.operator)
+    var made = HighIntermediaryRepresentation.Values.MachineOperation(double_type, operator, left, right)
+    var printer = Printers.Spite.ExpressionPrinter(binary)
+    made.shown = printer.text()
+    return made
+}
+
+func constant_operand(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    double_type: Model.Type,
+): HighIntermediaryRepresentation.Values.Value {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        return double_constant(expression)
+    }
+    return value_of(expression, double_type)
+}
+
 func binary_value(
     binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
 ): HighIntermediaryRepresentation.Values.Value {
@@ -5881,7 +5956,7 @@ func operands_of(
     binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
 ): List<HighIntermediaryRepresentation.Values.Value> {
     var operands = List<HighIntermediaryRepresentation.Values.Value>()
-    if is_a_number_literal(binary.left) and not is_a_number_literal(binary.right) {
+    if is_a_literal_tree(binary.left) and not is_a_literal_tree(binary.right) {
         var right_value = value_of(binary.right, null)
         var right_first = result_of_handle(right_value)
         var left_after = value_of(binary.left, right_first.value_type)
@@ -5914,6 +5989,7 @@ func refuse_a_cut(
     left_type: Model.Type,
     right_type: Model.Type,
 ) {
+    assert left_type.name != "Float" or not is_a_literal_tree(binary.right)
     if fitted_right == HighIntermediaryRepresentation.Values.Conversion {
         refuse_a_cut_conversion(binary, fitted_right, left_type, right_type)
     }

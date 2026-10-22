@@ -1,0 +1,590 @@
+var program = LowIntermediaryRepresentation.LowProgram()
+var machine = Machine(program)
+var operands = LowOptimizationPasses.Operands()
+var never_pure = Dictionary<String, Boolean>()
+var failed_calls = Dictionary<String, Boolean>()
+var remaining_steps = 20000000
+var steps_per_call = 2000000
+var most_answer_objects = 64
+var most_answer_bytes = 4096
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var frame = Frame(0)
+var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+var next_register = 0
+var seeded = List<Boolean>()
+var seed_values = List<Long>()
+
+func Pass(starting_program: LowIntermediaryRepresentation.LowProgram) {
+    program = starting_program
+    machine = Machine(starting_program)
+}
+
+func transformed(): LowIntermediaryRepresentation.LowProgram {
+    program.lowered_functions.each(register_the_function)
+    find_the_impure()
+    program.lowered_functions.each(evaluate_the_function)
+    return program
+}
+
+func register_the_function(lowered: LowIntermediaryRepresentation.LowFunction) {
+    var total = operands.most_register_of(lowered)
+    machine.add_function(lowered, total)
+}
+
+func find_the_impure() {
+    var callees = Dictionary<String, List<String>>()
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var lowered = program.lowered_functions[index]
+        var called = List<String>()
+        if lowered.is_resumable or touches_the_world(lowered, called) {
+            never_pure[lowered.key] = true
+        }
+        callees[lowered.key] = called
+        index = index + 1
+    }
+    var changed = true
+    while changed {
+        changed = false
+        index = 0
+        while index < program.lowered_functions.count() {
+            var lowered = program.lowered_functions[index]
+            var called = callees[lowered.key]
+            crash called
+            if never_pure[lowered.key] != true and calls_the_impure(called) {
+                never_pure[lowered.key] = true
+                changed = true
+            }
+            index = index + 1
+        }
+    }
+}
+
+func calls_the_impure(called: List<String>): Boolean {
+    var index = 0
+    while index < called.count() {
+        var key = called[index]
+        if never_pure[key] == true or not machine.known_functions.has(key) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func touches_the_world(lowered: LowIntermediaryRepresentation.LowFunction, called: List<String>): Boolean {
+    var block_index = 0
+    while block_index < lowered.blocks.count() {
+        var block = lowered.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Call {
+                called.append(instruction.function)
+            }
+            if is_impure(instruction) {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func is_impure(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.ForeignAddress: return true
+        LowIntermediaryRepresentation.Instructions.OpenLibrary: return true
+        LowIntermediaryRepresentation.Instructions.FrameAddress: return true
+        LowIntermediaryRepresentation.Instructions.StartThread: return true
+        LowIntermediaryRepresentation.Instructions.JoinThread: return true
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return true
+        LowIntermediaryRepresentation.Instructions.CompareExchange: return true
+        LowIntermediaryRepresentation.Instructions.Exit: return true
+        LowIntermediaryRepresentation.Instructions.ImportCall: return instruction.library != "ucrtbase.dll"
+        LowIntermediaryRepresentation.Instructions.DataAddress: return not is_constant_data(instruction.label)
+        LowIntermediaryRepresentation.Instructions.Return: return instruction.is_a_suspension
+        _: return false
+    }
+}
+
+func is_constant_data(label: Integer): Boolean {
+    if label < 0 or label >= machine.read_only.count() {
+        return false
+    }
+    return machine.read_only[label] == true
+}
+
+func evaluate_the_function(lowered: LowIntermediaryRepresentation.LowFunction) {
+    assert not lowered.is_resumable and remaining_steps > 0
+    function = lowered
+    var total = machine.register_totals[lowered.key]
+    crash total
+    next_register = total
+    note_the_seeds(total)
+    var block_index = 0
+    while block_index < function.blocks.count() and remaining_steps > 0 {
+        var block = function.blocks[block_index]
+        evaluate_the_block(block)
+        block_index = block_index + 1
+    }
+    if next_register > function.register_count {
+        function.register_count = next_register
+    }
+}
+
+func note_the_seeds(total: Integer) {
+    var definitions = List<Integer>()
+    seeded = List<Boolean>()
+    seed_values = List<Long>()
+    var index = 0
+    while index < total {
+        definitions.append(0)
+        seeded.append(false)
+        seed_values.append(0)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            note_a_seed(instruction, definitions)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    index = 0
+    while index < total {
+        var count = definitions[index]
+        crash count
+        if count != 1 or index < function.parameter_count {
+            seeded[index] = false
+        }
+        index = index + 1
+    }
+}
+
+func note_a_seed(instruction: LowIntermediaryRepresentation.Instructions.Instruction, definitions: List<Integer>) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        var count = definitions[register]
+        crash count
+        definitions[register] = count + 1
+        index = index + 1
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+        seeded[instruction.target] = true
+        seed_values[instruction.target] = instruction.number
+    }
+}
+
+func evaluate_the_block(block: LowIntermediaryRepresentation.LowBlock) {
+    machine.reset()
+    var total = machine.register_totals[function.key]
+    crash total
+    frame = Frame(total)
+    var index = 0
+    while index < seeded.count() {
+        if seeded[index] == true {
+            var value = seed_values[index]
+            crash value
+            frame.set(index, value, -1)
+        }
+        index = index + 1
+    }
+    kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        evaluate_the_instruction(instruction)
+        index = index + 1
+    }
+    block.instructions = kept
+}
+
+func evaluate_the_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if not can_run(instruction) {
+        give_up(instruction)
+        return
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        evaluate_the_call(instruction)
+        return
+    }
+    machine.failed = false
+    machine.steps = 0
+    machine.step_limit = 1
+    var outcome = machine.executed(instruction, frame)
+    if outcome < 0 {
+        machine.failed = false
+        give_up(instruction)
+        return
+    }
+    var rewritten = folded(instruction)
+    kept.append(rewritten)
+}
+
+func can_run(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if remaining_steps <= 0 or not is_simulated(instruction) {
+        return false
+    }
+    operands.read(instruction)
+    return operands.uses.all(frame.holds)
+}
+
+func is_simulated(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return true
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: return true
+        LowIntermediaryRepresentation.Instructions.DecimalCompare: return true
+        LowIntermediaryRepresentation.Instructions.DecimalConversion: return true
+        LowIntermediaryRepresentation.Instructions.Load: return true
+        LowIntermediaryRepresentation.Instructions.Store: return true
+        LowIntermediaryRepresentation.Instructions.DataAddress: return true
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return true
+        LowIntermediaryRepresentation.Instructions.Allocate: return true
+        LowIntermediaryRepresentation.Instructions.Retain: return true
+        LowIntermediaryRepresentation.Instructions.Free: return true
+        LowIntermediaryRepresentation.Instructions.Resize: return true
+        LowIntermediaryRepresentation.Instructions.Call: return never_pure[instruction.function] != true
+        LowIntermediaryRepresentation.Instructions.ImportCall: return instruction.library == "ucrtbase.dll"
+        _: return false
+    }
+}
+
+func give_up(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.uses.count() {
+        var register = operands.uses[index]
+        poison_the_register(register)
+        index = index + 1
+    }
+    index = 0
+    while index < operands.defines.count() {
+        var defined = operands.defines[index]
+        frame.forget(defined)
+        index = index + 1
+    }
+    kept.append(instruction)
+}
+
+func poison_the_register(register: Integer) {
+    assert frame.holds(register)
+    var tag = frame.tag_of(register)
+    if machine.is_object(tag) {
+        machine.poison(tag)
+    }
+}
+
+func folded(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+): LowIntermediaryRepresentation.Instructions.Instruction {
+    var target = -1
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Copy: target = instruction.target
+        LowIntermediaryRepresentation.Instructions.Arithmetic: target = instruction.target
+        LowIntermediaryRepresentation.Instructions.Compare: target = instruction.target
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: target = instruction.target
+        LowIntermediaryRepresentation.Instructions.DecimalCompare: target = instruction.target
+        LowIntermediaryRepresentation.Instructions.DecimalConversion: target = instruction.target
+        LowIntermediaryRepresentation.Instructions.Load: target = instruction.target
+        LowIntermediaryRepresentation.Instructions.ImportCall: target = instruction.target
+        _: target = -1
+    }
+    if target < 0 or not frame.holds(target) or frame.tag_of(target) != -1 {
+        return instruction
+    }
+    var number = frame.value_of(target)
+    return LowIntermediaryRepresentation.Instructions.Constant(target, number)
+}
+
+func memo_key_of(call: LowIntermediaryRepresentation.Instructions.Call): String {
+    var pieces = List<String>()
+    pieces.append(call.function)
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if frame.tag_of(argument) != -1 {
+            return ""
+        }
+        var value = frame.value_of(argument)
+        var written = value.to_string()
+        pieces.append(written)
+        index = index + 1
+    }
+    return pieces.join(" ")
+}
+
+func evaluate_the_call(call: LowIntermediaryRepresentation.Instructions.Call) {
+    var memo_key = memo_key_of(call)
+    var memoised = not memo_key.is_empty()
+    if memoised and failed_calls.has(memo_key) {
+        give_up(call)
+        return
+    }
+    machine.begin_watch()
+    machine.failed = false
+    machine.steps = 0
+    machine.step_limit = steps_per_call
+    if remaining_steps < steps_per_call {
+        machine.step_limit = remaining_steps
+    }
+    var outcome = machine.executed(call, frame)
+    remaining_steps = remaining_steps - machine.steps
+    if outcome < 0 {
+        machine.failed = false
+        machine.restore_the_watched()
+        machine.end_watch()
+        if memoised {
+            failed_calls[memo_key] = true
+        }
+        give_up(call)
+        return
+    }
+    var changed = machine.changed_since_watch()
+    var replaced = false
+    if not changed {
+        replaced = materialized(call)
+    }
+    machine.end_watch()
+    if not replaced {
+        kept.append(call)
+    }
+}
+
+func new_register(): Integer {
+    var register = next_register
+    next_register = next_register + 1
+    machine.register_totals[function.key] = next_register
+    return register
+}
+
+func emit(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    kept.append(instruction)
+}
+
+func materialized(call: LowIntermediaryRepresentation.Instructions.Call): Boolean {
+    var answer_tag = -1
+    var answer_value: Long = 0
+    if call.target >= 0 {
+        answer_tag = frame.tag_of(call.target)
+        answer_value = frame.value_of(call.target)
+    }
+    var presence_value: Long = 0
+    var presence_tag = -1
+    if call.presence >= 0 {
+        presence_tag = frame.tag_of(call.presence)
+        presence_value = frame.value_of(call.presence)
+    }
+    if presence_tag != -1 {
+        return false
+    }
+    var reached = List<Integer>()
+    if machine.is_object(answer_tag) and not reached_from(answer_tag, reached) {
+        return false
+    }
+    if not holds_every_new_object(reached) or reached.count() > most_answer_objects {
+        return false
+    }
+    var bytes = 0
+    var index = 0
+    while index < reached.count() {
+        var object = reached[index]
+        var room = machine.sizes[object]
+        crash room
+        bytes = bytes + room
+        index = index + 1
+    }
+    if bytes > most_answer_bytes {
+        return false
+    }
+    var registers = List<Integer>()
+    index = 0
+    while index < reached.count() {
+        var object = reached[index]
+        var made = allocation_of(object)
+        registers.append(made)
+        index = index + 1
+    }
+    index = 0
+    while index < reached.count() {
+        var object = reached[index]
+        var made = registers[index]
+        crash made
+        fill_the_object(object, made, reached, registers)
+        index = index + 1
+    }
+    answer_into(call, answer_tag, answer_value, reached, registers)
+    if call.presence >= 0 {
+        var presence_made = LowIntermediaryRepresentation.Instructions.Constant(call.presence, presence_value)
+        emit(presence_made)
+    }
+    return true
+}
+
+func reached_from(start: Integer, reached: List<Integer>): Boolean {
+    reached.append(start)
+    var index = 0
+    while index < reached.count() {
+        var object = reached[index]
+        if object < machine.watermark or not machine.is_live(object) {
+            return false
+        }
+        var held_tags = machine.word_tags[object]
+        crash held_tags
+        var slot = 0
+        while slot < held_tags.count() {
+            var tag = held_tags[slot]
+            if machine.is_object(tag) and not reached.contains(tag) {
+                reached.append(tag)
+            }
+            slot = slot + 1
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func holds_every_new_object(reached: List<Integer>): Boolean {
+    var object = machine.watermark
+    while object < machine.object_count() {
+        var is_garbage = machine.freed[object] == true
+        if not is_garbage and not reached.contains(object) {
+            return false
+        }
+        object = object + 1
+    }
+    return true
+}
+
+func allocation_of(object: Integer): Integer {
+    var room = machine.sizes[object]
+    crash room
+    var size_register = new_register()
+    var size_made = LowIntermediaryRepresentation.Instructions.Constant(size_register, room)
+    emit(size_made)
+    var made = new_register()
+    var allocating = LowIntermediaryRepresentation.Instructions.Allocate(made, size_register)
+    emit(allocating)
+    return made
+}
+
+func fill_the_object(object: Integer, made: Integer, reached: List<Integer>, registers: List<Integer>) {
+    var room = machine.sizes[object]
+    crash room
+    var slot = 0
+    while slot * 8 < room {
+        var word = machine.word_of(object, slot)
+        var tag = machine.tag_in(object, slot)
+        if tag != -1 {
+            var pointer = pointer_register(tag, word, reached, registers)
+            var stored = LowIntermediaryRepresentation.Instructions.Store(made, slot * 8, pointer, 'bits_64')
+            emit(stored)
+        } else if word != 0 {
+            store_the_number(made, slot * 8, word, room - slot * 8)
+        }
+        slot = slot + 1
+    }
+}
+
+func store_the_number(made: Integer, at: Integer, word: Long, left_in_object: Integer) {
+    if left_in_object >= 8 {
+        store_a_piece(made, at, word, 'bits_64')
+        return
+    }
+    var offset = at
+    var rest = word
+    var bytes_left = left_in_object
+    if bytes_left >= 4 {
+        var low = rest.bits_and(4294967295)
+        store_a_piece(made, offset, low, 'bits_32')
+        rest = rest.shifted_right(32)
+        rest = rest.bits_and(4294967295)
+        offset = offset + 4
+        bytes_left = bytes_left - 4
+    }
+    if bytes_left >= 2 {
+        var middle = rest.bits_and(65535)
+        store_a_piece(made, offset, middle, 'bits_16')
+        rest = rest.shifted_right(16)
+        offset = offset + 2
+        bytes_left = bytes_left - 2
+    }
+    if bytes_left >= 1 {
+        var last = rest.bits_and(255)
+        store_a_piece(made, offset, last, 'bits_8')
+    }
+}
+
+func store_a_piece(made: Integer, at: Integer, number: Long, width: LowIntermediaryRepresentation.Width) {
+    var held = new_register()
+    var constant_made = LowIntermediaryRepresentation.Instructions.Constant(held, number)
+    emit(constant_made)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(made, at, held, width)
+    emit(stored)
+}
+
+func pointer_register(tag: Integer, offset: Long, reached: List<Integer>, registers: List<Integer>): Integer {
+    var base = base_register(tag, reached, registers)
+    if offset == 0 {
+        return base
+    }
+    var distance = new_register()
+    var distance_made = LowIntermediaryRepresentation.Instructions.Constant(distance, offset)
+    emit(distance_made)
+    var moved = new_register()
+    var adding = LowIntermediaryRepresentation.Instructions.Arithmetic(moved, 'add', base, distance)
+    adding.is_checked = false
+    emit(adding)
+    return moved
+}
+
+func base_register(tag: Integer, reached: List<Integer>, registers: List<Integer>): Integer {
+    if machine.is_object(tag) {
+        var position = reached.index_of(tag)
+        crash position
+        var register = registers[position]
+        crash register
+        return register
+    }
+    var made = new_register()
+    if machine.is_data(tag) {
+        var label = machine.label_of(tag)
+        var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(made, label)
+        emit(addressed)
+        return made
+    }
+    var index = machine.function_of(tag)
+    var name = machine.function_names[index]
+    crash name
+    var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(made, name)
+    emit(found)
+    return made
+}
+
+func answer_into(
+    call: LowIntermediaryRepresentation.Instructions.Call,
+    answer_tag: Integer,
+    answer_value: Long,
+    reached: List<Integer>,
+    registers: List<Integer>,
+) {
+    assert call.target >= 0
+    if answer_tag == -1 {
+        var number = LowIntermediaryRepresentation.Instructions.Constant(call.target, answer_value)
+        emit(number)
+        return
+    }
+    var pointer = pointer_register(answer_tag, answer_value, reached, registers)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(call.target, pointer)
+    emit(copied)
+}
