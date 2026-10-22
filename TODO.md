@@ -42,6 +42,13 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 
 ## The language
+- Inflection moves into `String` (D187): the tables become `String`'s attributes, `Inflection` leaves the library, the plural templates read `String`
+- `.owner` of a function value answers its bound instance (D188); `conformance/function_owner` is rewritten
+- A getter or setter called by name is refused everywhere (D189); `tests/boolean_layout` is rewritten
+- `null` answers `to_string()` and `to_debug()`, so a `T?` fits `Printable` and `Debuggable` (D191)
+- No `Weak`: the compiler decides which reference of a cycle holds no count (D192); the Weak tests are rewritten
+- `argument_count` of a missing function is an error, never 0 (D193)
+- The spec pages in `../SpiteLanguage/specs` still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D187 to D193
 
 - The runtime the library needs, as machine code: allocator, console, files, directories, clock, sockets, processes, dynamic library
 - A foreign call (D171) answers only `Integer`, `_as_long`, `_as_double` and `_as_float`: `_as_text`, a `type` passed as a pointer to its struct, a list passed as a pointer to its numbers with C's writes coming back, and a header's prototypes giving each argument its width (`float`, `unsigned long long`) are not built (`tests/foreign_library`), so a `Float` argument C declares `float` is passed as a `double`
