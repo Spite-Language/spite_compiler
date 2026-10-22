@@ -1,0 +1,438 @@
+var model = Model.ProgramModel()
+var keys = List<String>()
+var indices = Dictionary<String, Integer>()
+var called = List<List<String>>()
+var resolved = List<List<Integer>>()
+var is_resolved = List<Boolean>()
+var writers = Dictionary<String, List<Integer>>()
+var reaches = Dictionary<String, List<Boolean>>()
+var taken_as_values = List<String>()
+var drops = List<String>()
+var keeps_callbacks = false
+var current_calls = List<String>()
+var current_writes = List<String>()
+var reassigned = List<String>()
+var anything = "*"
+var waiting = [
+    "Program.sleep"
+    "Socket.accept_handle"
+    "Socket.receive_into"
+    "Socket.first_readable"
+    "Console.read_line"
+    "File.read_bytes"
+    "File.read_bytes_at"
+]
+
+func Assignments(high: HighIntermediaryRepresentation.HighProgram) {
+    model = high.model
+    high.built_functions.each(read_a_function)
+    add_a_node("$value", taken_as_values)
+    add_a_node("$drop", drops)
+    var foreign = List<String>()
+    if keeps_callbacks {
+        foreign.append("$value")
+    }
+    add_a_node("$foreign", foreign)
+    var no_calls = List<String>()
+    var everything = List<String>()
+    everything.append(anything)
+    add_a_function("$unknown", no_calls, everything)
+}
+
+func add_a_node(key: String, calls: List<String>) {
+    var nothing_written = List<String>()
+    add_a_function(key, calls, nothing_written)
+}
+
+func add_a_function(key: String, calls: List<String>, written: List<String>) {
+    var index = keys.count()
+    keys.append(key)
+    indices[key] = index
+    called.append(calls)
+    var no_targets = List<Integer>()
+    resolved.append(no_targets)
+    is_resolved.append(false)
+    var written_index = 0
+    while written_index < written.count() {
+        var attribute_key = written[written_index]
+        note_a_writer(attribute_key, index)
+        written_index = written_index + 1
+    }
+}
+
+func note_a_writer(attribute_key: String, index: Integer) {
+    if not writers.has(attribute_key) {
+        var none_yet = List<Integer>()
+        writers[attribute_key] = none_yet
+    }
+    var known = writers[attribute_key]
+    crash known
+    known.append(index)
+}
+
+func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    current_calls = List<String>()
+    current_writes = List<String>()
+    read_a_block(function.body)
+    var key = function.function.key()
+    if function.function.name == "drop" {
+        drops.append(key)
+    }
+    add_a_function(key, current_calls, current_writes)
+}
+
+func attribute_key_of(attribute: Model.AttributeModel): String {
+    return "{attribute.owner}.{attribute.name}"
+}
+
+func leaves_alone(
+    statements: List<HighIntermediaryRepresentation.Statements.Statement>,
+    from: Integer,
+    watched: List<String>,
+): Boolean {
+    current_calls = List<String>()
+    current_writes = List<String>()
+    var index = from
+    while index < statements.count() {
+        var statement = statements[index]
+        read_a_statement(statement)
+        index = index + 1
+    }
+    current_calls.append("$drop")
+    var watched_index = 0
+    while watched_index < watched.count() {
+        var attribute_key = watched[watched_index]
+        if is_touched(attribute_key) {
+            return false
+        }
+        watched_index = watched_index + 1
+    }
+    return true
+}
+
+func is_touched(attribute_key: String): Boolean {
+    var parts = attribute_key.split(".")
+    var last = parts.count() - 1
+    var name = parts[last]
+    crash name
+    var by_name = "?.{name}"
+    if current_writes.contains(attribute_key) or current_writes.contains(by_name) or current_writes.contains(anything) {
+        return true
+    }
+    var index = 0
+    while index < current_calls.count() {
+        var key = current_calls[index]
+        if reaches_a_writer(key, attribute_key, by_name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func may_assign(called_keys: List<String>, attribute: Model.AttributeModel): Boolean {
+    var attribute_key = attribute_key_of(attribute)
+    var by_name = "?.{attribute.name}"
+    if reaches_a_writer("$drop", attribute_key, by_name) {
+        return true
+    }
+    var index = 0
+    while index < called_keys.count() {
+        var key = called_keys[index]
+        if reaches_a_writer(key, attribute_key, by_name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func reaches_a_writer(key: String, attribute_key: String, by_name: String): Boolean {
+    if not indices.has(key) {
+        return false
+    }
+    var reached = reach_of(key)
+    return any_written(reached, attribute_key) or any_written(reached, by_name) or any_written(reached, anything)
+}
+
+func any_written(reached: List<Boolean>, attribute_key: String): Boolean {
+    var found = writers[attribute_key]
+    if not found {
+        return false
+    }
+    var index = 0
+    while index < found.count() {
+        var writer = found[index]
+        if reached[writer] == true {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func reach_of(key: String): List<Boolean> {
+    if not reaches.has(key) {
+        record_the_reach(key)
+    }
+    var known = reaches[key]
+    crash known
+    return known
+}
+
+func record_the_reach(key: String) {
+    var reached = List<Boolean>()
+    var filling = 0
+    while filling < keys.count() {
+        reached.append(false)
+        filling = filling + 1
+    }
+    var start = indices[key]
+    crash start
+    var pending = List<Integer>()
+    pending.append(start)
+    while not pending.is_empty() {
+        var last = pending.count() - 1
+        var node = pending[last]
+        crash node
+        pending.remove_at(last)
+        if reached[node] != true {
+            reached[node] = true
+            var targets = targets_of(node)
+            targets.each(pending.append)
+        }
+    }
+    reaches[key] = reached
+}
+
+func targets_of(node: Integer): List<Integer> {
+    if is_resolved[node] != true {
+        resolve(node)
+    }
+    var known = resolved[node]
+    crash known
+    return known
+}
+
+func resolve(node: Integer) {
+    var targets = List<Integer>()
+    var calls = called[node]
+    crash calls
+    var index = 0
+    while index < calls.count() {
+        var callee = calls[index]
+        if indices.has(callee) {
+            var target = indices[callee]
+            crash target
+            targets.append(target)
+        }
+        index = index + 1
+    }
+    resolved[node] = targets
+    is_resolved[node] = true
+}
+
+func names_assigned_in(block: HighIntermediaryRepresentation.Statements.Block): List<String> {
+    reassigned = List<String>()
+    gather_from_a_block(block)
+    return reassigned
+}
+
+func gather_from_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(gather_from_a_statement)
+}
+
+func gather_from_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Assign: reassigned.append(statement.name)
+        HighIntermediaryRepresentation.Statements.If: gather_from_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: gather_from_a_block(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: gather_from_a_block(statement)
+        _: return
+    }
+}
+
+func gather_from_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    gather_from_a_block(branch.then_branch)
+    gather_from_a_block(branch.else_branch)
+}
+
+func read_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(read_a_statement)
+}
+
+func read_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: read_a_value(statement.value)
+        HighIntermediaryRepresentation.Statements.Assign: read_an_assignment(statement)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: read_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: read_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: read_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.Return: read_a_return(statement)
+        HighIntermediaryRepresentation.Statements.If: read_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: read_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Stop: read_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: read_a_block(statement)
+    }
+}
+
+func read_an_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign) {
+    read_a_value(assigned.value)
+}
+
+func read_a_return(returned: HighIntermediaryRepresentation.Statements.Return) {
+    read_a_value(returned.value)
+}
+
+func read_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(read_a_present)
+    read_a_value(stop.then)
+}
+
+func read_an_attribute_write(written: HighIntermediaryRepresentation.Statements.AssignAttribute) {
+    var attribute_key = attribute_key_of(written.attribute)
+    current_writes.append(attribute_key)
+    read_a_value(written.object)
+    read_a_value(written.value)
+}
+
+func read_a_shape_write(written: HighIntermediaryRepresentation.Statements.AssignThroughShape) {
+    current_writes.append("?.{written.member}")
+    var fillers = model.fillers_of(written.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        current_calls.append("{filler.name}.set_{written.member}")
+        index = index + 1
+    }
+    read_a_value(written.object)
+    read_a_value(written.value)
+}
+
+func read_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
+    read_a_value(evaluated.value)
+    read_a_value(evaluated.waited)
+}
+
+func read_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    read_a_value(branch.condition)
+    read_a_block(branch.then_branch)
+    read_a_block(branch.else_branch)
+}
+
+func read_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    read_a_value(loop.condition)
+    read_a_block(loop.body)
+}
+
+func read_a_present(value: HighIntermediaryRepresentation.Values.Value) {
+    read_a_value(value)
+}
+
+func read_a_value(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: read_a_call(value)
+        HighIntermediaryRepresentation.Values.Conversion: read_a_conversion(value)
+        HighIntermediaryRepresentation.Values.AttributeRead: read_a_value(value.object)
+        HighIntermediaryRepresentation.Values.ClassOfValue: read_a_value(value.described)
+        HighIntermediaryRepresentation.Values.ClassTest: read_a_value(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: read_a_value(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: read_a_value(value.number)
+        HighIntermediaryRepresentation.Values.ForeignCall: read_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.FunctionValue: read_a_taken_function(value)
+        HighIntermediaryRepresentation.Values.FunctionValueCall: read_a_function_value_call(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: read_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MakeObject: read_a_making(value)
+        HighIntermediaryRepresentation.Values.Negation: read_a_value(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: read_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: read_a_value(value.tested)
+        HighIntermediaryRepresentation.Values.ShapeCall: read_a_shape_call(value)
+        _: return
+    }
+}
+
+func read_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    read_a_value(first)
+    read_a_value(second)
+}
+
+func read_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    var key = call.function.key()
+    if waiting.contains(key) {
+        current_writes.append(anything)
+    }
+    var name = call.function.name
+    if name == "_write_value" or name == "_forget_value" {
+        current_writes.append("[]{call.function.owner}")
+    }
+    current_calls.append(key)
+    read_a_value(call.receiver)
+    call.arguments.each(read_a_present)
+}
+
+func read_a_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion) {
+    if conversion.kind == 'join' {
+        current_writes.append(anything)
+    }
+    read_a_value(conversion.converted)
+}
+
+func read_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall) {
+    current_calls.append("$foreign")
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if argument.value_type.kind == 'function' {
+            current_calls.append("$value")
+        }
+        read_a_value(argument)
+        index = index + 1
+    }
+    read_a_value(call.library)
+}
+
+func read_a_taken_function(taken: HighIntermediaryRepresentation.Values.FunctionValue) {
+    var key = taken.function.key()
+    if not taken_as_values.contains(key) {
+        taken_as_values.append(key)
+    }
+    read_a_value(taken.receiver)
+}
+
+func read_a_function_value_call(call: HighIntermediaryRepresentation.Values.FunctionValueCall) {
+    current_calls.append("$value")
+    read_a_value(call.called)
+    call.arguments.each(read_a_present)
+}
+
+func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var class_key = made.value_type.name
+    if class_key == "ForeignCallback" {
+        keeps_callbacks = true
+    }
+    current_calls.append("{class_key}._attribute_defaults")
+    if made.constructor {
+        var constructor_key = made.constructor.key()
+        current_calls.append(constructor_key)
+    }
+    made.arguments.each(read_a_present)
+}
+
+func read_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    var fillers = model.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        current_calls.append("{filler.name}.{call.member.name}")
+        current_calls.append("{filler.name}.get_{call.member.name}")
+        index = index + 1
+    }
+    read_a_value(call.receiver)
+    call.arguments.each(read_a_present)
+}

@@ -139,7 +139,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A test against a value a list never holds is decided while compiling
 - A table filled once is read as constants
 - A dictionary written out and only read by literal keys is folded
-- Maths on constants is worked out while compiling
+- Maths on constants is worked out while compiling (built: a `+`, `-` or `*` of whole numbers whose operands' ranges are one value each; not built: decimals and the library's maths on constants, such as `0.5.cosine()`, divisions and remainders)
 - A binary schema is a constant
 - A word inflected while compiling
 - Identical functions are folded into one
@@ -160,19 +160,17 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A deep copy nothing changes is the original
 - Copies that cost nothing
 - Allocation is the C library's, counted only where read
+- Objects in the frame need an instruction that reserves room in the frame, which the x64 generator does not have yet
 
 ### The counts
 
-- Singletons: made on first use, never counted
+- Singletons: made on first use, never counted (a singleton passed to a call is not counted; kept in a local, an attribute or a list it still is)
 - Singletons that hold nothing are static objects
 - Atomic reference counts only with threads
 - Plain reference counts where no thread reaches a class
-- An argument its caller holds is passed without counting
-- An attribute a call cannot assign is passed without counting
-- Storing an object into a list counts it only when it changes the slot
 - An item passed to a call that cannot change its list is not counted
 - A singleton's attribute that never changes is read in place
-- A list's templates read its elements without counting them
+- A list's templates read its elements without counting them: done where nothing after the read in the template can write a list of that class; a template handed a function value still counts when any function the program takes as a value could write one
 - An item written back to its own slot is not written
 - A list item read only to test it is not counted
 - A write-back of what the slot already holds is not written
@@ -183,8 +181,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The text, the numbers and the collections
 
-- Text joined in one piece
-- A number joined into text is written in place
 - Short text lives inside the `String`
 - Short symbols are inline text
 - A foreign name is never copied
@@ -193,14 +189,14 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A decimal literal beside a `Float` is a `Float`
 - A proven divisor is not checked
 - Arithmetic is checked in every build
-- Arithmetic a range proves is not checked
-- A loop over plain values reads its count once and its items unchecked
-- A proven read tests only its bounds
+- Arithmetic a range proves is not checked (built in `building/ranges.spite`; not built: a total that adds at most one term a pass, a counter stepped down under `>` or `>=`, a loop local other than a counter keeping the range of what it is assigned, a `-` in front reported as a negation, and a proven divisor, whose zero test the generator writes whatever the range)
+- A loop over plain values reads its count once and its items unchecked (built: `count()` is one load and a proven read is a bound test and a load; not built: the count and the item address read once before the loop, and the bound test dropped where nothing in the loop can change the list)
+- A proven read tests only its bounds (built for a library `List` of numbers or objects; not built: `Vector`, `Items`, a list of `T?` items, unions or function values)
 - A number read from bytes is one load
 - A walked `crash` line's read is the row's read
 - Boxing only where a value travels as a shape
 - A function value describes its arguments when asked
-- Defaults the constructor replaces are never made
+- Defaults the constructor replaces are never made: done for a quiet default the constructor assigns before reading it; a default some other making (a deep copy, a reader) overwrites is still made
 - Proofs that survive a call
 - A dictionary hashes a key once, cheaply
 - A dictionary keyed by numbers hashes the numbers
@@ -239,7 +235,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Loop-invariant code motion: a load, an address or a computation that does not change in a loop is still made on every pass
 - Common subexpressions within a block (the same pure computation or the same load twice with no store between) are still made twice
 - A division by a negative constant, and an unsigned one by a constant that is not a power of two, keep the `div`; a remainder by a power of two tested against zero is not yet a mask test
-- Inlining stops at leaf functions: a small function that calls another is called, and a function inlined into a loop keeps its bounds checks (no range proof yet)
+- Inlining stops at leaf functions: a small function that calls another is called, and a function inlined into a loop keeps its bounds checks (ranges are proved before inlining)
 - A value read across a call in a loop and spilled is reloaded on each use: no interval splitting and no rematerialisation of loads
 - Loops are not rotated (each pass jumps back to the test at the top)
 
@@ -269,9 +265,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A proven divisor is not checked
 - A divisor written as zero is an error
 - Arithmetic that does not fit halts
-- A range proves arithmetic fits
+- A range proves arithmetic fits (built, D230; not built: the totals, the counters stepped down, and the loop locals other than counters, see the optimisation's line)
 - A wider operand is written first
-- Maths on constants is worked out while compiling
+- Maths on constants is worked out while compiling (whole numbers built; decimals and calls not)
 - A dictionary only read by literal keys is never made
 
 ### Compile-time questions

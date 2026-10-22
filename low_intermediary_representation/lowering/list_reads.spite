@@ -1,0 +1,161 @@
+# ../../OPTIMIZATIONS.md#a-proven-read-tests-only-its-bounds
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low_program = LowIntermediaryRepresentation.LowProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
+var library = Validators.LibraryFile()
+
+func ListReads(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+func is_a_plain_get(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if call.function.name != "get_at" or call.arguments.count() != 1 {
+        return false
+    }
+    if not is_the_library_list(call.function, "list.spite") {
+        return false
+    }
+    var owner = lowering.layout.program.class_named(call.function.owner)
+    if not owner {
+        return false
+    }
+    var element = owner.bound_types["$element_type"]
+    if not element {
+        return false
+    }
+    if element.is_nullable {
+        return false
+    }
+    return element.kind == 'scalar' or element.kind == 'object'
+}
+
+func is_a_count(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if not call.arguments.is_empty() {
+        return false
+    }
+    if call.function.name == "length" {
+        return is_the_library_list(call.function, "string.spite")
+    }
+    if call.function.name != "count" {
+        return false
+    }
+    var is_listed = is_the_library_list(call.function, "list.spite")
+    if not is_listed {
+        is_listed = is_the_library_list(call.function, "vector.spite")
+    }
+    if not is_listed {
+        is_listed = is_the_library_list(call.function, "items.spite")
+    }
+    return is_listed
+}
+
+func is_the_library_list(function: Model.FunctionModel, file_name: String): Boolean {
+    if not function.declaration {
+        return false
+    }
+    var written = function.declaration.path.replace("\\", "/")
+    if not library.holds(written) {
+        return false
+    }
+    return written.ends_with("/common/{file_name}")
+}
+
+func read(conversion: HighIntermediaryRepresentation.Values.Conversion): Lowered? {
+    var converted = conversion.converted
+    if converted == HighIntermediaryRepresentation.Values.Call {
+        assert is_a_plain_get(converted)
+        return read_the_item(converted, conversion.shown)
+    }
+    return null
+}
+
+func read_the_item(call: HighIntermediaryRepresentation.Values.Call, shown: String): Lowered {
+    var outer = lowering.pending_releases
+    lowering.pending_releases = List<Integer>()
+    var list = lowering.lower_value(call.receiver)
+    crash call.receiver
+    lowering.release_later(list, call.receiver.value_type)
+    var position = call.arguments[0]
+    crash position
+    var at = lowering.lower_value(position)
+    var owner = lowering.layout.program.class_named(call.function.owner)
+    crash owner
+    var length = load_the_length(owner, list.value)
+    var inside = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(inside, 'less', at.value, length)
+    compared.is_signed = false
+    lowering.emit(compared)
+    var tested = Lowered(-1, inside)
+    lowering.stop_if_missing(tested, shown)
+    var element = owner.bound_types["$element_type"]
+    crash element
+    var address = item_address(owner, list.value, at.value, element)
+    var value = lowering.new_register()
+    var width = lowering.width_of(element)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(value, address, 0, width)
+    loaded.is_signed = lowering.is_signed(element)
+    lowering.emit(loaded)
+    var is_counted = lowering.is_a_pointer(element)
+    if is_counted {
+        lowering.retain(value)
+    }
+    lowering.release_the_pending()
+    lowering.pending_releases = outer
+    if is_counted {
+        return lowering.owned(value)
+    }
+    return lowering.single(value)
+}
+
+func counted(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var outer = lowering.pending_releases
+    lowering.pending_releases = List<Integer>()
+    var list = lowering.lower_value(call.receiver)
+    crash call.receiver
+    lowering.release_later(list, call.receiver.value_type)
+    var owner = lowering.layout.program.class_named(call.function.owner)
+    crash owner
+    var length = load_the_length(owner, list.value)
+    lowering.release_the_pending()
+    lowering.pending_releases = outer
+    return lowering.single(length)
+}
+
+func load_the_length(owner: Model.ClassModel, list: Integer): Integer {
+    var length_attribute = owner.attribute_named("_length")
+    crash length_attribute
+    var offset = lowering.layout.offset_of(length_attribute)
+    var length = lowering.new_register()
+    var width = lowering.width_of(length_attribute.attribute_type)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(length, list, offset, width)
+    lowering.emit(loaded)
+    return length
+}
+
+func item_address(owner: Model.ClassModel, list: Integer, at: Integer, element: Model.Type): Integer {
+    var buffer_attribute = owner.attribute_named("_buffer")
+    crash buffer_attribute
+    var offset = lowering.layout.offset_of(buffer_attribute)
+    var buffer = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(buffer, list, offset, 'bits_64')
+    lowering.emit(loaded)
+    var storage = lowering.storage_of(buffer)
+    var size = item_size_of(element)
+    var size_register = lowering.constant(size)
+    var scaled = lowering.new_register()
+    var multiplied = LowIntermediaryRepresentation.Instructions.Arithmetic(scaled, 'multiply', at, size_register)
+    multiplied.is_checked = false
+    lowering.emit(multiplied)
+    return lowering.address_plus(storage, scaled)
+}
+
+func item_size_of(element: Model.Type): Integer {
+    if element.kind != 'scalar' {
+        return 8
+    }
+    var scalar = lowering.scalars.of(element.name)
+    crash scalar
+    return scalar.size
+}

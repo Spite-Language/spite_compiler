@@ -14,6 +14,12 @@ var singleton_slots = Dictionary<String, Integer>()
 var scopes = List<List<Integer>>()
 var pending_releases = List<Integer>()
 var waits: Waits? = null
+var assignments: Assignments? = null
+var reassigned_names = List<String>()
+var borrows_parameters = false
+var trimmed_keys = List<String>()
+var block_statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+var statement_index = 0
 var makes_work = false
 var resumable_mode = false
 var resume_blocks = List<Integer>()
@@ -51,6 +57,7 @@ func lowered(
     scopes = List<List<Integer>>()
     var held = List<Integer>()
     scopes.append(held)
+    note_the_borrowed_parameters(high)
     high.function.parameters.each(take_parameter)
     function.parameter_count = function.register_count
     var body = current
@@ -76,6 +83,15 @@ func lowered(
         dispatch_the_resumes(dispatch, body)
     }
     return function
+}
+
+func note_the_borrowed_parameters(high: HighIntermediaryRepresentation.HighFunction) {
+    borrows_parameters = false
+    reassigned_names = List<String>()
+    assert not resumable_mode
+    assert assignments
+    reassigned_names = assignments.names_assigned_in(high.body)
+    borrows_parameters = true
 }
 
 func note_the_place(model: Model.FunctionModel, declared_line: Integer) {
@@ -167,10 +183,76 @@ func lowered_call_arguments(call: HighIntermediaryRepresentation.Values.Call): L
     var arguments = List<Integer>()
     var receiver = lower_value(call.receiver)
     crash call.receiver
-    release_later(receiver, call.receiver.value_type)
+    var unknown = unknown_callees()
+    passed_on(receiver, call.receiver, unknown)
     arguments.append(receiver.value)
-    add_arguments(arguments, call.arguments)
+    add_arguments(arguments, call.arguments, unknown)
     return arguments
+}
+
+func unknown_callees(): List<String> {
+    var unknown = List<String>()
+    unknown.append("$unknown")
+    return unknown
+}
+
+func passed_on(value: Lowered, given: HighIntermediaryRepresentation.Values.Value, called_keys: List<String>) {
+    release_later(value, given.value_type)
+    assert is_a_pointer(given.value_type) and not value.owned
+    assert not is_steady(given, called_keys)
+    retain(value.value)
+    pending_releases.append(value.value)
+}
+
+func is_steady(given: HighIntermediaryRepresentation.Values.Value?, called_keys: List<String>): Boolean {
+    crash given
+    if is_a_singleton_type(given.value_type) {
+        return true
+    }
+    switch given {
+        HighIntermediaryRepresentation.Values.LocalRead: return true
+        HighIntermediaryRepresentation.Values.ThisRead: return true
+        HighIntermediaryRepresentation.Values.Conversion: return carries_steadily(given, called_keys)
+        HighIntermediaryRepresentation.Values.AttributeRead: return is_a_steady_attribute(given, called_keys)
+        _: return false
+    }
+}
+
+func is_a_singleton_type(of_type: Model.Type): Boolean {
+    if of_type.kind != 'object' {
+        return false
+    }
+    var model = layout.program.class_named(of_type.name)
+    if not model {
+        return false
+    }
+    return model.is_singleton
+}
+
+func carries_steadily(
+    conversion: HighIntermediaryRepresentation.Values.Conversion,
+    called_keys: List<String>,
+): Boolean {
+    if conversion.kind == 'join' or conversion.kind == 'into_handle' {
+        return false
+    }
+    return is_steady(conversion.converted, called_keys)
+}
+
+func is_a_steady_attribute(
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+    called_keys: List<String>,
+): Boolean {
+    if layout.is_back(read.attribute) {
+        return false
+    }
+    if not is_steady(read.object, called_keys) {
+        return false
+    }
+    if not assignments {
+        return false
+    }
+    return not assignments.may_assign(called_keys, read.attribute)
 }
 
 func start(key: String) {
@@ -192,6 +274,7 @@ func take_parameter(parameter: Model.ParameterModel) {
 
 func hold_a_parameter(parameter: Model.ParameterModel) {
     assert is_a_pointer(parameter.parameter_type)
+    assert not borrows_parameters or reassigned_names.contains(parameter.name)
     var register = locals[parameter.name]
     crash register
     retain(register)
@@ -350,7 +433,17 @@ func lower_block(block: HighIntermediaryRepresentation.Statements.Block?) {
     crash block
     var held = List<Integer>()
     scopes.append(held)
-    block.statements.each(lower_statement)
+    var outer_statements = block_statements
+    var outer_index = statement_index
+    block_statements = block.statements
+    statement_index = 0
+    while statement_index < block_statements.count() {
+        var statement = block_statements[statement_index]
+        lower_statement(statement)
+        statement_index = statement_index + 1
+    }
+    block_statements = outer_statements
+    statement_index = outer_index
     if not terminated {
         held.each(release_held)
     }
@@ -378,10 +471,13 @@ func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
     var value = lower_value(declare.value)
     var register = new_register()
     locals[declare.name] = register
-    kept(value, declare.declared_type)
+    var borrowed = is_a_borrowed_local(declare, value)
+    if not borrowed {
+        kept(value, declare.declared_type)
+    }
     var copied = LowIntermediaryRepresentation.Instructions.Copy(register, value.value)
     emit(copied)
-    if is_a_pointer(declare.declared_type) {
+    if is_a_pointer(declare.declared_type) and not borrowed {
         hold(register)
         held_types[register] = declare.declared_type
     }
@@ -391,6 +487,68 @@ func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
         var copied_presence = LowIntermediaryRepresentation.Instructions.Copy(presence, value.presence)
         emit(copied_presence)
     }
+}
+
+func is_a_borrowed_local(declare: HighIntermediaryRepresentation.Statements.Declare, value: Lowered): Boolean {
+    if not borrows_parameters or value.owned or not is_a_pointer(declare.declared_type) {
+        return false
+    }
+    if reassigned_names.contains(declare.name) {
+        return false
+    }
+    var watched = List<String>()
+    if not gather_the_sources(declare.value, watched) or watched.is_empty() {
+        return false
+    }
+    if not assignments {
+        return false
+    }
+    var after = statement_index + 1
+    return assignments.leaves_alone(block_statements, after, watched)
+}
+
+func gather_the_sources(given: HighIntermediaryRepresentation.Values.Value?, watched: List<String>): Boolean {
+    crash given
+    if is_a_singleton_type(given.value_type) {
+        return true
+    }
+    switch given {
+        HighIntermediaryRepresentation.Values.ThisRead: return true
+        HighIntermediaryRepresentation.Values.LocalRead: return not reassigned_names.contains(given.name)
+        HighIntermediaryRepresentation.Values.Conversion: return gather_through_a_conversion(given, watched)
+        HighIntermediaryRepresentation.Values.AttributeRead: return gather_through_an_attribute(given, watched)
+        HighIntermediaryRepresentation.Values.Call: return gather_through_a_slot(given, watched)
+        _: return false
+    }
+}
+
+func gather_through_a_conversion(
+    conversion: HighIntermediaryRepresentation.Values.Conversion,
+    watched: List<String>,
+): Boolean {
+    if conversion.kind == 'join' or conversion.kind == 'into_handle' {
+        return false
+    }
+    return gather_the_sources(conversion.converted, watched)
+}
+
+func gather_through_an_attribute(
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+    watched: List<String>,
+): Boolean {
+    if layout.is_back(read.attribute) {
+        return false
+    }
+    watched.append("{read.attribute.owner}.{read.attribute.name}")
+    return gather_the_sources(read.object, watched)
+}
+
+func gather_through_a_slot(call: HighIntermediaryRepresentation.Values.Call, watched: List<String>): Boolean {
+    if call.function.has_a_body() or call.function.name != "_read_value" {
+        return false
+    }
+    watched.append("[]{call.function.owner}")
+    return gather_the_sources(call.receiver, watched)
 }
 
 func lower_assign(assign: HighIntermediaryRepresentation.Statements.Assign) {
@@ -857,7 +1015,7 @@ func lower_make_object(made: HighIntermediaryRepresentation.Values.MakeObject): 
         var singleton = singleton_of(class_key, made)
         return single(singleton)
     }
-    var object = make_object(class_key)
+    var object = make_object_for(class_key, made)
     call_the_constructor(object, made)
     if class_key == "ForeignCallback" {
         var callbacks = Callbacks(this)
@@ -866,7 +1024,21 @@ func lower_make_object(made: HighIntermediaryRepresentation.Values.MakeObject): 
     return owned(object)
 }
 
+func make_object_for(class_key: String, made: HighIntermediaryRepresentation.Values.MakeObject): Integer {
+    if made.constructor {
+        var constructor_key = made.constructor.key()
+        if trimmed_keys.contains(constructor_key) {
+            return make_object_with(class_key, "{constructor_key}$defaults")
+        }
+    }
+    return make_object(class_key)
+}
+
 func make_object(class_key: String): Integer {
+    return make_object_with(class_key, "{class_key}._attribute_defaults")
+}
+
+func make_object_with(class_key: String, defaults_key: String): Integer {
     var size = layout.size_of(class_key)
     var size_register = constant(size)
     var object = new_register()
@@ -886,7 +1058,7 @@ func make_object(class_key: String): Integer {
     }
     var arguments = List<Integer>()
     arguments.append(object)
-    var defaults = LowIntermediaryRepresentation.Instructions.Call(-1, "{class_key}._attribute_defaults", arguments)
+    var defaults = LowIntermediaryRepresentation.Instructions.Call(-1, defaults_key, arguments)
     emit(defaults)
     return object
 }
@@ -898,7 +1070,9 @@ func call_the_constructor(object: Integer, made: HighIntermediaryRepresentation.
     pending_releases = List<Integer>()
     var arguments = List<Integer>()
     arguments.append(object)
-    add_arguments(arguments, made.arguments)
+    var constructing = List<String>()
+    constructing.append(constructor_key)
+    add_arguments(arguments, made.arguments, constructing)
     if resumable_mode and is_resumable(constructor_key) and not is_a_singleton_class(made.value_type.name) {
         var working = Working(this)
         working.waited_into(constructor_key, arguments, -1, -1)
@@ -1199,12 +1373,16 @@ func record_label_of(class_key: String): Integer {
     return label
 }
 
-func add_arguments(arguments: List<Integer>, values: List<HighIntermediaryRepresentation.Values.Value>) {
+func add_arguments(
+    arguments: List<Integer>,
+    values: List<HighIntermediaryRepresentation.Values.Value>,
+    called_keys: List<String>,
+) {
     var index = 0
     while index < values.count() {
         var value = values[index]
         var argument_value = lower_value(value)
-        release_later(argument_value, value.value_type)
+        passed_on(argument_value, value, called_keys)
         arguments.append(argument_value.value)
         if argument_value.presence >= 0 {
             arguments.append(argument_value.presence)
@@ -1217,6 +1395,14 @@ func lower_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var intrinsic = Intrinsics(this)
     if not call.function.has_a_body() {
         return intrinsic.lowered(call)
+    }
+    var reads = ListReads(this)
+    if reads.is_a_count(call) {
+        return reads.counted(call)
+    }
+    var joins = TextJoins(this)
+    if joins.is_a_join(call) {
+        return joins.joined(call)
     }
     if not call.number_positions.is_empty() {
         return lower_number_dispatch(call)
@@ -1238,12 +1424,14 @@ func lower_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var outer = pending_releases
     pending_releases = List<Integer>()
     var arguments = List<Integer>()
+    var calling = List<String>()
+    calling.append(called_key)
     var receiver = lower_value(call.receiver)
     crash call.receiver
-    release_later(receiver, call.receiver.value_type)
+    passed_on(receiver, call.receiver, calling)
     settle_before_clearing(call, receiver.value)
     arguments.append(receiver.value)
-    add_arguments(arguments, call.arguments)
+    add_arguments(arguments, call.arguments, calling)
     var answer = finished_call(call, arguments)
     release_the_pending()
     pending_releases = outer
@@ -1255,13 +1443,14 @@ func lower_number_dispatch(call: HighIntermediaryRepresentation.Values.Call): Lo
     pending_releases = List<Integer>()
     var receiver = lower_value(call.receiver)
     crash call.receiver
-    release_later(receiver, call.receiver.value_type)
+    var unknown = unknown_callees()
+    passed_on(receiver, call.receiver, unknown)
     var registers = List<Integer>()
     var index = 0
     while index < call.arguments.count() {
         var argument = call.arguments[index]
         var lowered_argument = lower_value(argument)
-        release_later(lowered_argument, argument.value_type)
+        passed_on(lowered_argument, argument, unknown)
         registers.append(lowered_argument.value)
         index = index + 1
     }
@@ -1383,6 +1572,10 @@ func lower_operation(operation: HighIntermediaryRepresentation.Values.MachineOpe
     if operation.operator == 'and' or operation.operator == 'or' {
         return lower_logic(operation)
     }
+    if operation.is_folded {
+        var folded = constant(operation.folded_number)
+        return single(folded)
+    }
     var left = lower_value(operation.left)
     var right = lower_value(operation.right)
     var target = new_register()
@@ -1407,6 +1600,7 @@ func lower_operation(operation: HighIntermediaryRepresentation.Values.MachineOpe
     )
     computed.width = width_of(operand_type)
     computed.is_signed = is_signed(operand_type)
+    computed.is_checked = not operation.is_proven_to_fit
     computed.line = line
     computed.shown = operation.shown
     computed.type_name = operand_type.name
@@ -1576,6 +1770,13 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
     if conversion.kind == 'join' {
         var joining = Working(this)
         return joining.joined(conversion)
+    }
+    if conversion.kind == 'proven' {
+        var reads = ListReads(this)
+        var read = reads.read(conversion)
+        if read {
+            return read
+        }
     }
     var converted = lower_value(conversion.converted)
     if conversion.kind == 'nullable' {
@@ -2035,14 +2236,28 @@ func small_object(class_key: String, size: Integer): Integer {
     return object
 }
 
+func filled_members(call: HighIntermediaryRepresentation.Values.ShapeCall): List<String> {
+    var filled = List<String>()
+    var fillers = layout.program.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        filled.append("{filler.name}.{call.member.name}")
+        filled.append("{filler.name}.get_{call.member.name}")
+        index = index + 1
+    }
+    return filled
+}
+
 func lower_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall): Lowered {
     var outer = pending_releases
     pending_releases = List<Integer>()
+    var filled = filled_members(call)
     var receiver = lower_value(call.receiver)
     crash call.receiver
-    release_later(receiver, call.receiver.value_type)
+    passed_on(receiver, call.receiver, filled)
     var arguments = List<Integer>()
-    add_arguments(arguments, call.arguments)
+    add_arguments(arguments, call.arguments, filled)
     var target = -1
     var presence = -1
     if not call.value_type.is_nothing() {
@@ -2373,7 +2588,8 @@ func lower_function_value_call(call: HighIntermediaryRepresentation.Values.Funct
     pending_releases = List<Integer>()
     var called = lower_value(call.called)
     crash call.called
-    release_later(called, call.called.value_type)
+    var unknown = unknown_callees()
+    passed_on(called, call.called, unknown)
     var address = new_register()
     var loaded_address = LowIntermediaryRepresentation.Instructions.Load(address, called.value, 16, 'bits_64')
     emit(loaded_address)
@@ -2382,7 +2598,7 @@ func lower_function_value_call(call: HighIntermediaryRepresentation.Values.Funct
     emit(loaded_receiver)
     var arguments = List<Integer>()
     arguments.append(receiver)
-    add_arguments(arguments, call.arguments)
+    add_arguments(arguments, call.arguments, unknown)
     var target = -1
     if not call.value_type.is_nothing() {
         target = new_register()

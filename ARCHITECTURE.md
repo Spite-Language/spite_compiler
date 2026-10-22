@@ -79,7 +79,12 @@ function). Each optimisation and each proof is a pass of its own.
   - a place that keeps a value (a local, an attribute, a list slot, a function value's receiver, an answer) retains
     a borrowed one and releases what it held before;
   - an owned value nobody keeps (an argument, a receiver, a tested or discarded value) is released after its use;
-  - a function retains its parameters, and every block releases its locals when it ends or returns;
+  - a caller holds what it passes for the whole call, so a function counts only the parameters it assigns again
+    (and every parameter of a step of a `Concurrent` work); the caller counts an argument or a receiver read from
+    a place the call may assign, and lets it go after the call (`lowering/assignments.spite` answers what a call
+    may assign, following every call to the end);
+  - every block releases its locals when it ends or returns; a local declared from an attribute or a list slot
+    that nothing after it in its block can write holds it uncounted;
   - `_release` frees an object whose count reaches zero through its class's `_free_<class>`: `drop()` first, then
     a list's items, the attributes that hold objects, and a buffer's bytes.
 - A `Buffer`'s room is sized by the compiler (D33): a buffer proven never to grow keeps its bytes inside the
