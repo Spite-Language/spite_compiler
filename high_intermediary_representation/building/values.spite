@@ -149,14 +149,13 @@ func fitted(
     }
     if wanted.kind == 'shape' and given.kind != 'shape' {
         if given.is_nullable {
-            refuse_an_unproven_fit(value, wanted)
+            refuse_a_null_that_cannot_answer(value, wanted)
         }
         var present = given.present()
         filled_shape(present, wanted)
         if given.is_nullable {
-            need_text_constants()
-            var text_type = context.text()
-            filled_shape(text_type, wanted)
+            var absent_type = absent_stand_in()
+            filled_shape(absent_type, wanted)
         }
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
     }
@@ -2555,7 +2554,7 @@ func member_call(
     if specialised {
         return specialised
     }
-    refuse_an_accessor_call(callee, call, owner, function)
+    refuse_an_accessor_call(callee, call, function)
     var made = called(function, receiver, call.arguments)
     refuse_a_wider_bitwise_operand(callee, call, made)
     return made
@@ -2564,18 +2563,15 @@ func member_call(
 func refuse_an_accessor_call(
     callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
-    owner: Model.ClassModel,
     function: Model.FunctionModel,
 ) {
-    var library = Validators.LibraryFile()
-    var path = context.path()
     var is_a_setter = callee.name.starts_with("set_") and call.arguments.count() == 1
     var is_a_getter = callee.name.starts_with("get_") and call.arguments.is_empty() and function.answer
     var is_an_accessor = is_a_setter or is_a_getter
-    assert is_an_accessor and function.declaration and not library.holds(path) and not library.holds(owner.file.path)
+    assert is_an_accessor and function.declaration
     var length = callee.name.length()
     var attribute_name = callee.name.slice(4, length)
-    assert not owner.attribute_named(attribute_name) and function.parameters.count() == call.arguments.count()
+    assert function.parameters.count() == call.arguments.count()
     crash callee.target
     var printer = Printers.Spite.ExpressionPrinter(callee.target)
     var receiver_text = printer.text()
@@ -3938,31 +3934,38 @@ func plural_of(word: String): String {
     if not head.is_empty() {
         head = "{head}_"
     }
-    var inflection = context.resolver.class_model_named("Inflection")
-    if not inflection {
+    var text_class = context.resolver.class_model_named("String")
+    if not text_class {
         return word.pluralize()
     }
-    if inflection_lists(inflection, "uncountables", last_word) {
+    if inflection_lists(text_class, "uncountables", last_word) {
         return word
     }
-    var irregular = irregular_plural(inflection, last_word)
+    var irregular = irregular_plural(text_class, last_word)
     if not irregular.is_empty() {
         return "{head}{irregular}"
     }
     return word.pluralize()
 }
 
-func inflection_lists(inflection: Model.ClassModel, name: String, word: String): Boolean {
-    var attribute = inflection.attribute_named(name)
-    if not attribute {
-        return false
-    }
-    crash attribute.declaration
-    var listed = attribute.declaration.value
+func inflection_lists(text_class: Model.ClassModel, name: String, word: String): Boolean {
+    var listed = inflection_table(text_class, name)
     if listed == AbstractSyntaxTree.Shapes.Expressions.ListLiteral {
         return lists_the_word(listed, word)
     }
     return false
+}
+
+func inflection_table(text_class: Model.ClassModel, name: String): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    var function = text_class.function_named(name)
+    assert function
+    crash function.declaration
+    crash function.declaration.body
+    var last = function.declaration.body.statements.last()
+    if last == AbstractSyntaxTree.Shapes.Statements.ReturnStatement {
+        return last.value
+    }
+    return null
 }
 
 func lists_the_word(listed: AbstractSyntaxTree.Shapes.Expressions.ListLiteral, word: String): Boolean {
@@ -3980,13 +3983,8 @@ func lists_the_word(listed: AbstractSyntaxTree.Shapes.Expressions.ListLiteral, w
     return false
 }
 
-func irregular_plural(inflection: Model.ClassModel, word: String): String {
-    var attribute = inflection.attribute_named("irregulars")
-    if not attribute {
-        return ""
-    }
-    crash attribute.declaration
-    var table = attribute.declaration.value
+func irregular_plural(text_class: Model.ClassModel, word: String): String {
+    var table = inflection_table(text_class, "irregulars")
     if table == AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral {
         return plural_in_the_table(table, word)
     }
@@ -5339,16 +5337,37 @@ func refuse_an_unproven_fit(value: HighIntermediaryRepresentation.Values.Value, 
             typing.refuse_missing_read_needed(context, value.index_path, shown, shown_wanted, value.index_hint)
         }
     }
-    if wanted.kind == 'shape' and is_an_index_local(value) {
-        typing.refuse_maybe_null_needed(context, shown, shown_wanted)
-    }
 }
 
-func is_an_index_local(value: HighIntermediaryRepresentation.Values.Value): Boolean {
-    if value == HighIntermediaryRepresentation.Values.LocalRead {
-        return context.index_locals.contains(value.name)
+func refuse_a_null_that_cannot_answer(value: HighIntermediaryRepresentation.Values.Value, wanted: Model.Type) {
+    var shape = context.program.shape_keyed(wanted.name)
+    crash shape
+    var index = 0
+    var answered = true
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if not is_answered_by_null(member) {
+            answered = false
+        }
+        index = index + 1
     }
-    return false
+    assert not answered
+    refuse_an_unproven_fit(value, wanted)
+    var shown = context.shown(value.value_type)
+    typing.refuse_maybe_null_needed(context, shown, shape.name)
+}
+
+func is_answered_by_null(member: Model.FunctionModel): Boolean {
+    var names_it = member.name == "to_string" or member.name == "to_debug"
+    return names_it and member.parameters.is_empty() and not member.is_an_attribute
+}
+
+func absent_stand_in(): Model.Type {
+    var found = context.resolver.symbols.find("Spite.Internal.Absent", "")
+    crash found
+    var absent = context.resolver.class_model_named("Spite.Internal.Absent")
+    crash absent
+    return absent.type_of_an_instance()
 }
 
 func named_key_of(
@@ -6568,7 +6587,7 @@ func reflection_question(
     var has_one = not matching.is_empty()
     switch question {
         "has_function": return boolean_constant(has_one)
-        "argument_count": return counted_arguments(matching)
+        "argument_count": return counted_arguments(matching, asked, pattern)
         "function_waits": return waits_question(matching)
         _: return writes_question(call, asked, matching)
     }
@@ -6707,12 +6726,17 @@ func fits_the_pattern(name: String, pattern: String): Boolean {
     return long_enough and name.starts_with(prefix) and name.ends_with(suffix)
 }
 
-func counted_arguments(matching: List<Model.FunctionModel>): HighIntermediaryRepresentation.Values.Value {
+func counted_arguments(
+    matching: List<Model.FunctionModel>,
+    asked: String,
+    pattern: String,
+): HighIntermediaryRepresentation.Values.Value {
     var integer = context.scalar_type("Integer")
     var found = matching.first()
     if not found {
-        return HighIntermediaryRepresentation.Values.WholeNumber(integer, 0)
+        typing.refuse_a_missing_counted_function(context, asked, pattern)
     }
+    crash found
     var counted = found.parameters.count()
     return HighIntermediaryRepresentation.Values.WholeNumber(integer, counted)
 }
@@ -6846,7 +6870,7 @@ func function_value_member(
     var function_type = target.value_type
     var shown = context.shown(function_type)
     var is_described = member.name == "name" or member.name == "arguments" or member.name == "returns"
-    if not is_described {
+    if not is_described and member.name != "owner" {
         typing.refuse_function_value_member(context, shown, member.name)
     }
     if member.name == "returns" {
@@ -6857,11 +6881,32 @@ func function_value_member(
         typing.refuse_an_unnamed_function_value(context, member.name)
     }
     crash known
+    if member.name == "owner" {
+        return owner_of_a_function_value(target, known)
+    }
     if member.name == "name" {
         return described_text(known.name)
     }
     var reflection = Reflection(context, this)
     return reflection.arguments_of(known)
+}
+
+func owner_of_a_function_value(
+    target: HighIntermediaryRepresentation.Values.Value,
+    known: Model.FunctionModel,
+): HighIntermediaryRepresentation.Values.Value {
+    if target == HighIntermediaryRepresentation.Values.FunctionValue {
+        crash target.receiver
+        return target.receiver
+    }
+    if known.is_synthetic {
+        typing.refuse_an_unnamed_function_value(context, "owner")
+    }
+    var owner = context.program.class_named(known.owner)
+    crash owner
+    var owner_type = owner.type_of_an_instance()
+    var receiver = Model.AttributeModel("owner", "Spite.FunctionValue", owner_type)
+    return HighIntermediaryRepresentation.Values.AttributeRead(target, receiver)
 }
 
 func returned_class_of(function_type: Model.Type): HighIntermediaryRepresentation.Values.Value {

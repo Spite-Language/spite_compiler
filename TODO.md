@@ -11,7 +11,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A member template that does not fit its member is refused only for `sum_`, `count_` and `each_` on a library collection (D115); the other forms, and two members with one plural, are not checked yet
 - A comment inside an enum, union or type body is not refused yet (only function bodies have their closing line)
 - Mapping rules across roots: a file in one root and a folder of the same dotted name in another (`specs/packages.md`), and the mapping rules for classes of a root loaded after the entry class is read
-- The library declares `Inflection` at its root where `specs/classes_and_files.md` names `String.Inflection`, so a program's `string/inflection.spite` is let through the library-name rules by D117 instead of by the spec's own rule
 - The emitter's refusals have no place (`validators/low_intermediary_representation/emittable`): each becomes a validator one level up once the high representation carries places
 - Every node carries its file, line and column, from the tree to the instructions
 - Unions and enums instead of strings in both representations (instruction kind, operator, types, call owner)
@@ -28,12 +27,12 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - A `crash` whose condition folds to false only once the function facts are answered (`function_writes_parameter`, `function_waits`) is not refused, and the facts keep no place for the write they found (`conformance/io_system_writes_row`, `conformance/snapshot_argument_writes`)
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D185)
-- Calling a getter or setter by name is refused only where the class has no attribute of that name (D182); `specs/functions_and_operators.md` refuses it beside an attribute too, and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
+- A getter or setter called by its bare name inside its own class (`set_rotation(rotation)` in `Matrix4`) is not refused (D189 refuses `point.set_height(4)`), and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
 - `conformance/vector_rows` stops first on `'alias' is never read`, an abstract syntax tree rule that runs before any borrow rule can, where it expects the row's resize error (D142)
 - `conformance/own_template_borrows` reopens `Vector` with the old library's `item_count`, `values` and `items`, which the library no longer has, so it fails on `item_count` before any borrow rule
 - `conformance/lent_arguments` stops on `unknown type 'argument.class'` (the reflection walks over a function's arguments, as `tests/reflection_walks`), before its plural-naming error
-- A plural template's member is matched with the program's own `String.Inflection` table, but a word that table leaves out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
+- A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
 - A pattern template whose hole names no enum (`Symbol<$t.phase_each>` with no `Phase`) crashes the compiler instead of the old error naming the enum to declare
 - A class name that reaches no file is collected in `SymbolTable.unknown_names` and never reported
 - The emitter resolves a call whose class is unknown by the function's name alone, when one class has it
@@ -42,12 +41,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 
 ## The language
-- Inflection moves into `String` (D187): the tables become `String`'s attributes, `Inflection` leaves the library, the plural templates read `String`
-- `.owner` of a function value answers its bound instance (D188); `conformance/function_owner` is rewritten
-- A getter or setter called by name is refused everywhere (D189); `tests/boolean_layout` is rewritten
-- `null` answers `to_string()` and `to_debug()`, so a `T?` fits `Printable` and `Debuggable` (D191)
 - No `Weak`: the compiler decides which reference of a cycle holds no count (D192); the Weak tests are rewritten
-- `argument_count` of a missing function is an error, never 0 (D193)
 - The spec pages in `../SpiteLanguage/specs` still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D187 to D193
 
 - The runtime the library needs, as machine code: allocator, console, files, directories, clock, sockets, processes, dynamic library
@@ -79,7 +73,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ## Faults found while porting
 
 - At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)
-- The spec puts the inflection table at `library/string/inflection.spite` (`String.Inflection`), but a class file and a folder of one name are refused (`conformance/class_and_namespace`), so the table stays `common/inflection.spite`, and a program's `string/inflection.spite` is mapped onto it (D161). Needs a decision on whether a class may also be a namespace
 
 - `shape_members` corrupts the heap (reported in `List<Spite.Internal.Running>.reserve`) once a `type`'s function is held as a value and run through `Parallel`: a count is released once too often
 
@@ -98,7 +91,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The library breaks three rules it is exempt from for now (D71): singletons bound as locals (`Arguments`, `Environment._setting`, `Spite.Internal.Fault.report`, `Spite.Internal.Work._settle`), locals that only copy a path to narrow it (`BinaryCursor._buffer`, `BinaryWriterCursor`, `JsonReader`, `JsonWriter`), and a terminal `if` (`Dictionary.remove_at`)
 - The `if` that narrows a path does not record which check narrowed it, so a second check inside its branch is "a condition is a Boolean" instead of "already narrowed by"; `while value` does not narrow its body
 
-- A `T?` that is not a `[ ]` read, given where a type is wanted (`console.print(names.first())`), prints `null` instead of being refused (D100): a value printed where something is missing, which the specification refuses
 - Proofs undone by calls: only a call to the class's own function (the attributes it assigns itself, not through what it calls) and a call on a receiver reached through `[ ]` or a call (what it shrinks through `[ ]`) undo proofs; a call that shrinks a list parameter, a function value, and an undone proof read inside a loop (named by the call) are not followed. Undoing a narrowing made before a loop is refused only for an attribute path, not a name; a check of a `[ ]` read proven by a count or an earlier check is not refused (D101)
 - Lost writes: a local holding an item that a program function answers (`lookup.of(0)`, "'found' holds 'values[row]' of 'Column'") and an assignment in the branches of a last `if` or `switch` are not judged; a write is judged only to a local the block made with a constructor, `copy()` or an own function that always answers one
 - A decimal `%` is computed as `x - trunc(x / y) * y`, which loses digits once the quotient passes 2^53: compute it exactly, as `fmod` does
