@@ -44,6 +44,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - `Symbol` is text marked as a symbol: `symbol.class` is not yet `Symbol`, `Symbol(text)` and `Symbol<T>` outside a template parameter are not built; `Anything`, and `Null` and `Number` as type names outside a `$T ==` test (D35)
 - `Build` reads are not folded, so both branches of `if build.serve` are compiled; a `load` under an `if` on a `Build` field
+- Arithmetic and functions through `Number` (`value + value` on a `Number`), and a template over the classes of a namespace (`Symbol<Bundle>` with `Bundle` a folder)
 - A template's compiler-supplied functions (`BinaryWriter.schema()`), `deep_copy`, and a walked row declared `var row: $row_type = null`
 - Vector and Items keep their items inline: today they hold references, so changing a found item changes the one in the list
 - Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`), filled in by the compiler and folded where constant (D37): still missing are walks compiled once per attribute (`value.attributes[attribute]`, `attributes.each`), folding of constant reads, `Spite.Attribute` bound to an instance, `Spite.Call`, `.accesses`, enums as classes, and a function value being the same object as its `Spite.Function`
@@ -56,6 +57,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `lent_to_calls` stops with heap corruption (0xC0000374): bisect it
 - A temporary the builder declares for a comparison (`call() == true`) can be read before its declaration in some branch; plain reads avoid it today
 - Building a text by appending to it copies it each time (`text_building` takes minutes)
+- Two `Concurrent`s that wait for each other loop forever instead of halting (`concurrent_wait_cycle`), since the work runs in order
 - The fault handler is not built: a stack overflow or a bad address ends the program with the system's code and no report
 
 ## The errors
@@ -68,7 +70,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Crash reports and the `<program>.crashes` map
 - `--optimization-report`, `--final-classes`
 - `--repl`, `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
-- The suite runs tests one at a time: run them in parallel, and make one compile fast enough that a model can iterate on the language test by test
+- The runner has no time limit, so a test that hangs stops the whole run; the suite runs tests one at a time: run them in parallel, and make one compile fast enough that a model can iterate on the language test by test
 - Caches per step and per unit
 
 ## The compiler proves itself

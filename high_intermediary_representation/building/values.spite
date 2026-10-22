@@ -80,6 +80,10 @@ func fitted(
         need(equals)
         return HighIntermediaryRepresentation.Values.EnumFromText(wanted, enumeration, value)
     }
+    if wanted.kind == 'shape' and given.kind == 'shape' and given.name != wanted.name {
+        refill_a_shape(given, wanted)
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
+    }
     if wanted.kind == 'shape' and given.kind != 'shape' {
         var present = given.present()
         filled_shape(present, wanted)
@@ -114,6 +118,20 @@ func number_read_from_text(
     var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
     var read = method_call(value, "to_{reader}", no_arguments)
     return fitted(read, wanted)
+}
+
+func refill_a_shape(given: Model.Type, wanted: Model.Type) {
+    var link = "{given.name}>{wanted.name}"
+    if not context.shape_links.contains(link) {
+        context.shape_links.append(link)
+    }
+    var fillers = context.program.fillers_of(given.name)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        filled_shape(filler, wanted)
+        index = index + 1
+    }
 }
 
 func filled_shape(given: Model.Type, wanted: Model.Type) {
@@ -151,6 +169,11 @@ func fits_as_an_enum(shape: Model.ShapeModel, shown: String) {
         index = index + 1
     }
     need_text_constants()
+    var text_type = context.text()
+    var text_model = context.class_of(text_type)
+    var joining = text_model.function_named("sum")
+    crash joining
+    need(joining)
 }
 
 func fits_as_a_class(shape: Model.ShapeModel, given: Model.Type, shown: String) {
@@ -506,6 +529,13 @@ func name_value(
     if internal_name {
         var local_type = context.scope.type_of(internal_name)
         crash local_type
+        var declared_type = context.scope.types[internal_name]
+        crash declared_type
+        var is_boxed = declared_type.kind == 'shape' and is_held_in_a_box(local_type)
+        if is_boxed {
+            var boxed = HighIntermediaryRepresentation.Values.LocalRead(declared_type, internal_name)
+            return HighIntermediaryRepresentation.Values.Conversion(local_type, 'unbox', boxed)
+        }
         return HighIntermediaryRepresentation.Values.LocalRead(local_type, internal_name)
     }
     var attribute = context.current_class.attribute_named(identifier.name)
@@ -568,12 +598,20 @@ func number_room(
     return HighIntermediaryRepresentation.Values.NumberRoom(made, number, scalar.size)
 }
 
+func is_held_in_a_box(of_type: Model.Type): Boolean {
+    return of_type.kind == 'scalar' or of_type.kind == 'enumeration'
+}
+
 func narrowed(
     value: HighIntermediaryRepresentation.Values.Value,
     path: String,
 ): HighIntermediaryRepresentation.Values.Value {
     var narrowed_type = context.scope.narrowed_type_of(path)
     if narrowed_type {
+        var is_boxed = value.value_type.kind == 'shape' and is_held_in_a_box(narrowed_type)
+        if is_boxed {
+            return HighIntermediaryRepresentation.Values.Conversion(narrowed_type, 'unbox', value)
+        }
         return HighIntermediaryRepresentation.Values.Conversion(narrowed_type, 'present', value)
     }
     return value
@@ -993,6 +1031,17 @@ func result_of_handle(value: HighIntermediaryRepresentation.Values.Value): HighI
 func class_path_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): List<String> {
     var inference = NameResolution.Inference()
     return inference.class_path_of(expression)
+}
+
+func tested_class_path_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): List<String> {
+    var path = List<String>()
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        if expression.name.starts_with("$") {
+            path.append(expression.name)
+            return path
+        }
+    }
+    return class_path_of(expression)
 }
 
 func constructed(
@@ -1989,6 +2038,15 @@ func binary_value(
         var equal_maybe = maybe_equal(left, right)
         return HighIntermediaryRepresentation.Values.Negation(equal_maybe)
     }
+    var compares_a_shape = left.value_type.kind == 'shape' and right.value_type.kind != 'shape'
+    var asks_equality = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    if compares_a_shape and asks_equality {
+        var same = shape_equal(left, right)
+        if binary.operator == 'not_equal' {
+            return HighIntermediaryRepresentation.Values.Negation(same)
+        }
+        return same
+    }
     if is_machine_comparable(left.value_type) {
         var fitted_right = fitted(right, left.value_type)
         refuse_a_cut(binary, fitted_right, left.value_type, right.value_type)
@@ -2077,6 +2135,21 @@ func maybe_equal(
     var fitted_right = fitted(right, present_type)
     var equal = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', present, fitted_right)
     var tested = HighIntermediaryRepresentation.Values.PresenceTest(local)
+    return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', tested, equal)
+}
+
+func shape_equal(
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    var boolean = context.boolean()
+    var right_type = right.value_type.present()
+    if not is_held_in_a_box(right_type) {
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', left, right)
+    }
+    var tested = HighIntermediaryRepresentation.Values.ClassTest(left, right_type)
+    var unboxed = HighIntermediaryRepresentation.Values.Conversion(right_type, 'unbox', left)
+    var equal = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', unboxed, right)
     return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', tested, equal)
 }
 
@@ -2217,7 +2290,7 @@ func operator_function_name(operator: HighIntermediaryRepresentation.Values.Oper
 
 func is_a_class_test(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
     var compares = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
-    var right = class_path_of(binary.right)
+    var right = tested_class_path_of(binary.right)
     return compares and not right.is_empty()
 }
 
@@ -2225,7 +2298,7 @@ func class_test_value(
     binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
 ): HighIntermediaryRepresentation.Values.Value {
     var tested = value_of(binary.left, null)
-    var path = class_path_of(binary.right)
+    var path = tested_class_path_of(binary.right)
     var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
     var member = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
     if tested.value_type.name == "Spite.Class" {
