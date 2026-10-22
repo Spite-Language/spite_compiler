@@ -624,3 +624,104 @@ Checked `+`, `-` and `*` jump on the overflow (or carry, unsigned) flag to the c
 is written after the function's blocks, out of the path that runs. A 64-bit operation works in its target's
 register directly, undoing itself in the report's path when it overwrote an operand the report prints; a 32-bit one
 works in 32 bits and its overflow flag is the check. A division's zero check jumps out the same way.
+
+## A dictionary hashes a key once, cheaply
+
+The library's `Dictionary` keeps its keys and its values in two lists, in the order the keys were first set, and
+over them a table of slots: a power of two of them, each the position of an entry and 32 bits of its key's hash,
+never more than half full. Every `get_at`, `set_at`, `contains` and `remove_at` hashes the key once and walks the
+slots from the one the hash names; a slot whose hash bits differ is passed without reading its key, so a key is
+compared only where its bits already match. Growing the table moves each slot by the bits it keeps, so no key is
+hashed again, and an empty dictionary has no table.
+
+A `String` key is hashed by its bytes, eight at a time (one exclusive or and one multiply each, then the bytes
+left over), and two keys are compared eight bytes at a time.
+
+```
+func count_words(words: List<String>): Dictionary<String, Integer> {
+    var counts = Dictionary<String, Integer>()
+    var index = 0
+    while index < words.count() {
+        var word = words[index]
+        var seen = counts[word]
+        if seen {
+            counts[word] = seen + 1
+        } else {
+            counts[word] = 1
+        }
+        index = index + 1
+    }
+    return counts
+}
+```
+
+When it applies: every dictionary. When it does not: the work around it; a read written twice
+(`if counts[word] { total = total + counts[word] }`) still looks the key up twice. What a user can observe: the
+time, one more allocation for a dictionary's table once it holds a key, and `remove_at`, which takes time in
+proportion to the table, as the specification says. `keys()`, `values()` and `to_debug()` answer in insertion order
+as before.
+
+## A dictionary keyed by numbers hashes the numbers
+
+A key that is not text (a whole number, a `Boolean`, an enum value, an object) is hashed from its bits by one
+multiply by 6364136223846793005, with no `String` made for it: the library's `Dictionary._key_bits(key)` has no
+body, and the compiler answers the key's own register, so an object is hashed by its identity. A `Float` or a
+`Double` is hashed the same way once `0.0` and `-0.0` are one key and every not-a-number is one key, the first one
+stored being the key `keys()` answers. The slot is the top bits of the product, so keys that differ only in their
+high bits (addresses, `Long`s) still spread over the table.
+
+```
+func squares(): Dictionary<Integer, Integer> {
+    var table = Dictionary<Integer, Integer>()
+    var index = 0
+    while index < 1000 {
+        table[index * 7] = index * index
+        index = index + 1
+    }
+    return table
+}
+```
+
+When it applies: every dictionary whose key is not a `String`. What a user can observe: nothing but the time.
+
+## A number read from bytes is one load
+
+`Buffer`'s big-endian reads and writes (`read_integer_big_endian_at`, `write_long_big_endian_at` and the rest, of
+every width, whole or decimal) are one load or one store of that width with the bytes swapped in the register
+(`bswap`, or a rotate by eight for two bytes), as a little-endian one is one load. The library declares
+`_read_integer_big_endian_at(at)` and the rest with no body, and the compiler writes each one; nothing is copied to
+read a number, where before each read made a `Buffer` of the bytes reversed.
+
+```
+func identity_of(record: Buffer, at: Integer): Integer? {
+    return record.read_integer_big_endian_at(at)
+}
+```
+
+When it applies: every big-endian read or write of two bytes or more. When it does not: the public read is still a
+call that tests the bounds and answers `null` outside them. What a user can observe: no allocation for a read,
+under `--debug-memory`, and the time.
+
+## A dictionary written out and only read by literal keys is folded
+
+A local made from a dictionary literal whose keys are all text or all whole numbers written out, whose values are
+all literals of one kind, and that its function only ever reads with a key written out (`points["gold"]`), is
+never made: each read is the value written for that key, or `null` for a key the literal does not have. The read
+keeps its type, a `T?`, so `crash points["gold"]` and `if` narrow it as they would; after the `crash`, the read is
+the value itself.
+
+```
+func points_for(golds: Integer, silvers: Integer): Integer {
+    var points = {"gold": 50, "silver": 20}
+    crash points["gold"]
+    crash points["silver"]
+    return golds * points["gold"] + silvers * points["silver"]
+}
+```
+
+`points_for` makes no dictionary and hashes nothing. When it does not apply: a literal with a declared type, a key
+or a value that is not a literal (`-5` included), the same key twice, any other mention of the local (a key in a
+variable, a write, `count()`, passing it, a second `var` of the same name in the function), a dictionary held in an
+attribute, and the interactive builds (`--repl`, `--repl-port`, `--development`, `--hot-reload`), which keep the
+dictionary a reader can inspect. What a user can observe: no dictionary, no allocation and no hashing for the
+folded ones, and nothing else.
