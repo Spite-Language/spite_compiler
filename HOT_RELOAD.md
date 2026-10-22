@@ -39,3 +39,11 @@ silently, so every new fact goes into the manifest when it is decided.
 - A `Concurrent` stopped at a wait finishes on the old code; the swap waits for it.
 - The reflection tables are swapped with the code.
 - One reload at a time: the state is never read half-written.
+
+## The manifest is the reflection model (proposed by Claude, unconfirmed)
+
+The classes a program reflects over (`Spite.Class`, its attributes and functions) are the description of the
+program the compiler already builds. A reload compares the new program's description with the running one's
+instead of keeping a second, parallel manifest: a changed layout is a changed `Spite.Class`, a changed signature
+a changed function of it. To decide when reflection is built: whether those classes can carry what a reload
+needs (layouts, recorded facts, slots) without a program that never reloads paying for it.

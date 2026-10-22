@@ -37,13 +37,14 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
 - The memory of a value of any type: `_read_value` and `_write_value`, and a room sized by item count times item size
 - Memory: heap, reference counting, frees, and `--debug-memory` counts equal to the original's
-- Strings and text literals with holes
-- Lists and dictionaries, with their templates and member templates
+- Chains of member templates as one loop, `Dictionary` templates through its values, and the passed-function forms (`filter(f)`, `sort_by(f)`, `remove_where(f)`, `map(f)`)
+- A dictionary keyed by hashing instead of a walk of its keys
 - References, enums, unions and `type` shapes
-- Functions as values, variadics, operators as functions
+- A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
 - `switch`, and narrowing a `T?`
-- `Float` and `Double`: their room reads, arithmetic and checked conversions to whole numbers
-- A narrowing that does not fit halts without printing the value (`spite: 200, an Integer, does not fit in a Tiny`)
+- `Float` and `Double`: `%`, the maths functions past `square_root`, exponent notation in literals, a `Double` too large for a `Float` halting, and `UnsignedLong` to and from a decimal past 2^63
+- Crash reports: the values of the names in a `crash` condition, `assert` traces, and the `<program>.crashes` map
+- `.class` and the rest of reflection over declared classes, attributes and functions
 - A number's room is a `Buffer` made on every read of `_buffer` (D33): fold a read at a known position of a fresh room into the number itself
 - Concurrency, reflection, `load` of a package, codegen values
 - Program settings: the program's own `build.spite` and `environment.spite`
@@ -62,7 +63,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `spite program` builds and runs; `--check`, `--build`, `--executable-path`, with the original's error texts for every other flag
 - Crash reports and the `<program>.crashes` map
 - `--optimization-report`, `--final-classes`
-- `--repl`, `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`)
+- `--repl`, `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
+- The suite runs tests one at a time: run them in parallel, and make one compile fast enough that a model can iterate on the language test by test
 - Caches per step and per unit
 
 ## The compiler proves itself

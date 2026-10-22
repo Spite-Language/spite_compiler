@@ -247,6 +247,7 @@ func lower_value(value: HighIntermediaryRepresentation.Values.Value?): Lowered {
     crash value
     switch value {
         HighIntermediaryRepresentation.Values.WholeNumber: return lower_whole_number(value)
+        HighIntermediaryRepresentation.Values.DecimalNumber: return lower_decimal_number(value)
         HighIntermediaryRepresentation.Values.TextConstant: return lower_text(value)
         HighIntermediaryRepresentation.Values.NullConstant: return lower_null()
         HighIntermediaryRepresentation.Values.LocalRead: return lower_local(value)
@@ -262,14 +263,29 @@ func lower_value(value: HighIntermediaryRepresentation.Values.Value?): Lowered {
         HighIntermediaryRepresentation.Values.Conversion: return lower_conversion(value)
         HighIntermediaryRepresentation.Values.NumberRoom: return lower_number_room(value)
         HighIntermediaryRepresentation.Values.ShapeCall: return lower_shape_call(value)
+        HighIntermediaryRepresentation.Values.EnumText: return lower_enum_text(value)
         HighIntermediaryRepresentation.Values.FunctionValue: return lower_function_value(value)
         HighIntermediaryRepresentation.Values.FunctionValueCall: return lower_function_value_call(value)
-        _: return unbuilt()
     }
 }
 
 func lower_whole_number(number: HighIntermediaryRepresentation.Values.WholeNumber): Lowered {
     var register = constant(number.number)
+    return single(register)
+}
+
+func lower_decimal_number(number: HighIntermediaryRepresentation.Values.DecimalNumber): Lowered {
+    var bits: Long = 0
+    if number.value_type.name == "Float" {
+        var parsed_float = number.written.to_float()
+        crash parsed_float
+        bits = parsed_float.bits()
+    } else {
+        var parsed = number.written.to_double()
+        crash parsed
+        bits = parsed.bits()
+    }
+    var register = constant(bits)
     return single(register)
 }
 
@@ -301,8 +317,13 @@ func lower_local(read: HighIntermediaryRepresentation.Values.LocalRead): Lowered
 
 func lower_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead): Lowered {
     var object = lower_value(read.object)
-    var offset = layout.offset_of(read.attribute)
-    var attribute_type = read.attribute.attribute_type
+    return load_attribute(object.value, read.attribute)
+}
+
+func load_attribute(object_register: Integer, attribute: Model.AttributeModel): Lowered {
+    var object = single(object_register)
+    var offset = layout.offset_of(attribute)
+    var attribute_type = attribute.attribute_type
     var target = new_register()
     var width = width_of(attribute_type)
     var loaded = LowIntermediaryRepresentation.Instructions.Load(target, object.value, offset, width)
@@ -498,6 +519,9 @@ func lower_operation(operation: HighIntermediaryRepresentation.Values.MachineOpe
     crash operation.left
     var operand_type = operation.left.value_type
     var comparison = comparison_of(operation.operator)
+    if is_a_decimal(operand_type) {
+        return decimal_operation(operation, operand_type, left.value, right.value, target)
+    }
     if comparison {
         var compared = LowIntermediaryRepresentation.Instructions.Compare(target, comparison, left.value, right.value)
         compared.is_signed = is_signed(operand_type)
@@ -514,6 +538,48 @@ func lower_operation(operation: HighIntermediaryRepresentation.Values.MachineOpe
     computed.width = width_of(operand_type)
     computed.is_signed = is_signed(operand_type)
     computed.line = line
+    computed.shown = operation.shown
+    computed.type_name = operand_type.name
+    computed.path = path
+    emit(computed)
+    return single(target)
+}
+
+func is_a_decimal(of_type: Model.Type): Boolean {
+    if of_type.kind != 'scalar' {
+        return false
+    }
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    return scalar.is_decimal
+}
+
+func decimal_operation(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+    operand_type: Model.Type,
+    left: Integer,
+    right: Integer,
+    target: Integer,
+): Lowered {
+    var is_double = operand_type.name == "Double"
+    var comparison = comparison_of(operation.operator)
+    if comparison {
+        var compared = LowIntermediaryRepresentation.Instructions.DecimalCompare(target, comparison, left, right)
+        compared.is_double = is_double
+        emit(compared)
+        return single(target)
+    }
+    var arithmetic_operator = arithmetic_of(operation.operator)
+    if arithmetic_operator == 'remainder' {
+        return unbuilt()
+    }
+    var computed = LowIntermediaryRepresentation.Instructions.DecimalArithmetic(
+        target,
+        arithmetic_operator,
+        left,
+        right,
+    )
+    computed.is_double = is_double
     emit(computed)
     return single(target)
 }
@@ -641,15 +707,92 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
         var boxed = conversion.converted.value_type
         return boxed_into_a_shape(converted, boxed)
     }
+    crash conversion.converted
+    var from_type = conversion.converted.value_type
+    if conversion.kind == 'widen' and is_a_decimal(from_type) {
+        return decimal_converted(converted.value, from_type, conversion.value_type)
+    }
+    if conversion.kind == 'to_decimal' or conversion.kind == 'narrow_decimal' {
+        return decimal_converted(converted.value, from_type, conversion.value_type)
+    }
+    if conversion.kind == 'to_whole' {
+        check_the_decimal_range(converted.value, from_type, conversion.value_type)
+        return decimal_converted(converted.value, from_type, conversion.value_type)
+    }
+    if conversion.kind == 'proven' {
+        stop_if_missing(converted)
+        return single(converted.value)
+    }
     if conversion.kind == 'narrow' {
-        crash conversion.converted
-        var given = conversion.converted.value_type
-        check_the_range(converted.value, given, conversion.value_type)
+        check_the_range(converted.value, from_type, conversion.value_type)
     }
     return single(converted.value)
 }
 
+func stop_if_missing(converted: Lowered) {
+    var presence = converted.presence
+    if presence < 0 {
+        var zero = constant(0)
+        presence = new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(presence, 'not_equal', converted.value, zero)
+        emit(compared)
+    }
+    var stopping = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(presence, after, stopping)
+    emit(test)
+    switch_to(stopping)
+    var label = text_label("spite: a read the program proved present is missing, at {path}:{line}\n")
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+    switch_to(after)
+}
+
+func lower_enum_text(text: HighIntermediaryRepresentation.Values.EnumText): Lowered {
+    var number = lower_value(text.number)
+    return enum_text_of(number.value, text.enumeration, text.value_type)
+}
+
+func enum_text_of(number: Integer, enumeration: Model.EnumModel, string_type: Model.Type): Lowered {
+    var target = new_register()
+    var after = new_block()
+    var index = 0
+    while index < enumeration.values.count() {
+        var name = enumeration.values[index]
+        var value = enumeration.numbers[index]
+        crash value
+        var wanted = constant(value)
+        var matches = new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', number, wanted)
+        emit(compared)
+        var naming = new_block()
+        var next = new_block()
+        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, naming, next)
+        emit(test)
+        switch_to(naming)
+        var constant_text = HighIntermediaryRepresentation.Values.TextConstant(name)
+        constant_text.value_type = string_type
+        var made = lower_text(constant_text)
+        var copied = LowIntermediaryRepresentation.Instructions.Copy(target, made.value)
+        emit(copied)
+        jump_to(after)
+        switch_to(next)
+        index = index + 1
+    }
+    var label = text_label("spite: a value outside its enum '{enumeration.name}', at {path}:{line}\n")
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+    switch_to(after)
+    return single(target)
+}
+
 func boxed_into_a_shape(converted: Lowered, boxed: Model.Type): Lowered {
+    if boxed.kind == 'enumeration' {
+        var enum_box = small_object(boxed.name, 24)
+        var stored_enum = LowIntermediaryRepresentation.Instructions.Store(enum_box, 16, converted.value, 'bits_64')
+        emit(stored_enum)
+        return single(enum_box)
+    }
     if boxed.kind != 'scalar' {
         return single(converted.value)
     }
@@ -725,10 +868,27 @@ func call_a_filler(
     emit(test)
     switch_to(calling)
     var own = receiver
-    if filler.kind == 'scalar' {
+    var is_boxed = filler.kind == 'scalar' or filler.kind == 'enumeration'
+    if is_boxed {
         own = new_register()
         var unboxed = LowIntermediaryRepresentation.Instructions.Load(own, receiver, 16, 'bits_64')
         emit(unboxed)
+    }
+    if filler.kind == 'enumeration' {
+        var enumeration = enum_model_of(filler.name)
+        var string_type = call.value_type
+        var named = enum_text_of(own, enumeration, string_type)
+        var copied_name = LowIntermediaryRepresentation.Instructions.Copy(target, named.value)
+        emit(copied_name)
+        jump_to(after)
+        switch_to(next)
+        return
+    }
+    if call.member.is_an_attribute {
+        read_a_filling_attribute(call, filler, own, target, presence)
+        jump_to(after)
+        switch_to(next)
+        return
     }
     var passed = List<Integer>()
     passed.append(own)
@@ -744,6 +904,40 @@ func call_a_filler(
     emit(called)
     jump_to(after)
     switch_to(next)
+}
+
+func enum_model_of(enum_key: String): Model.EnumModel {
+    var parts = enum_key.split(".")
+    var last = parts.count() - 1
+    var simple = parts[last]
+    crash simple
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = layout.program.class_named(owner_key)
+    crash owner
+    var made = owner.enum_named(simple)
+    crash made
+    return made
+}
+
+func read_a_filling_attribute(
+    call: HighIntermediaryRepresentation.Values.ShapeCall,
+    filler: Model.Type,
+    object: Integer,
+    target: Integer,
+    presence: Integer,
+) {
+    var model = layout.program.class_named(filler.name)
+    crash model
+    var attribute = model.attribute_named(call.member.name)
+    crash attribute
+    var loaded = load_attribute(object, attribute)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, loaded.value)
+    emit(copied)
+    if presence >= 0 {
+        var copied_presence = LowIntermediaryRepresentation.Instructions.Copy(presence, loaded.presence)
+        emit(copied_presence)
+    }
 }
 
 func lower_function_value(made: HighIntermediaryRepresentation.Values.FunctionValue): Lowered {
@@ -786,21 +980,93 @@ func lower_function_value_call(call: HighIntermediaryRepresentation.Values.Funct
     return single(target)
 }
 
+func decimal_converted(source: Integer, from_type: Model.Type, to_type: Model.Type): Lowered {
+    var target = new_register()
+    var converting = LowIntermediaryRepresentation.Instructions.DecimalConversion(target, source)
+    var from_scalar = scalars.of(from_type.name)
+    var to_scalar = scalars.of(to_type.name)
+    crash from_scalar
+    crash to_scalar
+    if from_scalar.is_decimal {
+        converting.from_decimal_size = from_scalar.size
+    } else {
+        converting.whole_is_signed = from_scalar.is_signed
+        converting.whole_width = width_of(from_type)
+    }
+    if to_scalar.is_decimal {
+        converting.to_decimal_size = to_scalar.size
+    } else {
+        converting.whole_is_signed = to_scalar.is_signed
+        converting.whole_width = width_of(to_type)
+    }
+    emit(converting)
+    return single(target)
+}
+
+func check_the_decimal_range(value: Integer, from_type: Model.Type, to_type: Model.Type) {
+    var to_scalar = scalars.of(to_type.name)
+    crash to_scalar
+    var wide = value
+    if from_type.name == "Float" {
+        var double_type = Model.Type('scalar', "Double")
+        var widened = decimal_converted(value, from_type, double_type)
+        wide = widened.value
+    }
+    var bits = value_bits_of(to_scalar)
+    var above_bits = double_bits_of_power(bits)
+    var lowest_bits: Long = 0
+    if to_scalar.is_signed {
+        lowest_bits = above_bits - 9223372036854775807 - 1
+    }
+    var article = article_of(to_type.name)
+    var message = "spite: a {from_type.name} does not fit in {article} {to_type.name}, at {path}:{line} in {function.key}\n"
+    decimal_stop_unless(wide, 'greater_or_equal', lowest_bits, message)
+    decimal_stop_unless(wide, 'less', above_bits, message)
+}
+
+func double_bits_of_power(bits: Integer): Long {
+    var exponent: Long = 1023 + bits
+    return exponent.shifted_left(52)
+}
+
+func decimal_stop_unless(
+    value: Integer,
+    comparison: LowIntermediaryRepresentation.Comparison,
+    limit_bits: Long,
+    message: String,
+) {
+    var bound = constant(limit_bits)
+    var fits = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.DecimalCompare(fits, comparison, value, bound)
+    emit(compared)
+    var stopping = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(fits, after, stopping)
+    emit(test)
+    switch_to(stopping)
+    var label = text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+    switch_to(after)
+}
+
 func check_the_range(value: Integer, given: Model.Type, wanted: Model.Type) {
     var given_scalar = scalars.of(given.name)
     var wanted_scalar = scalars.of(wanted.name)
     crash given_scalar
     crash wanted_scalar
-    var message = "spite: a value of {given.name} does not fit in {wanted.name}, at {path}:{line}"
+    var given_article = article_of(given.name)
+    var wanted_article = article_of(wanted.name)
+    var message = ", {given_article} {given.name}, does not fit in {wanted_article} {wanted.name}, at {path}:{line} in {function.key}\n"
     var loses_the_sign = not wanted_scalar.is_signed or wanted_scalar.size < given_scalar.size
     if given_scalar.is_signed and loses_the_sign {
         var lowest = lowest_of(wanted_scalar)
-        stop_unless(value, 'greater_or_equal', lowest, true, message)
+        stop_unless(value, 'greater_or_equal', lowest, true, message, given_scalar.is_signed)
     }
     var wanted_bits = value_bits_of(wanted_scalar)
     if value_bits_of(given_scalar) > wanted_bits {
         var highest = power_of_two(wanted_bits) - 1
-        stop_unless(value, 'less_or_equal', highest, given_scalar.is_signed, message)
+        stop_unless(value, 'less_or_equal', highest, given_scalar.is_signed, message, given_scalar.is_signed)
     }
 }
 
@@ -836,6 +1102,7 @@ func stop_unless(
     limit: Long,
     compares_signed: Boolean,
     message: String,
+    value_is_signed: Boolean,
 ) {
     var bound = constant(limit)
     var fits = new_register()
@@ -847,10 +1114,24 @@ func stop_unless(
     var test = LowIntermediaryRepresentation.Instructions.Branch(fits, after, stopping)
     emit(test)
     switch_to(stopping)
-    var label = text_label("{message}\n")
-    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    var opening = text_label("spite: ")
+    var closing = text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(opening)
+    stopped.labels.append(opening)
+    stopped.labels.append(closing)
+    stopped.numbers.append(value)
+    stopped.signed_numbers.append(value_is_signed)
     emit(stopped)
     switch_to(after)
+}
+
+func article_of(name: String): String {
+    var first = name.code_at(0)
+    var is_a_vowel = first == 65 or first == 69 or first == 73 or first == 79 or first == 85
+    if is_a_vowel {
+        return "an"
+    }
+    return "a"
 }
 
 func made_nullable(converted: Lowered, nullable_type: Model.Type): Lowered {
@@ -944,7 +1225,7 @@ func is_signed(of_type: Model.Type): Boolean {
     }
     var scalar = scalars.of(of_type.name)
     crash scalar
-    return scalar.is_signed
+    return scalar.is_signed and not scalar.is_decimal
 }
 
 func unbuilt(): Lowered {
