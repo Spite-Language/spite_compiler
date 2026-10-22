@@ -1,0 +1,416 @@
+var is_learned = false
+var linked = List<String>()
+var linked_by_the_made = List<String>()
+var forwarded = Dictionary<String, List<String>>()
+var back_keys = List<String>()
+var counted_keys = List<String>()
+var stores = List<BackReferenceStore>()
+var locals = List<String>()
+var aliases = Dictionary<String, String>()
+var made_count = 0
+var appending = ["append", "insert", "prepend", "add", "set_at"]
+
+func holds_no_count(program: ProgramModel, attribute: AttributeModel): Boolean {
+    var key = "{attribute.owner}.{attribute.name}"
+    if back_keys.contains(key) {
+        return true
+    }
+    if counted_keys.contains(key) {
+        return false
+    }
+    learn(program)
+    var answer = points_back(program, attribute)
+    if answer {
+        back_keys.append(key)
+    } else {
+        counted_keys.append(key)
+    }
+    return answer
+}
+
+func learn(program: ProgramModel) {
+    assert not is_learned
+    is_learned = true
+    program.order.each(note_the_constructors)
+    program.order.each(read_the_class)
+}
+
+func note_the_constructors(model: ClassModel) {
+    assert model.bound_types.count() == 0
+    model.declared_functions.each(note_a_constructor)
+}
+
+func note_a_constructor(function: FunctionModel) {
+    assert function.is_constructor and not forwarded.has(function.name)
+    assert function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    start_reading(declaration)
+    var kept = List<String>()
+    var index = 0
+    while index < declaration.parameters.count() {
+        var parameter = declaration.parameters[index]
+        var stored = attribute_given(parameter.name)
+        kept.append(stored)
+        index = index + 1
+    }
+    forwarded[function.name] = kept
+}
+
+func attribute_given(parameter_name: String): String {
+    var index = 0
+    while index < stores.count() {
+        var store = stores[index]
+        if store.holder == "this" and store.value == parameter_name {
+            return store.attribute
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func read_the_class(model: ClassModel) {
+    assert model.bound_types.count() == 0
+    model.declared_functions.each(read_a_function)
+}
+
+func read_a_function(function: FunctionModel) {
+    assert function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    start_reading(declaration)
+    stores.each(link_back)
+}
+
+func start_reading(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    stores = List<BackReferenceStore>()
+    locals = List<String>()
+    aliases = Dictionary<String, String>()
+    declaration.parameters.each(note_a_parameter)
+    read_block(declaration.body)
+}
+
+func note_a_parameter(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
+    locals.append(parameter.name)
+}
+
+func link_back(store: BackReferenceStore) {
+    var index = 0
+    while index < stores.count() {
+        var other = stores[index]
+        var closes = other.holder == store.value and other.value == store.holder
+        if closes and store.attribute != other.attribute and store.holder != store.value {
+            note_a_link(store, other)
+        }
+        index = index + 1
+    }
+}
+
+func note_a_link(store: BackReferenceStore, other: BackReferenceStore) {
+    var link = "{store.attribute}|{other.attribute}"
+    if not linked.contains(link) {
+        linked.append(link)
+    }
+    var is_made_here = store.holder.starts_with("#") and not store.value.starts_with("#")
+    assert is_made_here and not linked_by_the_made.contains(link)
+    linked_by_the_made.append(link)
+}
+
+func read_block(block: AbstractSyntaxTree.Shapes.Statements.Block?) {
+    assert block
+    block.statements.each(read_statement)
+}
+
+func read_statement(statement: AbstractSyntaxTree.Shapes.Statements.Statement) {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: read_variable(statement)
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: read_assignment(statement)
+        AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: read_expression_statement(statement)
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: read_if(statement)
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: read_block(statement.body)
+        AbstractSyntaxTree.Shapes.Statements.SwitchStatement: read_switch(statement)
+        AbstractSyntaxTree.Shapes.Statements.Block: read_block(statement)
+        _: return
+    }
+}
+
+func read_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    read_block(statement.then_branch)
+    read_block(statement.else_branch)
+}
+
+func read_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement) {
+    var index = 0
+    while index < statement.cases.count() {
+        var switch_case = statement.cases[index]
+        read_block(switch_case.body)
+        index = index + 1
+    }
+}
+
+func read_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    locals.append(statement.name)
+    assert statement.value
+    var key = key_of(statement.value)
+    alias_a_local(statement.name, key)
+}
+
+func alias_a_local(name: String, key: String) {
+    var aliased = name
+    if key.starts_with("#") {
+        aliased = key
+    }
+    aliases[name] = aliased
+}
+
+func read_assignment(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    crash statement.target
+    crash statement.value
+    var key = key_of(statement.value)
+    assign_to(statement.target, key)
+}
+
+func assign_to(target: AbstractSyntaxTree.Shapes.Expressions.Expression, key: String) {
+    switch target {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: assign_a_name(target.name, key)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: store_into_a_member(target, key)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: store_into_an_item(target, key)
+        _: return
+    }
+}
+
+func assign_a_name(name: String, key: String) {
+    if locals.contains(name) {
+        alias_a_local(name, key)
+    } else {
+        store_into_a_name(name, key)
+    }
+}
+
+func store_into_a_name(name: String, key: String) {
+    assert not locals.contains(name)
+    add_a_store("this", name, key)
+}
+
+func store_into_a_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression, key: String) {
+    crash member.target
+    var holder_key = key_of(member.target)
+    add_a_store(holder_key, member.name, key)
+}
+
+func store_into_an_item(item: AbstractSyntaxTree.Shapes.Expressions.IndexExpression, key: String) {
+    crash item.target
+    store_into(item.target, key)
+}
+
+func store_into(collection: AbstractSyntaxTree.Shapes.Expressions.Expression, key: String) {
+    switch collection {
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: store_into_a_member(collection, key)
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: store_into_a_name(collection.name, key)
+        _: return
+    }
+}
+
+func add_a_store(holder: String, attribute: String, value: String) {
+    assert not holder.is_empty() and not attribute.is_empty() and not value.is_empty()
+    var store = BackReferenceStore(holder, attribute, value)
+    stores.append(store)
+}
+
+func read_expression_statement(statement: AbstractSyntaxTree.Shapes.Statements.ExpressionStatement) {
+    crash statement.value
+    read_an_expression(statement.value)
+}
+
+func read_an_expression(value: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    switch value {
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: read_a_call(value)
+        _: return
+    }
+}
+
+func read_a_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    crash call.callee
+    read_a_callee(call.callee, call.arguments)
+}
+
+func read_a_callee(
+    callee: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+) {
+    switch callee {
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: read_a_method_call(callee, arguments)
+        _: return
+    }
+}
+
+func read_a_method_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+) {
+    assert appending.contains(callee.name)
+    var item = arguments.last()
+    crash callee.target
+    assert item
+    var item_key = key_of(item)
+    store_into(callee.target, item_key)
+}
+
+func key_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expression): String {
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return key_of_a_name(expression.name)
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return key_of_a_literal(expression)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return key_of_a_member(expression)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return made_by(expression)
+        _: return ""
+    }
+}
+
+func key_of_a_name(name: String): String {
+    var aliased = aliases[name]
+    if aliased {
+        return aliased
+    }
+    if locals.contains(name) {
+        return name
+    }
+    return "this.{name}"
+}
+
+func key_of_a_literal(literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression): String {
+    if literal.kind == 'keyword_this' {
+        return "this"
+    }
+    return ""
+}
+
+func key_of_a_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): String {
+    crash member.target
+    var target_key = key_of(member.target)
+    if target_key.is_empty() {
+        return ""
+    }
+    return "{target_key}.{member.name}"
+}
+
+func made_by(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): String {
+    read_a_call(call)
+    crash call.callee
+    var name = called_name(call.callee)
+    var kept = forwarded[name]
+    var made = ""
+    if kept {
+        made_count = made_count + 1
+        made = "#{made_count}"
+        forward_the_arguments(made, kept, call.arguments)
+    }
+    return made
+}
+
+func called_name(callee: AbstractSyntaxTree.Shapes.Expressions.Expression): String {
+    switch callee {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return callee.name
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return callee.name
+        _: return ""
+    }
+}
+
+func forward_the_arguments(
+    made: String,
+    kept: List<String>,
+    arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+) {
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        var stored = kept[index]
+        if stored {
+            forward_an_argument(made, stored, argument)
+        }
+        index = index + 1
+    }
+}
+
+func forward_an_argument(made: String, stored: String, argument: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    var argument_key = key_of(argument)
+    add_a_store(made, stored, argument_key)
+}
+
+func points_back(program: ProgramModel, attribute: AttributeModel): Boolean {
+    var held = attribute.attribute_type
+    var is_a_single_object = held.kind == 'object' and held.is_nullable and held.name != "String"
+    var holder = program.class_named(attribute.owner)
+    var target = program.class_named(held.name)
+    if is_a_single_object and holder and target {
+        return is_held_back(program, attribute, holder, target)
+    }
+    return false
+}
+
+func is_held_back(program: ProgramModel, attribute: AttributeModel, holder: ClassModel, target: ClassModel): Boolean {
+    if holder.is_singleton or target.is_singleton {
+        return false
+    }
+    if holder.bound_types.count() > 0 or target.bound_types.count() > 0 {
+        return false
+    }
+    var index = 0
+    while index < target.declared_attributes.count() {
+        var owning = target.declared_attributes[index]
+        if is_owned_across(program, attribute, holder, owning) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func is_owned_across(
+    program: ProgramModel,
+    attribute: AttributeModel,
+    holder: ClassModel,
+    owning: AttributeModel,
+): Boolean {
+    var link = "{attribute.name}|{owning.name}"
+    var is_itself = owning.owner == attribute.owner and owning.name == attribute.name
+    if is_itself or not linked.contains(link) {
+        return false
+    }
+    if not holds_the_class(program, owning.attribute_type, holder.key) {
+        return false
+    }
+    var owning_type = owning.attribute_type
+    var may_point_back = owning_type.kind == 'object' and owning_type.is_nullable and owning_type.name == holder.key
+    if not may_point_back {
+        return true
+    }
+    var other_way = "{owning.name}|{attribute.name}"
+    return linked_by_the_made.contains(link) and not linked_by_the_made.contains(other_way)
+}
+
+func holds_the_class(program: ProgramModel, held: Type, key: String): Boolean {
+    if held.kind != 'object' {
+        return false
+    }
+    if held.name == key {
+        return true
+    }
+    var model = program.class_named(held.name)
+    if model {
+        return holds_as_an_item(model, key)
+    }
+    return false
+}
+
+func holds_as_an_item(model: ClassModel, key: String): Boolean {
+    var names = model.bound_types.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var bound = model.bound_types[name]
+        crash bound
+        if bound.name == key {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
