@@ -41,6 +41,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 
 ## The language
+- No `Symbol<...>` (D206): templates by a parameter named in the function's name, typed `Spite.AttributeDeclaration`/`Attribute`/`FunctionDeclaration`/`Function`, the class inferred from the body; namespace and enum walks as reflection code unrolled while compiling; every program and the library rewritten
+- SpiteSpec as the whole specification (D207): one program per rule and corner of every spec page, then the Markdown spec retired
+- Fixes instead of errors (D208, to discuss): the formatter, and each rule whose fix needs no choice
 - A cycle the program's code does not link as owner and back reference still leaks (D194): two objects stored in each other's attributes where neither was made in that function, one attribute pointing both ways (`partner`), a cycle through a union or a `type`, a non-nullable back attribute, or links made in two different functions; a leak no run reports until `--debug-memory` has its report (D244)
 - A back reference is read without a count (D195), so a call on it (`child.parent.leave()`) whose body lets the owner go runs on freed memory, and on two threads the check that its object lives races with the owner's last release
 - The spec pages in `../SpiteLanguage/specs` still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D187 to D193
