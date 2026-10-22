@@ -73,6 +73,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found while porting
 
+- `String.code_at(index)` reads its bytes without testing the index (D244): past the length it answers the zeroed room's 0, and past the room or below 0 whatever memory holds, where `specs/standard_library.md` says `0` out of range (itself a default a caller cannot tell from a real 0)
+
 - `--optimization-report` written without `=path` writes the report to a file named `true` in the working folder (D244): it should name its default path or refuse the bare flag
 
 - At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)
@@ -182,7 +184,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The text, the numbers and the collections
 
-- Short text lives inside the `String`
+- Short text lives inside the `String` (D271): every text is one allocation, but every allocation is the system heap's (`HeapAlloc` and `HeapFree`, about 60 ns a call on Mortaro's machine), so making many short texts still costs what Python's own small-object allocator does not; a text whose `String` keeps other attributes is still two
+- A slice shares its source's bytes where the source outlives it and neither changes (texts can change in place through `append_code` and an append, so it needs that proven first)
+- `List.join` copies every `String` item with `to_string()` before it appends it, one allocation per item that an append of the item itself would not need
 - Short symbols are inline text
 - A foreign name is never copied
 - Crash text out of the binary

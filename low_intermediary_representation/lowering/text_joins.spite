@@ -5,7 +5,16 @@ var no_low_program = LowIntermediaryRepresentation.LowProgram()
 var no_slots = Dictionary<String, Integer>()
 var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
 var library = Validators.LibraryFile()
-var made = -1
+var kinds = List<Integer>()
+var values = List<Integer>()
+var lengths = List<Integer>()
+var labels = List<Integer>()
+var known_length = 0
+var added = -1
+var is_fresh = false
+var written_kind = 0
+var text_kind = 1
+var number_kind = 2
 
 func TextJoins(starting_lowering: FunctionLowering) {
     lowering = starting_lowering
@@ -15,7 +24,18 @@ func is_a_join(call: HighIntermediaryRepresentation.Values.Call): Boolean {
     if not call.is_a_join or call.arguments.count() != 1 {
         return false
     }
-    if call.function.key() != "String.sum" or not call.function.declaration {
+    return is_the_librarys(call, "String.sum")
+}
+
+func is_an_append(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if not call.receiver or call.arguments.count() != 1 {
+        return false
+    }
+    return is_the_librarys(call, "String._append_text")
+}
+
+func is_the_librarys(call: HighIntermediaryRepresentation.Values.Call, key: String): Boolean {
+    if call.function.key() != key or not call.function.declaration {
         return false
     }
     var written = call.function.declaration.path.replace("\\", "/")
@@ -25,9 +45,142 @@ func is_a_join(call: HighIntermediaryRepresentation.Values.Call): Boolean {
 func joined(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var pieces = List<HighIntermediaryRepresentation.Values.Value>()
     gather(call, pieces)
-    made = lowering.make_object("String")
-    pieces.each(append_a_piece)
+    var outer = lowering.pending_releases
+    lowering.pending_releases = List<Integer>()
+    pieces.each(note_a_piece)
+    var made = fresh_text()
+    write_the_pieces(made)
+    lowering.release_the_pending()
+    lowering.pending_releases = outer
     return lowering.owned(made)
+}
+
+func appended(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var outer = lowering.pending_releases
+    lowering.pending_releases = List<Integer>()
+    crash call.receiver
+    var receiver = lowering.lower_value(call.receiver)
+    lowering.release_later(receiver, call.receiver.value_type)
+    var piece = call.arguments[0]
+    crash piece
+    var pieces = List<HighIntermediaryRepresentation.Values.Value>()
+    gather_a_piece(piece, pieces)
+    pieces.each(note_a_piece)
+    write_the_pieces(receiver.value)
+    lowering.release_the_pending()
+    lowering.pending_releases = outer
+    return lowering.single(-1)
+}
+
+func lower_text(text: HighIntermediaryRepresentation.Values.TextConstant): Lowered {
+    note_a_piece(text)
+    var made = fresh_text()
+    write_the_pieces(made)
+    return lowering.owned(made)
+}
+
+func fresh_text(): Integer {
+    if not lowering.layout.holds_texts_whole() {
+        return lowering.make_object("String")
+    }
+    is_fresh = true
+    var length = added_length()
+    var one = lowering.constant(1)
+    var room = lowering.new_register()
+    var with_an_end = unchecked('add', length, one)
+    copy(room, with_an_end)
+    var least = lowering.constant(lowering.layout.inline_room)
+    var small = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(small, 'less', room, least)
+    lowering.emit(compared)
+    var widening = lowering.new_block()
+    var sized = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(small, widening, sized)
+    lowering.emit(test)
+    lowering.switch_to(widening)
+    copy(room, least)
+    lowering.jump_to(sized)
+    lowering.switch_to(sized)
+    return whole_text(room)
+}
+
+func empty_text(default_room: Integer): Integer {
+    var room_value = default_room + 1
+    if room_value < lowering.layout.inline_room {
+        room_value = lowering.layout.inline_room
+    }
+    var room = lowering.constant(room_value)
+    return whole_text(room)
+}
+
+func whole_text(room: Integer): Integer {
+    var one = lowering.constant(1)
+    var offset = lowering.layout.inline_offset()
+    var inline_offset = lowering.constant(offset)
+    var text_size_value = lowering.layout.size_of("String")
+    var text_size = lowering.constant(text_size_value)
+    var buffer_size = unchecked('add', inline_offset, room)
+    var whole_size = unchecked('add', text_size, buffer_size)
+    var made = allocated("String", whole_size)
+    var buffer = unchecked('add', made, text_size)
+    header(buffer, "Buffer")
+    var flag = lowering.constant(1)
+    var text_flag_offset = lowering.layout.text_flag_offset()
+    var stored_text_flag = LowIntermediaryRepresentation.Instructions.Store(made, text_flag_offset, flag, 'bits_8')
+    lowering.emit(stored_text_flag)
+    var embedded_offset = lowering.layout.embedded_flag_offset()
+    var stored_flag = LowIntermediaryRepresentation.Instructions.Store(buffer, embedded_offset, flag, 'bits_8')
+    lowering.emit(stored_flag)
+    var inside = unchecked('add', buffer, inline_offset)
+    var storage_offset = lowering.layout.storage_offset
+    var stored_storage = LowIntermediaryRepresentation.Instructions.Store(buffer, storage_offset, inside, 'bits_64')
+    lowering.emit(stored_storage)
+    var capacity = unchecked('subtract', room, one)
+    var capacity_offset = buffer_offset("capacity")
+    var stored_capacity = LowIntermediaryRepresentation.Instructions.Store(buffer, capacity_offset, capacity, 'bits_32')
+    lowering.emit(stored_capacity)
+    var buffer_slot = string_offset("_buffer")
+    var stored_buffer = LowIntermediaryRepresentation.Instructions.Store(made, buffer_slot, buffer, 'bits_64')
+    lowering.emit(stored_buffer)
+    return made
+}
+
+func allocated(class_key: String, size: Integer): Integer {
+    var object = lowering.new_register()
+    var made = LowIntermediaryRepresentation.Instructions.Allocate(object, size)
+    lowering.emit(made)
+    header(object, class_key)
+    return object
+}
+
+func header(object: Integer, class_key: String) {
+    var class_id = lowering.layout.class_id_of(class_key)
+    var id_register = lowering.constant(class_id)
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(object, 0, id_register, 'bits_64')
+    lowering.emit(stored_id)
+    var one = lowering.constant(1)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(object, 8, one, 'bits_64')
+    lowering.emit(stored_count)
+}
+
+func added_length(): Integer {
+    if added >= 0 {
+        return added
+    }
+    var summed = lowering.constant(known_length)
+    var index = 0
+    while index < kinds.count() {
+        var kind = kinds[index]
+        var length = lengths[index]
+        crash length
+        if kind != written_kind {
+            var more = unchecked('add', summed, length)
+            summed = more
+        }
+        index = index + 1
+    }
+    added = summed
+    return summed
 }
 
 func gather(
@@ -35,21 +188,21 @@ func gather(
     pieces: List<HighIntermediaryRepresentation.Values.Value>,
 ) {
     crash call.receiver
-    gather_a_receiver(call.receiver, pieces)
+    gather_a_piece(call.receiver, pieces)
     var piece = call.arguments[0]
     crash piece
     pieces.append(piece)
 }
 
-func gather_a_receiver(
-    receiver: HighIntermediaryRepresentation.Values.Value,
+func gather_a_piece(
+    piece: HighIntermediaryRepresentation.Values.Value,
     pieces: List<HighIntermediaryRepresentation.Values.Value>,
 ) {
-    if receiver == HighIntermediaryRepresentation.Values.Call {
-        gather_a_call(receiver, pieces)
+    if piece == HighIntermediaryRepresentation.Values.Call {
+        gather_a_call(piece, pieces)
         return
     }
-    pieces.append(receiver)
+    pieces.append(piece)
 }
 
 func gather_a_call(
@@ -63,56 +216,180 @@ func gather_a_call(
     pieces.append(call)
 }
 
-func append_a_piece(piece: HighIntermediaryRepresentation.Values.Value) {
+func note_a_piece(piece: HighIntermediaryRepresentation.Values.Value) {
     if piece == HighIntermediaryRepresentation.Values.TextConstant {
-        append_the_constant(piece)
+        note_the_written(piece)
         return
     }
     if piece == HighIntermediaryRepresentation.Values.Call {
-        append_a_call(piece)
+        note_a_call(piece)
         return
     }
-    append_the_text(piece)
+    note_the_text(piece)
 }
 
-func append_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+func note_the_written(text: HighIntermediaryRepresentation.Values.TextConstant) {
+    var length = text.text.length()
+    assert length != 0
+    var label = lowering.text_label(text.text)
+    var length_register = lowering.constant(length)
+    note(written_kind, -1, length_register, label)
+    known_length = known_length + length
+}
+
+func note_a_call(call: HighIntermediaryRepresentation.Values.Call) {
     var numbers = NumberTexts(lowering)
     if numbers.is_a_number_text(call) {
-        numbers.append_the_digits(call, made)
+        var number = numbers.number_of(call)
+        var length = numbers.length_of(number)
+        note(number_kind, number, length, -1)
         return
     }
-    append_the_text(call)
+    note_the_text(call)
 }
 
-func append_the_text(piece: HighIntermediaryRepresentation.Values.Value) {
-    var outer = lowering.pending_releases
-    lowering.pending_releases = List<Integer>()
+func note_the_text(piece: HighIntermediaryRepresentation.Values.Value) {
     var lowered = lowering.lower_value(piece)
     lowering.release_later(lowered, piece.value_type)
-    var arguments = List<Integer>()
-    arguments.append(made)
-    arguments.append(lowered.value)
-    var appended = LowIntermediaryRepresentation.Instructions.Call(-1, "String._append_text", arguments)
-    lowering.emit(appended)
-    lowering.release_the_pending()
-    lowering.pending_releases = outer
+    var length = length_of(lowered.value)
+    note(text_kind, lowered.value, length, -1)
 }
 
-func append_the_constant(text: HighIntermediaryRepresentation.Values.TextConstant) {
-    var label = lowering.text_label(text.text)
-    var bytes = lowering.new_register()
-    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(bytes, label)
-    lowering.emit(addressed)
-    var length = text.text.length()
+func note(kind: Integer, value: Integer, length: Integer, label: Integer) {
+    kinds.append(kind)
+    values.append(value)
+    lengths.append(length)
+    labels.append(label)
+}
+
+func write_the_pieces(made: Integer) {
+    assert not kinds.is_empty()
+    var length = added_length()
+    var start = lowering.constant(0)
+    if not is_fresh {
+        var held = length_of(made)
+        start = held
+        make_room(made, start, length)
+    }
+    var storage = lowering.bytes_of_text(made)
+    var beginning = lowering.address_plus(storage, start)
+    var position = lowering.new_register()
+    copy(position, beginning)
     var index = 0
-    while index < length {
-        var offset_register = lowering.constant(index)
-        var code = lowering.load_byte(bytes, offset_register)
-        var arguments = List<Integer>()
-        arguments.append(made)
-        arguments.append(code)
-        var appended = LowIntermediaryRepresentation.Instructions.Call(-1, "String.append_code", arguments)
-        lowering.emit(appended)
+    while index < kinds.count() {
+        write_a_piece(index, position)
         index = index + 1
     }
+    var total = unchecked('add', start, length)
+    store_the_length(made, total)
+}
+
+func write_a_piece(index: Integer, position: Integer) {
+    var kind = kinds[index]
+    var value = values[index]
+    var length = lengths[index]
+    var label = labels[index]
+    crash kind
+    crash value
+    crash length
+    crash label
+    if kind == number_kind {
+        var numbers = NumberTexts(lowering)
+        numbers.write_the_digits(value, position, length)
+    } else {
+        var source = source_of(kind, value, label)
+        var copied = LowIntermediaryRepresentation.Instructions.CopyBytes(position, source, length)
+        lowering.emit(copied)
+    }
+    var moved = lowering.address_plus(position, length)
+    copy(position, moved)
+}
+
+func source_of(kind: Integer, value: Integer, label: Integer): Integer {
+    if kind == written_kind {
+        var bytes = lowering.new_register()
+        var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(bytes, label)
+        lowering.emit(addressed)
+        return bytes
+    }
+    return lowering.bytes_of_text(value)
+}
+
+func make_room(made: Integer, start: Integer, added: Integer) {
+    var buffer = buffer_of(made)
+    var capacity_offset = buffer_offset("capacity")
+    var capacity = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(capacity, buffer, capacity_offset, 'bits_32')
+    lowering.emit(loaded)
+    var wanted = unchecked('add', start, added)
+    var full = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(full, 'greater', wanted, capacity)
+    lowering.emit(compared)
+    var growing = lowering.new_block()
+    var roomy = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(full, growing, roomy)
+    lowering.emit(test)
+    lowering.switch_to(growing)
+    var arguments = List<Integer>()
+    arguments.append(made)
+    arguments.append(added)
+    var grown = LowIntermediaryRepresentation.Instructions.Call(-1, "String._make_room_for", arguments)
+    lowering.emit(grown)
+    lowering.jump_to(roomy)
+    lowering.switch_to(roomy)
+}
+
+func store_the_length(made: Integer, total: Integer) {
+    var length_offset = string_offset("_length")
+    var stored = LowIntermediaryRepresentation.Instructions.Store(made, length_offset, total, 'bits_32')
+    lowering.emit(stored)
+    var buffer = buffer_of(made)
+    var count_offset = buffer_offset("item_count")
+    var counted = LowIntermediaryRepresentation.Instructions.Store(buffer, count_offset, total, 'bits_32')
+    lowering.emit(counted)
+}
+
+func length_of(text: Integer): Integer {
+    var length_offset = string_offset("_length")
+    var length = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(length, text, length_offset, 'bits_32')
+    lowering.emit(loaded)
+    return length
+}
+
+func buffer_of(text: Integer): Integer {
+    var buffer_offset_in_text = string_offset("_buffer")
+    var buffer = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(buffer, text, buffer_offset_in_text, 'bits_64')
+    lowering.emit(loaded)
+    return buffer
+}
+
+func string_offset(name: String): Integer {
+    var owner = lowering.layout.program.class_named("String")
+    crash owner
+    var attribute = owner.attribute_named(name)
+    crash attribute
+    return lowering.layout.offset_of(attribute)
+}
+
+func buffer_offset(name: String): Integer {
+    var owner = lowering.layout.program.class_named("Buffer")
+    crash owner
+    var attribute = owner.attribute_named(name)
+    crash attribute
+    return lowering.layout.offset_of(attribute)
+}
+
+func unchecked(operator: LowIntermediaryRepresentation.ArithmeticOperator, left: Integer, right: Integer): Integer {
+    var target = lowering.new_register()
+    var computed = LowIntermediaryRepresentation.Instructions.Arithmetic(target, operator, left, right)
+    computed.is_checked = false
+    lowering.emit(computed)
+    return target
+}
+
+func copy(target: Integer, source: Integer) {
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, source)
+    lowering.emit(copied)
 }
