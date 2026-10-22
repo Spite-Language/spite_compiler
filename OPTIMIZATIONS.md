@@ -482,11 +482,16 @@ making the tables makes texts:
 
 These run in this order on the low representation, then in the x64 generator:
 
-1. [inlining](#small-leaf-functions-are-inlined) (`low_optimization_passes/inlining`), over the whole program;
-2. per function: [constant folding](#maths-left-on-constants-after-lowering-is-worked-out-too) (`constant_folding`),
+1. [inlining](#small-functions-are-inlined) (`low_optimization_passes/inlining`), over the whole program;
+2. per function, [object placement](#objects-that-never-leave-their-function-live-in-registers-or-the-frame)
+   (`object_placement`);
+3. per function: [constant folding](#maths-left-on-constants-after-lowering-is-worked-out-too) (`constant_folding`),
    [jump threading](#jumps-to-jumps-go-straight-to-the-end) (`jump_threading`),
    [copy propagation](#a-copy-of-a-value-that-never-changes-is-the-value) (`copy_propagation`),
    [dead code](#a-value-nobody-reads-is-not-computed) (`dead_code`),
+   [common subexpressions](#the-same-computation-in-a-block-is-made-once) (`common_subexpressions`), copy propagation
+   again, [remainder tests](#a-remainder-by-a-power-of-two-tested-against-zero-is-a-mask) (`remainder_tests`),
+   [loop invariants](#what-a-loop-does-not-change-is-computed-before-it) (`loop_invariants`), dead code again,
    [copy coalescing](#a-value-computed-only-to-be-copied-is-computed-in-place) (`copy_coalescing`), and dead code
    again;
 3. in `generators/windows_x64`: [block layout](#blocks-are-laid-out-along-the-likely-path),
@@ -500,17 +505,21 @@ A function that waits (a resumable function, whose values live in a heap frame a
 the lowering wrote it by every pass, and its values stay in its frame: the frame is sized from its registers
 before these passes run, and a value must be in the frame when the function resumes.
 
-## Small leaf functions are inlined
+## Small functions are inlined
 
-A call to a function that calls nothing, waits for nothing and holds at most 24 instructions (an accessor, a
-list's `get_at` and `set_at`, a tiny helper) is replaced by a copy of the function's body. Its parameters become
-the caller's argument registers when the body never writes them, and a copy otherwise; its answers are copied
-into the call's answer registers; its blocks are added at the end of the caller and the call becomes a jump into
-them.
+A call to a function that waits for nothing and holds at most 24 instructions (an accessor, a list's `get_at` and
+`set_at`, a tiny helper), or at most 40 when it calls other functions, makes objects or frees them, is replaced by
+a copy of the function's body. Its parameters become the caller's argument registers when the body never writes
+them, and a copy otherwise; its answers are copied into the call's answer registers; its blocks are added at the
+end of the caller and the call becomes a jump into them. A call to a function whose whole body is a bare `return`
+(an empty `_attribute_defaults`, a constructor's `$defaults` with nothing to set) is removed.
 
-It applies when the callee calls nothing (no `Call`, foreign call, allocation, free, thread or library call), has
-a place, takes and answers no decimal in a register, and the caller is not resumable, is under 4000
-instructions and has inlined fewer than 64 calls.
+It applies when the callee makes no foreign call, thread or library call, takes and answers no decimal in a
+register (only a function handed to foreign code does), and the caller is not resumable, is under 4000
+instructions and has inlined fewer than 64 calls. A function the compiler wrote, which has no place in the source,
+is inlined too; its blocks report the caller's place. Inlining a callee that calls others is what lets an object
+the callee makes and answers, such as `Offset.scaled`'s result or `Point.copy()`'s copy, be
+[placed](#objects-that-never-leave-their-function-live-in-registers-or-the-frame) in the caller.
 
 What a user can observe: nothing in a program's output. A crash in inlined arithmetic names the function it was
 written in (each copied instruction keeps its owner); a native fault in inlined code reports the inlined
@@ -527,6 +536,77 @@ func Lists() {
 
 `marks[0] = 1` is `set_at`'s bounds check and store, written in `Lists` with no call.
 
+## Objects that never leave their function live in registers or the frame
+
+After inlining, each function's objects are followed from where they are made: every register a copy joins to the
+one an allocation writes forms a group. A group **leaves its function** when one of its registers is a parameter, is
+written by anything but an allocation or a copy, is stored into memory, is passed to a call (other than its own
+release, or a call that [keeps nothing of it](#what-a-call-keeps-nothing-of)), is answered with a presence, waited
+on, or used in any other way; reading and writing its attributes at fixed offsets, retaining it and releasing it do
+not make it leave. A group that does not leave is placed in one of three ways, the first that fits:
+
+1. **One object at a time, in registers.** When no register of the group still holds an earlier object whenever
+   the group makes a new one (a loop that makes one row, one copy or one buffer each pass and lets it go before the
+   next), every attribute the function touches is one register, shared by the whole group. A read is that
+   register, a write sets it, the allocation sets them all to zero (what fresh memory holds), and the object is
+   never made. Its count is a register too when the class releases attributes when it is freed (a row of items):
+   a retain adds one, a release takes one away and, when it reaches zero, releases those attributes, exactly as
+   freeing the object would have.
+2. **Several objects, each in its own registers.** When objects of the group overlap in time (a velocity added to
+   itself each pass: `velocity = velocity + pulled` makes the new one while the old is still read) but every copy
+   of a register is its last use, so no two registers name one object, and the class releases nothing when it is
+   freed, each register of the group gets its own register per attribute and a copy copies them all.
+3. **In the frame.** Otherwise, when the class releases nothing when freed and is at most 4096 bytes, and the
+   function makes at most one object of the group at a time or makes it outside every loop, the allocation becomes
+   room in the function's frame (`FrameRoom`, cleared to zero where it is made) and its address in a register;
+   its retains and releases are dropped.
+
+An object of a group placed in registers that is answered by `return` is made at the return, with every attribute
+written from its registers and a count of one, so a function that builds its answer through a loop of temporary
+objects makes one object, not one per pass.
+
+It does not apply to an object whose class has a `drop`, is held back by back references or frees its attributes
+in another way than releasing them, to an object read at an offset that overlaps another read, to one whose
+attribute is read both as signed and unsigned, to one of more than 32 attributes in registers, or to anything in a
+function that waits. A whole number attribute narrower than 64 bits read back from a register is cut and extended
+as the read would have done.
+
+What a user can observe: only time and memory. An object in registers or in the frame is never allocated, so
+`--debug-memory` counts fewer allocations and frees; its `drop`-less class has nothing else to run.
+
+```spite
+func simulate(steps: Integer): Offset {
+    var position = Offset(0.0, 0.0, 0.0)
+    var velocity = Offset(1.0, 0.5, 0.25)
+    var step = 0
+    while step < steps {
+        var moved = velocity.scaled(0.001)
+        position = position + moved
+        step = step + 1
+    }
+    return position
+}
+```
+
+`scaled` and `+` are inlined, `moved` and every `position` but the answer live in registers, and the one object
+made is the answer, at the `return`.
+
+### What a call keeps nothing of
+
+A call keeps nothing of its argument at a position when, in the called function, the parameter and every copy of it
+are only read through, written through or compared: never stored, answered, passed on, retained or released. An
+object passed only to such calls can still live in the frame (the third placement above), since nothing can hold
+its address after the call returns.
+
+## A number's bits are read in place
+
+A number's functions in the library read the number through `_value()`, which reads the first bytes of a
+`Buffer` made to hold it. When such a read is at offset 0, as wide as the number and of its class, it is the
+number itself: no buffer is made, written or freed. `x.absolute()` on an `Integer` is a comparison and a
+subtraction.
+
+What a user can observe: only time; the allocations of those buffers are gone from `--debug-memory`.
+
 ## Maths left on constants after lowering is worked out too
 
 An arithmetic instruction or a comparison whose two operands are constants (a register written once, by a
@@ -535,6 +615,8 @@ constant) becomes a constant; a branch on a constant becomes a jump; a block not
 It applies to `+`, `-` (operands below 2^62), `*` (below 2^31), `/` and `%` (by a divisor that is neither 0 nor
 -1), and the bit operations, signed and unsigned, when the exact answer fits the instruction's width. When it does
 not fit, the instruction is kept, so the program still halts at run time with the same report.
+
+A retain or a release of a register known to hold nothing (the 0 an attribute of a fresh object reads) is removed.
 
 ## Jumps to jumps go straight to the end
 
@@ -556,6 +638,40 @@ removed: each of them can halt the program or change memory.
 
 `t = a + b` followed in the same block by `x = t`, where `t` is written and read only there and `x` is neither
 read nor written in between, becomes `x = a + b`. This is what turns `index = index + 1` into one `add`.
+
+## The same computation in a block is made once
+
+Within a block, an unchecked arithmetic, a decimal arithmetic or conversion, an address of data or of a function,
+or a load, that repeats one made earlier in the block on the same registers, with neither register written in
+between (and, for a load, no store, call, allocation or other write of memory in between; a retain only changes
+the count, at offset 8), copies the earlier answer instead. `a + b` and `b + a` are the same for `+`, `*` and the
+bit operations.
+
+Across blocks, the same holds for a computation whose registers, read and written, are each written once in the
+function: when it is made on every path to a block (found by following the blocks forward, keeping only what every
+path leading in made, and forgetting loads at every write of memory), a repeat in that block copies the answer.
+`list.count()` read before a loop and again in the loop's bound test is one load when the loop writes nothing.
+
+It does not apply to checked arithmetic, a division or a comparison (which is better made again just before the
+branch that reads its flags), nor across blocks to a register written more than once or in a function of more than
+400 blocks.
+
+## What a loop does not change is computed before it
+
+A loop is found from each jump back to a block that dominates it. When the loop is entered from exactly one block
+that only goes on to it, an instruction in the loop is moved to the end of that block when every register it reads
+is written only outside the loop (or by an instruction already moved), it writes a register nothing else writes,
+and it is an unchecked arithmetic, a copy, a decimal arithmetic or conversion, or an address. A load moves too
+when it is in the loop's first block (which every pass runs) and nothing in the loop writes memory or calls
+(a retain only blocks a load of the count). Each instruction moved runs once instead of once per pass.
+
+It does not apply to a function of more than 400 blocks or that waits, to checked arithmetic, divisions and
+comparisons, nor to a load past the loop's first block, since a pass that leaves early would not have made it.
+
+## A remainder by a power of two tested against zero is a mask
+
+`x % 2^k` read only by `== 0` or `!= 0` is `x` with its low `k` bits kept (`and`), signed or not: a whole number is
+divisible by `2^k` exactly when those bits are zero. `if index % 2 == 0` is a `test`.
 
 ## Blocks are laid out along the likely path
 
@@ -602,7 +718,11 @@ addressing mode instead: `movsxd r, dword [base + index*4 + 16]`, and the sum an
 A division or remainder by a constant that is neither 0 nor -1 drops the checks for both, which cannot fail. By a
 power of two up to 2^30 it is a shift (signed: with the rounding toward zero that `/` has) or a mask; signed, by any
 other divisor from 3 to 2^31 - 1, it is a multiplication by a magic number worked out while compiling, a shift and a
-sign correction. A multiplication by a power of two that is not checked is a shift.
+sign correction. A signed divisor from -2^31 + 1 to -2 divides by its size and negates the quotient (the remainder
+is the same, since it takes the sign of what is divided). An unsigned number of 32 bits or fewer divided by any
+other constant from 3 to 2^31 - 1 is multiplied by `2^63 / divisor + 1` worked out while compiling, keeping the top
+of the 128-bit product: exact for every such number. A multiplication by a power of two that is not checked is a
+shift. An unsigned 64-bit number divided by a constant that is not a power of two keeps the `div`.
 
 ```spite
 func Sums(): Long {
@@ -617,6 +737,30 @@ func Sums(): Long {
 ```
 
 `index % 7` is no `idiv`: a multiplication, two shifts, two additions and a subtraction.
+
+## A proven divisor is not checked
+
+A division or remainder whose divisor's [range](#arithmetic-a-range-proves-is-not-checked) holds neither 0 nor -1
+(`crash parts > 0` before `amount / parts`) is lowered unchecked: the generator writes no zero test and no -1 path,
+only the division. A division of 32-bit numbers divides in 32 bits (`cdq` and `idiv ecx`), which is faster than the
+64-bit `idiv`, whether it is checked or not.
+
+What a user can observe: only time; a divisor the range cannot prove is tested as before and halts with the same
+report.
+
+```spite
+func shares(amounts: List<Integer>, parts: Integer): Long {
+    crash parts > 0
+    var total: Long = 0
+    var index = 0
+    while index < amounts.count() {
+        var amount = amounts[index]
+        total = total + amount / parts + amount % parts
+        index = index + 1
+    }
+    return total
+}
+```
 
 ## Arithmetic checks cost one jump on the hot path
 

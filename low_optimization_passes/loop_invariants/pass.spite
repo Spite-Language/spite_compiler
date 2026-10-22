@@ -1,0 +1,350 @@
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var flow = LowOptimizationPasses.ObjectPlacement.Flow()
+var block_count = 0
+var dominators = List<Boolean>()
+var definitions = List<Integer>()
+var inside = List<Boolean>()
+var defined_inside = List<Boolean>()
+var largest_function = 400
+var header = 0
+var preheader = 0
+var touches_memory = false
+var counts_objects = false
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    block_count = function.blocks.count()
+    if function.is_resumable or block_count > largest_function or block_count < 2 {
+        return function
+    }
+    flow.find_the_edges(function)
+    find_the_dominators()
+    count_the_definitions()
+    var round = 0
+    while round < 2 {
+        var block_index = 0
+        while block_index < block_count {
+            hoist_the_loops_ending_at(block_index)
+            block_index = block_index + 1
+        }
+        round = round + 1
+    }
+    return function
+}
+
+func dominates(dominator: Integer, block_index: Integer): Boolean {
+    return dominators[block_index * block_count + dominator] == true
+}
+
+func find_the_dominators() {
+    dominators.clear()
+    var total = block_count * block_count
+    var index = 0
+    while index < total {
+        dominators.append(index >= block_count)
+        index = index + 1
+    }
+    dominators[0] = true
+    var changed = true
+    var round = 0
+    while changed and round < 64 {
+        changed = false
+        var block_index = 1
+        while block_index < block_count {
+            if narrow_the_dominators(block_index) {
+                changed = true
+            }
+            block_index = block_index + 1
+        }
+        round = round + 1
+    }
+}
+
+func narrow_the_dominators(block_index: Integer): Boolean {
+    var coming = flow.predecessors_of(block_index)
+    var changed = false
+    var candidate = 0
+    while candidate < block_count {
+        var slot = block_index * block_count + candidate
+        var now = dominators[slot] == true
+        if now and candidate != block_index {
+            var kept = coming.count() > 0
+            var index = 0
+            while index < coming.count() {
+                var predecessor = coming[index]
+                if not dominates(candidate, predecessor) {
+                    kept = false
+                }
+                index = index + 1
+            }
+            if not kept {
+                dominators[slot] = false
+                changed = true
+            }
+        }
+        candidate = candidate + 1
+    }
+    return changed
+}
+
+func count_the_definitions() {
+    var register_total = operands.most_register_of(function)
+    definitions.clear()
+    defined_inside.clear()
+    var index = 0
+    while index < register_total {
+        var implicit = 0
+        if index < function.parameter_count {
+            implicit = 1
+        }
+        definitions.append(implicit)
+        defined_inside.append(false)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var instruction_index = 0
+        while instruction_index < block.instructions.count() {
+            var instruction = block.instructions[instruction_index]
+            operands.read(instruction)
+            operands.defines.each(count_a_definition)
+            instruction_index = instruction_index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func count_a_definition(register: Integer) {
+    var count = definitions[register]
+    crash count
+    definitions[register] = count + 1
+}
+
+func hoist_the_loops_ending_at(latch: Integer) {
+    var leaving = flow.successors[latch]
+    crash leaving
+    var index = 0
+    while index < leaving.count() {
+        var target = leaving[index]
+        if dominates(target, latch) {
+            hoist_the_loop(target, latch)
+        }
+        index = index + 1
+    }
+}
+
+func hoist_the_loop(loop_header: Integer, latch: Integer) {
+    header = loop_header
+    find_the_body(latch)
+    assert find_the_preheader()
+    study_the_body()
+    var round = 0
+    var moved_any = true
+    while moved_any and round < 8 {
+        moved_any = false
+        var block_index = 0
+        while block_index < block_count {
+            if inside[block_index] == true and hoisted_from(block_index) {
+                moved_any = true
+            }
+            block_index = block_index + 1
+        }
+        round = round + 1
+    }
+}
+
+func find_the_body(latch: Integer) {
+    inside.clear()
+    var index = 0
+    while index < block_count {
+        inside.append(false)
+        index = index + 1
+    }
+    inside[header] = true
+    var waiting = List<Integer>()
+    waiting.append(latch)
+    while not waiting.is_empty() {
+        var taken = waiting.remove_last()
+        crash taken
+        if inside[taken] != true {
+            inside[taken] = true
+            var coming = flow.predecessors_of(taken)
+            var coming_index = 0
+            while coming_index < coming.count() {
+                var predecessor = coming[coming_index]
+                waiting.append(predecessor)
+                coming_index = coming_index + 1
+            }
+        }
+    }
+}
+
+func find_the_preheader(): Boolean {
+    var coming = flow.predecessors_of(header)
+    var found = -1
+    var index = 0
+    while index < coming.count() {
+        var predecessor = coming[index]
+        if inside[predecessor] != true {
+            if found >= 0 {
+                return false
+            }
+            found = predecessor
+        }
+        index = index + 1
+    }
+    if found < 0 {
+        return false
+    }
+    var onward = flow.successors[found]
+    crash onward
+    if onward.count() != 1 {
+        return false
+    }
+    preheader = found
+    return true
+}
+
+func study_the_body() {
+    touches_memory = false
+    counts_objects = false
+    var index = 0
+    while index < defined_inside.count() {
+        defined_inside[index] = false
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < block_count {
+        if inside[block_index] == true {
+            var block = function.blocks[block_index]
+            crash block
+            block.instructions.each(study_an_instruction)
+        }
+        block_index = block_index + 1
+    }
+}
+
+func study_an_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    operands.defines.each(mark_defined_inside)
+    if instruction == LowIntermediaryRepresentation.Instructions.Retain {
+        counts_objects = true
+        return
+    }
+    if not reads_only(instruction) {
+        touches_memory = true
+    }
+}
+
+func mark_defined_inside(register: Integer) {
+    defined_inside[register] = true
+}
+
+func reads_only(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return true
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: return true
+        LowIntermediaryRepresentation.Instructions.DecimalCompare: return true
+        LowIntermediaryRepresentation.Instructions.DecimalConversion: return true
+        LowIntermediaryRepresentation.Instructions.Load: return true
+        LowIntermediaryRepresentation.Instructions.DataAddress: return true
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return true
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Branch: return true
+        LowIntermediaryRepresentation.Instructions.Stop: return not instruction.continues
+        _: return false
+    }
+}
+
+func hoisted_from(block_index: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var moved_any = false
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if is_invariant(instruction, block_index) {
+            hoist(instruction)
+            moved_any = true
+        } else {
+            kept.append(instruction)
+        }
+        index = index + 1
+    }
+    if moved_any {
+        block.instructions = kept
+    }
+    return moved_any
+}
+
+func is_invariant(instruction: LowIntermediaryRepresentation.Instructions.Instruction, block_index: Integer): Boolean {
+    if not may_move(instruction, block_index) {
+        return false
+    }
+    operands.read(instruction)
+    if operands.defines.count() != 1 {
+        return false
+    }
+    var target = operands.defines[0]
+    if target < function.parameter_count or definitions[target] != 1 {
+        return false
+    }
+    var index = 0
+    while index < operands.uses.count() {
+        var used = operands.uses[index]
+        if defined_inside[used] == true or used == target {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func may_move(instruction: LowIntermediaryRepresentation.Instructions.Instruction, block_index: Integer): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return operands.is_pure(instruction)
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: return true
+        LowIntermediaryRepresentation.Instructions.DecimalConversion: return true
+        LowIntermediaryRepresentation.Instructions.DataAddress: return true
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return true
+        LowIntermediaryRepresentation.Instructions.Load: return may_move_a_load(instruction, block_index)
+        _: return false
+    }
+}
+
+func may_move_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load, block_index: Integer): Boolean {
+    if block_index != header or touches_memory {
+        return false
+    }
+    return not counts_objects or loaded.offset != 8
+}
+
+func hoist(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var target = operands.defines[0]
+    crash target
+    defined_inside[target] = false
+    var block = function.blocks[preheader]
+    crash block
+    var last = block.instructions.last()
+    var ends = false
+    if last {
+        ends = flow.ends_the_block(last)
+    }
+    if not ends {
+        block.instructions.append(instruction)
+        return
+    }
+    var count = block.instructions.count()
+    block.instructions.insert(count - 1, instruction)
+}

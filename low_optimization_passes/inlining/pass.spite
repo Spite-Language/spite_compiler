@@ -1,7 +1,10 @@
 var program = LowIntermediaryRepresentation.LowProgram()
 var operands = LowOptimizationPasses.Operands()
 var inlinable = Dictionary<String, LowIntermediaryRepresentation.LowFunction>()
+var doing_nothing = List<String>()
 var largest_callee = 24
+var largest_calling_callee = 40
+var calls_on = false
 var largest_caller = 4000
 var most_inlined = 64
 var register_base = 0
@@ -25,10 +28,14 @@ func transformed(): LowIntermediaryRepresentation.LowProgram {
 }
 
 func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
-    assert not function.is_resumable and not function.place.is_empty()
+    assert not function.is_resumable
+    if does_nothing(function) {
+        doing_nothing.append(function.key)
+    }
     assert function.answer_decimal_size == 0 and function.parameter_decimal_sizes.is_empty()
     var count = 0
     var copyable = true
+    calls_on = false
     var block_index = 0
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
@@ -41,8 +48,27 @@ func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
         }
         block_index = block_index + 1
     }
-    assert copyable and count <= largest_callee
+    var largest = largest_callee
+    if calls_on {
+        largest = largest_calling_callee
+    }
+    assert copyable and count <= largest
     inlinable[function.key] = function
+}
+
+func does_nothing(function: LowIntermediaryRepresentation.LowFunction): Boolean {
+    if function.blocks.count() != 1 or function.answer_decimal_size != 0 {
+        return false
+    }
+    var block = function.blocks[0]
+    if block.instructions.count() != 1 {
+        return false
+    }
+    var only = block.instructions[0]
+    if only == LowIntermediaryRepresentation.Instructions.Return {
+        return only.source < 0 and only.presence < 0 and not only.is_a_suspension
+    }
+    return false
 }
 
 func is_copyable(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
@@ -57,8 +83,21 @@ func is_copyable(instruction: LowIntermediaryRepresentation.Instructions.Instruc
         LowIntermediaryRepresentation.Instructions.Branch: return true
         LowIntermediaryRepresentation.Instructions.Return: return not instruction.is_a_suspension
         LowIntermediaryRepresentation.Instructions.Stop: return not instruction.continues
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: return true
+        LowIntermediaryRepresentation.Instructions.DecimalCompare: return true
+        LowIntermediaryRepresentation.Instructions.DecimalConversion: return true
+        LowIntermediaryRepresentation.Instructions.FrameRoom: return true
+        LowIntermediaryRepresentation.Instructions.Retain: return true
+        LowIntermediaryRepresentation.Instructions.Call: return calls_a_function()
+        LowIntermediaryRepresentation.Instructions.Allocate: return calls_a_function()
+        LowIntermediaryRepresentation.Instructions.Free: return calls_a_function()
         _: return false
     }
+}
+
+func calls_a_function(): Boolean {
+    calls_on = true
+    return true
 }
 
 func inline_into(function: LowIntermediaryRepresentation.LowFunction) {
@@ -91,6 +130,10 @@ func inlined_in_block(function: LowIntermediaryRepresentation.LowFunction, block
     var index = 0
     while index < block.instructions.count() {
         var instruction = block.instructions[index]
+        if calls_nothing(instruction) {
+            block.instructions.remove_at(index)
+            return true
+        }
         var callee = callee_of(instruction, function)
         if callee {
             if size_of(function) > largest_caller {
@@ -102,6 +145,13 @@ func inlined_in_block(function: LowIntermediaryRepresentation.LowFunction, block
             }
         }
         index = index + 1
+    }
+    return false
+}
+
+func calls_nothing(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        return instruction.target < 0 and instruction.presence < 0 and doing_nothing.contains(instruction.function)
     }
     return false
 }
@@ -277,8 +327,104 @@ func copy_into(
         LowIntermediaryRepresentation.Instructions.Branch: copy_branch(made, instruction)
         LowIntermediaryRepresentation.Instructions.Return: copy_return(made, instruction)
         LowIntermediaryRepresentation.Instructions.Stop: copy_stop(made, instruction)
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: copy_decimal_arithmetic(made, instruction)
+        LowIntermediaryRepresentation.Instructions.DecimalCompare: copy_decimal_compare(made, instruction)
+        LowIntermediaryRepresentation.Instructions.DecimalConversion: copy_decimal_conversion(made, instruction)
+        LowIntermediaryRepresentation.Instructions.FrameRoom: copy_frame_room(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Retain: copy_retain(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Call: copy_call(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Allocate: copy_allocate(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Free: copy_free(made, instruction)
         _: crash
     }
+}
+
+func copy_decimal_arithmetic(
+    made: LowIntermediaryRepresentation.LowBlock,
+    arithmetic: LowIntermediaryRepresentation.Instructions.DecimalArithmetic,
+) {
+    var target = moved(arithmetic.target)
+    var left = moved(arithmetic.left)
+    var right = moved(arithmetic.right)
+    var copied = LowIntermediaryRepresentation.Instructions.DecimalArithmetic(target, arithmetic.operator, left, right)
+    copied.is_double = arithmetic.is_double
+    made.instructions.append(copied)
+}
+
+func copy_decimal_compare(
+    made: LowIntermediaryRepresentation.LowBlock,
+    compare: LowIntermediaryRepresentation.Instructions.DecimalCompare,
+) {
+    var target = moved(compare.target)
+    var left = moved(compare.left)
+    var right = moved(compare.right)
+    var copied = LowIntermediaryRepresentation.Instructions.DecimalCompare(target, compare.comparison, left, right)
+    copied.is_double = compare.is_double
+    made.instructions.append(copied)
+}
+
+func copy_decimal_conversion(
+    made: LowIntermediaryRepresentation.LowBlock,
+    conversion: LowIntermediaryRepresentation.Instructions.DecimalConversion,
+) {
+    var target = moved(conversion.target)
+    var source = moved(conversion.source)
+    var copied = LowIntermediaryRepresentation.Instructions.DecimalConversion(target, source)
+    copied.from_decimal_size = conversion.from_decimal_size
+    copied.to_decimal_size = conversion.to_decimal_size
+    copied.whole_is_signed = conversion.whole_is_signed
+    copied.whole_width = conversion.whole_width
+    made.instructions.append(copied)
+}
+
+func copy_frame_room(
+    made: LowIntermediaryRepresentation.LowBlock,
+    room: LowIntermediaryRepresentation.Instructions.FrameRoom,
+) {
+    var target = moved(room.target)
+    var copied = LowIntermediaryRepresentation.Instructions.FrameRoom(target, room.size)
+    made.instructions.append(copied)
+}
+
+func copy_retain(
+    made: LowIntermediaryRepresentation.LowBlock,
+    retain: LowIntermediaryRepresentation.Instructions.Retain,
+) {
+    var object = moved(retain.object)
+    var copied = LowIntermediaryRepresentation.Instructions.Retain(object)
+    copied.is_atomic = retain.is_atomic
+    made.instructions.append(copied)
+}
+
+func copy_call(made: LowIntermediaryRepresentation.LowBlock, call: LowIntermediaryRepresentation.Instructions.Call) {
+    var target = moved(call.target)
+    var arguments = List<Integer>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var placed = moved(argument)
+        arguments.append(placed)
+        index = index + 1
+    }
+    var copied = LowIntermediaryRepresentation.Instructions.Call(target, call.function, arguments)
+    copied.presence = moved(call.presence)
+    made.instructions.append(copied)
+}
+
+func copy_allocate(
+    made: LowIntermediaryRepresentation.LowBlock,
+    allocate: LowIntermediaryRepresentation.Instructions.Allocate,
+) {
+    var target = moved(allocate.target)
+    var size = moved(allocate.size)
+    var copied = LowIntermediaryRepresentation.Instructions.Allocate(target, size)
+    made.instructions.append(copied)
+}
+
+func copy_free(made: LowIntermediaryRepresentation.LowBlock, freed: LowIntermediaryRepresentation.Instructions.Free) {
+    var pointer = moved(freed.pointer)
+    var copied = LowIntermediaryRepresentation.Instructions.Free(pointer)
+    made.instructions.append(copied)
 }
 
 func copy_constant(
@@ -336,6 +482,7 @@ func copy_load(made: LowIntermediaryRepresentation.LowBlock, loaded: LowIntermed
     var address = moved(loaded.address)
     var copied = LowIntermediaryRepresentation.Instructions.Load(target, address, loaded.offset, loaded.width)
     copied.is_signed = loaded.is_signed
+    copied.is_swapped = loaded.is_swapped
     made.instructions.append(copied)
 }
 
@@ -346,6 +493,7 @@ func copy_store(
     var address = moved(stored.address)
     var source = moved(stored.source)
     var copied = LowIntermediaryRepresentation.Instructions.Store(address, stored.offset, source, stored.width)
+    copied.is_swapped = stored.is_swapped
     made.instructions.append(copied)
 }
 
