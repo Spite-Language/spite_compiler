@@ -27,7 +27,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The emitter resolves a call whose class is unknown by the function's name alone, when one class has it
 - The builder ignores the `singleton` line
 - A `load` inside an `if` is refused; the language allows it when the condition reads only build settings
-- `DictionaryLiteral` is not lowered
 - `WholeNumber.value()` answers 0 for a text that is not a number
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 
@@ -35,25 +34,29 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - The runtime the library needs, as machine code: allocator, console, files, directories, clock, sockets, processes, dynamic library, weak references
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
-- The memory of a value of any type: `_read_value` and `_write_value`, and a room sized by item count times item size
 - `--debug-memory` counts and the leak report; an attribute read from an object made in the same expression (`Maker().part`) leaks that object; the counts a pass proves unneeded are still written
-- Chains of member templates as one loop, `Dictionary` templates through its values, and the passed-function forms (`filter(f)`, `sort_by(f)`, `remove_where(f)`, `map(f)`)
+- Chains of member templates as one loop, the passed-function forms (`filter(f)`, `sort_by(f)`, `remove_where(f)`), member templates over a list of a union (`entries.filter_files()`), and `filter_<member>_<function>(...)`
 - A dictionary keyed by hashing instead of a walk of its keys
-- References, enums, unions and `type` shapes
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
-- `switch`, and narrowing a `T?`
-- `Float` and `Double`: `%`, the maths functions past `square_root`, exponent notation in literals, a `Double` too large for a `Float` halting, and `UnsignedLong` to and from a decimal past 2^63
+- `Float` and `Double`: `%`, exponent notation in literals, a `Double` too large for a `Float` halting, a narrowing message that prints the decimal, and `UnsignedLong` to and from a decimal past 2^63
 - Crash reports: the values of the names in a `crash` condition, `assert` traces, and the `<program>.crashes` map
-- `.class` and the rest of reflection over declared classes, attributes and functions
 - A number's room is a `Buffer` made on every read of `_buffer` (D33): fold a read at a known position of a fresh room into the number itself
-- Concurrency, reflection, `load` of a package, codegen values
-- Program settings: the program's own `build.spite` and `environment.spite`
 
-- Symbols, build settings (`--name=value`) and `Anything`/`Nothing`, compiled in where read (D35)
+- `Symbol` is text marked as a symbol: `symbol.class` is not yet `Symbol`, `Symbol(text)` and `Symbol<T>` outside a template parameter are not built; `Anything`, and `Null` and `Number` as type names outside a `$T ==` test (D35)
+- `Build` reads are not folded, so both branches of `if build.serve` are compiled; a `load` under an `if` on a `Build` field
+- A template's compiler-supplied functions (`BinaryWriter.schema()`), `deep_copy`, and a walked row declared `var row: $row_type = null`
+- Vector and Items keep their items inline: today they hold references, so changing a found item changes the one in the list
 - Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`), filled in by the compiler and folded where constant (D37): still missing are walks compiled once per attribute (`value.attributes[attribute]`, `attributes.each`), folding of constant reads, `Spite.Attribute` bound to an instance, `Spite.Call`, `.accesses`, enums as classes, and a function value being the same object as its `Spite.Function`
-- `Parallel`, `Concurrent` and the rest of concurrency as language constructs each generator compiles (D36)
+- `Parallel` and `Concurrent` run their work in order, at once, when the handle is made: the state machines that let a `Concurrent` wait, the thread pool behind `Parallel`, the program waiting for its `Concurrent`s at exit, locks for singletons, `Atomic`, `Lock`, `Scheduler` and `ThreadPool` (D36); a handle of a nullable number loses its presence when it is stored
 - `foreign_callbacks` and `ipv6_addresses` still use `Memory.Address` and `Memory.Heap`: rewrite them with `Buffer` when foreign callbacks and sockets come (D36)
 - Allocation tests (frame objects, lent buffers, kept buffer addresses, the memory floor) come back as `--debug-memory` counts with the passes that place memory (D35)
+
+## Faults found while porting
+
+- `lent_to_calls` stops with heap corruption (0xC0000374): bisect it
+- A temporary the builder declares for a comparison (`call() == true`) can be read before its declaration in some branch; plain reads avoid it today
+- Building a text by appending to it copies it each time (`text_building` takes minutes)
+- The fault handler is not built: a stack overflow or a bad address ends the program with the system's code and no report
 
 ## The errors
 
