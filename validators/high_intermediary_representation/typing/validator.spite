@@ -57,12 +57,22 @@ func refuse_unknown_name(context: HighIntermediaryRepresentation.Building.Contex
     stop(context, "'{name}' is not a local, an attribute or a function of '{context.current_class.shown}'")
 }
 
+func refuse_unknown_function(context: HighIntermediaryRepresentation.Building.Context, name: String) {
+    var namespace = context.current_class.file.namespace
+    var class_file = context.resolver.symbols.find(name, namespace)
+    if class_file {
+        refuse_unknown_name(context, name)
+    }
+    stop(context, "this class has no function '{name}'")
+}
+
 func refuse_unknown_member(context: HighIntermediaryRepresentation.Building.Context, shown: String, name: String) {
     var advice = advice_for_member(shown, name)
     if not advice.is_empty() {
         stop(context, advice)
     }
-    stop(context, "a {shown} has no attribute or function '{name}'")
+    var article = article_of(shown)
+    stop(context, "{article} {shown} has no attribute or function '{name}'")
 }
 
 func advice_for_member(shown: String, name: String): String {
@@ -280,6 +290,116 @@ func refuse_an_unnamed_function_value(context: HighIntermediaryRepresentation.Bu
     )
 }
 
+func refuse_function_member(context: HighIntermediaryRepresentation.Building.Context, shown: String, name: String) {
+    stop(context, "'{shown}' has no attribute '{name}'")
+}
+
+func refuse_constant_on_value(context: HighIntermediaryRepresentation.Building.Context, owner: String, name: String) {
+    stop(context, "'{name}' is a constant of the class {owner}, not of a value: write '{owner}.{name}'")
+}
+
+func refuse_constant_assigned(context: HighIntermediaryRepresentation.Building.Context, written: String) {
+    stop(context, "'{written}' is a constant, and a constant is get-only: nothing can assign it")
+}
+
+func refuse_cast_by_name(context: HighIntermediaryRepresentation.Building.Context, written: String, name: String) {
+    var names = Mapping.Names()
+    var name_length = name.length()
+    var source_name = name.slice(5, name_length)
+    var source = names.class_name_of(source_name)
+    var article = article_of(source)
+    var reader = names.snake_case_of(written)
+    stop(
+        context,
+        "there is no '{written}.{name}()': a conversion belongs to the value converted, so write 'value.to_{reader}()' on {article} {source}, or cast by assignment: 'var converted: {written} = value'",
+    )
+}
+
+func refuse_copy_to_narrow(context: HighIntermediaryRepresentation.Building.Context, name: String, source: String) {
+    stop(
+        context,
+        "'{name}' only copies '{source}' so it can be narrowed: narrow '{source}' itself ('assert {source}') and use it directly",
+    )
+}
+
+func refuse_proven_check(context: HighIntermediaryRepresentation.Building.Context, written: String, check: String) {
+    stop(context, "'{written}' is already narrowed by {check}: remove this check")
+}
+
+func refuse_terminal_if(context: HighIntermediaryRepresentation.Building.Context, written: String) {
+    stop(
+        context,
+        "this 'if' is the last thing the function does and has no 'else', so it only checks that '{written}' is there: write 'assert {written}' and let the rest of the function run unindented",
+    )
+}
+
+func refuse_constraint(
+    context: HighIntermediaryRepresentation.Building.Context,
+    shown: String,
+    shape: String,
+    owner: String,
+    generic_name: String,
+    member: String,
+) {
+    stop(
+        context,
+        "'{shown}' does not fit type '{shape}', which '{owner}' requires of {generic_name}: it has no function '{member}'",
+    )
+}
+
+func refuse_whole_list(context: HighIntermediaryRepresentation.Building.Context, shown: String) {
+    stop(
+        context,
+        "this call passes a whole {shown}, but the last parameter is written with '...', so it takes the values one by one: pass the elements themselves, separated by commas",
+    )
+}
+
+func refuse_unsized_type(context: HighIntermediaryRepresentation.Building.Context, written: String) {
+    stop(
+        context,
+        "'{written}.size' is the size of the C struct a type is at a foreign call, and only a type whose attributes are all numbers is one",
+    )
+}
+
+func refuse_maybe_boolean(context: HighIntermediaryRepresentation.Building.Context) {
+    stop(
+        context,
+        "this is a Boolean? used by a condition, which would only test that it is there, not that it is true: prove it is there first ('crash index < flags.count()' proves 'flags[index]') or switch over it",
+    )
+}
+
+func refuse_folded_crash(context: HighIntermediaryRepresentation.Building.Context, written: String) {
+    var shown = context.current_class.shown
+    var place = ""
+    if shown.contains("<") {
+        place = " in {shown}"
+    }
+    stop(
+        context,
+        "'crash {written}' always halts{place}: its condition is decided while compiling and is false, so the program would stop here every time this function runs: call it only where the condition holds, or change what the condition asks",
+    )
+}
+
+func refuse_vector_item(
+    context: HighIntermediaryRepresentation.Building.Context,
+    shown: String,
+    attribute: String,
+    attribute_shown: String,
+) {
+    var article = article_of(attribute_shown)
+    stop(
+        context,
+        "'{shown}' cannot be an item of a Vector: its attribute '{attribute}' is {article} {attribute_shown}, and a Vector holds each item inline, so every attribute is a number, a Boolean, an enum or a String (keep '{shown}' in a 'List<{shown}>', or keep '{attribute}' somewhere else)",
+    )
+}
+
+func refuse_equal_keys(context: HighIntermediaryRepresentation.Building.Context, shown: String) {
+    stop(
+        context,
+        "a Dictionary keyed by '{shown}' finds each key by identity, one object one key, but '{shown}' declares 'equals', so an equal '{shown}' would not be found: key the dictionary by what 'equals' compares, a number or a String",
+    )
+}
+
 func refuse_no_members(context: HighIntermediaryRepresentation.Building.Context, shown: String) {
     stop(context, "a {shown} has no attributes or functions to reach with '.'")
 }
@@ -341,7 +461,16 @@ func refuse_unused_answer(context: HighIntermediaryRepresentation.Building.Conte
 func stop(context: HighIntermediaryRepresentation.Building.Context, text: String) {
     var failure = Validators.Failure()
     var path = context.path()
-    failure.stop_inside(path, context.line, context.current_class.shown, context.current_function.name, text)
+    var owner = plain_class_name(context.current_class.shown)
+    failure.stop_inside(path, context.line, owner, context.current_function.name, text)
+}
+
+func plain_class_name(shown: String): String {
+    var opening = shown.index_of("<")
+    if opening < 0 {
+        return shown
+    }
+    return shown.slice(0, opening)
 }
 
 func refuse_text_given(

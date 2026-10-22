@@ -1,0 +1,279 @@
+var empty_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+var no_folders = Mapping.FolderMap()
+var symbols = Symbols.SymbolTable(no_folders)
+var names = Mapping.Names()
+var class_name = ""
+var function_name = ""
+var line = 0
+var made_singleton = ""
+var value_classes = [
+    "String"
+    "Boolean"
+    "Tiny"
+    "Short"
+    "Integer"
+    "Long"
+    "UnsignedTiny"
+    "UnsignedShort"
+    "UnsignedInteger"
+    "UnsignedLong"
+    "Float"
+    "Double"
+    "List"
+    "Vector"
+    "Dictionary"
+]
+
+func check(
+    starting_walk: AbstractSyntaxTree.Walk.Walk,
+    starting_class_name: String,
+    starting_symbols: Symbols.SymbolTable,
+) {
+    walk = starting_walk
+    class_name = starting_class_name
+    symbols = starting_symbols
+    walk.function_declarations.each(check_the_singleton_function)
+    function_name = ""
+    walk.attribute_declarations.each(check_attribute)
+    walk.statements.each(check_statement)
+}
+
+func check_the_singleton_function(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    assert function.name == "is_singleton"
+    assert not (walk.file.namespace == "Spite" and class_name == "Class")
+    line = function.line
+    function_name = ""
+    refuse(
+        "a class says it is a singleton with a 'singleton' line at the top of its file, not with a function: delete 'is_singleton()' and write 'singleton' as the file's first line",
+    )
+}
+
+func check_attribute(attribute: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration) {
+    line = attribute.line
+    var value = attribute.value
+    if value == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        if is_a_singleton(value) {
+            made_singleton = constructed_name(value)
+            value.arguments.each(check_literal_argument)
+            value.arguments.each(scan)
+            return
+        }
+    }
+    scan_present(value)
+}
+
+func check_literal_argument(argument: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    assert not is_a_literal(argument)
+    var printer = Printers.Spite.ExpressionPrinter(argument)
+    var written = printer.text()
+    refuse(
+        "'{written}' is not a literal: a singleton's arguments are literals the compiler reads, because each distinct argument list is its own instance of '{made_singleton}', made the first time it is asked for",
+    )
+}
+
+func is_a_literal(argument: AbstractSyntaxTree.Shapes.Expressions.Expression): Boolean {
+    if argument == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return true
+    }
+    if argument == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        return argument.pieces.all(has_no_hole)
+    }
+    if argument == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression {
+        var operand = argument.operand
+        if operand == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+            return true
+        }
+    }
+    return false
+}
+
+func has_no_hole(piece: AbstractSyntaxTree.Shapes.Expressions.TextPiece): Boolean {
+    if piece.hole {
+        return false
+    }
+    return true
+}
+
+func check_statement(found: AbstractSyntaxTree.Walk.FoundStatement) {
+    function_name = found.function_name
+    check_any_statement(found.statement)
+}
+
+func check_any_statement(statement: AbstractSyntaxTree.Shapes.Statements.Statement?) {
+    crash statement
+    line = statement.line
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: check_local(statement)
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: check_assignment(statement)
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: scan_present(statement.condition)
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: scan_present(statement.condition)
+        AbstractSyntaxTree.Shapes.Statements.AssertStatement: scan_present(statement.condition)
+        AbstractSyntaxTree.Shapes.Statements.CrashStatement: scan_present(statement.condition)
+        AbstractSyntaxTree.Shapes.Statements.LoadStatement: return
+        AbstractSyntaxTree.Shapes.Statements.Block: return
+        _: scan_present(statement.value)
+    }
+}
+
+func check_assignment(assignment: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    scan_present(assignment.target)
+    scan_present(assignment.value)
+}
+
+func check_local(local: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    var value = local.value
+    if value == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        if is_a_singleton(value) {
+            check_local_singleton(value)
+            value.arguments.each(scan)
+            return
+        }
+    }
+    scan_present(value)
+}
+
+func check_local_singleton(made: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    assert not value_classes.contains(class_name) and not is_in_the_library()
+    var made_name = constructed_name(made)
+    var printer = Printers.Spite.ExpressionPrinter(made)
+    var written = printer.text()
+    var bound = bound_name(made_name)
+    refuse(
+        "'{made_name}' is a singleton, bound here as a local: bind it once beside the attributes, 'var {bound} = {written}', so every singleton the class uses is at the top of its file",
+    )
+}
+
+func is_in_the_library(): Boolean {
+    var library = Validators.LibraryFile()
+    return library.holds(walk.file.path)
+}
+
+func scan_present(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    assert expression
+    scan(expression)
+}
+
+func scan(expression: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: scan_call(expression)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: scan_member(expression)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: scan_index(expression)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: scan_binary(expression)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: scan_present(expression.operand)
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: expression.pieces.each(scan_piece)
+        AbstractSyntaxTree.Shapes.Expressions.ListLiteral: expression.entries.each(scan)
+        AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: expression.pairs.each(scan)
+        AbstractSyntaxTree.Shapes.Expressions.EntryLiteral: scan_entry(expression)
+        _: return
+    }
+}
+
+func scan_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    if is_a_singleton(call) {
+        refuse_inline(call, "")
+    }
+    scan_present(call.callee)
+    call.arguments.each(scan)
+}
+
+func scan_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var target = member.target
+    if target == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        if is_a_singleton(target) {
+            refuse_inline(target, member.name)
+        }
+    }
+    scan_present(target)
+}
+
+func scan_index(indexed: AbstractSyntaxTree.Shapes.Expressions.IndexExpression) {
+    scan_present(indexed.target)
+    scan_present(indexed.index)
+}
+
+func scan_binary(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
+    scan_present(binary.left)
+    scan_present(binary.right)
+}
+
+func scan_piece(piece: AbstractSyntaxTree.Shapes.Expressions.TextPiece) {
+    scan_present(piece.hole)
+}
+
+func scan_entry(entry: AbstractSyntaxTree.Shapes.Expressions.EntryLiteral) {
+    scan_present(entry.key)
+    scan_present(entry.value)
+}
+
+func refuse_inline(made: AbstractSyntaxTree.Shapes.Expressions.CallExpression, member: String) {
+    var made_name = constructed_name(made)
+    var printer = Printers.Spite.ExpressionPrinter(made)
+    var written = printer.text()
+    var bound = bound_name(made_name)
+    var used = bound
+    if not member.is_empty() {
+        used = "{bound}.{member}"
+    }
+    refuse(
+        "'{made_name}' is a singleton: bind it once beside the attributes, 'var {bound} = {written}', and use '{used}'",
+    )
+}
+
+func bound_name(made_name: String): String {
+    var segments = made_name.split(".")
+    var simple = segments.last()
+    crash simple
+    return names.snake_case_of(simple)
+}
+
+func is_a_singleton(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Boolean {
+    var made_name = constructed_name(call)
+    if made_name.is_empty() {
+        return false
+    }
+    if not call.generic_arguments.all(is_a_plain_type) {
+        return false
+    }
+    return symbols.is_a_singleton(made_name, walk.file.namespace)
+}
+
+func is_a_plain_type(argument: AbstractSyntaxTree.Shapes.Types.GenericArgument): Boolean {
+    if not argument.is_type {
+        return false
+    }
+    var written = argument.type_reference
+    if written == AbstractSyntaxTree.Shapes.Types.NamedType {
+        return is_a_plain_path(written.path)
+    }
+    return false
+}
+
+func is_a_plain_path(path: List<String>): Boolean {
+    var head = path.first()
+    if not head {
+        return false
+    }
+    return not head.starts_with("$")
+}
+
+func constructed_name(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): String {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        if callee.is_a_class_name {
+            return callee.name
+        }
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if callee.is_a_class_name {
+            var printer = Printers.Spite.ExpressionPrinter(callee)
+            return printer.text()
+        }
+    }
+    return ""
+}
+
+func refuse(text: String) {
+    var failure = Validators.Failure()
+    failure.stop_inside(walk.file.path, line, class_name, function_name, text)
+}

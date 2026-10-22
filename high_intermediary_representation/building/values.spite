@@ -919,6 +919,9 @@ func member_value(
     var owner = present_class_of(target)
     var attribute = owner.attribute_named(member.name)
     var getter = owner.function_named("get_{member.name}")
+    if getter and target.value_type.kind == 'scalar' {
+        typing.refuse_constant_on_value(context, owner.shown, member.name)
+    }
     var is_outside = owner.key != context.current_class.key
     if not getter and is_outside {
         getter = member_template_of(owner, "get_{member.name}")
@@ -1283,7 +1286,10 @@ func reflected_member(
     var getter = reflection_model.function_named("get_{member.name}")
     assert getter
     var no_written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
-    return called(getter, object, no_written)
+    var read = called(getter, object, no_written)
+    var printer = Printers.Spite.ExpressionPrinter(member)
+    var path = printer.text()
+    return narrowed(read, path)
 }
 
 func shape_size_of(path: List<String>): HighIntermediaryRepresentation.Values.Value? {
@@ -1298,6 +1304,10 @@ func shape_size_of(path: List<String>): HighIntermediaryRepresentation.Values.Va
     while index < shape.members.count() {
         var member = shape.members[index]
         crash member.answer
+        if not member.is_an_attribute or member.answer.kind != 'scalar' {
+            var written = path.join(".")
+            typing.refuse_unsized_type(context, written)
+        }
         var width = width_in_a_type(member.answer)
         if width > widest {
             widest = width
@@ -1615,6 +1625,13 @@ func result_of_handle(value: HighIntermediaryRepresentation.Values.Value): HighI
     return HighIntermediaryRepresentation.Values.Conversion(answer, 'join', value)
 }
 
+func refuse_a_cast_by_name(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var class_path = class_path_of(callee.target)
+    var written = class_path.join(".")
+    assert scalars.is_a_scalar(written)
+    typing.refuse_cast_by_name(context, written, callee.name)
+}
+
 func class_path_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): List<String> {
     var inference = NameResolution.Inference()
     return inference.class_path_of(expression)
@@ -1647,6 +1664,8 @@ func constructed(
     }
     crash made_type
     var made = context.class_of(made_type)
+    var constraints = Constraints(context, this)
+    constraints.check(made)
     context.need_defaults(made.key)
     var constructor = constructor_of(made)
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
@@ -1831,7 +1850,7 @@ func own_call(
         return copying.deep_copied(copied_value)
     }
     if not function {
-        typing.refuse_unknown_name(context, name)
+        typing.refuse_unknown_function(context, name)
     }
     crash function
     var own = this_value()
@@ -1996,6 +2015,9 @@ func member_call(
     }
     if not function and owner.key == "DynamicLibrary" {
         return foreign_call(receiver, callee.name, call.arguments)
+    }
+    if not function and callee.name.starts_with("from_") {
+        refuse_a_cast_by_name(callee)
     }
     if not function {
         var shown = context.shown(receiver.value_type)
@@ -3097,6 +3119,9 @@ func gathered_list(
     var list_model = context.class_of(list_type)
     var element_type = list_model.bound_types["$element_type"]
     crash element_type
+    if written.count() == start + 1 {
+        refuse_a_whole_list(list_type, element_type, written[start])
+    }
     var temporary = new_list(list_type)
     var index = start
     while index < written.count() {
@@ -3106,6 +3131,20 @@ func gathered_list(
         index = index + 1
     }
     return temporary
+}
+
+func refuse_a_whole_list(
+    list_type: Model.Type,
+    element_type: Model.Type,
+    entry: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+) {
+    var is_a_path = entry == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    is_a_path = is_a_path or entry == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    assert is_a_path and not element_type.name.starts_with("List")
+    var whole = value_of(entry, null)
+    assert whole.value_type.name == list_type.name
+    var shown = context.shown(list_type)
+    typing.refuse_whole_list(context, shown)
 }
 
 func made_list(list_type: Model.Type): HighIntermediaryRepresentation.Values.Value {
