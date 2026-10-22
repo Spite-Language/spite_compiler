@@ -25,6 +25,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found
 
+- `conformance/vector_rows` stops first on `'alias' is never read`, an abstract syntax tree rule that runs before any borrow rule can, where it expects the row's resize error (D142)
+- `conformance/own_template_borrows` reopens `Vector` with the old library's `item_count`, `values` and `items`, which the library no longer has, so it fails on `item_count` before any borrow rule
+- `conformance/lent_arguments` stops on `unknown type 'argument.class'` (the reflection walks over a function's arguments, as `tests/reflection_walks`), before its plural-naming error
 - A plural template's member is matched with the program's own `String.Inflection` table, but a word that table leaves out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
 - A pattern template whose hole names no enum (`Symbol<$t.phase_each>` with no `Phase`) crashes the compiler instead of the old error naming the enum to declare
 - A class name that reaches no file is collected in `SymbolTable.unknown_names` and never reported
@@ -277,11 +280,11 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### Borrowing and lending
 
-- Borrowed items of a `Vector` or `Items`
-- No borrowed read past a resize
-- Rows of borrowed items
-- An item lent to the caller
-- An item lent to a call
+- Borrowed items of a `Vector` or `Items` (built as refusals, D140, in `building/borrows.spite`: kept in an attribute, put in a list, returned, made a function value, given a second name, assigned again, borrowed from a collection nothing keeps; not built: the reads stay counted references, so nothing is uncounted yet, a member template's `get_at(...)` on its own collection is not seen as borrowed, and nothing is checked inside a walk copy)
+- No borrowed read past a resize (built as a refusal, D141, followed through the program's calls, a `type`'s fillers, `print`'s `to_string`s and text holes; not built: the library's own functions are not followed, so a library function handed a function value that it calls (`each`) is followed only when the value names a function, and a value of unknown type fans out to every function of the name)
+- Rows of borrowed items (built: a literal row and a walked row are refused when a call they are passed to may resize what they borrow from, and are never kept, returned, listed, aliased or assigned; not built: the row in the frame, the `___lent_<positions>` copy that compiles the callee under the rules, the error for a non-plain attribute of a literal row, and the arguments a plural fills)
+- An item lent to the caller (built: a `return` of a singleton's `Vector` or fitting `Items` item lends, with `fits_vector()` and `$T == X` folded, and the caller's name is borrowed; not built: the uncounted return, the refusal of a lending function used as a value or through a `type`, of a non-item return beside a lent one, and of a reused name)
+- An item lent to a call (built: a call lent a borrowed item is refused when it may resize its collection; not built: the `___lent_` copy that compiles the callee under the rules, so a callee keeping a lent item is not refused, and the errors for lending to a library function, a union parameter or an unnamed expression)
 - A list element lent to a row
 - An argument its caller holds is passed uncounted
 - An attribute a call cannot assign is passed uncounted
