@@ -165,12 +165,67 @@ func fitted(
     if are_numbers(wanted, given) {
         return decimal_conversion(given, wanted, value)
     }
+    var wants_its_reflection = given.kind == 'function' and wanted.kind == 'object' and wanted.name == "Spite.Function"
+    if wants_its_reflection {
+        var described = described_function(value)
+        if described {
+            var reflected = reflected_function(described)
+            return fitted(reflected, wanted)
+        }
+    }
     var shown_given = context.shown(given)
     var shown_wanted = context.shown(wanted)
     var wants_an_enum = wanted.kind == 'enumeration'
     typing.refuse_text_given(context, shown_given, shown_wanted, wants_an_enum)
     typing.refuse_mismatch(context, shown_given, shown_wanted)
     return value
+}
+
+func described_function(value: HighIntermediaryRepresentation.Values.Value): Model.FunctionModel? {
+    if value == HighIntermediaryRepresentation.Values.FunctionValue {
+        return value.function
+    }
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        return context.function_locals[value.name]
+    }
+    return null
+}
+
+func reflected_function(described: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value {
+    var reflection = Reflection(context, this)
+    var class_value = reflection.class_object(described.owner)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var functions = method_call(class_value, "get_functions", no_arguments)
+    var listing = present_class_of(functions)
+    var finder = member_template_of(listing, "find_by_name")
+    crash finder
+    need(finder)
+    need_text_constants()
+    var named = HighIntermediaryRepresentation.Values.TextConstant(described.name)
+    named.value_type = context.text()
+    var finder_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    finder_arguments.append(named)
+    var found = HighIntermediaryRepresentation.Values.Call(finder, functions, finder_arguments)
+    temporary_count = temporary_count + 1
+    var name = context.scope.declare("reflected_{temporary_count}", found.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, found.value_type, found)
+    declared.line = context.line
+    context.pending.append(declared)
+    var local = HighIntermediaryRepresentation.Values.LocalRead(found.value_type, name)
+    var there = HighIntermediaryRepresentation.Values.PresenceTest(local)
+    var missing = HighIntermediaryRepresentation.Values.Negation(there)
+    var file_path = context.path()
+    var function = context.current_function
+    var message = "spite: '{described.owner}.{described.name}' has no Spite.Function to describe it, at {file_path}:{context.line} in {function.owner}.{function.name}"
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+    stopped.line = context.line
+    var failed = HighIntermediaryRepresentation.Statements.Block()
+    failed.statements.append(stopped)
+    var checked = HighIntermediaryRepresentation.Statements.If(missing, failed, null)
+    checked.line = context.line
+    context.pending.append(checked)
+    var present_type = found.value_type.present()
+    return HighIntermediaryRepresentation.Values.Conversion(present_type, 'proven', local)
 }
 
 func number_read_from_text(
@@ -2114,6 +2169,12 @@ func member_call(
         refuse_a_cast_by_name(callee)
     }
     if not function {
+        var walked_on = walk_on(owner, receiver, callee.name, call.arguments)
+        if walked_on {
+            return walked_on
+        }
+    }
+    if not function {
         var shown = context.shown(receiver.value_type)
         typing.refuse_unknown_member(context, shown, callee.name)
     }
@@ -2840,12 +2901,27 @@ func walk_of(
     name: String,
     written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ): HighIntermediaryRepresentation.Values.Value? {
+    var own = this_value()
+    return walk_on(owner, own, name, written)
+}
+
+func walk_on(
+    owner: Model.ClassModel,
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value? {
     var index = 0
     while index < owner.declared_functions.count() {
         var template = owner.declared_functions[index]
         var is_singular = template.is_a_member_template and not template_takes_a_plural(template)
         if is_singular and walks_by_the_name(template, name) {
-            return walked_over(owner, template, written)
+            var held = receiver
+            var is_its_own = receiver == HighIntermediaryRepresentation.Values.ThisRead
+            if not is_its_own {
+                held = held_once(receiver)
+            }
+            return walked_over(owner, held, template, written)
         }
         index = index + 1
     }
@@ -2888,6 +2964,7 @@ func template_takes_a_plural(template: Model.FunctionModel): Boolean {
 
 func walked_over(
     owner: Model.ClassModel,
+    receiver: HighIntermediaryRepresentation.Values.Value,
     template: Model.FunctionModel,
     written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ): HighIntermediaryRepresentation.Values.Value {
@@ -2905,8 +2982,7 @@ func walked_over(
         var called_name = replaced_word(template.name, word, member)
         var function = member_template_of(owner, called_name)
         crash function
-        var own = this_value()
-        var made = called(function, own, written)
+        var made = called(function, receiver, written)
         var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(made)
         evaluated.line = context.line
         context.pending.append(evaluated)
@@ -3357,15 +3433,20 @@ func member_answered_by(model: Model.ClassModel, name: String, shown: String): M
         return read
     }
     var function = model.function_named(name)
-    if not function {
-        function = model.function_named("get_{name}")
+    if function {
+        need(function)
+        return function
     }
-    if not function {
+    var getter = model.function_named("get_{name}")
+    if not getter {
         typing.refuse_unknown_member(context, shown, name)
     }
-    crash function
-    need(function)
-    return function
+    crash getter
+    need(getter)
+    var through_the_getter = Model.FunctionModel(name, model.key)
+    through_the_getter.is_an_attribute = true
+    through_the_getter.answer = getter.answer
+    return through_the_getter
 }
 
 func listing_attributes(shape_type: Model.Type) {
@@ -3896,6 +3977,10 @@ func dictionary_value(
     expected: Model.Type?,
 ): HighIntermediaryRepresentation.Values.Value {
     if not expected {
+        var inferred = dictionary_type_by_its_keys(literal)
+        if inferred {
+            return dictionary_value(literal, inferred)
+        }
         return object_literal(literal, null)
     }
     if expected.kind == 'shape' {
@@ -3917,6 +4002,20 @@ func dictionary_value(
         index = index + 1
     }
     return temporary
+}
+
+func dictionary_type_by_its_keys(literal: AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral): Model.Type? {
+    var first = literal.pairs.first()
+    assert first
+    var names_fields = true
+    if first == AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
+        names_fields = first.key == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    }
+    assert not names_fields
+    var inference = NameResolution.Inference()
+    var written = inference.dictionary_type_of(literal)
+    assert written
+    return context.resolver.type_in(written, context.current_class, context.line)
 }
 
 func store_an_entry(
@@ -4100,7 +4199,11 @@ func index_value(
     need(function)
     var parameter = function.parameters[0]
     crash parameter
-    var position = fitted_value_of(index.index, parameter.parameter_type)
+    var position = named_key_of(owner, index.index)
+    if not position {
+        position = fitted_value_of(index.index, parameter.parameter_type)
+    }
+    crash position
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
     arguments.append(position)
     var read = HighIntermediaryRepresentation.Values.Call(function, target, arguments)
@@ -4111,6 +4214,19 @@ func index_value(
         return checked_item(read, shown_path)
     }
     return proven_by_its_path(read, index)
+}
+
+func named_key_of(
+    owner: Model.ClassModel,
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): HighIntermediaryRepresentation.Values.Value? {
+    var held = owner.bound_types["$value_type"]
+    assert held
+    var key = owner.bound_types["$key_type"]
+    assert key
+    var holds_reflection = held.kind == 'object' and held.name.starts_with("Spite.") and not held.is_nullable
+    assert holds_reflection and key.name == "String"
+    return name_index_of(written)
 }
 
 func path_of_an_index(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): String {
@@ -4795,6 +4911,13 @@ func logic_value(
 ): HighIntermediaryRepresentation.Values.Value {
     var boolean = context.boolean()
     var left = condition_of(binary.left)
+    if left == HighIntermediaryRepresentation.Values.WholeNumber {
+        var decides_an_and = binary.operator == 'and' and left.number == 0
+        var decides_an_or = binary.operator == 'or' and left.number != 0
+        if decides_an_and or decides_an_or {
+            return left
+        }
+    }
     var right = right_condition_of(binary)
     var operator = operator_of(binary.operator)
     var folded = folded_logic(left, right, operator)
@@ -4848,6 +4971,20 @@ func folded_with_a_left(
     return right
 }
 
+func reads_the_bound_member(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): Boolean {
+    if not context.current_function.bound_member_type {
+        return false
+    }
+    var listed = index.target
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return listed.name == "attributes"
+    }
+    if listed == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return listed.name == "attributes"
+    }
+    return false
+}
+
 func with_its_links(
     condition: AbstractSyntaxTree.Shapes.Expressions.Expression?,
 ): AbstractSyntaxTree.Shapes.Expressions.Expression? {
@@ -4855,6 +4992,9 @@ func with_its_links(
         return linked_member(condition.target, condition)
     }
     if condition == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        if reads_the_bound_member(condition) {
+            return condition
+        }
         return linked_member(condition.target, condition)
     }
     return condition
@@ -4929,6 +5069,11 @@ func condition_of(
         return HighIntermediaryRepresentation.Values.PresenceTest(written_value)
     }
     var value = result_of_handle(written_value)
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        if context.null_locals.contains(value.name) {
+            return boolean_constant(false)
+        }
+    }
     var present_type = value.value_type.present()
     if value.value_type.is_nullable and context.is_boolean(present_type) {
         var held = held_once(value)
@@ -4944,11 +5089,6 @@ func condition_of(
         var checked = proven_check_of(value)
         if checked {
             return checked
-        }
-    }
-    if value == HighIntermediaryRepresentation.Values.LocalRead {
-        if context.null_locals.contains(value.name) {
-            return boolean_constant(false)
         }
     }
     if value == HighIntermediaryRepresentation.Values.LocalRead {
