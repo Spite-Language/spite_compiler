@@ -556,6 +556,9 @@ func default_of_a_type(wanted: Model.Type): HighIntermediaryRepresentation.Value
     if wanted.kind == 'shape' {
         return default_of_a_shape(wanted)
     }
+    if wanted.kind == 'enumeration' {
+        return first_enum_value(wanted)
+    }
     assert wanted.kind == 'object'
     var made = context.class_of(wanted)
     context.need_defaults(made.key)
@@ -645,6 +648,13 @@ func enum_value(name: String, expected: Model.Type): HighIntermediaryRepresentat
     crash number
     var present = expected.present()
     return HighIntermediaryRepresentation.Values.WholeNumber(present, number)
+}
+
+func first_enum_value(enum_type: Model.Type): HighIntermediaryRepresentation.Values.Value {
+    var made = enum_model_of(enum_type)
+    var first_name = made.values.first()
+    crash first_name
+    return enum_value(first_name, enum_type)
 }
 
 func enum_model_of(enum_type: Model.Type): Model.EnumModel {
@@ -1386,6 +1396,9 @@ func bound_singleton_question(
 func bound_class_object(function: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value {
     crash function.bound_member_type
     var reflection = Reflection(context, this)
+    if function.bound_member_type.is_nullable {
+        return reflection.class_object("{function.bound_member_type.name}?")
+    }
     return reflection.class_object(function.bound_member_type.name)
 }
 
@@ -1687,7 +1700,8 @@ func made_from_a_bound_type(
     }
     crash bound
     var made_type = bound.present()
-    var is_plain = made_type.kind == 'scalar' or made_type.name == "String" or made_type.kind == 'shape'
+    var is_a_value = made_type.kind == 'shape' or made_type.kind == 'enumeration'
+    var is_plain = made_type.kind == 'scalar' or made_type.name == "String" or is_a_value
     if is_plain and call.arguments.is_empty() {
         var plain = default_of_a_type(made_type)
         crash plain
@@ -2434,11 +2448,36 @@ func member_call(
         }
     }
     if not function {
+        var read_as_an_enum = text_read_as_an_enum(receiver, owner, callee.name, written_count)
+        if read_as_an_enum {
+            return read_as_an_enum
+        }
+    }
+    if not function {
         var shown = context.shown(receiver.value_type)
         typing.refuse_unknown_member(context, shown, callee.name)
     }
     crash function
     return called(function, receiver, call.arguments)
+}
+
+func text_read_as_an_enum(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    owner: Model.ClassModel,
+    name: String,
+    written_count: Integer,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert owner.key == "String" and name.starts_with("to_") and written_count == 0
+    var name_length = name.length()
+    var snake = name.slice(3, name_length)
+    var enum_name = pascal_case_of(snake)
+    var path = List<String>()
+    path.append(enum_name)
+    var found = context.resolver.declared_type_in(path, context.current_class)
+    assert found
+    assert found.kind == 'enumeration'
+    var wanted = found.nullable()
+    return fitted(receiver, wanted)
 }
 
 func enum_value_found(
@@ -4930,6 +4969,10 @@ func binary_value(
         var fitted_right = fitted(right, left.value_type)
         refuse_a_cut(binary, fitted_right, left.value_type, right.value_type)
         refuse_a_division_by_zero(binary, operator, left, fitted_right)
+        var decided = decided_comparison(binary, operator, left, fitted_right)
+        if decided {
+            return decided
+        }
         var answer = answer_type_of(operator, left.value_type)
         var made = HighIntermediaryRepresentation.Values.MachineOperation(answer, operator, left, fitted_right)
         var printer = Printers.Spite.ExpressionPrinter(binary)
@@ -4941,6 +4984,48 @@ func binary_value(
     var shown = printed.text()
     show_the_operation(answered, shown)
     return answered
+}
+
+func decided_comparison(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value? {
+    var asks_left = binary.left == AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    var asks_right = binary.right == AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    assert asks_left or asks_right
+    if left == HighIntermediaryRepresentation.Values.WholeNumber {
+        return decided_with_a_left(operator, left, right)
+    }
+    return null
+}
+
+func decided_with_a_left(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: HighIntermediaryRepresentation.Values.WholeNumber,
+    right: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value? {
+    if right == HighIntermediaryRepresentation.Values.WholeNumber {
+        return compared_numbers(operator, left.number, right.number)
+    }
+    return null
+}
+
+func compared_numbers(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left_number: Long,
+    right_number: Long,
+): HighIntermediaryRepresentation.Values.Value? {
+    switch operator {
+        'equal': return boolean_constant(left_number == right_number)
+        'not_equal': return boolean_constant(left_number != right_number)
+        'less': return boolean_constant(left_number < right_number)
+        'less_or_equal': return boolean_constant(left_number <= right_number)
+        'greater': return boolean_constant(left_number > right_number)
+        'greater_or_equal': return boolean_constant(left_number >= right_number)
+        _: return null
+    }
 }
 
 func show_the_operation(answered: HighIntermediaryRepresentation.Values.Value, shown: String) {
@@ -5124,7 +5209,8 @@ func bound_is(bound: Model.Type, written: String): Boolean {
         "Number": return bound.kind == 'scalar' and bound.name != "Boolean" and not bound.is_nullable
         "List": return bound.name.starts_with("List_of_") and not bound.is_nullable
         "Dictionary": return bound.name.starts_with("Dictionary_of_") and not bound.is_nullable
-        "Symbol": return bound.is_symbol and not bound.is_nullable
+        "Symbol": return (bound.is_symbol or bound.kind == 'enumeration') and not bound.is_nullable
+        "Enum": return bound.kind == 'enumeration' and not bound.is_nullable
         _: return is_the_class(bound, written)
     }
 }
@@ -6171,7 +6257,23 @@ func parameter_place_of(call: AbstractSyntaxTree.Shapes.Expressions.CallExpressi
     if written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
         return literal_place_of(written)
     }
+    if written == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walked_place_of(written)
+    }
     return -1
+}
+
+func walked_place_of(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Integer {
+    var function = context.current_function
+    var asked = member.target
+    var names_the_walked = false
+    if asked == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_the_walked = asked.name == function.bound_parameter and member.name == "index"
+    }
+    if not names_the_walked or function.bound_member.is_empty() {
+        return -1
+    }
+    return function.bound_member_index
 }
 
 func literal_place_of(literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression): Integer {
