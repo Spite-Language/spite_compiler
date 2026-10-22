@@ -267,7 +267,8 @@ func area(): Integer {
 ```
 
 `area` returns 436 with no arithmetic left. When it does not apply: an answer that does not fit its type keeps the
-operation, which halts as it would have; a division, a call and a decimal are not worked out. What a user can
+operation, which halts as it would have. A division, a call and a decimal are left to the lowered program, where
+[calls on constants are run while compiling](#calls-on-constants-are-run-while-compiling). What a user can
 observe: nothing but the time.
 Every optimisation the compiler makes, one section each: what it does, when it applies, when it does not, what a
 user can observe, and a small program that shows it. None of them changes what a program prints, returns or
@@ -483,13 +484,15 @@ making the tables makes texts:
 These run in this order on the low representation, then in the x64 generator:
 
 1. [inlining](#small-leaf-functions-are-inlined) (`low_optimization_passes/inlining`), over the whole program;
-2. per function: [constant folding](#maths-left-on-constants-after-lowering-is-worked-out-too) (`constant_folding`),
+2. [running calls on constants](#calls-on-constants-are-run-while-compiling)
+   (`low_optimization_passes/compile_time_evaluation`), over the whole program;
+3. per function: [constant folding](#maths-left-on-constants-after-lowering-is-worked-out-too) (`constant_folding`),
    [jump threading](#jumps-to-jumps-go-straight-to-the-end) (`jump_threading`),
    [copy propagation](#a-copy-of-a-value-that-never-changes-is-the-value) (`copy_propagation`),
    [dead code](#a-value-nobody-reads-is-not-computed) (`dead_code`),
    [copy coalescing](#a-value-computed-only-to-be-copied-is-computed-in-place) (`copy_coalescing`), and dead code
    again;
-3. in `generators/windows_x64`: [block layout](#blocks-are-laid-out-along-the-likely-path),
+4. in `generators/windows_x64`: [block layout](#blocks-are-laid-out-along-the-likely-path),
    [register allocation](#values-live-in-registers) (`allocation.spite`), and instruction selection: the
    [immediates and compares](#constants-are-immediates-and-a-compare-is-the-branch),
    [addressing modes](#an-address-sum-is-the-addressing-mode),
@@ -535,6 +538,98 @@ constant) becomes a constant; a branch on a constant becomes a jump; a block not
 It applies to `+`, `-` (operands below 2^62), `*` (below 2^31), `/` and `%` (by a divisor that is neither 0 nor
 -1), and the bit operations, signed and unsigned, when the exact answer fits the instruction's width. When it does
 not fit, the instruction is kept, so the program still halts at run time with the same report.
+
+## Calls on constants are run while compiling
+
+A call whose arguments are all known while compiling, and whose function touches nothing but its own memory, is run
+by the compiler, and the call is replaced by its answer: a number becomes a constant, and an object (a `String`,
+a list, any graph of objects the call made) becomes the instructions that allocate it and write its bytes, so the
+program gets exactly the object the call would have made, without running the call. A maths function of the C
+library on known operands (`0.5.cosine()`, see [the maths functions are one call into the C
+library](#the-maths-functions-are-one-call-into-the-c-library)) is answered the same way, and so is every
+instruction left with known operands: a decimal operation, a conversion, a read of a text's bytes or of an object
+made in the same block.
+
+```spite
+func label(count: Integer): String {
+    var plural = "cactus".pluralize()
+    return "{count} {plural}"
+}
+
+func turn(point: Point) {
+    var turned_across = point.across * 0.5.cosine() - point.down * 0.5.sine()
+    point.across = turned_across
+}
+```
+
+`"cactus".pluralize()` is the text `cacti` made in three allocations, with none of the inflection tables built or
+searched; `0.5.cosine()` and `0.5.sine()` are the constants whose bits are `0x3f60a940` and `0x3ef57744`.
+
+How it works (`low_optimization_passes/compile_time_evaluation`): each block is followed from its start with a
+model of memory in which only the objects the block itself allocates exist. A register is known when it holds a
+constant (a register written once, by a constant, anywhere in the function) or what a known instruction computed;
+an object stays known as long as everything that touches it is known. A call whose arguments are all known runs in
+the compiler's interpreter of the low representation (`machine.spite`), instruction by instruction, with the
+machine's own semantics: the same wrapping and the same checks for whole numbers, the same IEEE operations for
+decimals, the C library's own functions for the maths, every allocation zeroed as `HeapAlloc` zeroes it. Then:
+
+- when the call changed none of the objects that existed before it, its answer replaces it, and the objects it
+  made are written out as allocations and stores (a pointer to another of them becomes its register, a pointer to
+  a text the address of that text);
+- when it changed objects the block made, and nothing else, the call stays, and the block goes on knowing what the
+  call left in them, so `"cactus"` built by its `append_code` calls is known when `pluralize` is called on it.
+
+When it does not apply: the call, or anything it calls, reads or writes a singleton or any memory the block did
+not make, calls the system or another library (anything but the maths functions), takes a frame's address, starts
+or joins a thread, waits, would halt (an arithmetic check, a `crash`, a division by zero), answers not-a-number,
+runs past two million instructions (twenty million for the whole program), or leaves an object it made held by
+nothing; and an object the block made stops being known as soon as it is passed to something that is not run, so
+nothing an unknown function could have written is ever read. The call is then left as it was. A call that failed
+once on the same numbers is not tried again.
+
+What a user can observe: the time, and fewer allocations under `--debug-memory` (a folded call's own work
+allocates nothing; the objects of its answer are still allocated where it was). A program whose maths is folded
+gets the maths library of the machine that compiles it, which is the one it runs on when both are the same
+Windows; `sqrt`, `floor`, `ceil`, `trunc`, `round` are exact everywhere, so only the transcendental functions can
+differ, by their last bit, between two versions of the C library.
+
+## A number's own bits are read in place
+
+A number class reads its value through the bytes of its room (`Float._value()` is
+`_buffer._read_float_at(0)`), and the room of a number is made only when its bytes are needed. A read of the room
+at offset 0, of the number's own width and sign, is the number itself: no `Buffer` is made, written and read back.
+
+```spite
+func half_of(value: Float): Float {
+    return value.divide(2.0)
+}
+```
+
+`divide` reads both operands with `_value()`, and each read is the register that holds the number. Before, every
+`_value()` allocated a `Buffer` of four bytes, stored the number in it and loaded it again, so every library
+function of a number (`sum`, `minimum`, `to_string`, `bits`, the maths) paid an allocation per operand. When it does
+not apply: a read at another offset or of another width, and `to_buffer()`, which still copies the bytes into a
+`Buffer` the caller keeps. What a user can observe: the time, and no allocation under `--debug-memory`.
+
+## The maths functions are one call into the C library
+
+`sine()`, `cosine()`, `tangent()`, `arc_sine()`, `arc_cosine()`, `arc_tangent()`, `arc_tangent_over(run)`,
+`power(exponent)`, `exponential()`, the three logarithms, `floor()`, `ceiling()`, `truncate()` and `round()` on
+`Float` and `Double` are bodiless declarations (`_sine()` and the rest) the compiler writes as one call through the
+import table to the C library's function (`sinf`, `cos`, ...), with the operands in the decimal registers the
+Windows calling convention passes them in. The executable imports `ucrtbase.dll` only when it calls one of them,
+and only the functions it calls. `square_root()` is one `sqrtss` or `sqrtsd`.
+
+```spite
+func height_at(angle: Float): Float {
+    return angle.sine() * 10.0
+}
+```
+
+Before, each call made a `DynamicLibrary` (three `String`s copied byte by byte), opened `ucrtbase.dll`, looked the
+function up and called it through a pointer. When it does not apply: nothing else calls the C library this way;
+the system classes still open their library with `DynamicLibrary`. What a user can observe: the answers are the C
+library's, bit for bit, as before; the time; and one more imported library in the executable.
 
 ## Jumps to jumps go straight to the end
 

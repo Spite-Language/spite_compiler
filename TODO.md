@@ -141,9 +141,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A function taking a `type` is compiled per class
 - A test against a value a list never holds is decided while compiling
 - A table filled once is read as constants
-- Maths on constants is worked out while compiling (built: a `+`, `-` or `*` of whole numbers whose operands' ranges are one value each; not built: decimals and the library's maths on constants, such as `0.5.cosine()`, divisions and remainders)
+- Maths on constants is worked out while compiling (built: whole numbers in the high representation, and every call, decimal operation and maths function on constants in the lowered program, D260; not built: the evaluator follows one block at a time and knows only the objects that block made, so a constant list filled before a loop is unknown inside the loop, and an object made in another function or held by a singleton is never known)
 - A binary schema is a constant
-- A word inflected while compiling
 - Identical functions are folded into one
 
 ### The memory, the placement and the copies
@@ -263,7 +262,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Arithmetic that does not fit halts
 - A range proves arithmetic fits (built, D230; not built: the totals, the counters stepped down, and the loop locals other than counters, see the optimisation's line)
 - A wider operand is written first
-- Maths on constants is worked out while compiling (whole numbers built; decimals and calls not)
 - A dictionary only read by literal keys is never made
 
 ### Compile-time questions

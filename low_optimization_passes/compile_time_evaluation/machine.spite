@@ -1,0 +1,1373 @@
+var program = LowIntermediaryRepresentation.LowProgram()
+var known_functions = Dictionary<String, LowIntermediaryRepresentation.LowFunction>()
+var register_totals = Dictionary<String, Integer>()
+var read_only = List<Boolean>()
+var function_names = List<String>()
+var words = List<List<Long>>()
+var word_tags = List<List<Integer>>()
+var sizes = List<Integer>()
+var freed = List<Boolean>()
+var poisoned = List<Boolean>()
+var memory_words = 0
+var watermark = 0
+var saved_objects = List<Integer>()
+var saved_words = List<List<Long>>()
+var saved_tags = List<List<Integer>>()
+var saved_freed = List<Boolean>()
+var steps = 0
+var step_limit = 0
+var depth = 0
+var failed = false
+var answer: Long = 0
+var answer_tag = -1
+var presence: Long = 0
+var presence_tag = -1
+var function_tag_base = -1000002
+var largest_object = 16777216
+var most_memory_words = 4194304
+var deepest = 200
+
+func Machine(starting_program: LowIntermediaryRepresentation.LowProgram) {
+    program = starting_program
+    var index = 0
+    while index < program.data.count() {
+        read_only.append(false)
+        index = index + 1
+    }
+    index = 0
+    while index < program.constant_labels.count() {
+        var label = program.constant_labels[index]
+        read_only[label] = true
+        index = index + 1
+    }
+}
+
+func add_function(function: LowIntermediaryRepresentation.LowFunction, register_total: Integer) {
+    known_functions[function.key] = function
+    register_totals[function.key] = register_total
+}
+
+func refused(): Boolean {
+    failed = true
+    return false
+}
+
+func failure(): Integer {
+    failed = true
+    return -1
+}
+
+func is_object(tag: Integer): Boolean {
+    return tag >= 0
+}
+
+func is_data(tag: Integer): Boolean {
+    return tag <= -2 and tag > function_tag_base
+}
+
+func is_function(tag: Integer): Boolean {
+    return tag <= function_tag_base
+}
+
+func label_of(tag: Integer): Integer {
+    return -2 - tag
+}
+
+func data_tag(label: Integer): Integer {
+    return -2 - label
+}
+
+func function_of(tag: Integer): Integer {
+    return function_tag_base - tag
+}
+
+func reset() {
+    words.clear()
+    word_tags.clear()
+    sizes.clear()
+    freed.clear()
+    poisoned.clear()
+    memory_words = 0
+    watermark = 0
+    saved_objects.clear()
+    saved_words.clear()
+    saved_tags.clear()
+    saved_freed.clear()
+}
+
+func object_count(): Integer {
+    return words.count()
+}
+
+func begin_watch() {
+    watermark = words.count()
+    saved_objects.clear()
+    saved_words.clear()
+    saved_tags.clear()
+    saved_freed.clear()
+}
+
+func end_watch() {
+    watermark = 0
+}
+
+func touch(object: Integer) {
+    assert object < watermark and not saved_objects.contains(object)
+    var held = words[object]
+    var held_tags = word_tags[object]
+    crash held
+    crash held_tags
+    var word_copy = held.copy()
+    var tag_copy = held_tags.copy()
+    saved_objects.append(object)
+    saved_words.append(word_copy)
+    saved_tags.append(tag_copy)
+    saved_freed.append(freed[object] == true)
+}
+
+func restore_the_watched() {
+    var index = 0
+    while index < saved_objects.count() {
+        var object = saved_objects[index]
+        var before = saved_words[index]
+        var before_tags = saved_tags[index]
+        crash before
+        crash before_tags
+        words[object] = before
+        word_tags[object] = before_tags
+        freed[object] = saved_freed[index] == true
+        index = index + 1
+    }
+}
+
+func changed_since_watch(): Boolean {
+    var index = 0
+    while index < saved_objects.count() {
+        var object = saved_objects[index]
+        if object_differs(index, object) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func object_differs(saved_index: Integer, object: Integer): Boolean {
+    var was_freed = saved_freed[saved_index] == true
+    var is_freed = freed[object] == true
+    var before = saved_words[saved_index]
+    var before_tags = saved_tags[saved_index]
+    var now = words[object]
+    var now_tags = word_tags[object]
+    crash before
+    crash before_tags
+    crash now
+    crash now_tags
+    if was_freed != is_freed or before.count() != now.count() {
+        return true
+    }
+    var index = 0
+    while index < now.count() {
+        if before[index] != now[index] or before_tags[index] != now_tags[index] {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func allocated(size: Long): Integer {
+    if size < 0 or size > largest_object {
+        return -1
+    }
+    var byte_count = size.to_integer()
+    var word_count = (byte_count + 7) / 8
+    if memory_words + word_count > most_memory_words {
+        return -1
+    }
+    memory_words = memory_words + word_count
+    var held = List<Long>()
+    var held_tags = List<Integer>()
+    var index = 0
+    while index < word_count {
+        held.append(0)
+        held_tags.append(-1)
+        index = index + 1
+    }
+    words.append(held)
+    word_tags.append(held_tags)
+    sizes.append(byte_count)
+    freed.append(false)
+    poisoned.append(false)
+    return words.count() - 1
+}
+
+func is_live(object: Integer): Boolean {
+    if object < 0 or object >= words.count() {
+        return false
+    }
+    return freed[object] == false and poisoned[object] == false
+}
+
+func reaches(object: Integer, at: Long, size: Integer): Boolean {
+    if not is_live(object) {
+        return false
+    }
+    var room = sizes[object]
+    crash room
+    return at >= 0 and at <= room - size
+}
+
+func word_of(object: Integer, slot: Integer): Long {
+    var held = words[object]
+    crash held
+    var word = held[slot]
+    crash word
+    return word
+}
+
+func tag_in(object: Integer, slot: Integer): Integer {
+    var held_tags = word_tags[object]
+    crash held_tags
+    var tag = held_tags[slot]
+    crash tag
+    return tag
+}
+
+func put_word(object: Integer, slot: Integer, word: Long, tag: Integer) {
+    var held = words[object]
+    var held_tags = word_tags[object]
+    crash held
+    crash held_tags
+    held[slot] = word
+    held_tags[slot] = tag
+}
+
+func byte_in(object: Integer, at: Integer): Long {
+    var word = word_of(object, at / 8)
+    var shift = 8 * (at % 8)
+    var moved = word.shifted_right(shift)
+    return moved.bits_and(255)
+}
+
+func put_byte(object: Integer, at: Integer, value: Long) {
+    var slot = at / 8
+    var word = word_of(object, slot)
+    var shift = 8 * (at % 8)
+    var mask: Long = 255
+    mask = mask.shifted_left(shift)
+    var kept = mask.bits_inverted()
+    var cleared = word.bits_and(kept)
+    var low = value.bits_and(255)
+    var placed = low.shifted_left(shift)
+    var joined = cleared.bits_or(placed)
+    var tag = tag_in(object, slot)
+    put_word(object, slot, joined, tag)
+}
+
+func any_tag_in(object: Integer, at: Integer, size: Integer): Boolean {
+    var slot = at / 8
+    var last = (at + size - 1) / 8
+    while slot <= last {
+        if tag_in(object, slot) != -1 {
+            return true
+        }
+        slot = slot + 1
+    }
+    return false
+}
+
+func little_from_object(object: Integer, at: Integer, size: Integer): Long {
+    var value: Long = 0
+    var index = 0
+    while index < size {
+        var read = byte_in(object, at + index)
+        var placed = read.shifted_left(8 * index)
+        value = value.bits_or(placed)
+        index = index + 1
+    }
+    return value
+}
+
+func little_into_object(object: Integer, at: Integer, size: Integer, value: Long) {
+    var index = 0
+    while index < size {
+        var moved = value.shifted_right(8 * index)
+        put_byte(object, at + index, moved)
+        index = index + 1
+    }
+}
+
+func swapped(value: Long, size: Integer): Long {
+    var result: Long = 0
+    var index = 0
+    while index < size {
+        var moved = value.shifted_right(8 * index)
+        var read = moved.bits_and(255)
+        var placed = read.shifted_left(8 * (size - 1 - index))
+        result = result.bits_or(placed)
+        index = index + 1
+    }
+    return result
+}
+
+func extended(value: Long, size: Integer, is_signed: Boolean): Long {
+    if size >= 8 {
+        return value
+    }
+    var one: Long = 1
+    var span = one.shifted_left(8 * size)
+    var low = value.bits_and(span - 1)
+    var half = one.shifted_left(8 * size - 1)
+    if is_signed and low >= half {
+        return low - span
+    }
+    return low
+}
+
+func size_of_width(width: LowIntermediaryRepresentation.Width): Integer {
+    switch width {
+        'bits_8': return 1
+        'bits_16': return 2
+        'bits_32': return 4
+        'bits_64': return 8
+    }
+}
+
+func executed(instruction: LowIntermediaryRepresentation.Instructions.Instruction, frame: Frame): Integer {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return constant(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Copy: return copied(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return arithmetic(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Compare: return compare(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: return decimal_arithmetic(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.DecimalCompare: return decimal_compare(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.DecimalConversion: return decimal_conversion(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Load: return read_memory(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Store: return write_memory(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Call: return call(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.CallAt: return call_at(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.DataAddress: return data_address(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return function_address(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Allocate: return allocate(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Retain: return retain(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Free: return free(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Resize: return resize(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Jump: return jump(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Branch: return branch(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.Return: return returned(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.ImportCall: return foreign_maths(instruction, frame)
+        _: return failure()
+    }
+}
+
+func constant(made: LowIntermediaryRepresentation.Instructions.Constant, frame: Frame): Integer {
+    frame.set(made.target, made.number, -1)
+    return 0
+}
+
+func copied(copy: LowIntermediaryRepresentation.Instructions.Copy, frame: Frame): Integer {
+    var value = frame.value_of(copy.source)
+    var tag = frame.tag_of(copy.source)
+    frame.set(copy.target, value, tag)
+    return 0
+}
+
+func jump(jumped: LowIntermediaryRepresentation.Instructions.Jump, frame: Frame): Integer {
+    frame.block = jumped.block
+    frame.position = 0
+    return 0
+}
+
+func branch(test: LowIntermediaryRepresentation.Instructions.Branch, frame: Frame): Integer {
+    if frame.tag_of(test.condition) != -1 {
+        return failure()
+    }
+    frame.block = test.when_false
+    if frame.value_of(test.condition) != 0 {
+        frame.block = test.when_true
+    }
+    frame.position = 0
+    return 0
+}
+
+func returned(ending: LowIntermediaryRepresentation.Instructions.Return, frame: Frame): Integer {
+    if ending.is_a_suspension {
+        return failure()
+    }
+    answer = 0
+    answer_tag = -1
+    presence = 0
+    presence_tag = -1
+    if ending.source >= 0 {
+        answer = frame.value_of(ending.source)
+        answer_tag = frame.tag_of(ending.source)
+    }
+    if ending.presence >= 0 {
+        presence = frame.value_of(ending.presence)
+        presence_tag = frame.tag_of(ending.presence)
+    }
+    return 2
+}
+
+func arithmetic(operation: LowIntermediaryRepresentation.Instructions.Arithmetic, frame: Frame): Integer {
+    var left_tag = frame.tag_of(operation.left)
+    var right_tag = frame.tag_of(operation.right)
+    if left_tag != -1 or right_tag != -1 {
+        return pointer_arithmetic(operation, frame, left_tag, right_tag)
+    }
+    var left = frame.value_of(operation.left)
+    var right = frame.value_of(operation.right)
+    var size = size_of_width(operation.width)
+    switch operation.operator {
+        'add': return added(operation, frame, left, right, size)
+        'subtract': return subtracted(operation, frame, left, right, size)
+        'multiply': return multiplied(operation, frame, left, right, size)
+        'divide': return divided(operation, frame, left, right)
+        'remainder': return divided(operation, frame, left, right)
+        'bits_and': return bitwise(operation, frame, left, right, size)
+        'bits_or': return bitwise(operation, frame, left, right, size)
+        'bits_xor': return bitwise(operation, frame, left, right, size)
+        'shift_left': return shifted(operation, frame, left, right, size)
+        'shift_right': return shifted(operation, frame, left, right, size)
+        _: return failure()
+    }
+}
+
+func finished_whole(
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    frame: Frame,
+    result: Long,
+    size: Integer,
+): Integer {
+    var kept = extended(result, size, operation.is_signed)
+    if operation.is_checked and kept != result {
+        return failure()
+    }
+    frame.set(operation.target, kept, -1)
+    return 0
+}
+
+func unsigned_less(left: Long, right: Long): Boolean {
+    var left_negative = left < 0
+    var right_negative = right < 0
+    if left_negative != right_negative {
+        return right_negative
+    }
+    return left < right
+}
+
+func added(
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    frame: Frame,
+    left: Long,
+    right: Long,
+    size: Integer,
+): Integer {
+    var result = left.wrapping_sum(right)
+    var wide = size == 8 and operation.is_checked
+    var left_negative = left < 0
+    var right_negative = right < 0
+    var result_negative = result < 0
+    var same_signs = left_negative == right_negative
+    var sign_changed = result_negative != left_negative
+    if wide and operation.is_signed and same_signs and sign_changed {
+        return failure()
+    }
+    if not canonical_operands(operation, left, right, size) {
+        return failure()
+    }
+    if wide and not operation.is_signed and unsigned_less(result, left) {
+        return failure()
+    }
+    return finished_whole(operation, frame, result, size)
+}
+
+func subtracted(
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    frame: Frame,
+    left: Long,
+    right: Long,
+    size: Integer,
+): Integer {
+    var result = left.wrapping_subtract(right)
+    var wide = size == 8 and operation.is_checked
+    var left_negative = left < 0
+    var right_negative = right < 0
+    var result_negative = result < 0
+    var different_signs = left_negative != right_negative
+    var sign_changed = result_negative != left_negative
+    if wide and operation.is_signed and different_signs and sign_changed {
+        return failure()
+    }
+    if not canonical_operands(operation, left, right, size) {
+        return failure()
+    }
+    if wide and not operation.is_signed and unsigned_less(left, right) {
+        return failure()
+    }
+    return finished_whole(operation, frame, result, size)
+}
+
+func canonical_operands(
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    left: Long,
+    right: Long,
+    size: Integer,
+): Boolean {
+    if size == 8 or not operation.is_checked {
+        return true
+    }
+    var left_kept = extended(left, size, operation.is_signed)
+    var right_kept = extended(right, size, operation.is_signed)
+    return left_kept == left and right_kept == right
+}
+
+func is_small(value: Long): Boolean {
+    return value > -2147483648 and value < 2147483648
+}
+
+func multiplied(
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    frame: Frame,
+    left: Long,
+    right: Long,
+    size: Integer,
+): Integer {
+    var result = left.wrapping_multiply(right)
+    var exact = is_small(left) and is_small(right)
+    if not exact and operation.is_checked and size == 8 and operation.is_signed {
+        exact = product_is_exact(left, right, result)
+    }
+    if operation.is_checked and not exact {
+        return failure()
+    }
+    if not canonical_operands(operation, left, right, size) {
+        return failure()
+    }
+    return finished_whole(operation, frame, result, size)
+}
+
+func product_is_exact(left: Long, right: Long, result: Long): Boolean {
+    if left == 0 {
+        return true
+    }
+    if left == -1 {
+        return right != -9223372036854775807 - 1
+    }
+    return result / left == right
+}
+
+func divided(
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    frame: Frame,
+    left: Long,
+    right: Long,
+): Integer {
+    if right == 0 or right == -1 {
+        return failure()
+    }
+    if not operation.is_signed and (left < 0 or right < 0) {
+        return failure()
+    }
+    var result = left / right
+    if operation.operator == 'remainder' {
+        result = left % right
+    }
+    frame.set(operation.target, result, -1)
+    return 0
+}
+
+func bitwise(
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    frame: Frame,
+    left: Long,
+    right: Long,
+    size: Integer,
+): Integer {
+    var result = left.bits_exclusive_or(right)
+    if operation.operator == 'bits_and' {
+        result = left.bits_and(right)
+    }
+    if operation.operator == 'bits_or' {
+        result = left.bits_or(right)
+    }
+    return finished_whole(operation, frame, result, size)
+}
+
+func shifted(
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    frame: Frame,
+    left: Long,
+    right: Long,
+    size: Integer,
+): Integer {
+    if operation.is_checked {
+        return failure()
+    }
+    var masked = right.bits_and(63)
+    var count = masked.to_integer()
+    var result = left.shifted_left(count)
+    if operation.operator == 'shift_right' {
+        result = shifted_right_of(left, count, operation.is_signed)
+    }
+    var kept = extended(result, size, operation.is_signed)
+    frame.set(operation.target, kept, -1)
+    return 0
+}
+
+func shifted_right_of(value: Long, count: Integer, is_signed: Boolean): Long {
+    var moved = value.shifted_right(count)
+    if is_signed or count == 0 or value >= 0 {
+        return moved
+    }
+    var largest: Long = 9223372036854775807
+    var mask = largest.shifted_right(count - 1)
+    return moved.bits_and(mask)
+}
+
+func pointer_arithmetic(
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    frame: Frame,
+    left_tag: Integer,
+    right_tag: Integer,
+): Integer {
+    if operation.width != 'bits_64' {
+        return failure()
+    }
+    var left = frame.value_of(operation.left)
+    var right = frame.value_of(operation.right)
+    if operation.operator == 'add' and right_tag == -1 {
+        var moved = left.wrapping_sum(right)
+        frame.set(operation.target, moved, left_tag)
+        return 0
+    }
+    if operation.operator == 'add' and left_tag == -1 {
+        var moved_right = right.wrapping_sum(left)
+        frame.set(operation.target, moved_right, right_tag)
+        return 0
+    }
+    if operation.operator == 'subtract' and right_tag == -1 {
+        var moved_back = left.wrapping_subtract(right)
+        frame.set(operation.target, moved_back, left_tag)
+        return 0
+    }
+    if operation.operator == 'subtract' and left_tag == right_tag {
+        var distance = left.wrapping_subtract(right)
+        frame.set(operation.target, distance, -1)
+        return 0
+    }
+    return failure()
+}
+
+func compare(test: LowIntermediaryRepresentation.Instructions.Compare, frame: Frame): Integer {
+    var left_tag = frame.tag_of(test.left)
+    var right_tag = frame.tag_of(test.right)
+    var left = frame.value_of(test.left)
+    var right = frame.value_of(test.right)
+    var holds = false
+    if left_tag == right_tag {
+        var ordered_signed = test.is_signed or left_tag != -1
+        holds = compared(test.comparison, left, right, ordered_signed)
+    } else {
+        var equality = test.comparison == 'equal' or test.comparison == 'not_equal'
+        if not equality or not are_distinct(left_tag, left, right_tag, right) {
+            return failure()
+        }
+        holds = test.comparison == 'not_equal'
+    }
+    var number: Long = 0
+    if holds {
+        number = 1
+    }
+    frame.set(test.target, number, -1)
+    return 0
+}
+
+func are_distinct(left_tag: Integer, left: Long, right_tag: Integer, right: Long): Boolean {
+    if left_tag == -1 {
+        return left == 0 and is_a_place(right_tag)
+    }
+    if right_tag == -1 {
+        return right == 0 and is_a_place(left_tag)
+    }
+    return is_a_place(left_tag) and is_a_place(right_tag)
+}
+
+func is_a_place(tag: Integer): Boolean {
+    if is_object(tag) {
+        return tag < freed.count() and freed[tag] == false
+    }
+    return tag != -1
+}
+
+func compared(
+    comparison: LowIntermediaryRepresentation.Comparison,
+    left: Long,
+    right: Long,
+    is_signed: Boolean,
+): Boolean {
+    var less = left < right
+    if not is_signed {
+        less = unsigned_less(left, right)
+    }
+    switch comparison {
+        'equal': return left == right
+        'not_equal': return left != right
+        'less': return less
+        'less_or_equal': return less or left == right
+        'greater': return not less and left != right
+        'greater_or_equal': return not less
+    }
+}
+
+func float_of(bits: Long): Float {
+    var masked = bits.bits_and(4294967295)
+    var narrow: UnsignedInteger = masked
+    return narrow.bits_as_float()
+}
+
+func float_bits(value: Float): Long {
+    return value.bits()
+}
+
+func decimal_operands_plain(left_tag: Integer, right_tag: Integer): Boolean {
+    return left_tag == -1 and right_tag == -1
+}
+
+func decimal_arithmetic(
+    operation: LowIntermediaryRepresentation.Instructions.DecimalArithmetic,
+    frame: Frame,
+): Integer {
+    var left_tag = frame.tag_of(operation.left)
+    var right_tag = frame.tag_of(operation.right)
+    if not decimal_operands_plain(left_tag, right_tag) {
+        return failure()
+    }
+    var left_bits = frame.value_of(operation.left)
+    var right_bits = frame.value_of(operation.right)
+    var left = left_bits.bits_as_double()
+    var right = right_bits.bits_as_double()
+    if not operation.is_double {
+        var narrow_left = float_of(left_bits)
+        var narrow_right = float_of(right_bits)
+        left = narrow_left.to_double()
+        right = narrow_right.to_double()
+    }
+    if left.is_not_a_number() or right.is_not_a_number() {
+        return failure()
+    }
+    if operation.operator == 'divide' and right == 0.0 {
+        return failure()
+    }
+    if operation.operator == 'square_root' and left < 0.0 {
+        return failure()
+    }
+    if operation.is_double {
+        return double_arithmetic(operation, frame, left, right)
+    }
+    var narrow_left_value = left.to_float()
+    var narrow_right_value = right.to_float()
+    return float_arithmetic(operation, frame, narrow_left_value, narrow_right_value)
+}
+
+func double_arithmetic(
+    operation: LowIntermediaryRepresentation.Instructions.DecimalArithmetic,
+    frame: Frame,
+    left: Double,
+    right: Double,
+): Integer {
+    var result = left
+    switch operation.operator {
+        'add': result = left + right
+        'subtract': result = left - right
+        'multiply': result = left * right
+        'divide': result = left / right
+        'square_root': result = left.square_root()
+        _: return failure()
+    }
+    if result.is_not_a_number() {
+        return failure()
+    }
+    var bits = result.bits()
+    frame.set(operation.target, bits, -1)
+    return 0
+}
+
+func float_arithmetic(
+    operation: LowIntermediaryRepresentation.Instructions.DecimalArithmetic,
+    frame: Frame,
+    left: Float,
+    right: Float,
+): Integer {
+    var result = left
+    switch operation.operator {
+        'add': result = left + right
+        'subtract': result = left - right
+        'multiply': result = left * right
+        'divide': result = left / right
+        'square_root': result = left.square_root()
+        _: return failure()
+    }
+    if result.is_not_a_number() {
+        return failure()
+    }
+    var bits = float_bits(result)
+    frame.set(operation.target, bits, -1)
+    return 0
+}
+
+func decimal_compare(test: LowIntermediaryRepresentation.Instructions.DecimalCompare, frame: Frame): Integer {
+    var left_tag = frame.tag_of(test.left)
+    var right_tag = frame.tag_of(test.right)
+    if not decimal_operands_plain(left_tag, right_tag) {
+        return failure()
+    }
+    var left_bits = frame.value_of(test.left)
+    var right_bits = frame.value_of(test.right)
+    var left = left_bits.bits_as_double()
+    var right = right_bits.bits_as_double()
+    if not test.is_double {
+        var narrow_left = float_of(left_bits)
+        var narrow_right = float_of(right_bits)
+        left = narrow_left.to_double()
+        right = narrow_right.to_double()
+    }
+    if left.is_not_a_number() or right.is_not_a_number() {
+        return failure()
+    }
+    var holds = decimals_compared(test.comparison, left, right)
+    var number: Long = 0
+    if holds {
+        number = 1
+    }
+    frame.set(test.target, number, -1)
+    return 0
+}
+
+func decimals_compared(comparison: LowIntermediaryRepresentation.Comparison, left: Double, right: Double): Boolean {
+    switch comparison {
+        'equal': return left == right
+        'not_equal': return left != right
+        'less': return left < right
+        'less_or_equal': return left <= right
+        'greater': return left > right
+        'greater_or_equal': return left >= right
+    }
+}
+
+func decimal_conversion(
+    conversion: LowIntermediaryRepresentation.Instructions.DecimalConversion,
+    frame: Frame,
+): Integer {
+    if frame.tag_of(conversion.source) != -1 {
+        return failure()
+    }
+    var source = frame.value_of(conversion.source)
+    if conversion.from_decimal_size == 0 {
+        return whole_into_decimal(conversion, frame, source)
+    }
+    var value = source.bits_as_double()
+    if conversion.from_decimal_size == 4 {
+        var narrow = float_of(source)
+        value = narrow.to_double()
+    }
+    if value.is_not_a_number() {
+        return failure()
+    }
+    if conversion.to_decimal_size == 0 {
+        return decimal_into_whole(conversion, frame, value)
+    }
+    if conversion.to_decimal_size == 8 {
+        var wide_bits = value.bits()
+        frame.set(conversion.target, wide_bits, -1)
+        return 0
+    }
+    var rounded = value.to_float()
+    var rounded_bits = float_bits(rounded)
+    frame.set(conversion.target, rounded_bits, -1)
+    return 0
+}
+
+func whole_into_decimal(
+    conversion: LowIntermediaryRepresentation.Instructions.DecimalConversion,
+    frame: Frame,
+    source: Long,
+): Integer {
+    if conversion.to_decimal_size == 8 {
+        var wide = source.to_double()
+        var wide_bits = wide.bits()
+        frame.set(conversion.target, wide_bits, -1)
+        return 0
+    }
+    var narrow = source.to_float()
+    var narrow_bits = float_bits(narrow)
+    frame.set(conversion.target, narrow_bits, -1)
+    return 0
+}
+
+func decimal_into_whole(
+    conversion: LowIntermediaryRepresentation.Instructions.DecimalConversion,
+    frame: Frame,
+    value: Double,
+): Integer {
+    var limit: Double = 9223372036854775000.0
+    var lowest: Double = 0.0
+    lowest = lowest - limit
+    if value >= limit or value <= lowest {
+        return failure()
+    }
+    var truncated = value.truncate()
+    var whole = truncated.to_long()
+    var size = size_of_width(conversion.whole_width)
+    var kept = extended(whole, size, conversion.whole_is_signed)
+    frame.set(conversion.target, kept, -1)
+    return 0
+}
+
+func foreign_maths(calling: LowIntermediaryRepresentation.Instructions.ImportCall, frame: Frame): Integer {
+    if calling.library != "ucrtbase.dll" or calling.arguments.is_empty() or calling.arguments.count() > 2 {
+        return failure()
+    }
+    var first = calling.arguments[0]
+    var second = first
+    if calling.arguments.count() == 2 {
+        var other = calling.arguments[1]
+        second = other
+    }
+    var first_tag = frame.tag_of(first)
+    var second_tag = frame.tag_of(second)
+    if not decimal_operands_plain(first_tag, second_tag) {
+        return failure()
+    }
+    var left_bits = frame.value_of(first)
+    var right_bits = frame.value_of(second)
+    if calling.answer_decimal_size == 8 {
+        var left = left_bits.bits_as_double()
+        var right = right_bits.bits_as_double()
+        return double_maths(calling, frame, left, right)
+    }
+    if calling.answer_decimal_size != 4 {
+        return failure()
+    }
+    var narrow_left = float_of(left_bits)
+    var narrow_right = float_of(right_bits)
+    return float_maths(calling, frame, narrow_left, narrow_right)
+}
+
+func double_maths(
+    calling: LowIntermediaryRepresentation.Instructions.ImportCall,
+    frame: Frame,
+    left: Double,
+    right: Double,
+): Integer {
+    if left.is_not_a_number() or right.is_not_a_number() {
+        return failure()
+    }
+    var result = left
+    switch calling.name {
+        "sin": result = left.sine()
+        "cos": result = left.cosine()
+        "tan": result = left.tangent()
+        "asin": result = left.arc_sine()
+        "acos": result = left.arc_cosine()
+        "atan": result = left.arc_tangent()
+        "atan2": result = left.arc_tangent_over(right)
+        "pow": result = left.power(right)
+        "exp": result = left.exponential()
+        "log": result = left.logarithm()
+        "log2": result = left.logarithm_base_2()
+        "log10": result = left.logarithm_base_10()
+        "floor": result = left.floor()
+        "ceil": result = left.ceiling()
+        "trunc": result = left.truncate()
+        "round": result = left.round()
+        _: return failure()
+    }
+    if result.is_not_a_number() {
+        return failure()
+    }
+    var bits = result.bits()
+    frame.set(calling.target, bits, -1)
+    return 0
+}
+
+func float_maths(
+    calling: LowIntermediaryRepresentation.Instructions.ImportCall,
+    frame: Frame,
+    left: Float,
+    right: Float,
+): Integer {
+    if left.is_not_a_number() or right.is_not_a_number() {
+        return failure()
+    }
+    var result = left
+    switch calling.name {
+        "sinf": result = left.sine()
+        "cosf": result = left.cosine()
+        "tanf": result = left.tangent()
+        "asinf": result = left.arc_sine()
+        "acosf": result = left.arc_cosine()
+        "atanf": result = left.arc_tangent()
+        "atan2f": result = left.arc_tangent_over(right)
+        "powf": result = left.power(right)
+        "expf": result = left.exponential()
+        "logf": result = left.logarithm()
+        "log2f": result = left.logarithm_base_2()
+        "log10f": result = left.logarithm_base_10()
+        "floorf": result = left.floor()
+        "ceilf": result = left.ceiling()
+        "truncf": result = left.truncate()
+        "roundf": result = left.round()
+        _: return failure()
+    }
+    if result.is_not_a_number() {
+        return failure()
+    }
+    var bits = float_bits(result)
+    frame.set(calling.target, bits, -1)
+    return 0
+}
+
+func read_memory(loaded: LowIntermediaryRepresentation.Instructions.Load, frame: Frame): Integer {
+    var tag = frame.tag_of(loaded.address)
+    var base = frame.value_of(loaded.address)
+    var at = base.wrapping_sum(loaded.offset)
+    var size = size_of_width(loaded.width)
+    if is_object(tag) {
+        return load_from_object(loaded, frame, tag, at, size)
+    }
+    if is_data(tag) {
+        var label = label_of(tag)
+        return load_from_data(loaded, frame, label, at, size)
+    }
+    return failure()
+}
+
+func load_from_object(
+    loaded: LowIntermediaryRepresentation.Instructions.Load,
+    frame: Frame,
+    object: Integer,
+    at: Long,
+    size: Integer,
+): Integer {
+    if not reaches(object, at, size) {
+        return failure()
+    }
+    var place = at.to_integer()
+    var aligned_word = size == 8 and place % 8 == 0
+    if aligned_word and not loaded.is_swapped {
+        var word = word_of(object, place / 8)
+        var tag = tag_in(object, place / 8)
+        frame.set(loaded.target, word, tag)
+        return 0
+    }
+    if any_tag_in(object, place, size) {
+        return failure()
+    }
+    var value = little_from_object(object, place, size)
+    if loaded.is_swapped {
+        value = swapped(value, size)
+    }
+    var kept = extended(value, size, loaded.is_signed)
+    frame.set(loaded.target, kept, -1)
+    return 0
+}
+
+func load_from_data(
+    loaded: LowIntermediaryRepresentation.Instructions.Load,
+    frame: Frame,
+    label: Integer,
+    at: Long,
+    size: Integer,
+): Integer {
+    if label < 0 or label >= read_only.count() or read_only[label] != true {
+        return failure()
+    }
+    var bytes = program.data[label]
+    crash bytes
+    if at < 0 or at > bytes.count() - size {
+        return failure()
+    }
+    var place = at.to_integer()
+    var value: Long = 0
+    var index = 0
+    while index < size {
+        var read = bytes[place + index]
+        crash read
+        var wide: Long = read
+        var placed = wide.shifted_left(8 * index)
+        value = value.bits_or(placed)
+        index = index + 1
+    }
+    if loaded.is_swapped {
+        value = swapped(value, size)
+    }
+    var kept = extended(value, size, loaded.is_signed)
+    frame.set(loaded.target, kept, -1)
+    return 0
+}
+
+func write_memory(stored: LowIntermediaryRepresentation.Instructions.Store, frame: Frame): Integer {
+    var object = frame.tag_of(stored.address)
+    var base = frame.value_of(stored.address)
+    var at = base.wrapping_sum(stored.offset)
+    var size = size_of_width(stored.width)
+    if not is_object(object) or not reaches(object, at, size) {
+        return failure()
+    }
+    var place = at.to_integer()
+    var value = frame.value_of(stored.source)
+    var tag = frame.tag_of(stored.source)
+    var aligned_word = size == 8 and place % 8 == 0
+    if tag != -1 and (not aligned_word or stored.is_swapped) {
+        return failure()
+    }
+    touch(object)
+    if aligned_word and not stored.is_swapped {
+        put_word(object, place / 8, value, tag)
+        return 0
+    }
+    if any_tag_in(object, place, size) {
+        return failure()
+    }
+    if stored.is_swapped {
+        value = swapped(value, size)
+    }
+    little_into_object(object, place, size, value)
+    return 0
+}
+
+func data_address(address: LowIntermediaryRepresentation.Instructions.DataAddress, frame: Frame): Integer {
+    var tag = data_tag(address.label)
+    frame.set(address.target, 0, tag)
+    return 0
+}
+
+func function_address(address: LowIntermediaryRepresentation.Instructions.FunctionAddress, frame: Frame): Integer {
+    var index = function_names.index_of(address.function)
+    if not index {
+        function_names.append(address.function)
+        index = function_names.count() - 1
+    }
+    crash index
+    var tag = function_tag_base - index
+    frame.set(address.target, 0, tag)
+    return 0
+}
+
+func allocate(made: LowIntermediaryRepresentation.Instructions.Allocate, frame: Frame): Integer {
+    if frame.tag_of(made.size) != -1 {
+        return failure()
+    }
+    var size = frame.value_of(made.size)
+    var object = allocated(size)
+    if object < 0 {
+        return failure()
+    }
+    frame.set(made.target, 0, object)
+    return 0
+}
+
+func retain(held: LowIntermediaryRepresentation.Instructions.Retain, frame: Frame): Integer {
+    var object = frame.tag_of(held.object)
+    var base = frame.value_of(held.object)
+    if object == -1 and base == 0 {
+        return 0
+    }
+    var at = base.wrapping_sum(8)
+    if not is_object(object) or not reaches(object, at, 8) or at % 8 != 0 {
+        return failure()
+    }
+    var place = at.to_integer()
+    if tag_in(object, place / 8) != -1 {
+        return failure()
+    }
+    var count = word_of(object, place / 8)
+    touch(object)
+    var counted = count.wrapping_sum(1)
+    put_word(object, place / 8, counted, -1)
+    return 0
+}
+
+func free(freeing: LowIntermediaryRepresentation.Instructions.Free, frame: Frame): Integer {
+    var object = frame.tag_of(freeing.pointer)
+    var base = frame.value_of(freeing.pointer)
+    if not is_object(object) or base != 0 or not is_live(object) {
+        return failure()
+    }
+    touch(object)
+    freed[object] = true
+    return 0
+}
+
+func resize(resizing: LowIntermediaryRepresentation.Instructions.Resize, frame: Frame): Integer {
+    var object = frame.tag_of(resizing.pointer)
+    var base = frame.value_of(resizing.pointer)
+    if frame.tag_of(resizing.size) != -1 {
+        return failure()
+    }
+    var size = frame.value_of(resizing.size)
+    var fresh = object == -1 and base == 0
+    var moved = is_object(object) and base == 0 and is_live(object)
+    if not fresh and not moved {
+        return failure()
+    }
+    var made = allocated(size)
+    if made < 0 {
+        return failure()
+    }
+    if moved {
+        move_the_words(object, made)
+        touch(object)
+        freed[object] = true
+    }
+    frame.set(resizing.target, 0, made)
+    return 0
+}
+
+func move_the_words(object: Integer, made: Integer) {
+    var held = words[object]
+    var room = words[made]
+    crash held
+    crash room
+    var index = 0
+    while index < held.count() and index < room.count() {
+        var word = word_of(object, index)
+        var tag = tag_in(object, index)
+        put_word(made, index, word, tag)
+        index = index + 1
+    }
+}
+
+func call(called: LowIntermediaryRepresentation.Instructions.Call, frame: Frame): Integer {
+    var values = List<Long>()
+    var argument_tags = List<Integer>()
+    var index = 0
+    while index < called.arguments.count() {
+        var argument = called.arguments[index]
+        var value = frame.value_of(argument)
+        var tag = frame.tag_of(argument)
+        values.append(value)
+        argument_tags.append(tag)
+        index = index + 1
+    }
+    var finished = run(called.function, values, argument_tags)
+    if not finished {
+        return failure()
+    }
+    frame.set(called.target, answer, answer_tag)
+    frame.set(called.presence, presence, presence_tag)
+    return 0
+}
+
+func call_at(called: LowIntermediaryRepresentation.Instructions.CallAt, frame: Frame): Integer {
+    var tag = frame.tag_of(called.address)
+    var base = frame.value_of(called.address)
+    if not is_function(tag) or base != 0 {
+        return failure()
+    }
+    var index = function_of(tag)
+    var name = function_names[index]
+    crash name
+    var values = List<Long>()
+    var argument_tags = List<Integer>()
+    var position = 0
+    while position < called.arguments.count() {
+        var argument = called.arguments[position]
+        var value = frame.value_of(argument)
+        var argument_tag = frame.tag_of(argument)
+        values.append(value)
+        argument_tags.append(argument_tag)
+        position = position + 1
+    }
+    var finished = run(name, values, argument_tags)
+    if not finished {
+        return failure()
+    }
+    frame.set(called.target, answer, answer_tag)
+    frame.set(called.presence, presence, presence_tag)
+    return 0
+}
+
+func run(key: String, values: List<Long>, argument_tags: List<Integer>): Boolean {
+    var found = known_functions[key]
+    if found {
+        return run_function(found, values, argument_tags)
+    }
+    return refused()
+}
+
+func run_function(
+    callee: LowIntermediaryRepresentation.LowFunction,
+    values: List<Long>,
+    argument_tags: List<Integer>,
+): Boolean {
+    var total = register_totals[callee.key]
+    crash total
+    var fits = callee.parameter_count == values.count() and callee.parameter_count <= total
+    if failed or callee.is_resumable or not fits or depth >= deepest {
+        return refused()
+    }
+    var frame = Frame(total)
+    var index = 0
+    while index < values.count() {
+        var value = values[index]
+        var tag = argument_tags[index]
+        crash tag
+        frame.set(index, value, tag)
+        index = index + 1
+    }
+    depth = depth + 1
+    var outcome = 0
+    while outcome == 0 {
+        outcome = stepped(callee, frame)
+    }
+    depth = depth - 1
+    return outcome == 2
+}
+
+func stepped(callee: LowIntermediaryRepresentation.LowFunction, frame: Frame): Integer {
+    if frame.block < 0 or frame.block >= callee.blocks.count() {
+        return failure()
+    }
+    var block = callee.blocks[frame.block]
+    if frame.position >= block.instructions.count() {
+        frame.block = frame.block + 1
+        frame.position = 0
+        return 0
+    }
+    var instruction = block.instructions[frame.position]
+    frame.position = frame.position + 1
+    steps = steps + 1
+    if steps > step_limit {
+        return failure()
+    }
+    return executed(instruction, frame)
+}
+
+func poison(object: Integer) {
+    var waiting = List<Integer>()
+    waiting.append(object)
+    var index = 0
+    while index < waiting.count() {
+        var next = waiting[index]
+        poison_one(next, waiting)
+        index = index + 1
+    }
+}
+
+func poison_one(object: Integer, waiting: List<Integer>) {
+    assert object >= 0 and object < poisoned.count() and poisoned[object] == false
+    poisoned[object] = true
+    var held_tags = word_tags[object]
+    crash held_tags
+    var index = 0
+    while index < held_tags.count() {
+        var tag = held_tags[index]
+        if tag >= 0 {
+            waiting.append(tag)
+        }
+        index = index + 1
+    }
+}

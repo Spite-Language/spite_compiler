@@ -27,10 +27,16 @@ var image_base: Long = 5368709120
 var section_alignment = 4096
 var file_alignment = 512
 var header_size = 512
+var descriptors_size = 40
 var lookup_offset = 0
+var library_lookup_offset = 0
 var address_table_offset = 0
+var library_address_table_offset = 0
+var address_tables_size = 0
 var hint_offsets = List<Integer>()
+var library_hint_offsets = List<Integer>()
 var library_name_offset = 0
+var c_library_name_offset = 0
 var label_offsets = List<Integer>()
 var slot_offsets = List<Integer>()
 var name_offsets = List<Integer>()
@@ -57,23 +63,30 @@ func aligned(size: Integer, alignment: Integer): Integer {
 }
 
 func lay_out_the_data() {
-    var descriptors_size = 40
-    lookup_offset = descriptors_size
-    var table_size = 8 * (imports.count() + 1)
-    address_table_offset = lookup_offset + table_size
-    var hints_start = address_table_offset + table_size
-    var offset = hints_start
-    var index = 0
-    while index < imports.count() {
-        var name = imports[index]
-        hint_offsets.append(offset)
-        var name_length = name.length()
-        offset = aligned(offset + 2 + name_length + 1, 2)
-        index = index + 1
+    var library_imports = emitter.library_imports
+    var imports_c = not library_imports.is_empty()
+    descriptors_size = 40
+    var library_table_size = 0
+    if imports_c {
+        descriptors_size = 60
+        library_table_size = 8 * (library_imports.count() + 1)
     }
+    lookup_offset = aligned(descriptors_size, 8)
+    var table_size = 8 * (imports.count() + 1)
+    library_lookup_offset = lookup_offset + table_size
+    address_table_offset = library_lookup_offset + library_table_size
+    library_address_table_offset = address_table_offset + table_size
+    address_tables_size = table_size + library_table_size
+    var hints_start = library_address_table_offset + library_table_size
+    var offset = laid_out_hints(imports, hint_offsets, hints_start)
+    offset = laid_out_hints(library_imports, library_hint_offsets, offset)
     library_name_offset = offset
+    if imports_c {
+        offset = aligned(offset + 13, 2)
+        c_library_name_offset = offset
+    }
     offset = aligned(offset + 13, 8)
-    index = 0
+    var index = 0
     while index < emitter.program.data.count() {
         var bytes = emitter.program.data[index]
         label_offsets.append(offset)
@@ -97,6 +110,19 @@ func lay_out_the_data() {
     fill_the_data(offset)
 }
 
+func laid_out_hints(names: List<String>, offsets: List<Integer>, start: Integer): Integer {
+    var offset = start
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        offsets.append(offset)
+        var name_length = name.length()
+        offset = aligned(offset + 2 + name_length + 1, 2)
+        index = index + 1
+    }
+    return offset
+}
+
 func fill_the_data(size: Integer) {
     var index = 0
     while index < size {
@@ -107,18 +133,17 @@ func fill_the_data(size: Integer) {
     data.write_integer_at(0, data_address + lookup_offset)
     data.write_integer_at(12, library_name_address)
     data.write_integer_at(16, data_address + address_table_offset)
-    index = 0
-    while index < imports.count() {
-        var hint = hint_offsets[index]
-        var name = imports[index]
-        crash hint
-        var hint_address: Long = data_address + hint
-        data.write_long_at(lookup_offset + 8 * index, hint_address)
-        data.write_long_at(address_table_offset + 8 * index, hint_address)
-        write_text_at(hint + 2, name)
-        index = index + 1
-    }
+    fill_the_hints(imports, hint_offsets, lookup_offset, address_table_offset)
     write_text_at(library_name_offset, "KERNEL32.dll")
+    var library_imports = emitter.library_imports
+    if not library_imports.is_empty() {
+        var c_library_name_address = data_address + c_library_name_offset
+        data.write_integer_at(20, data_address + library_lookup_offset)
+        data.write_integer_at(32, c_library_name_address)
+        data.write_integer_at(36, data_address + library_address_table_offset)
+        fill_the_hints(library_imports, library_hint_offsets, library_lookup_offset, library_address_table_offset)
+        write_text_at(c_library_name_offset, "ucrtbase.dll")
+    }
     index = 0
     while index < emitter.program.data.count() {
         var bytes = emitter.program.data[index]
@@ -133,6 +158,20 @@ func fill_the_data(size: Integer) {
         var name_offset = name_offsets[index]
         crash name_offset
         write_text_at(name_offset, name)
+        index = index + 1
+    }
+}
+
+func fill_the_hints(names: List<String>, offsets: List<Integer>, lookup_at: Integer, table_at: Integer) {
+    var index = 0
+    while index < names.count() {
+        var hint = offsets[index]
+        var name = names[index]
+        crash hint
+        var hint_address: Long = data_address + hint
+        data.write_long_at(lookup_at + 8 * index, hint_address)
+        data.write_long_at(table_at + 8 * index, hint_address)
+        write_text_at(hint + 2, name)
         index = index + 1
     }
 }
@@ -154,6 +193,7 @@ func write_bytes_at(at: Integer, bytes: Buffer) {
 
 func patch_the_code() {
     emitter.import_fixups.each(fix_an_import)
+    emitter.library_fixups.each(fix_a_library_import)
     emitter.data_fixups.each(fix_a_label)
     emitter.slot_fixups.each(fix_a_slot)
 }
@@ -167,6 +207,14 @@ func fix_an_import(fixup: Fixup) {
     var place = imports.index_of(fixup.target)
     crash place
     var target = data_address + address_table_offset + 8 * place
+    var distance = relative(fixup.at, target)
+    code.write_integer_at(fixup.at, distance)
+}
+
+func fix_a_library_import(fixup: Fixup) {
+    var place = emitter.library_imports.index_of(fixup.target)
+    crash place
+    var target = data_address + library_address_table_offset + 8 * place
     var distance = relative(fixup.at, target)
     code.write_integer_at(fixup.at, distance)
 }
@@ -270,15 +318,14 @@ func write_the_optional_header() {
 }
 
 func write_the_directories() {
-    var table_size = 8 * (imports.count() + 1)
     var index = 0
     while index < 16 {
         if index == 1 {
             dword(data_address)
-            dword(40)
+            dword(descriptors_size)
         } else if index == 12 {
             dword(data_address + address_table_offset)
-            dword(table_size)
+            dword(address_tables_size)
         } else {
             dword(0)
             dword(0)
