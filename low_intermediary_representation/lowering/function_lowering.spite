@@ -446,12 +446,13 @@ func store_an_attribute(object: Integer, attribute: Model.AttributeModel, value:
         release(old)
     }
     assert is_a_nullable_scalar(attribute_type)
-    var presence_offset = offset + 8
+    var presence_offset = layout.presence_offset_of(attribute)
+    var presence_width = layout.presence_width()
     var stored_presence = LowIntermediaryRepresentation.Instructions.Store(
         object,
         presence_offset,
         value.presence,
-        'bits_64',
+        presence_width,
     )
     emit(stored_presence)
 }
@@ -487,6 +488,11 @@ func lower_assign_through_shape(assign: HighIntermediaryRepresentation.Statement
     crash assign.value
     var value_type = assign.value.value_type
     kept(value, value_type)
+    var shared = shared_filler(assign.shape.key, assign.member)
+    if shared {
+        store_in_a_shared_block(shared, assign.member, object.value, value, value_type)
+        return
+    }
     var class_id = new_register()
     var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, object.value, 0, 'bits_64')
     emit(loaded)
@@ -502,6 +508,20 @@ func lower_assign_through_shape(assign: HighIntermediaryRepresentation.Statement
     var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
     emit(stopped)
     switch_to(after)
+}
+
+func store_in_a_shared_block(
+    filler: Model.Type,
+    member: String,
+    object: Integer,
+    value: Lowered,
+    value_type: Model.Type,
+) {
+    var model = layout.program.class_named(filler.name)
+    crash model
+    var attribute = model.attribute_named(member)
+    crash attribute
+    store_in_place(object, attribute, value, value_type)
 }
 
 func store_in_a_filler(
@@ -768,11 +788,19 @@ func lower_local(read: HighIntermediaryRepresentation.Values.LocalRead): Lowered
 }
 
 func lower_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead): Lowered {
+    var standing = layout.standing_in_for(read)
+    if standing {
+        return lower_value(standing)
+    }
     var object = lower_value(read.object)
     return load_attribute(object.value, read.attribute)
 }
 
 func load_attribute(object_register: Integer, attribute: Model.AttributeModel): Lowered {
+    var rebuilder = layout.rebuilder_of(attribute)
+    if rebuilder {
+        return rebuilt_in_place(object_register, rebuilder)
+    }
     var object = single(object_register)
     var offset = layout.offset_of(attribute)
     var attribute_type = attribute.attribute_type
@@ -788,15 +816,27 @@ func load_attribute(object_register: Integer, attribute: Model.AttributeModel): 
         return single(target)
     }
     var presence = new_register()
-    var presence_offset = offset + 8
+    var presence_offset = layout.presence_offset_of(attribute)
+    var presence_width = layout.presence_width()
     var loaded_presence = LowIntermediaryRepresentation.Instructions.Load(
         presence,
         object.value,
         presence_offset,
-        'bits_64',
+        presence_width,
     )
+    loaded_presence.is_signed = false
     emit(loaded_presence)
     return Lowered(target, presence)
+}
+
+func rebuilt_in_place(object: Integer, rebuilder: Model.FunctionModel): Lowered {
+    var target = new_register()
+    var arguments = List<Integer>()
+    arguments.append(object)
+    var key = rebuilder.key()
+    var called = LowIntermediaryRepresentation.Instructions.Call(target, key, arguments)
+    emit(called)
+    return owned(target)
 }
 
 func held_back(object: Integer): Lowered {
@@ -2051,26 +2091,53 @@ func lower_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall): Lo
     if is_a_nullable_scalar(call.value_type) {
         presence = new_register()
     }
+    var shared = shared_reading_filler(call)
+    if shared {
+        read_a_filling_attribute(call, shared, receiver.value, target, presence)
+    } else {
+        call_the_fillers(call, receiver.value, arguments, target, presence)
+    }
+    release_the_pending()
+    pending_releases = outer
+    var answer = Lowered(target, presence)
+    answer.owned = is_a_pointer(call.value_type)
+    return answer
+}
+
+func call_the_fillers(
+    call: HighIntermediaryRepresentation.Values.ShapeCall,
+    receiver: Integer,
+    arguments: List<Integer>,
+    target: Integer,
+    presence: Integer,
+) {
     var class_id = new_register()
-    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, receiver.value, 0, 'bits_64')
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, receiver, 0, 'bits_64')
     emit(loaded)
     var after = new_block()
     var fillers = layout.program.fillers_of(call.shape.key)
     var index = 0
     while index < fillers.count() {
         var filler = fillers[index]
-        call_a_filler(call, filler, receiver.value, class_id, arguments, target, presence, after)
+        call_a_filler(call, filler, receiver, class_id, arguments, target, presence, after)
         index = index + 1
     }
     var label = text_label("spite: no class fills '{call.shape.name}' here, at {path}:{line}\n")
     var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
     emit(stopped)
     switch_to(after)
-    release_the_pending()
-    pending_releases = outer
-    var answer = Lowered(target, presence)
-    answer.owned = is_a_pointer(call.value_type)
-    return answer
+}
+
+func shared_reading_filler(call: HighIntermediaryRepresentation.Values.ShapeCall): Model.Type? {
+    assert call.arguments.is_empty()
+    return shared_filler(call.shape.key, call.member.name)
+}
+
+func shared_filler(shape_key: String, member: String): Model.Type? {
+    var shared = layout.shared_offset_of(shape_key, member)
+    assert shared >= 0
+    var fillers = layout.program.fillers_of(shape_key)
+    return fillers.first()
 }
 
 func call_a_filler(
@@ -2301,7 +2368,7 @@ func read_a_filling_attribute(
     var loaded = load_attribute(object, attribute)
     var copied = LowIntermediaryRepresentation.Instructions.Copy(target, loaded.value)
     emit(copied)
-    if is_a_pointer(call.value_type) {
+    if is_a_pointer(call.value_type) and not loaded.owned {
         retain(target)
     }
     if presence >= 0 {

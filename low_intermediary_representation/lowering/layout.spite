@@ -1,6 +1,7 @@
 var program = Model.ProgramModel()
 var class_ids = Dictionary<String, Integer>()
 var offsets = Dictionary<String, Integer>()
+var presence_offsets = Dictionary<String, Integer>()
 var sizes = Dictionary<String, Integer>()
 var back_attributes = List<String>()
 var back_held = List<String>()
@@ -8,6 +9,14 @@ var back_offsets = Dictionary<String, Integer>()
 var header_size = 16
 var slot_size = 8
 var storage_offset = 16
+var scalars = Model.Scalars()
+var packs = false
+var absent = List<String>()
+var used_bytes = Dictionary<String, List<Boolean>>()
+var shared_offsets = Dictionary<String, Integer>()
+var rebuilt = Dictionary<String, Model.FunctionModel>()
+var folded = Dictionary<String, HighIntermediaryRepresentation.Values.Value>()
+var protected_names = ["_buffer", "_length", "item_count", "handle", "address", "context", "_function", "_cell"]
 
 func Layout(starting_program: Model.ProgramModel) {
     program = starting_program
@@ -22,7 +31,27 @@ func Layout(starting_program: Model.ProgramModel) {
     }
 }
 
+func lay_out_by_use(high: HighIntermediaryRepresentation.HighProgram) {
+    packs = high.packs_layouts
+    absent = high.absent_attributes
+    rebuilt = high.rebuilt_attributes
+    folded = high.folded_attributes
+    offsets = Dictionary<String, Integer>()
+    presence_offsets = Dictionary<String, Integer>()
+    sizes = Dictionary<String, Integer>()
+    back_offsets = Dictionary<String, Integer>()
+    used_bytes = Dictionary<String, List<Boolean>>()
+    shared_offsets = Dictionary<String, Integer>()
+    offsets["Spite.FunctionValue.owner"] = 24
+    high.shared_members.each(share_a_member)
+    program.order.each(lay_out)
+}
+
 func lay_out(model: Model.ClassModel) {
+    if packs and not keeps_its_declared_layout(model) {
+        pack(model)
+        return
+    }
     var offset = header_size
     if model.key == "Buffer" {
         offset = offset + slot_size
@@ -30,9 +59,13 @@ func lay_out(model: Model.ClassModel) {
     var index = 0
     while index < model.declared_attributes.count() {
         var attribute = model.declared_attributes[index]
-        offsets["{model.key}.{attribute.name}"] = offset
-        offset = offset + slot_size
-        if is_a_nullable_scalar(attribute.attribute_type) {
+        var key = "{model.key}.{attribute.name}"
+        if not absent.contains(key) {
+            offsets[key] = offset
+            offset = offset + slot_size
+        }
+        if not absent.contains(key) and is_a_nullable_scalar(attribute.attribute_type) {
+            presence_offsets[key] = offset
             offset = offset + slot_size
         }
         index = index + 1
@@ -42,6 +75,236 @@ func lay_out(model: Model.ClassModel) {
         offset = offset + slot_size
     }
     sizes[model.key] = offset
+}
+
+func keeps_its_declared_layout(model: Model.ClassModel): Boolean {
+    var key = model.key
+    var is_fixed = key == "Buffer" or key == "ForeignCallback" or key.starts_with("Spite.")
+    return is_fixed or scalars.is_a_scalar(key)
+}
+
+func may_move(attribute: Model.AttributeModel): Boolean {
+    return not protected_names.contains(attribute.name)
+}
+
+func pack(model: Model.ClassModel) {
+    var bytes = bytes_of(model.key)
+    var width = 8
+    while width >= 1 {
+        place_the_width(model, bytes, width)
+        width = width / 2
+    }
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var key = "{model.key}.{attribute.name}"
+        var is_placed = not absent.contains(key) and offsets.has(key)
+        if is_placed and is_a_nullable_scalar(attribute.attribute_type) {
+            var presence = first_free(bytes, 1)
+            take(bytes, presence, 1)
+            presence_offsets[key] = presence
+        }
+        index = index + 1
+    }
+    if back_held.contains(model.key) {
+        var back = first_free(bytes, slot_size)
+        take(bytes, back, slot_size)
+        back_offsets[model.key] = back
+    }
+    var end = bytes.count()
+    while end > header_size and bytes[end - 1] != true {
+        end = end - 1
+    }
+    var rounded = (end + slot_size - 1) / slot_size * slot_size
+    sizes[model.key] = rounded
+}
+
+func place_the_width(model: Model.ClassModel, bytes: List<Boolean>, width: Integer) {
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var key = "{model.key}.{attribute.name}"
+        var is_waiting = not absent.contains(key) and not offsets.has(key)
+        var attribute_width = width_in_bytes(attribute.attribute_type)
+        if is_waiting and attribute_width == width {
+            var offset = first_free(bytes, width)
+            take(bytes, offset, width)
+            offsets[key] = offset
+        }
+        index = index + 1
+    }
+}
+
+func bytes_of(class_key: String): List<Boolean> {
+    var known = used_bytes[class_key]
+    if known {
+        return known
+    }
+    var made = List<Boolean>()
+    while made.count() < header_size {
+        made.append(true)
+    }
+    used_bytes[class_key] = made
+    return made
+}
+
+func first_free(bytes: List<Boolean>, width: Integer): Integer {
+    var offset = header_size
+    while not is_free(bytes, offset, width) {
+        offset = offset + width
+    }
+    return offset
+}
+
+func is_free(bytes: List<Boolean>, offset: Integer, width: Integer): Boolean {
+    var index = offset
+    while index < offset + width {
+        if index < bytes.count() and bytes[index] == true {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func take(bytes: List<Boolean>, offset: Integer, width: Integer) {
+    while bytes.count() < offset + width {
+        bytes.append(false)
+    }
+    var index = offset
+    while index < offset + width {
+        bytes[index] = true
+        index = index + 1
+    }
+}
+
+func width_in_bytes(of_type: Model.Type): Integer {
+    if of_type.kind != 'scalar' {
+        return slot_size
+    }
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    return scalar.size
+}
+
+func share_a_member(shared: String) {
+    var parts = shared.split("|")
+    var member = parts.remove_last()
+    crash member
+    var shape_key = parts.join("|")
+    var attributes = filling_attributes(shape_key, member)
+    assert not attributes.is_empty()
+    var first = attributes.first()
+    crash first
+    var width = width_in_bytes(first.attribute_type)
+    var offset = common_offset(attributes, width)
+    assert offset >= 0
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        var key = "{attribute.owner}.{attribute.name}"
+        if not offsets.has(key) {
+            var bytes = bytes_of(attribute.owner)
+            take(bytes, offset, width)
+            offsets[key] = offset
+        }
+        index = index + 1
+    }
+    shared_offsets[shared] = offset
+}
+
+func filling_attributes(shape_key: String, member: String): List<Model.AttributeModel> {
+    var found = List<Model.AttributeModel>()
+    var unmatched = List<Model.AttributeModel>()
+    var fillers = program.fillers_of(shape_key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        var attribute = shareable_attribute(filler, member)
+        if not attribute {
+            return unmatched
+        }
+        if not is_like_the_first(found, attribute) {
+            return unmatched
+        }
+        found.append(attribute)
+        index = index + 1
+    }
+    return found
+}
+
+func is_like_the_first(found: List<Model.AttributeModel>, attribute: Model.AttributeModel): Boolean {
+    var first = found.first()
+    if not first {
+        return true
+    }
+    return first.attribute_type.is_the_same_as(attribute.attribute_type)
+}
+
+func shareable_attribute(filler: Model.Type, member: String): Model.AttributeModel? {
+    var is_a_class = filler.kind == 'object' and not filler.is_symbol and not filler.is_nullable
+    assert is_a_class
+    var model = program.class_named(filler.name)
+    assert model
+    assert not keeps_its_declared_layout(model)
+    var attribute = model.attribute_named(member)
+    assert attribute
+    var key = "{model.key}.{attribute.name}"
+    var is_plain = not is_back(attribute) and not is_a_nullable_scalar(attribute.attribute_type)
+    assert not absent.contains(key) and is_plain and may_move(attribute)
+    return attribute
+}
+
+func common_offset(attributes: List<Model.AttributeModel>, width: Integer): Integer {
+    var placed = -1
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        var found = offsets["{attribute.owner}.{attribute.name}"]
+        if found {
+            if placed >= 0 and placed != found {
+                return -1
+            }
+            placed = found
+        }
+        index = index + 1
+    }
+    if placed >= 0 {
+        if is_free_in_the_others(attributes, placed, width) {
+            return placed
+        }
+        return -1
+    }
+    var offset = header_size
+    while offset < 4096 {
+        if is_free_in_the_others(attributes, offset, width) {
+            return offset
+        }
+        offset = offset + width
+    }
+    return -1
+}
+
+func is_free_in_the_others(attributes: List<Model.AttributeModel>, offset: Integer, width: Integer): Boolean {
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        var key = "{attribute.owner}.{attribute.name}"
+        var bytes = bytes_of(attribute.owner)
+        if not offsets.has(key) and not is_free(bytes, offset, width) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func shared_offset_of(shape_key: String, member: String): Integer {
+    var found = shared_offsets["{shape_key}|{member}"]
+    if found {
+        return found
+    }
+    return -1
 }
 
 func note_the_back_references(model: Model.ClassModel) {
@@ -83,10 +346,46 @@ func is_a_nullable_scalar(of_type: Model.Type): Boolean {
     return is_held_in_place and of_type.is_nullable
 }
 
+func standing_in_for(
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+): HighIntermediaryRepresentation.Values.Value? {
+    var key = "{read.attribute.owner}.{read.attribute.name}"
+    var constant = folded[key]
+    if constant {
+        return constant
+    }
+    var rebuilder = rebuilt[key]
+    assert rebuilder
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    return HighIntermediaryRepresentation.Values.Call(rebuilder, read.object, no_arguments)
+}
+
+func rebuilder_of(attribute: Model.AttributeModel): Model.FunctionModel? {
+    return rebuilt["{attribute.owner}.{attribute.name}"]
+}
+
+func has_a_slot(attribute: Model.AttributeModel): Boolean {
+    return not absent.contains("{attribute.owner}.{attribute.name}")
+}
+
 func offset_of(attribute: Model.AttributeModel): Integer {
-    var found = offsets["{attribute.owner}.{attribute.name}"]
+    var key = "{attribute.owner}.{attribute.name}"
+    var found = offsets[key]
     crash found
     return found
+}
+
+func presence_offset_of(attribute: Model.AttributeModel): Integer {
+    var found = presence_offsets["{attribute.owner}.{attribute.name}"]
+    crash found
+    return found
+}
+
+func presence_width(): LowIntermediaryRepresentation.Width {
+    if packs {
+        return 'bits_8'
+    }
+    return 'bits_64'
 }
 
 func size_of(class_key: String): Integer {
