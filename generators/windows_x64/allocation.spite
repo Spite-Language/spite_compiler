@@ -1,0 +1,995 @@
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var register_total = 0
+var definitions = List<Integer>()
+var readings = List<Integer>()
+var is_constant = List<Boolean>()
+var constants = List<Long>()
+var fused = List<Boolean>()
+var homes = List<Integer>()
+var saved = List<Integer>()
+var starts = List<Integer>()
+var ends = List<Integer>()
+var block_heads = List<Integer>()
+var block_tails = List<Integer>()
+var successors = List<List<Integer>>()
+var predecessors = List<List<Integer>>()
+var root_blocks = List<List<Integer>>()
+var defining_blocks = List<List<Integer>>()
+var clobbers_until = List<Integer>()
+var position_total = 0
+var volatile_home = 10
+var keeping = List<Integer>()
+var depths = List<Integer>()
+var weights = List<Integer>()
+var layout = List<Integer>()
+var deferred_blocks = List<Integer>()
+var layout_positions = List<Integer>()
+var elided_targets = List<Boolean>()
+var address_bases = List<Integer>()
+var address_indexes = List<Integer>()
+var address_scales = List<Integer>()
+var address_displacements = List<Integer>()
+
+func Allocation(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+    keeping.append(3)
+    keeping.append(6)
+    keeping.append(7)
+    keeping.append(12)
+    keeping.append(13)
+    keeping.append(14)
+    keeping.append(15)
+}
+
+func allocate() {
+    lay_out_the_blocks()
+    register_total = operands.most_register_of(function)
+    fill_with_numbers(definitions, register_total, 0)
+    fill_with_numbers(readings, register_total, 0)
+    fill_with_numbers(homes, register_total, -1)
+    fill_with_numbers(starts, register_total, -1)
+    fill_with_numbers(ends, register_total, -1)
+    var index = 0
+    while index < register_total {
+        is_constant.append(false)
+        constants.append(0)
+        fused.append(false)
+        elided_targets.append(false)
+        address_bases.append(-1)
+        address_indexes.append(-1)
+        address_scales.append(1)
+        address_displacements.append(0)
+        index = index + 1
+    }
+    assert not function.is_resumable
+    count_the_operands()
+    find_the_fused_compares()
+    find_the_addresses()
+    number_the_positions()
+    find_the_edges()
+    find_the_depths()
+    fill_with_numbers(weights, register_total, 0)
+    walk_the_lives()
+    scan_the_intervals()
+    find_the_saved()
+}
+
+func fill_with_numbers(numbers: List<Integer>, count: Integer, value: Integer) {
+    numbers.clear()
+    var index = 0
+    while index < count {
+        numbers.append(value)
+        index = index + 1
+    }
+}
+
+func count_the_operands() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            operands.read(instruction)
+            operands.uses.each(count_a_reading)
+            operands.defines.each(count_a_definition)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_a_constant)
+        block_index = block_index + 1
+    }
+}
+
+func count_a_reading(register: Integer) {
+    var count = readings[register]
+    crash count
+    readings[register] = count + 1
+}
+
+func count_a_definition(register: Integer) {
+    var count = definitions[register]
+    crash count
+    definitions[register] = count + 1
+}
+
+func note_a_constant(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+        var target = instruction.target
+        var count = definitions[target]
+        crash count
+        if count == 1 and target >= function.parameter_count {
+            is_constant[target] = true
+            constants[target] = instruction.number
+        }
+    }
+}
+
+func constant_of(register: Integer): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    return is_constant[register] == true
+}
+
+func value_of(register: Integer): Long {
+    var value = constants[register]
+    crash value
+    return value
+}
+
+func is_fused(register: Integer): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    return fused[register] == true
+}
+
+func home_of(register: Integer): Integer {
+    if register < 0 or register >= homes.count() {
+        return -1
+    }
+    return homes[register]
+}
+
+func reading_count_of(register: Integer): Integer {
+    var count = readings[register]
+    crash count
+    return count
+}
+
+func find_the_fused_compares() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index + 1 < block.instructions.count() {
+            var instruction = block.instructions[index]
+            var following = block.instructions[index + 1]
+            fuse_when_it_fits(instruction, following)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func fuse_when_it_fits(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    following: LowIntermediaryRepresentation.Instructions.Instruction,
+) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Compare {
+        if following == LowIntermediaryRepresentation.Instructions.Branch {
+            var target = instruction.target
+            var only_read_here = following.condition == target and reading_count_of(target) == 1
+            var defined_once = definitions[target] == 1
+            if only_read_here and defined_once and not constant_of(target) and target >= function.parameter_count {
+                fused[target] = true
+            }
+        }
+    }
+}
+
+func is_elided(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+        return constant_of(instruction.target)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        return is_elided_target(instruction.target)
+    }
+    return false
+}
+
+func is_elided_target(register: Integer): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    return elided_targets[register] == true
+}
+
+func is_folded_address(register: Integer): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    var base = address_bases[register]
+    crash base
+    return base >= 0
+}
+
+func base_of(register: Integer): Integer {
+    var base = address_bases[register]
+    crash base
+    return base
+}
+
+func index_of(register: Integer): Integer {
+    var index = address_indexes[register]
+    crash index
+    return index
+}
+
+func scale_of(register: Integer): Integer {
+    var scale = address_scales[register]
+    crash scale
+    return scale
+}
+
+func displacement_of(register: Integer): Integer {
+    var displacement = address_displacements[register]
+    crash displacement
+    return displacement
+}
+
+func expanded_uses(uses: List<Integer>): List<Integer> {
+    var made = List<Integer>()
+    var index = 0
+    while index < uses.count() {
+        var register = uses[index]
+        if is_folded_address(register) {
+            var base = base_of(register)
+            made.append(base)
+            var folded_index = index_of(register)
+            if folded_index >= 0 {
+                made.append(folded_index)
+            }
+        } else {
+            made.append(register)
+        }
+        index = index + 1
+    }
+    return made
+}
+
+func find_the_addresses() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            var address = address_of(instruction)
+            if address >= 0 {
+                fold_the_address(block, index, address)
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func address_of(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Integer {
+    if instruction == LowIntermediaryRepresentation.Instructions.Load {
+        return instruction.address
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Store {
+        if instruction.source == instruction.address {
+            return -1
+        }
+        return instruction.address
+    }
+    return -1
+}
+
+func is_single(register: Integer): Boolean {
+    if register < function.parameter_count or constant_of(register) {
+        return false
+    }
+    return definitions[register] == 1 and readings[register] == 1
+}
+
+func fold_the_address(block: LowIntermediaryRepresentation.LowBlock, using: Integer, address: Integer) {
+    assert is_single(address)
+    var adding = defining_index(block, using, address)
+    assert adding >= 0
+    var found = block.instructions[adding]
+    crash found
+    if found == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        var plain_add = found.operator == 'add' and not found.is_checked and found.width == 'bits_64'
+        var steady = unchanged_between(block, adding, using, found.left)
+        steady = steady and unchanged_between(block, adding, using, found.right)
+        if plain_add and steady {
+            fold_the_sum(block, adding, using, address, found.left, found.right)
+        }
+    }
+}
+
+func fold_the_sum(
+    block: LowIntermediaryRepresentation.LowBlock,
+    adding: Integer,
+    using: Integer,
+    address: Integer,
+    left: Integer,
+    right: Integer,
+) {
+    if small_displacement(right) {
+        note_the_fold(address, left, -1, 1, right)
+        return
+    }
+    if small_displacement(left) {
+        note_the_fold(address, right, -1, 1, left)
+        return
+    }
+    assert not scaled_fold(block, adding, using, address, left, right)
+    assert not scaled_fold(block, adding, using, address, right, left)
+    note_the_fold(address, left, right, 1, -1)
+}
+
+func small_displacement(register: Integer): Boolean {
+    if not constant_of(register) {
+        return false
+    }
+    var value = value_of(register)
+    return value > -1073741824 and value < 1073741824
+}
+
+func scaled_fold(
+    block: LowIntermediaryRepresentation.LowBlock,
+    adding: Integer,
+    using: Integer,
+    address: Integer,
+    base: Integer,
+    product: Integer,
+): Boolean {
+    if not is_single(product) {
+        return false
+    }
+    var multiplying = defining_index(block, adding, product)
+    if multiplying < 0 {
+        return false
+    }
+    var found = block.instructions[multiplying]
+    crash found
+    if found == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        var scale = scale_from(found)
+        var steady = unchanged_between(block, multiplying, using, found.left)
+        if scale > 0 and steady and not found.is_checked {
+            note_the_fold(address, base, found.left, scale, -1)
+            elided_targets[product] = true
+            return true
+        }
+    }
+    return false
+}
+
+func scale_from(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Integer {
+    if not constant_of(arithmetic.right) {
+        return 0
+    }
+    var value = value_of(arithmetic.right)
+    if arithmetic.operator == 'multiply' {
+        if value == 1 or value == 2 or value == 4 or value == 8 {
+            return value.to_integer()
+        }
+    }
+    if arithmetic.operator == 'shift_left' {
+        return shifted_scale(value)
+    }
+    return 0
+}
+
+func shifted_scale(value: Long): Integer {
+    switch value {
+        0: return 1
+        1: return 2
+        2: return 4
+        3: return 8
+        _: return 0
+    }
+}
+
+func note_the_fold(address: Integer, base: Integer, index: Integer, scale: Integer, displacement: Integer) {
+    address_bases[address] = base
+    address_indexes[address] = index
+    address_scales[address] = scale
+    address_displacements[address] = 0
+    if displacement >= 0 {
+        var value = value_of(displacement)
+        address_displacements[address] = value.to_integer()
+    }
+    elided_targets[address] = true
+}
+
+func defining_index(block: LowIntermediaryRepresentation.LowBlock, before: Integer, register: Integer): Integer {
+    var earlier = before - 1
+    var lowest = before - 16
+    while earlier >= 0 and earlier >= lowest {
+        var instruction = block.instructions[earlier]
+        crash instruction
+        operands.read(instruction)
+        if operands.defines.contains(register) {
+            return earlier
+        }
+        earlier = earlier - 1
+    }
+    return -1
+}
+
+func unchanged_between(
+    block: LowIntermediaryRepresentation.LowBlock,
+    from_index: Integer,
+    to_index: Integer,
+    register: Integer,
+): Boolean {
+    var between = from_index + 1
+    while between < to_index {
+        var instruction = block.instructions[between]
+        crash instruction
+        operands.read(instruction)
+        if operands.defines.contains(register) {
+            return false
+        }
+        between = between + 1
+    }
+    return true
+}
+
+func number_the_positions() {
+    var block_count = function.blocks.count()
+    fill_with_numbers(block_heads, block_count, 0)
+    fill_with_numbers(block_tails, block_count, 0)
+    var position = 1
+    var layout_index = 0
+    while layout_index < layout.count() {
+        var block_index = layout[layout_index]
+        var block = function.blocks[block_index]
+        crash block
+        block_heads[block_index] = position
+        position = position + 1
+        var last = position - 1
+        var index = 0
+        while index < block.instructions.count() {
+            last = position
+            position = position + 1
+            index = index + 1
+        }
+        block_tails[block_index] = last
+        layout_index = layout_index + 1
+    }
+    position_total = position
+}
+
+func lay_out_the_blocks() {
+    var count = function.blocks.count()
+    layout = List<Integer>()
+    layout_positions = List<Integer>()
+    var placed = List<Boolean>()
+    var index = 0
+    while index < count {
+        placed.append(false)
+        layout_positions.append(0)
+        index = index + 1
+    }
+    deferred_blocks.clear()
+    var start = 0
+    while start < count {
+        var block = start
+        while block >= 0 {
+            while block >= 0 and placed[block] != true {
+                placed[block] = true
+                layout_positions[block] = layout.count()
+                layout.append(block)
+                block = preferred_next(block, placed)
+            }
+            block = next_deferred(placed)
+        }
+        start = start + 1
+    }
+}
+
+func next_deferred(placed: List<Boolean>): Integer {
+    while not deferred_blocks.is_empty() {
+        var block = deferred_blocks.remove_last()
+        crash block
+        if placed[block] != true {
+            return block
+        }
+    }
+    return -1
+}
+
+func preferred_next(block: Integer, placed: List<Boolean>): Integer {
+    var found = function.blocks[block]
+    crash found
+    var following = block + 1
+    if following >= function.blocks.count() {
+        following = -1
+    }
+    var last = found.instructions.last()
+    if not last {
+        return following
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        return last.block
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        if placed[last.when_true] != true {
+            deferred_blocks.append(last.when_false)
+            return last.when_true
+        }
+        return last.when_false
+    }
+    if ends_the_block(last) {
+        return -1
+    }
+    return following
+}
+
+func find_the_edges() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var made = List<Integer>()
+        successors.append(made)
+        var coming = List<Integer>()
+        predecessors.append(coming)
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var leaving = successors[block_index]
+        crash leaving
+        var falls_through = true
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            add_the_targets(instruction, leaving)
+            falls_through = not ends_the_block(instruction)
+            index = index + 1
+        }
+        if falls_through and block_index + 1 < function.blocks.count() {
+            leaving.append(block_index + 1)
+        }
+        var leaving_index = 0
+        while leaving_index < leaving.count() {
+            var successor = leaving[leaving_index]
+            var arriving = predecessors[successor]
+            crash arriving
+            arriving.append(block_index)
+            leaving_index = leaving_index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func add_the_targets(instruction: LowIntermediaryRepresentation.Instructions.Instruction, leaving: List<Integer>) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Jump {
+        leaving.append(instruction.block)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Branch {
+        leaving.append(instruction.when_true)
+        leaving.append(instruction.when_false)
+    }
+}
+
+func ends_the_block(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Jump {
+        return true
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Branch {
+        return true
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Return {
+        return true
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Exit {
+        return true
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Stop {
+        return not instruction.continues
+    }
+    return false
+}
+
+func touch(register: Integer, position: Integer) {
+    var start = starts[register]
+    crash start
+    if start < 0 or position < start {
+        starts[register] = position
+    }
+    var end = ends[register]
+    crash end
+    if position > end {
+        ends[register] = position
+    }
+}
+
+func walk_the_lives() {
+    var last_defined = List<Integer>()
+    var last_rooted = List<Integer>()
+    fill_with_numbers(last_defined, register_total, -1)
+    fill_with_numbers(last_rooted, register_total, -1)
+    var index = 0
+    while index < register_total {
+        var roots = List<Integer>()
+        root_blocks.append(roots)
+        var defining = List<Integer>()
+        defining_blocks.append(defining)
+        index = index + 1
+    }
+    var parameter = 0
+    while parameter < function.parameter_count and parameter < register_total {
+        touch(parameter, 0)
+        parameter = parameter + 1
+    }
+    var clobber_count = 0
+    clobbers_until.append(0)
+    var layout_index = 0
+    while layout_index < layout.count() {
+        var block_index = layout[layout_index]
+        var block = function.blocks[block_index]
+        crash block
+        clobbers_until.append(clobber_count)
+        var position = block_heads[block_index]
+        crash position
+        var instruction_index = 0
+        while instruction_index < block.instructions.count() {
+            position = position + 1
+            var instruction = block.instructions[instruction_index]
+            if clobbers_the_volatiles(instruction) {
+                clobber_count = clobber_count + 1
+            }
+            clobbers_until.append(clobber_count)
+            if not is_elided(instruction) {
+                operands.read(instruction)
+                var uses = expanded_uses(operands.uses)
+                var defines = operands.defines.copy()
+                note_the_uses(uses, block_index, position, last_defined, last_rooted)
+                note_the_defines(defines, block_index, position, last_defined)
+            }
+            instruction_index = instruction_index + 1
+        }
+        layout_index = layout_index + 1
+    }
+    var defined_marks = List<Integer>()
+    var live_marks = List<Integer>()
+    var block_count = function.blocks.count()
+    fill_with_numbers(defined_marks, block_count, -1)
+    fill_with_numbers(live_marks, block_count, -1)
+    var register = 0
+    while register < register_total {
+        var roots = root_blocks[register]
+        crash roots
+        if not roots.is_empty() {
+            walk_one_life(register, roots, defined_marks, live_marks)
+        }
+        register = register + 1
+    }
+}
+
+func note_the_uses(
+    uses: List<Integer>,
+    block_index: Integer,
+    position: Integer,
+    last_defined: List<Integer>,
+    last_rooted: List<Integer>,
+) {
+    var index = 0
+    while index < uses.count() {
+        var register = uses[index]
+        if not constant_of(register) and not is_fused(register) {
+            touch(register, position)
+            add_weight(register, block_index)
+            var defined_in = last_defined[register]
+            var rooted_in = last_rooted[register]
+            crash defined_in
+            crash rooted_in
+            if defined_in != block_index and rooted_in != block_index {
+                last_rooted[register] = block_index
+                var roots = root_blocks[register]
+                crash roots
+                roots.append(block_index)
+            }
+        }
+        index = index + 1
+    }
+}
+
+func note_the_defines(defines: List<Integer>, block_index: Integer, position: Integer, last_defined: List<Integer>) {
+    var index = 0
+    while index < defines.count() {
+        var register = defines[index]
+        if not is_fused(register) {
+            touch(register, position)
+            add_weight(register, block_index)
+            var defined_in = last_defined[register]
+            crash defined_in
+            if defined_in != block_index {
+                last_defined[register] = block_index
+                var defining = defining_blocks[register]
+                crash defining
+                defining.append(block_index)
+            }
+        }
+        index = index + 1
+    }
+}
+
+func walk_one_life(register: Integer, roots: List<Integer>, defined_marks: List<Integer>, live_marks: List<Integer>) {
+    var defining = defining_blocks[register]
+    crash defining
+    var index = 0
+    while index < defining.count() {
+        var defined_block = defining[index]
+        defined_marks[defined_block] = register
+        index = index + 1
+    }
+    var waiting = List<Integer>()
+    index = 0
+    while index < roots.count() {
+        var root = roots[index]
+        var marked = live_marks[root]
+        crash marked
+        if marked != register {
+            live_marks[root] = register
+            waiting.append(root)
+        }
+        index = index + 1
+    }
+    while not waiting.is_empty() {
+        var block = waiting.remove_last()
+        crash block
+        var head = block_heads[block]
+        crash head
+        touch(register, head)
+        if block == 0 {
+            touch(register, 0)
+        }
+        var coming = predecessors[block]
+        crash coming
+        var coming_index = 0
+        while coming_index < coming.count() {
+            var predecessor = coming[coming_index]
+            var tail = block_tails[predecessor]
+            crash tail
+            touch(register, tail)
+            var defined_there = defined_marks[predecessor] == register
+            var live_there = live_marks[predecessor] == register
+            if not defined_there and not live_there {
+                live_marks[predecessor] = register
+                waiting.append(predecessor)
+            }
+            coming_index = coming_index + 1
+        }
+    }
+}
+
+func clobbers_the_volatiles(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return false
+        LowIntermediaryRepresentation.Instructions.Copy: return false
+        LowIntermediaryRepresentation.Instructions.Compare: return false
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: return false
+        LowIntermediaryRepresentation.Instructions.DecimalCompare: return false
+        LowIntermediaryRepresentation.Instructions.DecimalConversion: return false
+        LowIntermediaryRepresentation.Instructions.Load: return false
+        LowIntermediaryRepresentation.Instructions.Store: return false
+        LowIntermediaryRepresentation.Instructions.DataAddress: return false
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return false
+        LowIntermediaryRepresentation.Instructions.Retain: return false
+        LowIntermediaryRepresentation.Instructions.Jump: return false
+        LowIntermediaryRepresentation.Instructions.Branch: return false
+        LowIntermediaryRepresentation.Instructions.Return: return false
+        LowIntermediaryRepresentation.Instructions.FrameAddress: return false
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return false
+        LowIntermediaryRepresentation.Instructions.CompareExchange: return false
+        _: return true
+    }
+}
+
+func clobbered_between(start: Integer, end: Integer): Boolean {
+    var before = 0
+    if start > 0 {
+        var counted = clobbers_until[start - 1]
+        crash counted
+        before = counted
+    }
+    var through = clobbers_until[end]
+    crash through
+    return through > before
+}
+
+func scan_the_intervals() {
+    var heads = List<Integer>()
+    fill_with_numbers(heads, position_total + 1, -1)
+    var chained = List<Integer>()
+    fill_with_numbers(chained, register_total, -1)
+    var register = register_total - 1
+    while register >= 0 {
+        var start = starts[register]
+        crash start
+        if start >= 0 {
+            var head = heads[start]
+            crash head
+            chained[register] = head
+            heads[start] = register
+        }
+        register = register - 1
+    }
+    var taken = List<Boolean>()
+    var physical = 0
+    while physical < 16 {
+        taken.append(false)
+        physical = physical + 1
+    }
+    var active = List<Integer>()
+    var position = 0
+    while position <= position_total {
+        var next = heads[position]
+        crash next
+        var current = next
+        while current >= 0 {
+            expire_before(position, active, taken)
+            place(current, active, taken)
+            var following = chained[current]
+            crash following
+            current = following
+        }
+        position = position + 1
+    }
+}
+
+func expire_before(position: Integer, active: List<Integer>, taken: List<Boolean>) {
+    var index = 0
+    while index < active.count() {
+        var register = active[index]
+        var end = ends[register]
+        crash end
+        if end < position {
+            var home = homes[register]
+            crash home
+            if home >= 0 {
+                taken[home] = false
+            }
+            active.remove_at(index)
+        } else {
+            index = index + 1
+        }
+    }
+}
+
+func place(register: Integer, active: List<Integer>, taken: List<Boolean>) {
+    var start = starts[register]
+    var end = ends[register]
+    crash start
+    crash end
+    var volatile_taken = taken[volatile_home] == true
+    if not volatile_taken and not clobbered_between(start, end) {
+        homes[register] = volatile_home
+        taken[volatile_home] = true
+        active.append(register)
+        return
+    }
+    var index = 0
+    while index < keeping.count() {
+        var candidate = keeping[index]
+        var candidate_taken = taken[candidate] == true
+        if not candidate_taken {
+            homes[register] = candidate
+            taken[candidate] = true
+            active.append(register)
+            return
+        }
+        index = index + 1
+    }
+    spill_the_cheapest(register, active)
+}
+
+func spill_the_cheapest(register: Integer, active: List<Integer>) {
+    var cheapest = -1
+    var cheapest_weight = weight_of(register)
+    var index = 0
+    while index < active.count() {
+        var other = active[index]
+        var other_home = homes[other]
+        crash other_home
+        var other_weight = weight_of(other)
+        if other_home != volatile_home and other_weight < cheapest_weight {
+            cheapest = index
+            cheapest_weight = other_weight
+        }
+        index = index + 1
+    }
+    if cheapest < 0 {
+        homes[register] = -1
+        return
+    }
+    var spilled = active[cheapest]
+    crash spilled
+    var freed = homes[spilled]
+    crash freed
+    homes[spilled] = -1
+    homes[register] = freed
+    active[cheapest] = register
+}
+
+func weight_of(register: Integer): Integer {
+    var weight = weights[register]
+    crash weight
+    return weight
+}
+
+func add_weight(register: Integer, block_index: Integer) {
+    var depth = depths[block_index]
+    crash depth
+    var cost = 1
+    var level = 0
+    while level < depth and level < 4 {
+        cost = cost * 8
+        level = level + 1
+    }
+    var weight = weights[register]
+    crash weight
+    if weight < 1000000000 {
+        weights[register] = weight + cost
+    }
+}
+
+func find_the_depths() {
+    var block_count = function.blocks.count()
+    fill_with_numbers(depths, block_count, 0)
+    var block_index = 0
+    while block_index < block_count {
+        var leaving = successors[block_index]
+        crash leaving
+        var from_position = layout_positions[block_index]
+        crash from_position
+        var leaving_index = 0
+        while leaving_index < leaving.count() {
+            var successor = leaving[leaving_index]
+            var to_position = layout_positions[successor]
+            crash to_position
+            if to_position <= from_position {
+                deepen(to_position, from_position)
+            }
+            leaving_index = leaving_index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func deepen(from_position: Integer, to_position: Integer) {
+    var position = from_position
+    while position <= to_position {
+        var block = layout[position]
+        crash block
+        var depth = depths[block]
+        crash depth
+        depths[block] = depth + 1
+        position = position + 1
+    }
+}
+
+func find_the_saved() {
+    var index = 0
+    while index < keeping.count() {
+        var candidate = keeping[index]
+        if homes.contains(candidate) {
+            saved.append(candidate)
+        }
+        index = index + 1
+    }
+}

@@ -1,0 +1,407 @@
+var program = LowIntermediaryRepresentation.LowProgram()
+var operands = LowOptimizationPasses.Operands()
+var inlinable = Dictionary<String, LowIntermediaryRepresentation.LowFunction>()
+var largest_callee = 24
+var largest_caller = 4000
+var most_inlined = 64
+var register_base = 0
+var block_base = 0
+var continuing = 0
+var answer = -1
+var answer_presence = -1
+var callee_place = ""
+var callee_key = ""
+var passed_arguments = List<Integer>()
+var held_register = 0
+
+func Pass(starting_program: LowIntermediaryRepresentation.LowProgram) {
+    program = starting_program
+}
+
+func transformed(): LowIntermediaryRepresentation.LowProgram {
+    program.lowered_functions.each(note_if_inlinable)
+    program.lowered_functions.each(inline_into)
+    return program
+}
+
+func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
+    assert not function.is_resumable and not function.place.is_empty()
+    assert function.answer_decimal_size == 0 and function.parameter_decimal_sizes.is_empty()
+    var count = 0
+    var copyable = true
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            copyable = copyable and is_copyable(instruction)
+            count = count + 1
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    assert copyable and count <= largest_callee
+    inlinable[function.key] = function
+}
+
+func is_copyable(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return true
+        LowIntermediaryRepresentation.Instructions.Load: return true
+        LowIntermediaryRepresentation.Instructions.Store: return true
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Branch: return true
+        LowIntermediaryRepresentation.Instructions.Return: return not instruction.is_a_suspension
+        LowIntermediaryRepresentation.Instructions.Stop: return not instruction.continues
+        _: return false
+    }
+}
+
+func inline_into(function: LowIntermediaryRepresentation.LowFunction) {
+    assert not function.is_resumable and not function.place.is_empty()
+    var inlined = 0
+    var block_index = 0
+    while block_index < function.blocks.count() and inlined < most_inlined {
+        if inlined_in_block(function, block_index) {
+            inlined = inlined + 1
+        } else {
+            block_index = block_index + 1
+        }
+    }
+}
+
+func size_of(function: LowIntermediaryRepresentation.LowFunction): Integer {
+    var count = 0
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        count = count + block.instructions.count()
+        block_index = block_index + 1
+    }
+    return count
+}
+
+func inlined_in_block(function: LowIntermediaryRepresentation.LowFunction, block_index: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        var callee = callee_of(instruction, function)
+        if callee {
+            if size_of(function) > largest_caller {
+                return false
+            }
+            if instruction == LowIntermediaryRepresentation.Instructions.Call {
+                inline_the_call(function, block_index, index, instruction, callee)
+                return true
+            }
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func callee_of(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    caller: LowIntermediaryRepresentation.LowFunction,
+): LowIntermediaryRepresentation.LowFunction? {
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        var found = inlinable[instruction.function]
+        if found and found.key != caller.key {
+            if instruction.arguments.count() == found.parameter_count {
+                return found
+            }
+        }
+    }
+    return null
+}
+
+func inline_the_call(
+    function: LowIntermediaryRepresentation.LowFunction,
+    block_index: Integer,
+    index: Integer,
+    call: LowIntermediaryRepresentation.Instructions.Call,
+    callee: LowIntermediaryRepresentation.LowFunction,
+) {
+    var block = function.blocks[block_index]
+    crash block
+    register_base = operands.most_register_of(function)
+    var callee_registers = operands.most_register_of(callee)
+    held_register = callee_registers
+    function.register_count = register_base + callee_registers + 1
+    block_base = function.blocks.count()
+    continuing = block_base + callee.blocks.count()
+    answer = call.target
+    answer_presence = call.presence
+    callee_place = callee.place
+    callee_key = callee.key
+    var before = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var after = LowIntermediaryRepresentation.LowBlock()
+    after.place = block.place
+    var position = 0
+    while position < block.instructions.count() {
+        var instruction = block.instructions[position]
+        if position < index {
+            before.append(instruction)
+        }
+        if position > index {
+            after.instructions.append(instruction)
+        }
+        position = position + 1
+    }
+    var falls_through = after.instructions.is_empty() or not ends_the_block(after)
+    if falls_through and block_index + 1 < block_base {
+        var onward = LowIntermediaryRepresentation.Instructions.Jump(block_index + 1)
+        after.instructions.append(onward)
+    }
+    passed_arguments = List<Integer>()
+    var parameter = 0
+    while parameter < callee.parameter_count {
+        var argument = call.arguments[parameter]
+        crash argument
+        if writes_the_parameter(callee, parameter) {
+            passed_arguments.append(-1)
+            var passed = LowIntermediaryRepresentation.Instructions.Copy(register_base + parameter, argument)
+            before.append(passed)
+        } else {
+            passed_arguments.append(argument)
+        }
+        parameter = parameter + 1
+    }
+    var entering = LowIntermediaryRepresentation.Instructions.Jump(block_base)
+    before.append(entering)
+    block.instructions = before
+    var callee_index = 0
+    while callee_index < callee.blocks.count() {
+        var copied = copied_block(callee, callee_index)
+        function.blocks.append(copied)
+        callee_index = callee_index + 1
+    }
+    function.blocks.append(after)
+}
+
+func ends_the_block(block: LowIntermediaryRepresentation.LowBlock): Boolean {
+    var last = block.instructions.last()
+    crash last
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        return true
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        return true
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Return {
+        return true
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Exit {
+        return true
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Stop {
+        return not last.continues
+    }
+    return false
+}
+
+func copied_block(
+    callee: LowIntermediaryRepresentation.LowFunction,
+    callee_index: Integer,
+): LowIntermediaryRepresentation.LowBlock {
+    var source = callee.blocks[callee_index]
+    crash source
+    var made = LowIntermediaryRepresentation.LowBlock()
+    made.place = callee_place
+    var index = 0
+    while index < source.instructions.count() {
+        var instruction = source.instructions[index]
+        copy_into(made, instruction)
+        index = index + 1
+    }
+    var falls_through = made.instructions.is_empty() or not ends_the_block(made)
+    if falls_through {
+        var onward = LowIntermediaryRepresentation.Instructions.Jump(block_base + callee_index + 1)
+        if callee_index + 1 >= callee.blocks.count() {
+            onward = LowIntermediaryRepresentation.Instructions.Jump(continuing)
+        }
+        made.instructions.append(onward)
+    }
+    return made
+}
+
+func moved(register: Integer): Integer {
+    if register < 0 {
+        return register
+    }
+    if register < passed_arguments.count() {
+        var argument = passed_arguments[register]
+        if argument >= 0 {
+            return argument
+        }
+    }
+    return register_base + register
+}
+
+func writes_the_parameter(callee: LowIntermediaryRepresentation.LowFunction, parameter: Integer): Boolean {
+    var block_index = 0
+    while block_index < callee.blocks.count() {
+        var block = callee.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            operands.read(instruction)
+            if operands.defines.contains(parameter) {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func copy_into(
+    made: LowIntermediaryRepresentation.LowBlock,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: copy_constant(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: copy_copy(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: copy_arithmetic(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Compare: copy_compare(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Load: copy_load(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Store: copy_store(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Jump: copy_jump(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Branch: copy_branch(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Return: copy_return(made, instruction)
+        LowIntermediaryRepresentation.Instructions.Stop: copy_stop(made, instruction)
+        _: crash
+    }
+}
+
+func copy_constant(
+    made: LowIntermediaryRepresentation.LowBlock,
+    constant: LowIntermediaryRepresentation.Instructions.Constant,
+) {
+    var target = moved(constant.target)
+    var copied = LowIntermediaryRepresentation.Instructions.Constant(target, constant.number)
+    made.instructions.append(copied)
+}
+
+func copy_copy(made: LowIntermediaryRepresentation.LowBlock, copy: LowIntermediaryRepresentation.Instructions.Copy) {
+    var target = moved(copy.target)
+    var source = moved(copy.source)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, source)
+    made.instructions.append(copied)
+}
+
+func copy_arithmetic(
+    made: LowIntermediaryRepresentation.LowBlock,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+) {
+    var target = moved(arithmetic.target)
+    var left = moved(arithmetic.left)
+    var right = moved(arithmetic.right)
+    var copied = LowIntermediaryRepresentation.Instructions.Arithmetic(target, arithmetic.operator, left, right)
+    copied.width = arithmetic.width
+    copied.is_signed = arithmetic.is_signed
+    copied.is_checked = arithmetic.is_checked
+    copied.line = arithmetic.line
+    copied.shown = arithmetic.shown
+    copied.type_name = arithmetic.type_name
+    copied.path = arithmetic.path
+    copied.owner = arithmetic.owner
+    if copied.owner.is_empty() {
+        copied.owner = callee_key
+    }
+    made.instructions.append(copied)
+}
+
+func copy_compare(
+    made: LowIntermediaryRepresentation.LowBlock,
+    compare: LowIntermediaryRepresentation.Instructions.Compare,
+) {
+    var target = moved(compare.target)
+    var left = moved(compare.left)
+    var right = moved(compare.right)
+    var copied = LowIntermediaryRepresentation.Instructions.Compare(target, compare.comparison, left, right)
+    copied.is_signed = compare.is_signed
+    made.instructions.append(copied)
+}
+
+func copy_load(made: LowIntermediaryRepresentation.LowBlock, loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    var target = moved(loaded.target)
+    var address = moved(loaded.address)
+    var copied = LowIntermediaryRepresentation.Instructions.Load(target, address, loaded.offset, loaded.width)
+    copied.is_signed = loaded.is_signed
+    made.instructions.append(copied)
+}
+
+func copy_store(
+    made: LowIntermediaryRepresentation.LowBlock,
+    stored: LowIntermediaryRepresentation.Instructions.Store,
+) {
+    var address = moved(stored.address)
+    var source = moved(stored.source)
+    var copied = LowIntermediaryRepresentation.Instructions.Store(address, stored.offset, source, stored.width)
+    made.instructions.append(copied)
+}
+
+func copy_jump(made: LowIntermediaryRepresentation.LowBlock, jump: LowIntermediaryRepresentation.Instructions.Jump) {
+    var copied = LowIntermediaryRepresentation.Instructions.Jump(block_base + jump.block)
+    made.instructions.append(copied)
+}
+
+func copy_branch(
+    made: LowIntermediaryRepresentation.LowBlock,
+    branch: LowIntermediaryRepresentation.Instructions.Branch,
+) {
+    var condition = moved(branch.condition)
+    var when_true = block_base + branch.when_true
+    var when_false = block_base + branch.when_false
+    var copied = LowIntermediaryRepresentation.Instructions.Branch(condition, when_true, when_false)
+    made.instructions.append(copied)
+}
+
+func copy_return(
+    made: LowIntermediaryRepresentation.LowBlock,
+    returned: LowIntermediaryRepresentation.Instructions.Return,
+) {
+    var answers = answer >= 0 and returned.source >= 0
+    var presents = answer_presence >= 0 and returned.presence >= 0
+    var source = moved(returned.source)
+    var presence = moved(returned.presence)
+    if answers and presents and presence == answer {
+        var held = register_base + held_register
+        var holding = LowIntermediaryRepresentation.Instructions.Copy(held, presence)
+        made.instructions.append(holding)
+        presence = held
+    }
+    if answers {
+        var answered = LowIntermediaryRepresentation.Instructions.Copy(answer, source)
+        made.instructions.append(answered)
+    }
+    if presents {
+        var present = LowIntermediaryRepresentation.Instructions.Copy(answer_presence, presence)
+        made.instructions.append(present)
+    }
+    var leaving = LowIntermediaryRepresentation.Instructions.Jump(continuing)
+    made.instructions.append(leaving)
+}
+
+func copy_stop(made: LowIntermediaryRepresentation.LowBlock, stop: LowIntermediaryRepresentation.Instructions.Stop) {
+    var copied = LowIntermediaryRepresentation.Instructions.Stop(stop.label)
+    copied.labels = stop.labels
+    copied.signed_numbers = stop.signed_numbers
+    copied.continues = stop.continues
+    var index = 0
+    while index < stop.numbers.count() {
+        var number = stop.numbers[index]
+        var placed = moved(number)
+        copied.numbers.append(placed)
+        index = index + 1
+    }
+    made.instructions.append(copied)
+}

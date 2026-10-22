@@ -6,6 +6,8 @@ var rbp = 5
 var r8 = 8
 var r9 = 9
 var r11 = 11
+var indexing = -1
+var scaling = 0
 
 func byte(value: Integer) {
     var written: Byte = value.to_byte()
@@ -672,4 +674,414 @@ func epilogue() {
     byte(236)
     byte(93)
     byte(195)
+}
+
+func fits_in_32_bits(value: Long): Boolean {
+    return value >= -2147483648 and value <= 2147483647
+}
+
+func low_32_bits(value: Long): Integer {
+    var low = value.bits_and(4294967295)
+    if low >= 2147483648 {
+        low = low - 4294967296
+    }
+    return low.to_integer()
+}
+
+func low_byte_of(value: Long): Integer {
+    var low = value.bits_and(255)
+    return low.to_integer()
+}
+
+func short_rex(register: Integer, base: Integer) {
+    var prefix = 64
+    if register >= 8 {
+        prefix = prefix + 4
+    }
+    if base >= 8 {
+        prefix = prefix + 1
+    }
+    byte(prefix)
+}
+
+func clear_register(register: Integer) {
+    if register >= 8 {
+        byte(69)
+    }
+    byte(49)
+    var bits = low_bits(register)
+    byte(192 + bits * 8 + bits)
+}
+
+func move_small_immediate(register: Integer, value: Long) {
+    if value == 0 {
+        clear_register(register)
+        return
+    }
+    if value > 0 and value <= 4294967295 {
+        if register >= 8 {
+            byte(65)
+        }
+        var register_bits = low_bits(register)
+        byte(184 + register_bits)
+        var low = low_32_bits(value)
+        dword(low)
+        return
+    }
+    if fits_in_32_bits(value) {
+        rex(true, 0, register)
+        byte(199)
+        var target_bits = low_bits(register)
+        byte(192 + target_bits)
+        var small = value.to_integer()
+        dword(small)
+        return
+    }
+    move_immediate(register, value)
+}
+
+func operation_immediate(extension: Integer, register: Integer, value: Long) {
+    rex(true, 0, register)
+    var register_bits = low_bits(register)
+    if value >= -128 and value <= 127 {
+        byte(131)
+        byte(192 + extension * 8 + register_bits)
+        var small = low_byte_of(value)
+        byte(small)
+        return
+    }
+    byte(129)
+    byte(192 + extension * 8 + register_bits)
+    var wide = value.to_integer()
+    dword(wide)
+}
+
+func multiply_immediate(target: Integer, source: Integer, value: Long) {
+    rex(true, target, source)
+    var target_bits = low_bits(target) * 8
+    var source_bits = low_bits(source)
+    if value >= -128 and value <= 127 {
+        byte(107)
+        byte(192 + target_bits + source_bits)
+        var small = low_byte_of(value)
+        byte(small)
+        return
+    }
+    byte(105)
+    byte(192 + target_bits + source_bits)
+    var wide = value.to_integer()
+    dword(wide)
+}
+
+func multiply_registers(target: Integer, source: Integer) {
+    rex(true, target, source)
+    byte(15)
+    byte(175)
+    var target_bits = low_bits(target) * 8
+    var source_bits = low_bits(source)
+    byte(192 + target_bits + source_bits)
+}
+
+func shift_immediate(extension: Integer, register: Integer, count: Integer) {
+    rex(true, 0, register)
+    byte(193)
+    var register_bits = low_bits(register)
+    byte(192 + extension * 8 + register_bits)
+    byte(count)
+}
+
+func test_register(register: Integer) {
+    rex(true, register, register)
+    byte(133)
+    var bits = low_bits(register)
+    byte(192 + bits * 8 + bits)
+}
+
+func memory_rex(wide: Boolean, register: Integer, base: Integer) {
+    var prefix = 64
+    if wide {
+        prefix = prefix + 8
+    }
+    if register >= 8 {
+        prefix = prefix + 4
+    }
+    if indexing >= 8 {
+        prefix = prefix + 2
+    }
+    if base >= 8 {
+        prefix = prefix + 1
+    }
+    byte(prefix)
+}
+
+func memory_operand(register: Integer, base: Integer, displacement: Integer) {
+    var register_bits = low_bits(register) * 8
+    var base_bits = low_bits(base)
+    var is_short = displacement >= -128 and displacement <= 127
+    var mode = 128
+    if is_short {
+        mode = 64
+    }
+    if indexing >= 0 {
+        byte(mode + register_bits + 4)
+        var index_bits = low_bits(indexing) * 8
+        byte(scaling * 64 + index_bits + base_bits)
+    } else {
+        byte(mode + register_bits + base_bits)
+        if base_bits == 4 {
+            byte(36)
+        }
+    }
+    if is_short {
+        var small = displacement
+        if small < 0 {
+            small = small + 256
+        }
+        byte(small)
+        return
+    }
+    dword(displacement)
+}
+
+func index_by(register: Integer, scale: Integer) {
+    indexing = register
+    scaling = 0
+    if scale == 2 {
+        scaling = 1
+    }
+    if scale == 4 {
+        scaling = 2
+    }
+    if scale == 8 {
+        scaling = 3
+    }
+}
+
+func stop_indexing() {
+    indexing = -1
+    scaling = 0
+}
+
+func load_from(
+    target: Integer,
+    base: Integer,
+    offset: Integer,
+    width: LowIntermediaryRepresentation.Width,
+    is_signed: Boolean,
+) {
+    switch width {
+        'bits_64': load_quad_from(target, base, offset)
+        'bits_32': load_double_word_from(target, base, offset, is_signed)
+        'bits_16': load_extended_from(target, base, offset, is_signed, 191, 183)
+        'bits_8': load_extended_from(target, base, offset, is_signed, 190, 182)
+    }
+}
+
+func load_quad_from(target: Integer, base: Integer, offset: Integer) {
+    memory_rex(true, target, base)
+    byte(139)
+    memory_operand(target, base, offset)
+}
+
+func load_double_word_from(target: Integer, base: Integer, offset: Integer, is_signed: Boolean) {
+    if is_signed {
+        memory_rex(true, target, base)
+        byte(99)
+    } else {
+        memory_rex(false, target, base)
+        byte(139)
+    }
+    memory_operand(target, base, offset)
+}
+
+func load_extended_from(
+    target: Integer,
+    base: Integer,
+    offset: Integer,
+    is_signed: Boolean,
+    signed_code: Integer,
+    unsigned_code: Integer,
+) {
+    memory_rex(true, target, base)
+    byte(15)
+    if is_signed {
+        byte(signed_code)
+    } else {
+        byte(unsigned_code)
+    }
+    memory_operand(target, base, offset)
+}
+
+func store_to(base: Integer, offset: Integer, source: Integer, width: LowIntermediaryRepresentation.Width) {
+    switch width {
+        'bits_64': store_wide_to(base, offset, source, true, 137)
+        'bits_32': store_wide_to(base, offset, source, false, 137)
+        'bits_16': store_word_to(base, offset, source)
+        'bits_8': store_wide_to(base, offset, source, false, 136)
+    }
+}
+
+func store_wide_to(base: Integer, offset: Integer, source: Integer, wide: Boolean, opcode: Integer) {
+    if wide {
+        memory_rex(true, source, base)
+    } else {
+        memory_rex(false, source, base)
+    }
+    byte(opcode)
+    memory_operand(source, base, offset)
+}
+
+func store_word_to(base: Integer, offset: Integer, source: Integer) {
+    byte(102)
+    memory_rex(false, source, base)
+    byte(137)
+    memory_operand(source, base, offset)
+}
+
+func store_immediate_to(base: Integer, offset: Integer, value: Long, width: LowIntermediaryRepresentation.Width) {
+    switch width {
+        'bits_64': store_double_word_immediate(base, offset, value, true)
+        'bits_32': store_double_word_immediate(base, offset, value, false)
+        'bits_16': store_word_immediate(base, offset, value)
+        'bits_8': store_byte_immediate(base, offset, value)
+    }
+}
+
+func store_double_word_immediate(base: Integer, offset: Integer, value: Long, wide: Boolean) {
+    if wide {
+        memory_rex(true, 0, base)
+    } else {
+        memory_rex(false, 0, base)
+    }
+    byte(199)
+    memory_operand(0, base, offset)
+    var low = low_32_bits(value)
+    dword(low)
+}
+
+func store_word_immediate(base: Integer, offset: Integer, value: Long) {
+    byte(102)
+    memory_rex(false, 0, base)
+    byte(199)
+    memory_operand(0, base, offset)
+    var low = value.bits_and(65535)
+    var low_part = low.bits_and(255)
+    var high_part = low.shifted_right(8)
+    var written_low = low_part.to_integer()
+    var written_high = high_part.to_integer()
+    byte(written_low)
+    byte(written_high)
+}
+
+func store_byte_immediate(base: Integer, offset: Integer, value: Long) {
+    memory_rex(false, 0, base)
+    byte(198)
+    memory_operand(0, base, offset)
+    var low = low_byte_of(value)
+    byte(low)
+}
+
+func store_slot_immediate(displacement: Integer, value: Long) {
+    rex(true, 0, 0)
+    byte(199)
+    slot_operand(0, displacement)
+    var small = value.to_integer()
+    dword(small)
+}
+
+func increment_memory(base: Integer, offset: Integer) {
+    memory_rex(true, 0, base)
+    byte(255)
+    memory_operand(0, base, offset)
+}
+
+func compare_registers(left: Integer, right: Integer) {
+    register_operation(57, left, right)
+}
+
+func compare_with(register: Integer, value: Long) {
+    if value == 0 {
+        test_register(register)
+        return
+    }
+    operation_immediate(7, register, value)
+}
+
+func narrow_rex(register: Integer, base: Integer) {
+    if register >= 8 or base >= 8 {
+        short_rex(register, base)
+    }
+}
+
+func operation_immediate_narrow(extension: Integer, register: Integer, value: Long) {
+    narrow_rex(0, register)
+    var register_bits = low_bits(register)
+    if value >= -128 and value <= 127 {
+        byte(131)
+        byte(192 + extension * 8 + register_bits)
+        var small = low_byte_of(value)
+        byte(small)
+        return
+    }
+    byte(129)
+    byte(192 + extension * 8 + register_bits)
+    var wide = value.to_integer()
+    dword(wide)
+}
+
+func register_operation_narrow(opcode: Integer, target: Integer, source: Integer) {
+    narrow_rex(source, target)
+    byte(opcode)
+    var source_bits = low_bits(source) * 8
+    var target_bits = low_bits(target)
+    byte(192 + source_bits + target_bits)
+}
+
+func multiply_registers_narrow(target: Integer, source: Integer) {
+    narrow_rex(target, source)
+    byte(15)
+    byte(175)
+    var target_bits = low_bits(target) * 8
+    var source_bits = low_bits(source)
+    byte(192 + target_bits + source_bits)
+}
+
+func multiply_immediate_narrow(target: Integer, source: Integer, value: Long) {
+    narrow_rex(target, source)
+    var target_bits = low_bits(target) * 8
+    var source_bits = low_bits(source)
+    if value >= -128 and value <= 127 {
+        byte(107)
+        byte(192 + target_bits + source_bits)
+        var small = low_byte_of(value)
+        byte(small)
+        return
+    }
+    byte(105)
+    byte(192 + target_bits + source_bits)
+    var wide = value.to_integer()
+    dword(wide)
+}
+
+func sign_extend_double_word(target: Integer, source: Integer) {
+    rex(true, target, source)
+    byte(99)
+    var target_bits = low_bits(target) * 8
+    var source_bits = low_bits(source)
+    byte(192 + target_bits + source_bits)
+}
+
+func move_double_word(target: Integer, source: Integer) {
+    narrow_rex(source, target)
+    byte(137)
+    var source_bits = low_bits(source) * 8
+    var target_bits = low_bits(target)
+    byte(192 + source_bits + target_bits)
+}
+
+func multiply_wide_by(register: Integer) {
+    rex(true, 0, register)
+    byte(247)
+    var register_bits = low_bits(register)
+    byte(232 + register_bits)
 }

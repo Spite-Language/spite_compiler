@@ -16,7 +16,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Unions and enums instead of strings in both representations (instruction kind, operator, types, call owner)
 - `printers/spite` and the formatter; the tree keeps comments, blank lines and literal spelling; `--final-classes`
 - `printers/machine_code`
-- Low representation in SSA form with basic blocks, and register allocation
+- Low representation in SSA form; until then each value has one register interval with no holes and a spilled value is spilled for its whole life (D210), and copy propagation only crosses a block for a parameter
 - Unit passes and program passes split by input type; every function has a stable identity for cache keys
 - Objects live on the heap until a pass proves the frame (replaces copying a returned object into the caller); until then `--optimization-report` lists every local list, object and copy as made on the heap (D160)
 - No range is proved yet, so every whole-number `+`, `-` and `*` keeps its overflow check, and `--optimization-report` lists each one (D160); a `-` in front is not listed
@@ -233,6 +233,15 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A crash's report is kept out of the way
 - Smaller ones
 - Other optimisations
+
+### The machine code (D210 to D214 are built)
+
+- Loop-invariant code motion: a load, an address or a computation that does not change in a loop is still made on every pass
+- Common subexpressions within a block (the same pure computation or the same load twice with no store between) are still made twice
+- A division by a negative constant, and an unsigned one by a constant that is not a power of two, keep the `div`; a remainder by a power of two tested against zero is not yet a mask test
+- Inlining stops at leaf functions: a small function that calls another is called, and a function inlined into a loop keeps its bounds checks (no range proof yet)
+- A value read across a call in a loop and spilled is reloaded on each use: no interval splitting and no rematerialisation of loads
+- Loops are not rotated (each pass jumps back to the test at the top)
 
 ## Every proof the original makes
 
