@@ -1,0 +1,504 @@
+var encoder = Encoder()
+var program = LowIntermediaryRepresentation.LowProgram()
+var data_fixups = List<Fixup>()
+var import_fixups = List<Fixup>()
+var stop_routine = 0
+var threaded = false
+var allocates = false
+var state_label = -1
+var slot_label = -1
+var table_label = -1
+var count_label = -1
+var pool_label = -1
+var lock_label = -1
+var making_routine = -1
+var allocating_routine = -1
+var freeing_routine = -1
+var resizing_routine = -1
+var releasing_routine = -1
+var state_size = 640
+var most_states = 1024
+var thread_slots = "78 14 00 00"
+var live_tag = 1527775232
+
+func SmallBlocks(
+    starting_encoder: Encoder,
+    starting_program: LowIntermediaryRepresentation.LowProgram,
+    starting_data_fixups: List<Fixup>,
+    starting_import_fixups: List<Fixup>,
+) {
+    encoder = starting_encoder
+    program = starting_program
+    data_fixups = starting_data_fixups
+    import_fixups = starting_import_fixups
+}
+
+func emit_the_routines(starting_stop_routine: Integer) {
+    stop_routine = starting_stop_routine
+    threaded = program.uses_threads
+    program.lowered_functions.each(note_a_function)
+    if allocates {
+        lay_out_the_state()
+        if threaded {
+            emit_the_making_routine()
+        }
+        emit_the_allocating_routine()
+        emit_the_freeing_routine()
+        emit_the_resizing_routine()
+        if threaded {
+            emit_the_releasing_routine()
+        }
+    }
+}
+
+func note_a_function(function: LowIntermediaryRepresentation.LowFunction) {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if allocates_with(instruction) {
+                allocates = true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func allocates_with(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Allocate: return true
+        LowIntermediaryRepresentation.Instructions.Free: return true
+        LowIntermediaryRepresentation.Instructions.Resize: return true
+        _: return false
+    }
+}
+
+func call_allocate() {
+    call_routine(allocating_routine)
+}
+
+func call_free() {
+    call_routine(freeing_routine)
+}
+
+func call_resize() {
+    call_routine(resizing_routine)
+}
+
+func call_release() {
+    if releasing_routine >= 0 {
+        call_routine(releasing_routine)
+    }
+}
+
+func call_routine(routine: Integer) {
+    assert routine >= 0
+    var at = encoder.call_relative()
+    encoder.patch_dword(at, routine - (at + 4))
+}
+
+func lay_out_the_state() {
+    if threaded {
+        slot_label = zeroed_label(8)
+        table_label = zeroed_label(8 * most_states)
+        count_label = zeroed_label(8)
+        pool_label = zeroed_label(8)
+        lock_label = zeroed_label(8)
+    } else {
+        state_label = zeroed_label(state_size)
+    }
+}
+
+func zeroed_label(size: Integer): Integer {
+    var room = Buffer()
+    var index = 0
+    while index < size {
+        room.append(0)
+        index = index + 1
+    }
+    program.data.append(room)
+    return program.data.count() - 1
+}
+
+func code(text: String) {
+    var index = 0
+    var count = text.length()
+    while index + 1 < count {
+        var high_code = text.code_at(index)
+        var low_code = text.code_at(index + 1)
+        var high = digit_of(high_code)
+        var low = digit_of(low_code)
+        encoder.byte(high * 16 + low)
+        index = index + 3
+    }
+}
+
+func digit_of(character: Integer): Integer {
+    var value = character - 48
+    if character >= 65 {
+        value = character - 55
+    }
+    return value
+}
+
+func at_label(text: String, label: Integer) {
+    code(text)
+    var at = encoder.position()
+    encoder.dword(0)
+    var fixup = Fixup(at, "", label)
+    data_fixups.append(fixup)
+}
+
+func call_import(name: String) {
+    var at = encoder.call_through_memory()
+    var fixup = Fixup(at, name, 0)
+    import_fixups.append(fixup)
+}
+
+func land(at: Integer) {
+    var here = encoder.position()
+    encoder.patch_dword(at, here - (at + 4))
+}
+
+func back_if(condition_code: Integer, target: Integer) {
+    var at = encoder.jump_if(condition_code)
+    encoder.patch_dword(at, target - (at + 4))
+}
+
+func back(target: Integer) {
+    var at = encoder.jump()
+    encoder.patch_dword(at, target - (at + 4))
+}
+
+func stop(text: String) {
+    var message = "spite: {text}\n"
+    var bytes = message.to_bytes()
+    program.data.append(bytes)
+    var label = program.data.count() - 1
+    at_label("48 8D 0D", label)
+    var length = bytes.count()
+    encoder.move_small_immediate(encoder.rdx, length)
+    call_routine(stop_routine)
+}
+
+func leave() {
+    code("48 83 C4 38 C3")
+}
+
+func find_the_state() {
+    if not threaded {
+        at_label("4C 8D 1D", state_label)
+        return
+    }
+    at_label("48 8B 05", slot_label)
+    code("48 85 C0")
+    var no_slot = encoder.jump_if(132)
+    code("65 4C 8B 1C C5 {thread_slots}")
+    code("4D 85 DB")
+    var found = encoder.jump_if(133)
+    land(no_slot)
+    code("48 89 4C 24 20 48 89 54 24 28")
+    call_routine(making_routine)
+    code("48 8B 4C 24 20 48 8B 54 24 28")
+    land(found)
+}
+
+func take_the_lock() {
+    var spinning = encoder.position()
+    code("B8 01 00 00 00")
+    at_label("48 87 05", lock_label)
+    code("48 85 C0")
+    var taken = encoder.jump_if(132)
+    code("F3 90")
+    back(spinning)
+    land(taken)
+}
+
+func give_the_lock_back() {
+    code("31 C0")
+    at_label("48 89 05", lock_label)
+}
+
+func emit_the_making_routine() {
+    making_routine = encoder.position()
+    code("48 83 EC 28")
+    at_label("48 8B 05", slot_label)
+    code("48 85 C0")
+    var has_slot = encoder.jump_if(133)
+    call_import("TlsAlloc")
+    code("89 C0 48 83 F8 40")
+    var no_slot = encoder.jump_if(131)
+    code("48 83 C0 01 48 89 C1 31 C0")
+    at_label("F0 48 0F B1 0D", slot_label)
+    at_label("48 8B 05", slot_label)
+    land(has_slot)
+    code("48 89 44 24 20")
+    take_the_lock()
+    at_label("4C 8B 1D", pool_label)
+    code("4D 85 DB")
+    var none_kept = encoder.jump_if(132)
+    code("4D 8B 43 20")
+    at_label("4C 89 05", pool_label)
+    give_the_lock_back()
+    var installing = encoder.jump()
+    land(none_kept)
+    give_the_lock_back()
+    call_import("GetProcessHeap")
+    code("48 89 C1 BA 08 00 00 00 41 B8 80 02 00 00")
+    call_import("HeapAlloc")
+    code("48 85 C0")
+    var out_of_memory = encoder.jump_if(132)
+    code("49 89 C3 B8 01 00 00 00")
+    at_label("F0 48 0F C1 05", count_label)
+    code("48 3D 00 04 00 00")
+    var too_many = encoder.jump_if(131)
+    code("41 89 43 18")
+    at_label("4C 8D 05", table_label)
+    code("4D 89 1C C0")
+    land(installing)
+    code("48 8B 44 24 20 65 4C 89 1C C5 {thread_slots}")
+    code("48 83 C4 28 C3")
+    land(no_slot)
+    stop("the program could not get a thread slot for its memory")
+    land(out_of_memory)
+    stop("the program ran out of memory")
+    land(too_many)
+    stop("the program ran more than 1024 threads that allocate memory at once")
+}
+
+func emit_the_allocating_routine() {
+    allocating_routine = encoder.position()
+    code("48 83 EC 38 48 89 C8 48 C1 E8 28")
+    var too_large = encoder.jump_if(133)
+    code("48 81 F9 F8 03 00 00")
+    var large = encoder.jump_if(135)
+    code("48 8D 51 17 48 C1 EA 04")
+    find_the_state()
+    var retrying = encoder.position()
+    code("49 8B 44 D3 40 48 85 C0")
+    var empty = encoder.jump_if(132)
+    code("4C 8B 00 4D 89 44 D3 40")
+    var tagging = encoder.position()
+    code("8D 8A 00 00 10 5B 89 48 F8 48 8D 4C 12 FF 45 31 C0 49 89 C1")
+    var zeroing = encoder.position()
+    code("4D 89 01 49 83 C1 08 48 83 E9 01")
+    back_if(133, zeroing)
+    leave()
+    land(empty)
+    if threaded {
+        code("31 C0 49 87 03 48 85 C0")
+        var nothing_returned = encoder.jump_if(132)
+        var collecting = encoder.position()
+        code("4C 8B 00 44 8B 48 F8 41 81 E9 00 00 20 5B")
+        code("4F 8B 54 CB 40 4C 89 10 4B 89 44 CB 40 4C 89 C0 48 85 C0")
+        back_if(133, collecting)
+        back(retrying)
+        land(nothing_returned)
+    }
+    var carving = encoder.position()
+    code("48 89 D1 48 C1 E1 04 49 8B 43 08 4C 8D 04 08 4D 3B 43 10")
+    var chunk_used_up = encoder.jump_if(135)
+    code("4D 89 43 08")
+    if threaded {
+        code("45 8B 43 18 44 89 40 04")
+    } else {
+        code("C7 40 04 00 00 00 00")
+    }
+    code("48 83 C0 08")
+    back(tagging)
+    land(chunk_used_up)
+    code("48 89 54 24 28 4C 89 5C 24 30")
+    call_import("GetProcessHeap")
+    code("48 89 C1 31 D2 41 B8 00 00 01 00")
+    call_import("HeapAlloc")
+    code("48 8B 54 24 28 4C 8B 5C 24 30 48 85 C0")
+    var no_chunk = encoder.jump_if(132)
+    code("49 89 43 08 4C 8D 80 00 00 01 00 4D 89 43 10")
+    back(carving)
+    land(large)
+    code("48 89 4C 24 20")
+    call_import("GetProcessHeap")
+    code("48 89 C1 BA 08 00 00 00 4C 8B 44 24 20 49 83 C0 10")
+    call_import("HeapAlloc")
+    code("48 85 C0")
+    var no_large = encoder.jump_if(132)
+    code("C7 40 08 00 00 30 5B 48 83 C0 10")
+    leave()
+    land(too_large)
+    land(no_chunk)
+    land(no_large)
+    code("31 C0")
+    leave()
+}
+
+func emit_the_freeing_routine() {
+    freeing_routine = encoder.position()
+    code("48 83 EC 38 48 85 C9")
+    var nothing = encoder.jump_if(132)
+    code("8B 41 F8 8D 90 FF FF EF A4 83 FA 40")
+    var not_small = encoder.jump_if(131)
+    code("83 C2 01")
+    find_the_state()
+    var elsewhere = -1
+    if threaded {
+        code("44 8B 41 FC 45 3B 43 18")
+        elsewhere = encoder.jump_if(133)
+    }
+    code("8D 82 00 00 20 5B 89 41 F8 4D 8B 44 D3 40 4C 89 01 49 89 4C D3 40")
+    land(nothing)
+    var done = encoder.position()
+    code("31 C0")
+    leave()
+    if threaded {
+        land(elsewhere)
+        code("8D 82 00 00 20 5B 89 41 F8")
+        at_label("4C 8D 0D", table_label)
+        code("4F 8B 0C C1")
+        var pushing = encoder.position()
+        code("49 8B 01 48 89 01 F0 49 0F B1 09")
+        back_if(133, pushing)
+        back(done)
+    }
+    land(not_small)
+    code("3D 00 00 30 5B")
+    var not_large = encoder.jump_if(133)
+    code("C7 41 F8 00 00 40 5B 48 89 4C 24 20")
+    call_import("GetProcessHeap")
+    code("48 89 C1 31 D2 4C 8B 44 24 20 49 83 E8 10")
+    call_import("HeapFree")
+    back(done)
+    land(not_large)
+    code("8D 90 FF FF DF A4 83 FA 40")
+    var twice_small = encoder.jump_if(130)
+    code("3D 00 00 40 5B")
+    var twice_large = encoder.jump_if(132)
+    stop("the program freed memory it never allocated")
+    land(twice_small)
+    land(twice_large)
+    stop("the program freed the same memory twice")
+}
+
+func emit_the_resizing_routine() {
+    resizing_routine = encoder.position()
+    code("48 85 C9")
+    var held = encoder.jump_if(133)
+    code("48 89 D1")
+    back(allocating_routine)
+    land(held)
+    code("48 83 EC 38 48 89 D0 48 C1 E8 28")
+    var too_large = encoder.jump_if(133)
+    code("8B 41 F8 3D 00 00 30 5B")
+    var large = encoder.jump_if(132)
+    code("44 8D 80 FF FF EF A4 41 83 F8 40")
+    var not_held = encoder.jump_if(131)
+    code("49 C1 E0 04 49 83 C0 08 4C 39 C2")
+    var moving = encoder.jump_if(135)
+    code("48 89 C8")
+    var clearing = encoder.position()
+    code("4C 39 C2")
+    var cleared = encoder.jump_if(131)
+    code("C6 04 10 00 48 83 C2 01")
+    back(clearing)
+    land(cleared)
+    leave()
+    land(moving)
+    code("48 89 4C 24 20 4C 89 44 24 28 48 89 D1")
+    call_routine(allocating_routine)
+    code("48 85 C0")
+    var no_room = encoder.jump_if(132)
+    code("48 8B 4C 24 20 4C 8B 44 24 28 45 31 C9")
+    var copying = encoder.position()
+    code("4E 8B 14 09 4E 89 14 08 49 83 C1 08 4D 39 C1")
+    back_if(130, copying)
+    code("48 89 44 24 30 48 8B 4C 24 20")
+    call_routine(freeing_routine)
+    code("48 8B 44 24 30")
+    leave()
+    land(large)
+    code("48 89 4C 24 20 48 89 54 24 28")
+    call_import("GetProcessHeap")
+    code("48 89 C1 BA 08 00 00 00 4C 8B 44 24 20 49 83 E8 10 4C 8B 4C 24 28 49 83 C1 10")
+    call_import("HeapReAlloc")
+    code("48 85 C0")
+    var no_large = encoder.jump_if(132)
+    code("48 83 C0 10")
+    leave()
+    land(too_large)
+    land(no_room)
+    land(no_large)
+    code("31 C0")
+    leave()
+    land(not_held)
+    stop("the program resized memory it freed or never allocated")
+}
+
+func emit_the_releasing_routine() {
+    releasing_routine = encoder.position()
+    at_label("48 8B 05", slot_label)
+    code("48 85 C0")
+    var no_slot = encoder.jump_if(132)
+    code("65 4C 8B 1C C5 {thread_slots} 4D 85 DB")
+    var no_state = encoder.jump_if(132)
+    code("31 C9 65 48 89 0C C5 {thread_slots}")
+    take_the_lock()
+    at_label("4C 8B 05", pool_label)
+    code("4D 89 43 20")
+    at_label("4C 89 1D", pool_label)
+    give_the_lock_back()
+    land(no_slot)
+    land(no_state)
+    code("C3")
+}
+
+func inlines_size(size: Long): Boolean {
+    return not threaded and size >= 0 and size <= 120
+}
+
+func allocate_inline(size: Long) {
+    var small_size = size.to_integer()
+    var size_class = (small_size + 23) / 16
+    var head = 64 + 8 * size_class
+    at_label("4C 8D 1D", state_label)
+    code("49 8B 83")
+    encoder.dword(head)
+    code("48 85 C0")
+    var empty = encoder.jump_if(132)
+    code("48 8B 08 49 89 8B")
+    encoder.dword(head)
+    code("C7 40 F8")
+    encoder.dword(live_tag + size_class)
+    code("31 C9 48 89 08")
+    var offset = 8
+    while offset < 16 * size_class - 8 {
+        code("48 89 48")
+        encoder.byte(offset)
+        offset = offset + 8
+    }
+    var done = encoder.jump()
+    land(empty)
+    encoder.move_small_immediate(encoder.rcx, size)
+    call_allocate()
+    land(done)
+}
+
+func free_inline() {
+    if threaded {
+        call_free()
+    } else {
+        code("48 85 C9")
+        var nothing = encoder.jump_if(132)
+        code("8B 41 F8 8D 90 FF FF EF A4 83 FA 40")
+        var not_small = encoder.jump_if(131)
+        code("05 00 00 10 00 89 41 F8")
+        at_label("4C 8D 1D", state_label)
+        code("4D 8B 44 D3 48 4C 89 01 49 89 4C D3 48")
+        var done = encoder.jump()
+        land(not_small)
+        call_free()
+        land(nothing)
+        land(done)
+    }
+}

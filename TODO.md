@@ -45,7 +45,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A back reference is read without a count (D195), so a call on it (`child.parent.leave()`) whose body lets the owner go runs on freed memory, and on two threads the check that its object lives races with the owner's last release
 - The spec pages in `../SpiteLanguage/specs` still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D187 to D193
 
-- The runtime the library needs, as machine code: allocator, console, files, directories, clock, sockets, processes, dynamic library
+- The runtime the library needs, as machine code: console, files, directories, clock, sockets, processes, dynamic library
 - A foreign call (D171) answers only `Integer`, `_as_long`, `_as_double` and `_as_float`: `_as_text`, a `type` passed as a pointer to its struct, a list passed as a pointer to its numbers with C's writes coming back, and a header's prototypes giving each argument its width (`float`, `unsigned long long`) are not built (`tests/foreign_library`), so a `Float` argument C declares `float` is passed as a `double`
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
 - `--debug-memory` counts and the leak report; an attribute read from an object made in the same expression (`Maker().part`) leaks that object; the counts a pass proves unneeded are still written
@@ -149,6 +149,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The memory, the placement and the copies
 
+- The small-block allocator (D300 to D302) never gives a chunk back to the system and never moves a free block to another size class, so a program's peak of small blocks of one size stays its memory; an allocation of a constant size above 120 bytes, and every free of a block above 1016 bytes, is a call
 - The compiler places memory
 - Reading an address is one machine operation
 - Objects that never leave their function live in the frame
@@ -184,7 +185,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The text, the numbers and the collections
 
-- Short text lives inside the `String` (D271): every text is one allocation, but every allocation is the system heap's (`HeapAlloc` and `HeapFree`, about 60 ns a call on Mortaro's machine), so making many short texts still costs what Python's own small-object allocator does not; a text whose `String` keeps other attributes is still two
+- Short text lives inside the `String` (D271): a text whose `String` keeps other attributes is still two allocations
 - A slice shares its source's bytes where the source outlives it and neither changes (texts can change in place through `append_code` and an append, so it needs that proven first)
 - `List.join` copies every `String` item with `to_string()` before it appends it, one allocation per item that an append of the item itself would not need
 - Short symbols are inline text
@@ -205,6 +206,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The threads
 
+- The small-block allocator (D300 to D302) has no inline fast path in a program with threads (every allocation and free there is a call), and a thread's lists are found through a thread slot where a `Parallel`'s own block could hand them over
 - Concurrency machinery only where it is used
 - Hidden async/await as compile-time state machines
 - Reads in a row overlap

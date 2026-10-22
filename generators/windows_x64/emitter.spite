@@ -37,9 +37,12 @@ var frame_slots = 0
 var current_place = ""
 var place_starts = List<Integer>()
 var place_texts = List<String>()
+var small_blocks = SmallBlocks(encoder, program, data_fixups, import_fixups)
+var current_ends_a_thread = false
 
 func Emitter(starting_program: LowIntermediaryRepresentation.LowProgram) {
     program = starting_program
+    small_blocks = SmallBlocks(encoder, program, data_fixups, import_fixups)
     parameter_registers.append(encoder.rcx)
     parameter_registers.append(encoder.rdx)
     parameter_registers.append(encoder.r8)
@@ -48,6 +51,7 @@ func Emitter(starting_program: LowIntermediaryRepresentation.LowProgram) {
 
 func emitted(): Buffer {
     emit_the_stop_routine()
+    small_blocks.emit_the_routines(stop_routine)
     program.lowered_functions.each(emit_function)
     if program.place_table >= 0 {
         write_the_places()
@@ -312,6 +316,7 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     current_block = 0
     var outgoing = 32 + 8 * most_arguments_of(function)
     current_is_resumable = function.is_resumable
+    current_ends_a_thread = function.ends_a_thread
     current_answer_decimal_size = function.answer_decimal_size
     if function.is_resumable {
         current_outgoing = (outgoing + 15) / 16 * 16
@@ -1505,11 +1510,16 @@ func emit_data_address(address: LowIntermediaryRepresentation.Instructions.DataA
 }
 
 func emit_allocate(allocate: LowIntermediaryRepresentation.Instructions.Allocate) {
-    call_import("GetProcessHeap")
-    encoder.move_register(encoder.rcx, encoder.rax)
-    encoder.move_small_immediate(encoder.rdx, 8)
-    read_into(encoder.r8, allocate.size)
-    call_import("HeapAlloc")
+    var size: Long = -1
+    if allocation.constant_of(allocate.size) {
+        size = allocation.value_of(allocate.size)
+    }
+    if small_blocks.inlines_size(size) {
+        small_blocks.allocate_inline(size)
+    } else {
+        read_into(encoder.rcx, allocate.size)
+        small_blocks.call_allocate()
+    }
     check_memory()
     write_from(allocate.target, encoder.rax)
 }
@@ -1527,32 +1537,14 @@ func emit_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
 }
 
 func emit_free(freed: LowIntermediaryRepresentation.Instructions.Free) {
-    call_import("GetProcessHeap")
-    encoder.move_register(encoder.rcx, encoder.rax)
-    encoder.move_small_immediate(encoder.rdx, 0)
-    read_into(encoder.r8, freed.pointer)
-    call_import("HeapFree")
+    read_into(encoder.rcx, freed.pointer)
+    small_blocks.free_inline()
 }
 
 func emit_resize(resize: LowIntermediaryRepresentation.Instructions.Resize) {
-    read_into(encoder.rax, resize.pointer)
-    encoder.test_rax()
-    var zero = 132
-    var fresh = encoder.jump_if(zero)
-    call_import("GetProcessHeap")
-    encoder.move_register(encoder.rcx, encoder.rax)
-    encoder.move_small_immediate(encoder.rdx, 8)
-    read_into(encoder.r8, resize.pointer)
-    read_into(encoder.r9, resize.size)
-    call_import("HeapReAlloc")
-    var done = encoder.jump()
-    patch_here(fresh)
-    call_import("GetProcessHeap")
-    encoder.move_register(encoder.rcx, encoder.rax)
-    encoder.move_small_immediate(encoder.rdx, 8)
-    read_into(encoder.r8, resize.size)
-    call_import("HeapAlloc")
-    patch_here(done)
+    read_into(encoder.rcx, resize.pointer)
+    read_into(encoder.rdx, resize.size)
+    small_blocks.call_resize()
     check_memory()
     write_from(resize.target, encoder.rax)
 }
@@ -1665,6 +1657,9 @@ func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
 }
 
 func emit_return(returned: LowIntermediaryRepresentation.Instructions.Return) {
+    if current_ends_a_thread {
+        small_blocks.call_release()
+    }
     if returned.source >= 0 {
         read_into(encoder.rax, returned.source)
     }

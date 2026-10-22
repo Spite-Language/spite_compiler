@@ -222,7 +222,9 @@ first, left to right as written, adds up their lengths (a written piece's length
 hole's is read from its text, a number's is counted), makes the text once with exactly that room, and copies each
 piece's bytes into it with one block copy (`copy r<n> bytes from r<a> to r<b>` in `--low-ir`, a `rep movsb` in the
 machine code). A written piece is copied straight from the executable's data, with no text made for it; a hole's
-text is let go once the join is written. A chain of pairs would make a whole new text at every piece and copy
+text is let go once the join is written. A hole's text the join only borrows (an attribute's, a singleton's) is
+counted until the join is written when a later piece calls a function, since that call may let it go
+(`"{name} then {rename()}"`). A chain of pairs would make a whole new text at every piece and copy
 everything joined so far into it.
 
 ```
@@ -368,6 +370,58 @@ func Lists() {
 
 Freeing `names` takes each text's count down in place and calls `_free_String` for the ones that reach 0. What a
 user can observe: the time.
+
+## Small blocks come from the compiler's own free lists
+
+Every object, list storage, text and task frame used to be one `HeapAlloc` and one `HeapFree` (about 60 ns each on
+Mortaro's machine). The generator now writes its own allocator into every program that allocates
+(`generators/windows_x64/small_blocks.spite`): a block of up to 1016 bytes takes one of 64 size classes, 16 bytes
+apart, and comes from that class's free list; a class whose list is empty carves blocks from a 64 KiB chunk taken
+from the system heap, and a freed block goes back on its class's list. Larger blocks are the system heap's, as
+before. Each block carries 8 bytes in front of it: its class and whether it is live or free, and in a program with
+threads the number of the thread that owns it.
+
+- **The size class is worked out while compiling.** An allocation whose size is a constant (every object, every
+  box, every frame) of up to 120 bytes is written in place in a program without threads: a load of its class's list
+  head, a test, two moves to unlink the block, its tag, and the stores that clear it, with a call to the shared
+  routine only when the list is empty. A size known only at run time, and every allocation in a program with
+  threads, calls the shared routine, which works the class out from the size.
+- **Freeing is a few instructions in place**: the block's tag gives its class, the block is marked free and pushed
+  on its list. A block of the system heap goes back to it.
+- **Threads**: in a program with threads every thread keeps its own lists in a block of its own, found through a
+  thread slot read straight from the thread's own block (`gs:[0x1480]`), so no allocation takes a lock. A block
+  freed on another thread than its owner's is pushed with one compare-exchange onto the owner's returned list,
+  which the owner takes back whole, with one exchange, when its own list for a class runs dry. When a thread a
+  `Parallel` started finishes, its lists are kept for the next thread that starts, so starting threads again and
+  again does not grow the memory.
+- **Nothing is silent**: memory is cleared as `HeapAlloc` cleared it (a grown block's new bytes are 0), freeing
+  memory twice stops with `the program freed the same memory twice`, freeing or resizing a pointer the allocator
+  never handed out stops with `the program freed memory it never allocated` (or `resized`), a size past 2^40 bytes
+  stops with `the program ran out of memory`, and so does a failed chunk.
+
+**When it does not apply:** a program that allocates nothing carries none of it; blocks above 1016 bytes are the
+system heap's; in a program with threads every allocation and free is a call (no inline fast path yet).
+
+**What a user can observe:** only the time and the memory. Memory freed into a class stays with that class and
+with the program: chunks are never given back to the system, so a program's peak of small blocks of one size is
+what it keeps. A pointer the program frees and then uses is reused sooner than the system heap reused it, so a
+fault of the compiler that reads freed memory shows at once instead of by luck.
+
+```
+var count = 0
+
+func Points() {
+    var index = 0
+    while index < 1000000 {
+        var point = Point(index, index)
+        count = count + point.x
+        index = index + 1
+    }
+}
+```
+
+Each `Point` (two `Integer`s) is its size class's list head popped and pushed back, with no call into the system; measured on
+the cases in the report (`objects_that_never_leave_their_function_live_in_the_frame`, `report_over_records`, ...).
 
 ## Maths on constants is worked out while compiling
 
