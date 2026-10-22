@@ -1,0 +1,406 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+var statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+var local_count = 0
+
+func Reflection(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func reflection_type(name: String): Model.Type {
+    var path = name.split(".")
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    return context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+}
+
+func class_object(described: String): HighIntermediaryRepresentation.Values.Value {
+    var class_type = reflection_type("Spite.Class")
+    var made = HighIntermediaryRepresentation.Values.ClassObject(class_type, described)
+    var known = "Spite.Class:{described}"
+    if context.reflected.contains(known) {
+        return made
+    }
+    context.reflected.append(known)
+    need_the_making(class_type)
+    var fill = fill_of_a_class(described)
+    context.synthetic_functions.append(fill)
+    return made
+}
+
+func namespace_object(described: String): HighIntermediaryRepresentation.Values.Value {
+    var namespace_type = reflection_type("Spite.Namespace")
+    if described.is_empty() {
+        var nullable = namespace_type.nullable()
+        return HighIntermediaryRepresentation.Values.NullConstant(nullable)
+    }
+    var made = HighIntermediaryRepresentation.Values.ClassObject(namespace_type, described)
+    var known = "Spite.Namespace:{described}"
+    if context.reflected.contains(known) {
+        return made
+    }
+    context.reflected.append(known)
+    need_the_making(namespace_type)
+    var fill = fill_of_a_namespace(described)
+    context.synthetic_functions.append(fill)
+    return made
+}
+
+func need_the_making(reflection: Model.Type) {
+    var model = context.class_of(reflection)
+    context.need_defaults(model.key)
+    var constructor = values.constructor_of(model)
+    crash constructor
+    context.need(constructor)
+    values.need_text_constants()
+}
+
+func fill_of_a_class(described: String): HighIntermediaryRepresentation.HighFunction {
+    var outer = statements
+    statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var class_type = reflection_type("Spite.Class")
+    var class_model = context.class_of(class_type)
+    var own = HighIntermediaryRepresentation.Values.ThisRead(class_type)
+    var model = context.program.class_named(described)
+    var shown = described
+    if model {
+        shown = model.shown
+    }
+    set_text(own, class_model, "_name_with_namespaces", shown)
+    var namespace_name = namespace_of(described)
+    var namespace = namespace_object(namespace_name)
+    set_value(own, class_model, "_namespace", namespace)
+    if model {
+        fill_from_the_model(own, class_model, model)
+    }
+    var function = Model.FunctionModel("_fill_{described}", class_model.key)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements = statements
+    statements = outer
+    return HighIntermediaryRepresentation.HighFunction(function, body)
+}
+
+func fill_from_the_model(
+    own: HighIntermediaryRepresentation.Values.Value,
+    class_model: Model.ClassModel,
+    model: Model.ClassModel,
+) {
+    set_flag(own, class_model, "_is_singleton", model.is_singleton)
+    var element = model.bound_types["$element_type"]
+    var is_a_list = model.function_named("_read_value")
+    if element and is_a_list {
+        set_flag(own, class_model, "_is_list", true)
+        var element_class = class_object(element.name)
+        set_value(own, class_model, "_element_type", element_class)
+    }
+    var dictionary_value = model.bound_types["$value_type"]
+    if dictionary_value {
+        set_flag(own, class_model, "_is_dictionary", true)
+        var value_class = class_object(dictionary_value.name)
+        set_value(own, class_model, "_element_type", value_class)
+    }
+    var scalars = Model.Scalars()
+    var is_stored_by_the_compiler = model.key == "String"
+    if scalars.of(model.key) {
+        is_stored_by_the_compiler = true
+    }
+    if not is_stored_by_the_compiler and not element {
+        add_the_attributes(own, class_model, model)
+    }
+    add_the_functions(own, class_model, model)
+}
+
+func add_the_attributes(
+    own: HighIntermediaryRepresentation.Values.Value,
+    class_model: Model.ClassModel,
+    model: Model.ClassModel,
+) {
+    var declaration_type = reflection_type("Spite.AttributeDeclaration")
+    var declaration_model = context.class_of(declaration_type)
+    need_the_making(declaration_type)
+    var listed = read_attribute(own, class_model, "_attributes")
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var index_value = whole(index)
+        var name = text(attribute.name)
+        var made = made_with(declaration_type, name, index_value)
+        var local = kept(made, declaration_type)
+        var described = class_object_of_type(attribute.attribute_type)
+        if described {
+            set_value(local, declaration_model, "_class", described)
+        }
+        appended(listed, local)
+        index = index + 1
+    }
+}
+
+func add_the_functions(
+    own: HighIntermediaryRepresentation.Values.Value,
+    class_model: Model.ClassModel,
+    model: Model.ClassModel,
+) {
+    var function_type = reflection_type("Spite.Function")
+    var function_model = context.class_of(function_type)
+    need_the_making(function_type)
+    var argument_type = reflection_type("Spite.Argument")
+    need_the_making(argument_type)
+    var listed = read_attribute(own, class_model, "_functions")
+    var index = 0
+    while index < model.declared_functions.count() {
+        var declared = model.declared_functions[index]
+        var is_listed = not declared.is_constructor and not declared.is_a_member_template
+        if is_listed {
+            var name = text(declared.name)
+            var no_more = List<HighIntermediaryRepresentation.Values.Value>()
+            var made = made_from(function_type, name, no_more)
+            var local = kept(made, function_type)
+            add_the_arguments(local, function_model, declared, argument_type)
+            appended(listed, local)
+        }
+        index = index + 1
+    }
+}
+
+func add_the_arguments(
+    function: HighIntermediaryRepresentation.Values.Value,
+    function_model: Model.ClassModel,
+    declared: Model.FunctionModel,
+    argument_type: Model.Type,
+) {
+    var argument_model = context.class_of(argument_type)
+    var listed = read_attribute(function, function_model, "_arguments")
+    var index = 0
+    while index < declared.parameters.count() {
+        var parameter = declared.parameters[index]
+        var name = text(parameter.name)
+        var index_value = whole(index)
+        var made = made_with(argument_type, name, index_value)
+        var local = kept(made, argument_type)
+        var described = class_object_of_type(parameter.parameter_type)
+        if described {
+            set_value(local, argument_model, "_class", described)
+        }
+        appended(listed, local)
+        index = index + 1
+    }
+}
+
+func class_object_of_type(of_type: Model.Type): HighIntermediaryRepresentation.Values.Value? {
+    var is_a_class = of_type.kind == 'object' or of_type.kind == 'scalar'
+    assert is_a_class
+    return class_object(of_type.name)
+}
+
+func fill_of_a_namespace(described: String): HighIntermediaryRepresentation.HighFunction {
+    var outer = statements
+    statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var namespace_type = reflection_type("Spite.Namespace")
+    var namespace_model = context.class_of(namespace_type)
+    var own = HighIntermediaryRepresentation.Values.ThisRead(namespace_type)
+    set_text(own, namespace_model, "_name_with_namespaces", described)
+    var parent_name = namespace_of(described)
+    var parent = namespace_object(parent_name)
+    set_value(own, namespace_model, "_parent", parent)
+    var function = Model.FunctionModel("_fill_{described}", namespace_model.key)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements = statements
+    statements = outer
+    return HighIntermediaryRepresentation.HighFunction(function, body)
+}
+
+func namespace_of(described: String): String {
+    var parts = described.split(".")
+    var last = parts.count() - 1
+    parts.remove_at(last)
+    return parts.join(".")
+}
+
+func last_name_of(described: String): String {
+    var parts = described.split(".")
+    var last = parts.count() - 1
+    var name = parts[last]
+    crash name
+    return name
+}
+
+func text(written: String): HighIntermediaryRepresentation.Values.Value {
+    var made = HighIntermediaryRepresentation.Values.TextConstant(written)
+    made.value_type = context.text()
+    return made
+}
+
+func whole(number: Integer): HighIntermediaryRepresentation.Values.Value {
+    var integer = context.scalar_type("Integer")
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, number)
+}
+
+func made_with(
+    made_type: Model.Type,
+    name: HighIntermediaryRepresentation.Values.Value,
+    index: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    var more = List<HighIntermediaryRepresentation.Values.Value>()
+    more.append(index)
+    return made_from(made_type, name, more)
+}
+
+func made_from(
+    made_type: Model.Type,
+    name: HighIntermediaryRepresentation.Values.Value,
+    more: List<HighIntermediaryRepresentation.Values.Value>,
+): HighIntermediaryRepresentation.Values.Value {
+    var model = context.class_of(made_type)
+    var constructor = values.constructor_of(model)
+    crash constructor
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(name)
+    var index = 0
+    while index < more.count() {
+        var argument = more[index]
+        arguments.append(argument)
+        index = index + 1
+    }
+    return HighIntermediaryRepresentation.Values.MakeObject(made_type, constructor, arguments)
+}
+
+func kept(
+    made: HighIntermediaryRepresentation.Values.Value,
+    made_type: Model.Type,
+): HighIntermediaryRepresentation.Values.Value {
+    local_count = local_count + 1
+    var name = "reflected_{local_count}"
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, made_type, made)
+    statements.append(declared)
+    return HighIntermediaryRepresentation.Values.LocalRead(made_type, name)
+}
+
+func read_attribute(
+    own: HighIntermediaryRepresentation.Values.Value,
+    model: Model.ClassModel,
+    name: String,
+): HighIntermediaryRepresentation.Values.Value {
+    var attribute = model.attribute_named(name)
+    crash attribute
+    return HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
+}
+
+func appended(listed: HighIntermediaryRepresentation.Values.Value, item: HighIntermediaryRepresentation.Values.Value) {
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(item)
+    var call = values.method_call(listed, "append", arguments)
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(call)
+    statements.append(evaluated)
+}
+
+func set_text(
+    own: HighIntermediaryRepresentation.Values.Value,
+    model: Model.ClassModel,
+    name: String,
+    written: String,
+) {
+    var value = text(written)
+    set_value(own, model, name, value)
+}
+
+func set_flag(own: HighIntermediaryRepresentation.Values.Value, model: Model.ClassModel, name: String, flag: Boolean) {
+    var boolean = context.boolean()
+    var number = 0
+    if flag {
+        number = 1
+    }
+    var value = HighIntermediaryRepresentation.Values.WholeNumber(boolean, number)
+    set_value(own, model, name, value)
+}
+
+func set_value(
+    own: HighIntermediaryRepresentation.Values.Value,
+    model: Model.ClassModel,
+    name: String,
+    value: HighIntermediaryRepresentation.Values.Value,
+) {
+    var attribute = model.attribute_named(name)
+    crash attribute
+    var fitted = values.fitted(value, attribute.attribute_type)
+    var assigned = HighIntermediaryRepresentation.Statements.AssignAttribute(own, attribute, fitted)
+    statements.append(assigned)
+}
+
+func class_of_value(
+    described: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    var described_type = described.value_type
+    if described_type.is_nullable {
+        var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
+        var shown = context.shown(described_type)
+        typing.refuse_maybe_null(context, shown)
+    }
+    if described_type.kind == 'object' or described_type.kind == 'scalar' {
+        return class_object(described_type.name)
+    }
+    var candidates = candidates_of(described_type)
+    candidates.each(class_object)
+    var class_type = reflection_type("Spite.Class")
+    return HighIntermediaryRepresentation.Values.ClassOfValue(class_type, described, candidates)
+}
+
+func candidates_of(described_type: Model.Type): List<String> {
+    var found = List<String>()
+    if described_type.kind == 'shape' {
+        var fillers = context.program.fillers_of(described_type.name)
+        var index = 0
+        while index < fillers.count() {
+            var filler = fillers[index]
+            found.append(filler.name)
+            index = index + 1
+        }
+        return found
+    }
+    var made = values.union_model_of(described_type)
+    var member_index = 0
+    while member_index < made.members.count() {
+        var member = made.members[member_index]
+        found.append(member.name)
+        member_index = member_index + 1
+    }
+    return found
+}
+
+func every_class(): HighIntermediaryRepresentation.Values.Value {
+    var argument = Model.Type('object', "Spite.Class")
+    var list_type = context.resolver.list_type_of(argument)
+    var listed = values.new_list(list_type)
+    var entry = context.program.class_named(context.program.entry)
+    crash entry
+    var folder = folder_of(entry.file.path)
+    var index = 0
+    while index < context.program.order.count() {
+        var model = context.program.order[index]
+        var bound = model.bound_types.keys()
+        var is_the_programs = model.file.path.starts_with(folder) and bound.is_empty()
+        var path_length = model.file.path.length()
+        var folder_length = folder.length()
+        var rest = model.file.path.slice(folder_length, path_length)
+        if rest.contains("..") {
+            is_the_programs = false
+        }
+        if is_the_programs {
+            var described = class_object(model.key)
+            values.append_to(listed, described)
+        }
+        index = index + 1
+    }
+    return listed
+}
+
+func folder_of(path: String): String {
+    var forward = path.replace("\\", "/")
+    var parts = forward.split("/")
+    var last = parts.count() - 1
+    parts.remove_at(last)
+    return parts.join("/")
+}

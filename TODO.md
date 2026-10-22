@@ -49,7 +49,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Concurrency, reflection, `load` of a package, codegen values
 - Program settings: the program's own `build.spite` and `environment.spite`
 
-- Symbols, build settings (`--name=value`), reflection of declared shapes (`Integer.smallest`, `Greeter.functions`) and `Anything`/`Nothing`, compiled in where read (D35)
+- Symbols, build settings (`--name=value`) and `Anything`/`Nothing`, compiled in where read (D35)
+- Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`), filled in by the compiler and folded where constant (D37): still missing are walks compiled once per attribute (`value.attributes[attribute]`, `attributes.each`), folding of constant reads, `Spite.Attribute` bound to an instance, `Spite.Call`, `.accesses`, enums as classes, and a function value being the same object as its `Spite.Function`
 - `Parallel`, `Concurrent` and the rest of concurrency as language constructs each generator compiles (D36)
 - `foreign_callbacks` and `ipv6_addresses` still use `Memory.Address` and `Memory.Heap`: rewrite them with `Buffer` when foreign callbacks and sockets come (D36)
 - Allocation tests (frame objects, lent buffers, kept buffer addresses, the memory floor) come back as `--debug-memory` counts with the passes that place memory (D35)

@@ -503,13 +503,26 @@ func narrowed(
 func member_value(
     member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): HighIntermediaryRepresentation.Values.Value {
+    var reflected = reflected_member(member)
+    if reflected {
+        return reflected
+    }
     var target = value_of(member.target, null)
+    if member.name == "class" and not has_its_own_class(target) {
+        var reflection = Reflection(context, this)
+        return reflection.class_of_value(target)
+    }
     if target.value_type.kind == 'shape' {
         var no_arguments = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
         return shape_call(target, member.name, no_arguments)
     }
     var owner = present_class_of(target)
     var attribute = owner.attribute_named(member.name)
+    var getter = owner.function_named("get_{member.name}")
+    if not attribute and getter {
+        var no_arguments = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+        return called(getter, target, no_arguments)
+    }
     if not attribute {
         var shown = context.shown(target.value_type)
         typing.refuse_unknown_member(context, shown, member.name)
@@ -522,6 +535,69 @@ func member_value(
     var printer = Printers.Spite.ExpressionPrinter(member)
     var path = printer.text()
     return narrowed(read, path)
+}
+
+func reflected_member(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var class_path = class_path_of(member.target)
+    assert not class_path.is_empty()
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described = context.resolver.class_type_in(class_path, no_arguments, context.current_class, context.line)
+    var reflection = Reflection(context, this)
+    if described.name == "Spite.Class" and member.name == "instances" {
+        return reflection.every_class()
+    }
+    var is_a_class = described.kind == 'object' or described.kind == 'scalar'
+    assert is_a_class
+    var object = reflection.class_object(described.name)
+    var class_model = context.class_of(object.value_type)
+    var getter = class_model.function_named("get_{member.name}")
+    assert getter
+    var no_written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    return called(getter, object, no_written)
+}
+
+func reflected_receiver(
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): HighIntermediaryRepresentation.Values.Value? {
+    var class_path = class_path_of(target)
+    assert not class_path.is_empty()
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described = context.resolver.class_type_in(class_path, no_arguments, context.current_class, context.line)
+    var is_a_class = described.kind == 'object' or described.kind == 'scalar'
+    assert is_a_class
+    var reflection = Reflection(context, this)
+    return reflection.class_object(described.name)
+}
+
+func called_on_a_class(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value {
+    var owner = context.class_of(receiver.value_type)
+    var function = owner.function_named(name)
+    if not function {
+        var shown = context.shown(receiver.value_type)
+        typing.refuse_unknown_member(context, shown, name)
+    }
+    crash function
+    return called(function, receiver, written)
+}
+
+func has_its_own_class(target: HighIntermediaryRepresentation.Values.Value): Boolean {
+    if not context.has_a_class(target.value_type) {
+        return false
+    }
+    var owner = context.class_of(target.value_type)
+    if owner.attribute_named("class") {
+        return true
+    }
+    if owner.function_named("get_class") {
+        return true
+    }
+    return false
 }
 
 func present_class_of(value: HighIntermediaryRepresentation.Values.Value): Model.ClassModel {
@@ -646,6 +722,10 @@ func member_call(
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): HighIntermediaryRepresentation.Values.Value {
+    var class_receiver = reflected_receiver(callee.target)
+    if class_receiver {
+        return called_on_a_class(class_receiver, callee.name, call.arguments)
+    }
     var receiver = value_of(callee.target, null)
     if receiver.value_type.kind == 'shape' {
         return shape_call(receiver, callee.name, call.arguments)
@@ -1264,11 +1344,29 @@ func class_test_value(
     var path = class_path_of(binary.right)
     var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
     var member = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+    if tested.value_type.name == "Spite.Class" {
+        return same_class(binary, tested, member)
+    }
     var test = HighIntermediaryRepresentation.Values.ClassTest(tested, member)
     if binary.operator == 'not_equal' {
         return HighIntermediaryRepresentation.Values.Negation(test)
     }
     return test
+}
+
+func same_class(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    tested: HighIntermediaryRepresentation.Values.Value,
+    member: Model.Type,
+): HighIntermediaryRepresentation.Values.Value {
+    var reflection = Reflection(context, this)
+    var object = reflection.class_object(member.name)
+    var boolean = context.boolean()
+    var compared = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', tested, object)
+    if binary.operator == 'not_equal' {
+        return HighIntermediaryRepresentation.Values.Negation(compared)
+    }
+    return compared
 }
 
 func logic_value(
