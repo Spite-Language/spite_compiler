@@ -881,6 +881,11 @@ func member_value(
         return handle_member(written_target, member.name)
     }
     var target = written_target
+    var is_a_function = target.value_type.kind == 'function' and not target.value_type.is_nullable
+    if is_a_function and member.name != "class" {
+        var shown_function = context.shown(target.value_type)
+        typing.refuse_function_member(context, shown_function, member.name)
+    }
     if member.name == "class" and not has_its_own_class(target) {
         var reflection = Reflection(context, this)
         return reflection.class_of_value(target)
@@ -911,6 +916,9 @@ func member_value(
     var owner = present_class_of(target)
     var attribute = owner.attribute_named(member.name)
     var getter = owner.function_named("get_{member.name}")
+    if getter and target.value_type.kind == 'scalar' {
+        typing.refuse_constant_on_value(context, owner.shown, member.name)
+    }
     var is_outside = owner.key != context.current_class.key
     if not getter and is_outside {
         getter = member_template_of(owner, "get_{member.name}")
@@ -1596,6 +1604,13 @@ func result_of_handle(value: HighIntermediaryRepresentation.Values.Value): HighI
     return HighIntermediaryRepresentation.Values.Conversion(answer, 'join', value)
 }
 
+func refuse_a_cast_by_name(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var class_path = class_path_of(callee.target)
+    var written = class_path.join(".")
+    assert scalars.is_a_scalar(written)
+    typing.refuse_cast_by_name(context, written, callee.name)
+}
+
 func class_path_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): List<String> {
     var inference = NameResolution.Inference()
     return inference.class_path_of(expression)
@@ -1628,6 +1643,8 @@ func constructed(
     }
     crash made_type
     var made = context.class_of(made_type)
+    var constraints = Constraints(context, this)
+    constraints.check(made)
     context.need_defaults(made.key)
     var constructor = constructor_of(made)
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
@@ -1808,7 +1825,7 @@ func own_call(
         return copying.deep_copied(copied_value)
     }
     if not function {
-        typing.refuse_unknown_name(context, name)
+        typing.refuse_unknown_function(context, name)
     }
     crash function
     var own = this_value()
@@ -1966,6 +1983,9 @@ func member_call(
     }
     if not function and owner.key == "DynamicLibrary" {
         return foreign_call(receiver, callee.name, call.arguments)
+    }
+    if not function and callee.name.starts_with("from_") {
+        refuse_a_cast_by_name(callee)
     }
     if not function {
         var shown = context.shown(receiver.value_type)
@@ -3054,6 +3074,9 @@ func gathered_list(
     var list_model = context.class_of(list_type)
     var element_type = list_model.bound_types["$element_type"]
     crash element_type
+    if written.count() == start + 1 {
+        refuse_a_whole_list(list_type, element_type, written[start])
+    }
     var temporary = new_list(list_type)
     var index = start
     while index < written.count() {
@@ -3063,6 +3086,20 @@ func gathered_list(
         index = index + 1
     }
     return temporary
+}
+
+func refuse_a_whole_list(
+    list_type: Model.Type,
+    element_type: Model.Type,
+    entry: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+) {
+    var is_a_path = entry == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    is_a_path = is_a_path or entry == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    assert is_a_path and not element_type.name.starts_with("List")
+    var whole = value_of(entry, null)
+    assert whole.value_type.name == list_type.name
+    var shown = context.shown(list_type)
+    typing.refuse_whole_list(context, shown)
 }
 
 func made_list(list_type: Model.Type): HighIntermediaryRepresentation.Values.Value {

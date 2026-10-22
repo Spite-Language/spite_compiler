@@ -6,7 +6,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Architecture (now)
 
-- Rules that need types, after the typed high representation: the terminal `if` on a `T?`, template walks (`template_walk`, `vector_template_walk`, `walk_with_function`), a condition that is not a Boolean, foreign libraries and callbacks, codegen value questions (`argument_count`, `function_reflection`, `parameter_write_question`, `returned_text`), a `_:` that answers for nothing, and the rest of level 5 of `../SpiteLanguage/diagnostics`
+- Rules that need types, after the typed high representation: template walks (`template_walk`, `vector_template_walk`, `walk_with_function`), a condition that is not a Boolean, foreign libraries and callbacks, codegen value questions (`argument_count`, `function_reflection`, `parameter_write_question`, `returned_text`), a `_:` that answers for nothing, and the rest of level 5 of `../SpiteLanguage/diagnostics`
 - Rules that need name resolution (level 4 of `../SpiteLanguage/diagnostics`): a class name that reaches nothing, attributes never read (reopenings can read them), reopening rules, the parameters of a function that replaces another (exempt from the unread rule)
 - A comment inside an enum, union or type body is not refused yet (only function bodies have their closing line)
 - Port the rest of the mapping rules: a class named like a namespace, a hidden class, a class named like a library class, `spite/` folders
@@ -67,7 +67,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - A class object fills the class objects it names as it is filled, so the fills nest as deep as the classes reach one another (the main stack reserve was raised to 64 MB for it): fill them from a worklist, and fold the constant ones while compiling
 
-- A program can name `Spite.Internal` classes: refuse it outside the standard library (`conformance/internal_use`)
+- A program can still name `Spite.Internal` in a written type, in a text, or as a class in its own `spite/internal/` folder: only expressions are refused (`internal_class`)
+- The library breaks three rules it is exempt from for now (D71): singletons bound as locals (`Arguments`, `Environment._setting`, `Spite.Internal.Fault.report`, `Spite.Internal.Work._settle`), locals that only copy a path to narrow it (`BinaryCursor._buffer`, `BinaryWriterCursor`, `JsonReader`, `JsonWriter`), and a terminal `if` (`Dictionary.remove_at`)
+- The `if` that narrows a path does not record which check narrowed it, so a second check inside its branch is "a condition is a Boolean" instead of "already narrowed by"; `while value` does not narrow its body
 
 - A decimal `%` is computed as `x - trunc(x / y) * y`, which loses digits once the quotient passes 2^53: compute it exactly, as `fmod` does
 

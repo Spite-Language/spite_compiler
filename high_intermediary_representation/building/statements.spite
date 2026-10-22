@@ -106,11 +106,111 @@ func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
     made.line = statement.line
     add(made)
     note_a_counted_list(name, statement.value)
+    note_a_copy(statement, name, local_type)
     if value == HighIntermediaryRepresentation.Values.Conversion {
         if value.kind == 'proven' {
             context.proven_locals.append(name)
         }
     }
+}
+
+func note_a_copy(
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    internal_name: String,
+    local_type: Model.Type,
+) {
+    assert local_type.is_nullable and is_a_bare_path(statement.value)
+    assert not (statement.declared_type and context.current_class.shown.contains("<"))
+    var path = context.path()
+    var library = Validators.LibraryFile()
+    assert not library.holds(path)
+    crash statement.value
+    var printer = Printers.Spite.ExpressionPrinter(statement.value)
+    var source = printer.text()
+    assert context.current_function.declaration
+    var assigned = AssignedPaths()
+    var targets = assigned.of(context.current_function.declaration)
+    assert not targets.contains(statement.name)
+    var index = 0
+    while index < targets.count() {
+        var target = targets[index]
+        assert not (target == source or target.starts_with("{source}.") or target.starts_with("{source}["))
+        index = index + 1
+    }
+    context.scope.note_a_copy(internal_name, statement.name, source, statement.line)
+}
+
+func is_a_bare_path(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if written == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return true
+    }
+    if written == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return true
+    }
+    return false
+}
+
+func last_line_of(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration?): Integer {
+    crash declaration
+    crash declaration.body
+    var last = declaration.body.statements.last()
+    crash last
+    return last.line
+}
+
+func refuse_a_copy(fact_path: String) {
+    var source = context.scope.copied_sources[fact_path]
+    assert source
+    var written_name = context.scope.copied_names[fact_path]
+    var line = context.scope.copied_lines[fact_path]
+    crash written_name
+    crash line
+    context.line = line
+    typing.refuse_copy_to_narrow(context, written_name, source)
+}
+
+func refuse_a_loop_copy(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    if condition == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var fact_path = identifier_path(condition.name)
+        refuse_a_copy(fact_path)
+    }
+}
+
+func refuse_a_proven_check(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    assert is_a_bare_path(condition)
+    crash condition
+    var printer = Printers.Spite.ExpressionPrinter(condition)
+    var written = printer.text()
+    var fact_path = path_of(condition, written)
+    var check = context.scope.check_of(fact_path)
+    assert check
+    typing.refuse_proven_check(context, written, check)
+}
+
+func note_the_checks(keyword: String, condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, line: Integer) {
+    crash condition
+    var printer = Printers.Spite.ExpressionPrinter(condition)
+    var written = printer.text()
+    var index = 0
+    while index < facts_paths.count() {
+        var path = facts_paths[index]
+        context.scope.note_the_check(path, "'{keyword} {written}' on line {line}")
+        index = index + 1
+    }
+}
+
+func refuse_a_terminal_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    assert not statement.else_branch and facts_paths.count() > 0
+    assert not context.current_function.answer and is_a_bare_path(statement.condition)
+    var line_of_the_last = last_line_of(context.current_function.declaration)
+    assert line_of_the_last == statement.line
+    var path = context.path()
+    var library = Validators.LibraryFile()
+    assert not library.holds(path)
+    crash statement.condition
+    var printer = Printers.Spite.ExpressionPrinter(statement.condition)
+    var written = printer.text()
+    typing.refuse_terminal_if(context, written)
 }
 
 func note_a_counted_list(name: String, written: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
@@ -204,6 +304,7 @@ func assign_a_member(
     target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ) {
     assert not assigns_a_walked_value(statement, target)
+    refuse_a_constant(target)
     var object = values.value_of(target.target, null)
     var owner = values.present_class_of(object)
     var attribute = owner.attribute_named(target.name)
@@ -229,6 +330,13 @@ func assign_a_member(
     var printer = Printers.Spite.ExpressionPrinter(target)
     var path = printer.text()
     assign_an_attribute(statement, object, attribute, path)
+}
+
+func refuse_a_constant(target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var class_path = values.class_path_of(target.target)
+    var written = class_path.join(".")
+    assert values.scalars.is_a_scalar(written)
+    typing.refuse_constant_assigned(context, "{written}.{target.name}")
 }
 
 func assigns_a_walked_value(
@@ -446,6 +554,7 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
         return
     }
     read_facts(statement.condition)
+    refuse_a_terminal_if(statement)
     var paths = facts_paths
     var types = facts_types
     var then_branch = narrowed_block_of(statement.then_branch, paths, types)
@@ -512,6 +621,7 @@ func build_a_decided_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatem
 }
 
 func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
+    refuse_a_loop_copy(statement.condition)
     var condition = values.condition_of(statement.condition)
     facts_paths = List<String>()
     facts_types = List<Model.Type>()
@@ -664,6 +774,7 @@ func build_inner_block(statement: AbstractSyntaxTree.Shapes.Statements.Block) {
 }
 
 func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatement) {
+    refuse_a_proven_check(statement.condition)
     statement.condition = values.with_its_links(statement.condition)
     var condition = values.condition_of(statement.condition)
     var failed = HighIntermediaryRepresentation.Statements.Block()
@@ -675,6 +786,7 @@ func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatemen
     add(made)
     read_facts(statement.condition)
     narrow_all(facts_paths, facts_types)
+    note_the_checks("assert", statement.condition, statement.line)
 }
 
 func default_return(): HighIntermediaryRepresentation.Statements.Statement {
@@ -699,6 +811,7 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
         add(stopped)
         return
     }
+    refuse_a_proven_check(statement.condition)
     statement.condition = values.with_its_links(statement.condition)
     var condition = values.condition_of(statement.condition)
     var failed = HighIntermediaryRepresentation.Statements.Block()
@@ -709,6 +822,7 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     add(made)
     read_facts(statement.condition)
     narrow_all(facts_paths, facts_types)
+    note_the_checks("crash", statement.condition, statement.line)
 }
 
 func always_stops(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
@@ -873,6 +987,7 @@ func read_a_fact(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
     var path = printer.text()
     var present = value.value_type.present()
     var fact_path = path_of(condition, path)
+    refuse_a_copy(fact_path)
     facts_paths.append(fact_path)
     facts_types.append(present)
 }
