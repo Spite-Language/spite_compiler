@@ -54,6 +54,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found while porting
 
+- `shape_members` corrupts the heap (reported in `List<Spite.Internal.Running>.reserve`) once a `type`'s function is held as a value and run through `Parallel`: a count is released once too often
+
 - `tests/system` expects `Arguments.get(3)` to answer "" for a missing argument, a default nobody can tell from a real answer (D244): the library stops instead, and the test needs a decision
 
 - The fault handler runs before any library's own exception handling, so a C library that catches its own faults inside a foreign call would be stopped
