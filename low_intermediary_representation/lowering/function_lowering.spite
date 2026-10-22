@@ -638,10 +638,27 @@ func singleton_of(class_key: String, made: HighIntermediaryRepresentation.Values
     var test = LowIntermediaryRepresentation.Instructions.Branch(missing, making, after)
     emit(test)
     switch_to(making)
+    halt_on_state(
+        slot,
+        1,
+        "spite: singleton '{class_key}' is asked for while it is being made: a singleton cannot reach itself as it initialises\n",
+    )
+    halt_on_state(
+        slot,
+        3,
+        "spite: a drop() at exit used the singleton {class_key} after it was destroyed: singletons are destroyed in reverse order of when they were made, so keep {class_key} in an attribute of the singleton whose drop() uses it\n",
+    )
+    var being_made = constant(1)
+    var marked = LowIntermediaryRepresentation.Instructions.Store(slot, 16, being_made, 'bits_64')
+    emit(marked)
     var fresh = make_object(class_key)
+    call_the_constructor(fresh, made)
     var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 0, fresh, 'bits_64')
     emit(stored)
-    call_the_constructor(fresh, made)
+    var finished = constant(2)
+    var marked_made = LowIntermediaryRepresentation.Instructions.Store(slot, 16, finished, 'bits_64')
+    emit(marked_made)
+    record_the_making(slot, class_key)
     var copied = LowIntermediaryRepresentation.Instructions.Copy(object, fresh)
     emit(copied)
     jump_to(after)
@@ -649,14 +666,60 @@ func singleton_of(class_key: String, made: HighIntermediaryRepresentation.Values
     return object
 }
 
+func halt_on_state(slot: Integer, state: Integer, message: String) {
+    var current = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(current, slot, 16, 'bits_64')
+    emit(loaded)
+    var wanted = constant(state)
+    var matches = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', current, wanted)
+    emit(compared)
+    var halting = new_block()
+    var going_on = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(matches, halting, going_on)
+    emit(test)
+    switch_to(halting)
+    var label = text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+    switch_to(going_on)
+}
+
+func record_the_making(slot: Integer, class_key: String) {
+    var head_label = made_singletons_label()
+    var head = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(head, head_label)
+    emit(addressed)
+    var newest = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(newest, head, 0, 'bits_64')
+    emit(loaded)
+    var linked = LowIntermediaryRepresentation.Instructions.Store(slot, 8, newest, 'bits_64')
+    emit(linked)
+    var destroy = new_register()
+    var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(destroy, "_destroy_{class_key}")
+    emit(found)
+    var kept_destroy = LowIntermediaryRepresentation.Instructions.Store(slot, 24, destroy, 'bits_64')
+    emit(kept_destroy)
+    var pushed = LowIntermediaryRepresentation.Instructions.Store(head, 0, slot, 'bits_64')
+    emit(pushed)
+}
+
+func made_singletons_label(): Integer {
+    return record_label_of("")
+}
+
 func slot_label_of(class_key: String): Integer {
+    return record_label_of(class_key)
+}
+
+func record_label_of(class_key: String): Integer {
     var known = singleton_slots[class_key]
     if known {
         return known
     }
     var empty = Buffer()
     var index = 0
-    while index < 8 {
+    while index < 32 {
         empty.append(0)
         index = index + 1
     }
@@ -1483,7 +1546,7 @@ func check_the_decimal_range(value: Integer, from_type: Model.Type, to_type: Mod
     }
     var article = article_of(to_type.name)
     var from_article = article_of(from_type.name)
-    var message = "spite: {from_article} {from_type.name} does not fit in {article} {to_type.name}, at {path}:{line} in {function.key}\n"
+    var message = ", {from_article} {from_type.name}, does not fit in {article} {to_type.name}, at {path}:{line} in {function.key}\n"
     decimal_stop_unless(wide, 'greater_or_equal', lowest_bits, message)
     decimal_stop_unless(wide, 'less', above_bits, message)
 }
@@ -1508,8 +1571,16 @@ func decimal_stop_unless(
     var test = LowIntermediaryRepresentation.Instructions.Branch(fits, after, stopping)
     emit(test)
     switch_to(stopping)
-    var label = text_label(message)
-    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    var double_type = Model.Type('scalar', "Double")
+    var long_type = Model.Type('scalar', "Long")
+    var whole = decimal_converted(value, double_type, long_type)
+    var opening = text_label("spite: ")
+    var closing = text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(opening)
+    stopped.labels.append(opening)
+    stopped.labels.append(closing)
+    stopped.numbers.append(whole.value)
+    stopped.signed_numbers.append(1)
     emit(stopped)
     switch_to(after)
 }

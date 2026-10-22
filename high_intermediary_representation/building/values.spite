@@ -628,10 +628,44 @@ func name_value(
     if identifier.name.starts_with("$") {
         var bound = context.current_class.bound_types[identifier.name]
         crash bound
+        if not bound.constant.is_empty() {
+            return constant_of(bound)
+        }
         return reflection.class_object(bound.name)
     }
     typing.refuse_unknown_name(context, identifier.name)
     return unbuilt()
+}
+
+func constant_of(bound: Model.Type): HighIntermediaryRepresentation.Values.Value {
+    var plain = Model.Type(bound.kind, bound.name)
+    switch bound.name {
+        "Boolean": return boolean_constant(bound.constant == "true")
+        "String": return text_constant_of(bound.constant)
+        "Float": return HighIntermediaryRepresentation.Values.DecimalNumber(plain, bound.constant)
+        _: return whole_constant(plain, bound.constant)
+    }
+}
+
+func text_constant_of(written: String): HighIntermediaryRepresentation.Values.Value {
+    var length = written.length()
+    var inside = written.slice(1, length - 1)
+    return described_text(inside)
+}
+
+func boolean_constant(holds: Boolean): HighIntermediaryRepresentation.Values.Value {
+    var number = 0
+    if holds {
+        number = 1
+    }
+    var boolean = context.boolean()
+    return HighIntermediaryRepresentation.Values.WholeNumber(boolean, number)
+}
+
+func whole_constant(plain: Model.Type, written: String): HighIntermediaryRepresentation.Values.Value {
+    var number = written.to_long()
+    crash number
+    return HighIntermediaryRepresentation.Values.WholeNumber(plain, number)
 }
 
 func function_value(function: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value {
@@ -812,6 +846,11 @@ func described_by_the_parameter(
 }
 
 func walked_value(function: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value? {
+    if function.bound_member_type and not function.walked_object {
+        if function.bound_member_type.kind == 'enumeration' {
+            return enum_value(function.bound_member, function.bound_member_type)
+        }
+    }
     assert function.walked_object
     var object = walked_object_read(function)
     var model = context.class_of(function.walked_object)
@@ -1222,6 +1261,12 @@ func made_from_a_bound_type(
     }
     crash bound
     var made_type = bound.present()
+    var is_plain = made_type.kind == 'scalar' or made_type.name == "String"
+    if is_plain and call.arguments.is_empty() {
+        var plain = default_of_a_type(made_type)
+        crash plain
+        return plain
+    }
     var made = context.class_of(made_type)
     context.need_defaults(made.key)
     var constructor = constructor_of(made)
@@ -1594,6 +1639,7 @@ func specialized_for(owner: Model.ClassModel, template: Model.FunctionModel, nam
         'shape': return specialized_over_a_shape(owner, template, owner_type, name, match)
         'namespace': return specialized_over_a_namespace(owner, template, name, match)
         'parameters': return specialized_over_parameters(owner, template, owner_type, name, match)
+        'enumeration': return specialized_over_values(owner, template, owner_type, name, match)
         _: return specialized_over_a_class(owner, template, owner_type, name, match)
     }
 }
@@ -1669,6 +1715,25 @@ func specialized_over_a_namespace(
     assert model
     var member_type = Model.Type('object', model.key)
     var made = context.resolver.specialized(template, name, model.shown, member_type, false, owner)
+    owner.declared_functions.append(made)
+    return made
+}
+
+func specialized_over_values(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var parts = match.split("|")
+    var written = parts[0]
+    crash written
+    var enumeration = enum_model_of(owner_type)
+    var index = enumeration.values.index_of(written)
+    assert index
+    var made = context.resolver.specialized(template, name, written, owner_type, false, owner)
+    made.bound_member_index = index
     owner.declared_functions.append(made)
     return made
 }
@@ -1812,6 +1877,10 @@ func walked_names(member_owner: Model.Type): List<String> {
     }
     if member_owner.kind == 'parameters' {
         return parameters_of(member_owner)
+    }
+    if member_owner.kind == 'enumeration' {
+        var enumeration = enum_model_of(member_owner)
+        return enumeration.values
     }
     var is_walked = member_owner.kind == 'object' or member_owner.kind == 'shape'
     if member_owner.is_nullable or not is_walked {
@@ -3065,6 +3134,14 @@ func condition_of(
 ): HighIntermediaryRepresentation.Values.Value {
     var written_value = value_of(expression, null)
     var value = result_of_handle(written_value)
+    var present_type = value.value_type.present()
+    if value.value_type.is_nullable and context.is_boolean(present_type) {
+        var held = held_once(value)
+        var there = HighIntermediaryRepresentation.Values.PresenceTest(held)
+        var flag = HighIntermediaryRepresentation.Values.Conversion(present_type, 'present', held)
+        var boolean = context.boolean()
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', there, flag)
+    }
     if value.value_type.is_nullable {
         return HighIntermediaryRepresentation.Values.PresenceTest(value)
     }
