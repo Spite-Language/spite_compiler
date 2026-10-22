@@ -2120,6 +2120,18 @@ func member_call(
     if question {
         return question
     }
+    var counted = pattern_argument_count(call, callee)
+    if counted {
+        return counted
+    }
+    var fitting = vector_fit_question(call, callee)
+    if fitting {
+        return fitting
+    }
+    var any_fitting = any_attribute_fit_question(call, callee)
+    if any_fitting {
+        return any_fitting
+    }
     var asked = bound_type_question(call, callee)
     if asked {
         return asked
@@ -2412,6 +2424,7 @@ func specialized_over_a_pattern(
     made.bound_member_index = place
     made.bound_pattern = function_part
     made.bound_function = bound_function
+    made.bound_class = class_key
     owner.declared_functions.append(made)
     return made
 }
@@ -5334,6 +5347,156 @@ func value_call_of(
     return made
 }
 
+func vector_fit_question(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert callee.name == "fits_vector" and call.arguments.is_empty()
+    var asked = known_class_asked(callee.target)
+    assert asked
+    var fits = fits_a_vector(asked)
+    return boolean_constant(fits)
+}
+
+func any_attribute_fit_question(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert callee.name == "any_attribute_fits_vector"
+    var asked = known_class_asked(callee.target)
+    assert asked
+    var skipped = List<String>()
+    var index = 0
+    while index < call.arguments.count() {
+        var written = call.arguments[index]
+        var path = class_path_of(written)
+        var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+        var skipped_type = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+        skipped.append(skipped_type.name)
+        index = index + 1
+    }
+    var holds = any_attribute_fits(asked, skipped)
+    return boolean_constant(holds)
+}
+
+func any_attribute_fits(asked: Model.Type, skipped: List<String>): Boolean {
+    if asked.kind == 'shape' and not asked.is_nullable {
+        return any_member_fits(asked, skipped)
+    }
+    if not context.has_a_class(asked) or asked.is_nullable {
+        return false
+    }
+    var model = context.class_of(asked)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var held = attribute.attribute_type
+        var counts = not skipped.contains(held.name) and fits_a_vector(held)
+        if counts {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func any_member_fits(asked: Model.Type, skipped: List<String>): Boolean {
+    var shape = context.program.shape_keyed(asked.name)
+    crash shape
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.is_an_attribute and member.answer {
+            var counts = not skipped.contains(member.answer.name) and fits_a_vector(member.answer)
+            if counts {
+                return true
+            }
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func known_class_asked(asked: AbstractSyntaxTree.Shapes.Expressions.Expression?): Model.Type? {
+    if asked == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        assert asked.name.starts_with("$")
+        return context.current_class.bound_types[asked.name]
+    }
+    if asked == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walked_class_asked(asked)
+    }
+    return null
+}
+
+func walked_class_asked(asked: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Model.Type? {
+    var function = context.current_function
+    var described = asked.target
+    var names_the_walked = false
+    if described == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_the_walked = asked.name == "class" and described.name == function.bound_parameter
+    }
+    assert names_the_walked
+    return function.bound_member_type
+}
+
+func fits_a_vector(element: Model.Type): Boolean {
+    var is_an_object = element.kind == 'object' and not element.is_nullable and element.name != "String"
+    if not is_an_object or not context.has_a_class(element) {
+        return false
+    }
+    var held = context.class_of(element)
+    if held.function_named("drop") {
+        return false
+    }
+    var index = 0
+    while index < held.declared_attributes.count() {
+        var attribute = held.declared_attributes[index]
+        if not is_kept_inline(attribute.attribute_type) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_kept_inline(held: Model.Type): Boolean {
+    if held.kind == 'scalar' or held.kind == 'enumeration' {
+        return true
+    }
+    if held.kind != 'object' {
+        return false
+    }
+    if held.name == "String" {
+        return true
+    }
+    if not context.has_a_class(held) {
+        return false
+    }
+    var model = context.class_of(held)
+    return model.is_singleton
+}
+
+func pattern_argument_count(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var function = context.current_function
+    assert callee.name == "argument_count" and call.arguments.is_empty() and not function.bound_class.is_empty()
+    var asked = callee.target
+    var names_the_walked = false
+    if asked == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_the_walked = asked.name == function.bound_parameter
+    }
+    assert names_the_walked
+    var walked_class = context.program.class_named(function.bound_class)
+    crash walked_class
+    var bound = walked_class.function_named(function.bound_function)
+    crash bound
+    var integer = context.scalar_type("Integer")
+    var counted = bound.parameters.count()
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, counted)
+}
+
 func reflection_question(
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
@@ -5352,7 +5515,8 @@ func reflection_question(
         refuse_an_unwritten_question(asked, question)
     }
     crash pattern
-    var matching = matching_functions(model, pattern)
+    var bound_pattern = pattern_of_the_walk(pattern)
+    var matching = matching_functions(model, bound_pattern)
     var has_one = not matching.is_empty()
     switch question {
         "has_function": return boolean_constant(has_one)
@@ -5360,6 +5524,19 @@ func reflection_question(
         "function_waits": return waits_question(matching)
         _: return writes_question(call, asked, matching)
     }
+}
+
+func pattern_of_the_walk(pattern: String): String {
+    var function = context.current_function
+    if function.bound_function.is_empty() or function.bound_pattern.is_empty() {
+        return pattern
+    }
+    var opened = pattern.replace("<", "")
+    var unwrapped = opened.replace(">", "")
+    if unwrapped == function.bound_pattern {
+        return function.bound_function
+    }
+    return pattern
 }
 
 func refuse_an_unwritten_question(asked: String, question: String) {
