@@ -24,6 +24,9 @@ is decided; `../SpiteLanguage/specs` is the rule when anything disagrees.
 - Every feature or fixed error gets a test in `../SpiteSpec`: `tests/<name>` must pass, `conformance/<name>`
   must fail with the old compiler's exact error text.
 - Commit as you go. Ask Mortaro first only for an architecture decision you are not sure of.
+- Every decision, Mortaro's or an agent's, is a row in `../MortarosSpite/DECISIONS.md`, the canon for every Spite
+  repository, with the next free number; read `../MortarosSpite/mortaros_notes.md` first, and put questions only
+  Mortaro can answer in `../MortarosSpite/mortaros_missing_decisions.md`. This repository keeps no decision log.
 - Stage paths explicitly; never `git add -A` while another session works here.
 
 ## Commits
