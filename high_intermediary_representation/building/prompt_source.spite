@@ -1,0 +1,1681 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var types = List<Model.Type>()
+var lines = List<String>()
+var singletons = List<Model.ClassModel>()
+var listed_classes = List<Model.ClassModel>()
+var described_classes = List<Model.ClassModel>()
+var chosen_keys = List<String>()
+var writable_scalars = ["Integer", "Long", "Double", "Float", "Boolean"]
+var readers = ["integer_of", "long_of", "double_of", "float_of", "boolean_of"]
+
+func PromptSource(starting_context: Context) {
+    context = starting_context
+}
+
+func source(own_key: String): String {
+    var entry = context.program.class_named(context.program.entry)
+    crash entry
+    var entry_type = entry.type_of_an_instance()
+    number_of(entry_type)
+    choose_the_classes(own_key)
+    var index = 0
+    while index < singletons.count() {
+        var singleton = singletons[index]
+        var singleton_type = singleton.type_of_an_instance()
+        number_of(singleton_type)
+        index = index + 1
+    }
+    out(0, "var prompt = Spite.Internal.Prompt()")
+    blank()
+    write_run(entry)
+    write_bind()
+    var type_index = 0
+    while type_index < types.count() {
+        var each = types[type_index]
+        write_type(type_index + 1, each)
+        type_index = type_index + 1
+    }
+    return lines.join("\n")
+}
+
+func choose_the_classes(own_key: String) {
+    var build = context.program.class_named("Build")
+    if build {
+        choose(build, true)
+    }
+    var index = 0
+    while index < context.made_classes.count() {
+        var key = context.made_classes[index]
+        var model = context.program.class_named(key)
+        if model and key != own_key {
+            choose(model, true)
+        }
+        index = index + 1
+    }
+    var order_index = 0
+    while order_index < context.program.order.count() {
+        var ordered = context.program.order[order_index]
+        if ordered.key != own_key {
+            choose(ordered, false)
+        }
+        order_index = order_index + 1
+    }
+}
+
+func choose(model: Model.ClassModel, allows_settings: Boolean) {
+    var is_made_up = model.file.path.is_empty() or model.shown == "Object"
+    assert not chosen_keys.contains(model.key) and not is_made_up
+    var is_settings = model.key == "Build" or model.key == "Environment"
+    var from_the_library = context.resolver.symbols.is_library_path(model.file.path)
+    var is_allowed = not from_the_library or is_settings and allows_settings
+    assert is_allowed
+    chosen_keys.append(model.key)
+    if model.is_singleton {
+        singletons.append(model)
+    } else {
+        listed_classes.append(model)
+    }
+    if not from_the_library {
+        described_classes.append(model)
+    }
+}
+
+func out(depth: Integer, text: String) {
+    var indent = ""
+    var level = 0
+    while level < depth {
+        indent = "{indent}    "
+        level = level + 1
+    }
+    lines.append("{indent}{text}")
+}
+
+func blank() {
+    lines.append("")
+}
+
+func escaped(text: String): String {
+    var slashed = text.replace("\\", "\\\\")
+    var quoted = slashed.replace("\"", "\\\"")
+    var braced = quoted.replace("\{", "\\\{")
+    return braced.replace("\n", "\\n")
+}
+
+func short_of(shown: String): String {
+    var kept = ""
+    var word = ""
+    var index = 0
+    while index < shown.length() {
+        var character = shown.character_at(index)
+        var code = shown.code_at(index)
+        var is_lower = code >= 97 and code <= 122
+        var is_upper = code >= 65 and code <= 90
+        var is_digit = code >= 48 and code <= 57
+        var is_a_letter = is_lower or is_upper or is_digit or code == 95
+        if is_a_letter {
+            word = "{word}{character}"
+        } else if character == "." {
+            word = ""
+        } else {
+            kept = "{kept}{word}{character}"
+            word = ""
+        }
+        index = index + 1
+    }
+    return "{kept}{word}"
+}
+
+func plain_short_of(shown: String): String {
+    var short = short_of(shown)
+    var opening = short.index_of("<")
+    if opening >= 0 {
+        return short.slice(0, opening)
+    }
+    return short
+}
+
+func plural_of(word: String): String {
+    var length = word.length()
+    var ends_like_a_hiss = word.ends_with("s") or word.ends_with("x") or word.ends_with("ch") or word.ends_with("sh")
+    if ends_like_a_hiss {
+        return "{word}es"
+    }
+    if word.ends_with("y") and length > 1 {
+        var before = word.code_at(length - 2)
+        var is_a_vowel = before == 97 or before == 101 or before == 105 or before == 111 or before == 117
+        if not is_a_vowel {
+            var stem = word.slice(0, length - 1)
+            return "{stem}ies"
+        }
+    }
+    return "{word}s"
+}
+
+func kind_of(described: Model.Type): String {
+    switch described.kind {
+        'enumeration': return "enum"
+        'union': return "union"
+        'scalar': return scalar_kind_of(described)
+        'object': return object_kind_of(described)
+        _: return "opaque"
+    }
+}
+
+func scalar_kind_of(described: Model.Type): String {
+    if described.is_symbol {
+        return "opaque"
+    }
+    return "scalar"
+}
+
+func object_kind_of(described: Model.Type): String {
+    if described.name == "String" {
+        return "text"
+    }
+    var model = context.program.class_named(described.name)
+    if not model {
+        return "opaque"
+    }
+    var is_a_list = model.shown.starts_with("List<") and model.bound_types.has("$element_type")
+    if is_a_list {
+        return "list"
+    }
+    var is_a_dictionary = model.shown.starts_with("Dictionary<") and model.bound_types.has("$value_type")
+    if is_a_dictionary {
+        return "dictionary"
+    }
+    var is_settings = model.key == "Build" or model.key == "Environment"
+    var from_the_library = context.resolver.symbols.is_library_path(model.file.path)
+    if from_the_library and not is_settings {
+        return "library"
+    }
+    return "object"
+}
+
+func class_model_of(described: Model.Type): Model.ClassModel {
+    var model = context.program.class_named(described.name)
+    crash model
+    return model
+}
+
+func written_of(described: Model.Type): String {
+    var written = present_written_of(described)
+    if described.is_nullable {
+        return "{written}?"
+    }
+    return written
+}
+
+func present_written_of(described: Model.Type): String {
+    switch described.kind {
+        'enumeration': return nested_written_of(described)
+        'union': return nested_written_of(described)
+        'object': return object_written_of(described)
+        _: return described.name
+    }
+}
+
+func object_written_of(described: Model.Type): String {
+    var model = context.program.class_named(described.name)
+    if model {
+        return model.shown
+    }
+    return described.name
+}
+
+func nested_written_of(described: Model.Type): String {
+    var parts = described.name.split(".")
+    var last = parts.count() - 1
+    var simple = parts[last]
+    crash simple
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = context.program.class_named(owner_key)
+    crash owner
+    return "{owner.shown}.{simple}"
+}
+
+func shown_of(described: Model.Type): String {
+    if kind_of(described) == "opaque" {
+        return context.shown(described)
+    }
+    var written = written_of(described)
+    return short_of(written)
+}
+
+func is_writable(described: Model.Type): Boolean {
+    if described.is_nullable {
+        return false
+    }
+    var kind = kind_of(described)
+    if kind == "text" or kind == "enum" {
+        return true
+    }
+    return kind == "scalar" and writable_scalars.contains(described.name)
+}
+
+func reader_of(described: Model.Type): String {
+    var index = writable_scalars.index_of(described.name)
+    crash index
+    var reader = readers[index]
+    crash reader
+    return reader
+}
+
+func literal_kind_of(described: Model.Type): String {
+    var kind = kind_of(described)
+    if kind == "enum" {
+        return "enum"
+    }
+    if kind == "text" {
+        return "String"
+    }
+    return described.name
+}
+
+func number_of(described: Model.Type): Integer {
+    var present = described.present()
+    var index = 0
+    while index < types.count() {
+        var known = types[index]
+        if known.kind == present.kind and known.name == present.name {
+            return index + 1
+        }
+        index = index + 1
+    }
+    types.append(present)
+    var number = types.count()
+    reach(present)
+    return number
+}
+
+func reach(described: Model.Type) {
+    var kind = kind_of(described)
+    if kind == "object" {
+        reach_an_object(described)
+    } else if kind == "list" {
+        reach_calls(described)
+        var element = element_of(described)
+        number_of(element)
+    } else if kind == "dictionary" {
+        var key = key_of(described)
+        number_of(key)
+        var held = held_of(described)
+        number_of(held)
+        reach_calls(described)
+    } else if kind == "union" {
+        var members = members_of(described)
+        members.each(number_of)
+    }
+}
+
+func reach_an_object(described: Model.Type) {
+    var attributes = attributes_of(described)
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        number_of(attribute.attribute_type)
+        index = index + 1
+    }
+    reach_calls(described)
+}
+
+func reach_calls(described: Model.Type) {
+    var calls = calls_of(described)
+    var index = 0
+    while index < calls.count() {
+        var call = calls[index]
+        if is_callable(call) {
+            reach_a_call(call)
+        }
+        index = index + 1
+    }
+}
+
+func reach_a_call(call: PromptCall) {
+    if call.answer {
+        number_of(call.answer)
+    }
+    call.parameter_types.each(number_of)
+}
+
+func is_callable(call: PromptCall): Boolean {
+    return call.parameter_types.all(is_writable)
+}
+
+func element_of(described: Model.Type): Model.Type {
+    var model = class_model_of(described)
+    var element = model.bound_types["$element_type"]
+    crash element
+    return element
+}
+
+func key_of(described: Model.Type): Model.Type {
+    var model = class_model_of(described)
+    var key = model.bound_types["$key_type"]
+    crash key
+    return key
+}
+
+func held_of(described: Model.Type): Model.Type {
+    var model = class_model_of(described)
+    var held = model.bound_types["$value_type"]
+    crash held
+    return held
+}
+
+func members_of(described: Model.Type): List<Model.Type> {
+    var parts = described.name.split(".")
+    var last = parts.count() - 1
+    var simple = parts[last]
+    crash simple
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = context.program.class_named(owner_key)
+    crash owner
+    var declared_union = owner.union_named(simple)
+    crash declared_union
+    return declared_union.members
+}
+
+func values_of(described: Model.Type): List<String> {
+    var parts = described.name.split(".")
+    var last = parts.count() - 1
+    var simple = parts[last]
+    crash simple
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = context.program.class_named(owner_key)
+    crash owner
+    var enumeration = owner.enum_named(simple)
+    crash enumeration
+    return enumeration.values
+}
+
+func attributes_of(described: Model.Type): List<Model.AttributeModel> {
+    var model = class_model_of(described)
+    var shown = List<Model.AttributeModel>()
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if not attribute.name.starts_with("_") {
+            shown.append(attribute)
+        }
+        index = index + 1
+    }
+    return shown
+}
+
+func is_listed(function: Model.FunctionModel): Boolean {
+    var is_hidden = function.name.starts_with("_") or function.name == "drop"
+    var is_made = function.is_constructor or function.is_synthetic or function.is_a_member_template
+    var is_a_copy = not function.bound_member.is_empty() or not function.number_copy_of.is_empty()
+    var is_walked = function.is_a_walk_copy or not function.bound_function.is_empty() or function.is_an_attribute
+    return not is_hidden and not is_made and not is_a_copy and not is_walked
+}
+
+func declared_calls_of(model: Model.ClassModel): List<PromptCall> {
+    var calls = List<PromptCall>()
+    var index = 0
+    while index < model.declared_functions.count() {
+        var function = model.declared_functions[index]
+        if is_listed(function) {
+            var call = call_of(function)
+            calls.append(call)
+        }
+        index = index + 1
+    }
+    return calls
+}
+
+func call_of(function: Model.FunctionModel): PromptCall {
+    var call = PromptCall(function.name)
+    call.answer = function.answer
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var parameter_type = parameter.parameter_type
+        if parameter.is_variadic {
+            parameter_type = Model.Type('function', "...")
+        }
+        call.takes(parameter.name, parameter_type)
+        index = index + 1
+    }
+    return call
+}
+
+func calls_of(described: Model.Type): List<PromptCall> {
+    var kind = kind_of(described)
+    if kind == "list" {
+        return list_calls_of(described)
+    }
+    if kind == "dictionary" {
+        return dictionary_calls_of(described)
+    }
+    var model = class_model_of(described)
+    var calls = declared_calls_of(model)
+    var has_its_own = false
+    var index = 0
+    while index < calls.count() {
+        var call = calls[index]
+        if call.name == "to_debug" {
+            has_its_own = true
+        }
+        index = index + 1
+    }
+    if not has_its_own {
+        var debugged = PromptCall("to_debug")
+        debugged.answer = context.text()
+        calls.append(debugged)
+    }
+    return calls
+}
+
+func answering(name: String, answer: Model.Type): PromptCall {
+    var call = PromptCall(name)
+    call.answer = answer
+    return call
+}
+
+func list_calls_of(described: Model.Type): List<PromptCall> {
+    var element = element_of(described)
+    var calls = List<PromptCall>()
+    var integer = context.scalar_type("Integer")
+    var boolean = context.boolean()
+    var nullable_element = element.nullable()
+    var counted = answering("count", integer)
+    calls.append(counted)
+    var empty = answering("is_empty", boolean)
+    calls.append(empty)
+    var first = answering("first", nullable_element)
+    calls.append(first)
+    var last = answering("last", nullable_element)
+    calls.append(last)
+    if kind_of(element) == "object" and not element.is_nullable {
+        add_the_templates(described, element, calls)
+    }
+    return calls
+}
+
+func dictionary_calls_of(described: Model.Type): List<PromptCall> {
+    var calls = List<PromptCall>()
+    var integer = context.scalar_type("Integer")
+    var boolean = context.boolean()
+    var counted = answering("count", integer)
+    calls.append(counted)
+    var empty = answering("is_empty", boolean)
+    calls.append(empty)
+    var contains = answering("contains", boolean)
+    var key = key_of(described)
+    contains.takes("key", key)
+    calls.append(contains)
+    var keys = PromptCall("keys")
+    keys.answers_the_keys = true
+    calls.append(keys)
+    return calls
+}
+
+func add_the_templates(described: Model.Type, element: Model.Type, calls: List<PromptCall>) {
+    var list_model = class_model_of(described)
+    var attributes = attributes_of(element)
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        add_member_templates(list_model, described, element, attribute.name, attribute.attribute_type, calls)
+        index = index + 1
+    }
+    var element_model = class_model_of(element)
+    var function_index = 0
+    while function_index < element_model.declared_functions.count() {
+        var function = element_model.declared_functions[function_index]
+        if is_listed(function) and function.parameters.is_empty() {
+            if function.answer {
+                add_member_templates(list_model, described, element, function.name, function.answer, calls)
+            } else {
+                add_an_each(list_model, function.name, calls)
+            }
+        }
+        function_index = function_index + 1
+    }
+}
+
+func add_an_each(list_model: Model.ClassModel, member: String, calls: List<PromptCall>) {
+    if list_model.function_named("each_member") {
+        var each = PromptCall("each_{member}")
+        calls.append(each)
+    }
+}
+
+func add_member_templates(
+    list_model: Model.ClassModel,
+    described: Model.Type,
+    element: Model.Type,
+    member: String,
+    member_type: Model.Type,
+    calls: List<PromptCall>,
+) {
+    assert not member_type.is_nullable
+    var kind = kind_of(member_type)
+    var is_a_number = kind == "scalar" and member_type.name != "Boolean" and writable_scalars.contains(member_type.name)
+    var integer = context.scalar_type("Integer")
+    var boolean = context.boolean()
+    if context.is_boolean(member_type) {
+        add_a_template(list_model, "filter_member", "filter_{member}", described, calls)
+        add_a_template(list_model, "count_member", "count_{member}", integer, calls)
+        add_a_template(list_model, "any_member", "any_{member}", boolean, calls)
+        add_a_template(list_model, "all_member", "all_{member}", boolean, calls)
+    }
+    if is_a_number {
+        add_a_template(list_model, "sum_member", "sum_{member}", member_type, calls)
+    }
+    if is_a_number or kind == "text" {
+        add_a_template(list_model, "sort_by_member", "sort_by_{member}", described, calls)
+    }
+    var is_mapped = kind == "scalar" or kind == "text" or kind == "enum" or kind == "object"
+    if is_mapped and list_model.function_named("map_members") {
+        var mapped_type = context.resolver.list_type_of(member_type)
+        var plural = plural_of(member)
+        add_a_template(list_model, "map_members", "map_{plural}", mapped_type, calls)
+    }
+    if is_writable(member_type) and list_model.function_named("find_by_member") {
+        var nullable_element = element.nullable()
+        var found = answering("find_by_{member}", nullable_element)
+        found.takes("value", member_type)
+        calls.append(found)
+    }
+}
+
+func add_a_template(
+    list_model: Model.ClassModel,
+    template: String,
+    name: String,
+    answer: Model.Type,
+    calls: List<PromptCall>,
+) {
+    if list_model.function_named(template) {
+        var call = answering(name, answer)
+        calls.append(call)
+    }
+}
+
+func signature_of(call: PromptCall): String {
+    var pieces = List<String>()
+    var index = 0
+    while index < call.parameter_names.count() {
+        var parameter_name = call.parameter_names[index]
+        var parameter_type = call.parameter_types[index]
+        crash parameter_type
+        var shown = shown_of(parameter_type)
+        pieces.append("{parameter_name}: {shown}")
+        index = index + 1
+    }
+    var joined = pieces.join(", ")
+    var answered = "Nothing"
+    if call.answer {
+        answered = shown_of(call.answer)
+    }
+    return "{call.name}({joined}): {answered}"
+}
+
+func signatures_of(calls: List<PromptCall>, keys_text: String): String {
+    var texts = List<String>()
+    var index = 0
+    while index < calls.count() {
+        var call = calls[index]
+        if call.answers_the_keys {
+            texts.append(keys_text)
+        } else {
+            var signature = signature_of(call)
+            texts.append(signature)
+        }
+        index = index + 1
+    }
+    return texts.join("\n")
+}
+
+func write_run(entry: Model.ClassModel) {
+    out(0, "func run(program: {entry.shown}) \{")
+    var enum_text = enum_lines()
+    var enum_written = escaped(enum_text)
+    out(1, "prompt.enum_lines = \"{enum_written}\"")
+    var class_text = class_lines()
+    var class_written = escaped(class_text)
+    out(1, "prompt.class_lines = \"{class_written}\"")
+    described_classes.each(write_a_description)
+    out(1, "while prompt.reads() \{")
+    out(2, "answer(program)")
+    out(1, "}")
+    out(1, "prompt.finish()")
+    out(0, "}")
+    blank()
+    out(0, "func answer(program: {entry.shown}) \{")
+    out(1, "if prompt.fetches() \{")
+    out(2, "prompt.start_fetching()")
+    out(2, "walk_1(program, 0)")
+    out(1, "}")
+    out(1, "if prompt.walks() and prompt.fetching_went_well() \{")
+    out(2, "prompt.start_walking()")
+    out(2, "walk_1(program, 0)")
+    out(1, "}")
+    out(0, "}")
+    blank()
+}
+
+func enum_lines(): String {
+    var found = List<String>()
+    var index = 0
+    while index < described_classes.count() {
+        var model = described_classes[index]
+        var enum_index = 0
+        while enum_index < model.enums.count() {
+            var enumeration = model.enums[enum_index]
+            var quoted = List<String>()
+            var value_index = 0
+            while value_index < enumeration.values.count() {
+                var value = enumeration.values[value_index]
+                quoted.append("'{value}'")
+                value_index = value_index + 1
+            }
+            var joined = quoted.join(", ")
+            found.append("{model.shown}.{enumeration.name}: {joined}")
+            enum_index = enum_index + 1
+        }
+        index = index + 1
+    }
+    return found.join("\n")
+}
+
+func class_lines(): String {
+    var found = List<String>()
+    var index = 0
+    while index < singletons.count() {
+        var singleton = singletons[index]
+        found.append("{singleton.shown}()")
+        index = index + 1
+    }
+    var class_index = 0
+    while class_index < listed_classes.count() {
+        var listed = listed_classes[class_index]
+        found.append(listed.shown)
+        class_index = class_index + 1
+    }
+    return found.join("\n")
+}
+
+func write_a_description(model: Model.ClassModel) {
+    var described = List<String>()
+    if model.is_singleton {
+        described.append("{model.shown}, a singleton")
+    } else {
+        described.append(model.shown)
+    }
+    described.append("attributes:")
+    var own_type = model.type_of_an_instance()
+    var attributes = attributes_of(own_type)
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        var shown = shown_of(attribute.attribute_type)
+        described.append("{attribute.name}: {shown}")
+        index = index + 1
+    }
+    if attributes.is_empty() {
+        described.append("none")
+    }
+    described.append("functions:")
+    var calls = declared_calls_of(model)
+    var call_index = 0
+    while call_index < calls.count() {
+        var call = calls[call_index]
+        var signature = signature_of(call)
+        described.append(signature)
+        call_index = call_index + 1
+    }
+    if calls.is_empty() {
+        described.append("none")
+    }
+    var text = described.join("\n")
+    var written = escaped(text)
+    var qualified = escaped(model.shown)
+    var short_name = short_of(model.shown)
+    var short = escaped(short_name)
+    out(1, "prompt.describes(\"{qualified}\", \"{short}\", \"{written}\")")
+}
+
+func write_switch(depth: Integer, subject: String, cases: List<String>, statements: List<String>, otherwise: String) {
+    if cases.count() < 2 {
+        write_ifs(depth, subject, cases, statements, otherwise)
+        return
+    }
+    out(depth, "switch {subject} \{")
+    var index = 0
+    while index < cases.count() {
+        var matched = cases[index]
+        var statement = statements[index]
+        crash statement
+        var written = escaped(matched)
+        out(depth + 1, "\"{written}\": {statement}")
+        index = index + 1
+    }
+    out(depth + 1, "_: {otherwise}")
+    out(depth, "}")
+}
+
+func write_ifs(depth: Integer, subject: String, cases: List<String>, statements: List<String>, otherwise: String) {
+    var index = 0
+    while index < cases.count() {
+        var matched = cases[index]
+        var statement = statements[index]
+        crash statement
+        var written = escaped(matched)
+        out(depth, "if {subject} == \"{written}\" \{")
+        out(depth + 1, statement)
+        if not statement.starts_with("return") {
+            out(depth + 1, "return")
+        }
+        out(depth, "}")
+        index = index + 1
+    }
+    out(depth, otherwise)
+}
+
+func write_bind() {
+    var cases = List<String>()
+    var statements = List<String>()
+    var index = 0
+    while index < singletons.count() {
+        var singleton = singletons[index]
+        var singleton_type = singleton.type_of_an_instance()
+        var number = number_of(singleton_type)
+        var written = singleton.shown.replace(" ", "")
+        cases.append(written)
+        statements.append("bind_{number}(at)")
+        var short_name = short_of(singleton.shown)
+        var short = short_name.replace(" ", "")
+        var sharing = singletons_named(short)
+        if short != written and sharing.count() == 1 {
+            cases.append(short)
+            statements.append("bind_{number}(at)")
+        }
+        if short != written and sharing.count() > 1 and not cases.contains(short) {
+            var joined = sharing.join(", ")
+            var shared = escaped(joined)
+            cases.append(short)
+            statements.append("prompt.shared_singleton(at, \"{shared}\")")
+        }
+        index = index + 1
+    }
+    var class_index = 0
+    while class_index < listed_classes.count() {
+        var listed = listed_classes[class_index]
+        var listed_written = listed.shown.replace(" ", "")
+        cases.append(listed_written)
+        statements.append("prompt.not_a_singleton(at)")
+        var listed_short_name = short_of(listed.shown)
+        var listed_short = listed_short_name.replace(" ", "")
+        if listed_short != listed_written and not cases.contains(listed_short) {
+            cases.append(listed_short)
+            statements.append("prompt.not_a_singleton(at)")
+        }
+        class_index = class_index + 1
+    }
+    out(0, "func bind(at: Integer) \{")
+    out(1, "var name = prompt.step_name(at)")
+    write_switch(1, "name", cases, statements, "prompt.no_singleton(at)")
+    out(0, "}")
+    blank()
+    singletons.each(write_a_binding)
+}
+
+func singletons_named(short: String): List<String> {
+    var found = List<String>()
+    var index = 0
+    while index < singletons.count() {
+        var singleton = singletons[index]
+        var singleton_short_name = short_of(singleton.shown)
+        var singleton_short = singleton_short_name.replace(" ", "")
+        if singleton_short == short {
+            found.append("{singleton.shown}()")
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func write_a_binding(singleton: Model.ClassModel) {
+    var singleton_type = singleton.type_of_an_instance()
+    var number = number_of(singleton_type)
+    var written = singleton.shown.replace(" ", "")
+    var quoted = escaped(written)
+    out(0, "func bind_{number}(at: Integer) \{")
+    out(1, "assert prompt.bound_without_arguments(at, \"{quoted}\")")
+    out(1, "var bound = {singleton.shown}()")
+    out(1, "walk_{number}(bound, at + 1)")
+    out(0, "}")
+    blank()
+}
+
+func write_type(number: Integer, described: Model.Type) {
+    var kind = kind_of(described)
+    assert kind != "opaque"
+    write_walk(number, described, kind)
+    write_reach(number, described)
+    write_end(number, described, kind)
+    write_show(number, described)
+    write_full(number, described, kind)
+    write_nested(number, described, kind)
+    if kind == "object" {
+        write_attribute_list(number, described)
+        write_object_step(number, described)
+        write_object_names(number, described)
+        write_calls(number, described)
+        write_object_assignment(number, described)
+    } else if kind == "list" {
+        write_collection_step(number, described)
+        write_list_index(number, described)
+        write_calls(number, described)
+        write_list_assignment(number, described)
+    } else if kind == "dictionary" {
+        write_collection_step(number, described)
+        write_dictionary_index(number, described)
+        write_calls(number, described)
+        write_dictionary_assignment(number, described)
+    } else if kind == "enum" {
+        write_enum(number, described)
+    }
+}
+
+func write_walk(number: Integer, described: Model.Type, kind: String) {
+    var written = written_of(described)
+    out(0, "func walk_{number}(value: {written}, at: Integer) \{")
+    out(1, "if prompt.ends(at) \{")
+    out(2, "end_{number}(value, at)")
+    out(2, "return")
+    out(1, "}")
+    var steps = kind == "object" or kind == "list" or kind == "dictionary"
+    if steps {
+        out(1, "if prompt.assigns(at) \{")
+        out(2, "assign_{number}(value, at)")
+        out(2, "return")
+        out(1, "}")
+        out(1, "step_{number}(value, at)")
+    } else if kind == "union" {
+        write_union_dispatch(1, described, "walk_", "(value, at)", false)
+    } else if kind == "library" {
+        var library_name = plain_short_of(written)
+        var quoted = escaped(library_name)
+        out(1, "prompt.library_class(at, \"{quoted}\")")
+    } else {
+        var shown = short_of(written)
+        var quoted_shown = escaped(shown)
+        out(1, "prompt.no_attributes(at, \"{quoted_shown}\")")
+    }
+    out(0, "}")
+    blank()
+}
+
+func write_reach(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    out(0, "func reach_{number}(value: {written}?, at: Integer) \{")
+    write_present_or_null(described, "walk_{number}(value, at)", "prompt.reached_null(at)")
+    out(0, "}")
+    blank()
+}
+
+func write_present_or_null(described: Model.Type, present: String, absent: String) {
+    if context.is_boolean(described) {
+        out(1, "switch value \{")
+        out(2, "Boolean: {present}")
+        out(2, "Null: {absent}")
+        out(1, "}")
+        return
+    }
+    out(1, "if value \{")
+    out(2, present)
+    if not present.starts_with("return") {
+        out(2, "return")
+    }
+    out(1, "}")
+    out(1, absent)
+}
+
+func write_union_dispatch(depth: Integer, described: Model.Type, called: String, arguments: String, returns: Boolean) {
+    var members = members_of(described)
+    var index = 0
+    while index < members.count() {
+        var member = members[index]
+        var number = number_of(member)
+        var written = written_of(member)
+        out(depth, "if value == {written} \{")
+        if returns {
+            out(depth + 1, "return {called}{number}{arguments}")
+        } else {
+            out(depth + 1, "{called}{number}{arguments}")
+            out(depth + 1, "return")
+        }
+        out(depth, "}")
+        index = index + 1
+    }
+    out(depth, "crash")
+}
+
+func write_end(number: Integer, described: Model.Type, kind: String) {
+    var written = written_of(described)
+    out(0, "func end_{number}(value: {written}, at: Integer) \{")
+    if kind == "union" {
+        out(1, "if prompt.shows() \{")
+        out(2, "show_{number}(value)")
+        out(2, "return")
+        out(1, "}")
+        write_union_dispatch(1, described, "end_", "(value, at)", false)
+        out(0, "}")
+        blank()
+        return
+    }
+    var shown = short_of(written)
+    var quoted_shown = escaped(shown)
+    var plain = plain_short_of(written)
+    var quoted_plain = escaped(plain)
+    var cases = List<String>()
+    var statements = List<String>()
+    cases.append("show")
+    statements.append("show_{number}(value)")
+    cases.append("attributes")
+    cases.append("functions")
+    if kind == "object" {
+        statements.append("list_attributes_{number}(value)")
+        var calls = calls_of(described)
+        var signatures = signatures_of(calls, "")
+        var quoted_signatures = escaped(signatures)
+        statements.append("prompt.say(\"{quoted_signatures}\")")
+    } else if kind == "list" or kind == "dictionary" {
+        statements.append("prompt.no_attributes(at, \"{quoted_shown}\")")
+        var collection_calls = calls_of(described)
+        var keys_text = ""
+        if kind == "dictionary" {
+            var key = key_of(described)
+            var key_shown = shown_of(key)
+            keys_text = "keys(): List<{key_shown}>"
+        }
+        var collection_signatures = signatures_of(collection_calls, keys_text)
+        var quoted_collection = escaped(collection_signatures)
+        statements.append("prompt.say(\"{quoted_collection}\")")
+    } else if kind == "library" {
+        statements.append("prompt.library_class(at, \"{quoted_plain}\")")
+        statements.append("prompt.library_class(at, \"{quoted_plain}\")")
+    } else {
+        statements.append("prompt.no_attributes(at, \"{quoted_shown}\")")
+        statements.append("prompt.no_functions(at, \"{quoted_shown}\")")
+    }
+    cases.append("fetch")
+    statements.append("prompt.fetch(value, \"{quoted_shown}\")")
+    out(1, "var mode = prompt.mode")
+    write_switch(1, "mode", cases, statements, "prompt.refuse_bytes(at)")
+    out(0, "}")
+    blank()
+}
+
+func write_show(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    out(0, "func show_{number}(value: {written}) \{")
+    out(1, "var shown = full_{number}(value)")
+    out(1, "prompt.say(shown)")
+    out(0, "}")
+    blank()
+    out(0, "func show_or_null_{number}(value: {written}?) \{")
+    write_present_or_null(described, "show_{number}(value)", "prompt.say(\"null\")")
+    out(0, "}")
+    blank()
+}
+
+func piece_of(described: Model.Type, expression: String): String {
+    if kind_of(described) == "opaque" {
+        var opaque_shown = context.shown(described)
+        var quoted_opaque = escaped(opaque_shown)
+        return "\"{quoted_opaque} \\\{...}\""
+    }
+    var number = number_of(described)
+    if described.is_nullable {
+        return "nested_or_null_{number}({expression})"
+    }
+    return "nested_{number}({expression})"
+}
+
+func write_full(number: Integer, described: Model.Type, kind: String) {
+    var written = written_of(described)
+    var attributes = List<Model.AttributeModel>()
+    if kind == "object" {
+        attributes = attributes_of(described)
+    }
+    var unused = ""
+    if kind == "object" and attributes.is_empty() {
+        unused = "_"
+    }
+    out(0, "func full_{number}({unused}value: {written}): String \{")
+    var plain = plain_short_of(written)
+    var quoted_plain = escaped(plain)
+    if kind == "object" and attributes.is_empty() {
+        out(1, "return \"{quoted_plain} \\\{}\"")
+    } else if kind == "object" {
+        var parts = List<String>()
+        var index = 0
+        while index < attributes.count() {
+            var attribute = attributes[index]
+            var piece = piece_of(attribute.attribute_type, "value.{attribute.name}")
+            out(1, "var piece_{index} = {piece}")
+            parts.append("{attribute.name}: \{piece_{index}}")
+            index = index + 1
+        }
+        var joined = parts.join(", ")
+        out(1, "return \"{quoted_plain} \\\{ {joined} }\"")
+    } else if kind == "union" {
+        write_union_dispatch(1, described, "full_", "(value)", true)
+    } else {
+        out(1, "return nested_{number}(value)")
+    }
+    out(0, "}")
+    blank()
+}
+
+func write_nested(number: Integer, described: Model.Type, kind: String) {
+    var written = written_of(described)
+    var is_constant = kind == "object" or kind == "library" or kind == "opaque"
+    var unused = ""
+    if is_constant {
+        unused = "_"
+    }
+    out(0, "func nested_{number}({unused}value: {written}): String \{")
+    var plain = plain_short_of(written)
+    var quoted_plain = escaped(plain)
+    var shown = short_of(written)
+    var quoted_shown = escaped(shown)
+    if is_constant {
+        out(1, "return \"{quoted_plain} \\\{...}\"")
+    } else if kind == "text" {
+        out(1, "return value")
+    } else if kind == "scalar" or kind == "enum" {
+        out(1, "return value.to_string()")
+    } else if kind == "list" or kind == "dictionary" {
+        out(1, "var counted = value.count()")
+        out(1, "return \"{quoted_shown}(\{counted})\"")
+    } else if kind == "union" {
+        write_union_dispatch(1, described, "nested_", "(value)", true)
+    }
+    out(0, "}")
+    blank()
+    out(0, "func nested_or_null_{number}(value: {written}?): String \{")
+    write_present_or_null(described, "return nested_{number}(value)", "return \"null\"")
+    out(0, "}")
+    blank()
+}
+
+func write_attribute_list(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    var attributes = attributes_of(described)
+    var unused = ""
+    if attributes.is_empty() {
+        unused = "_"
+    }
+    out(0, "func list_attributes_{number}({unused}value: {written}) \{")
+    if attributes.is_empty() {
+        var plain = plain_short_of(written)
+        var quoted_plain = escaped(plain)
+        out(1, "prompt.say(\"{quoted_plain} has no attributes\")")
+    } else {
+        var listed = List<String>()
+        var index = 0
+        while index < attributes.count() {
+            var attribute = attributes[index]
+            var piece = piece_of(attribute.attribute_type, "value.{attribute.name}")
+            out(1, "var piece_{index} = {piece}")
+            var shown = shown_of(attribute.attribute_type)
+            var quoted_shown = escaped(shown)
+            listed.append("{attribute.name}: {quoted_shown} = \{piece_{index}}")
+            index = index + 1
+        }
+        var joined = listed.join("\\n")
+        out(1, "prompt.say(\"{joined}\")")
+    }
+    out(0, "}")
+    blank()
+}
+
+func walk_of(described: Model.Type, expression: String): String {
+    if kind_of(described) == "opaque" {
+        var opaque_shown = context.shown(described)
+        var quoted_opaque = escaped(opaque_shown)
+        return "prompt.opaque(at + 1, \"{quoted_opaque}\")"
+    }
+    var number = number_of(described)
+    if described.is_nullable {
+        return "reach_{number}({expression}, at + 1)"
+    }
+    return "walk_{number}({expression}, at + 1)"
+}
+
+func known_names_of(described: Model.Type): String {
+    var attributes = attributes_of(described)
+    var names = attributes.map_names()
+    var joined = names.join(", ")
+    return escaped(joined)
+}
+
+func no_attribute_of(described: Model.Type): String {
+    var written = written_of(described)
+    var plain = plain_short_of(written)
+    var quoted_plain = escaped(plain)
+    var known = known_names_of(described)
+    return "prompt.no_attribute(at, \"{quoted_plain}\", \"{known}\")"
+}
+
+func no_element_of(described: Model.Type): String {
+    var shown = shown_of(described)
+    var quoted_shown = escaped(shown)
+    return "prompt.no_attribute(at, \"{quoted_shown}\", \"\")"
+}
+
+func write_object_step(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    out(0, "func step_{number}(value: {written}, at: Integer) \{")
+    out(1, "var kind = prompt.step_kind(at)")
+    var cases = List<String>()
+    var statements = List<String>()
+    cases.append("call")
+    statements.append("call_{number}(value, at)")
+    cases.append("singleton")
+    statements.append("bind(at)")
+    cases.append("name")
+    statements.append("name_{number}(value, at)")
+    var refused = no_attribute_of(described)
+    write_switch(1, "kind", cases, statements, refused)
+    out(0, "}")
+    blank()
+}
+
+func write_object_names(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    out(0, "func name_{number}(value: {written}, at: Integer) \{")
+    out(1, "var name = prompt.step_name(at)")
+    var cases = List<String>()
+    var statements = List<String>()
+    var attributes = attributes_of(described)
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        cases.append(attribute.name)
+        var walked = walk_of(attribute.attribute_type, "value.{attribute.name}")
+        statements.append(walked)
+        index = index + 1
+    }
+    var refused = no_attribute_of(described)
+    write_switch(1, "name", cases, statements, refused)
+    out(0, "}")
+    blank()
+}
+
+func write_calls(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    var calls = calls_of(described)
+    var cases = List<String>()
+    var statements = List<String>()
+    var index = 0
+    while index < calls.count() {
+        var call = calls[index]
+        if not cases.contains(call.name) {
+            cases.append(call.name)
+            statements.append("call_{number}_{index}(value, at)")
+        }
+        index = index + 1
+    }
+    if kind_of(described) == "object" {
+        var attributes = attributes_of(described)
+        var attribute_index = 0
+        while attribute_index < attributes.count() {
+            var attribute = attributes[attribute_index]
+            if not cases.contains(attribute.name) {
+                cases.append(attribute.name)
+                statements.append("prompt.not_callable(at)")
+            }
+            attribute_index = attribute_index + 1
+        }
+    }
+    out(0, "func call_{number}(value: {written}, at: Integer) \{")
+    out(1, "var name = prompt.step_name(at)")
+    write_switch(1, "name", cases, statements, "prompt.no_function(at)")
+    out(0, "}")
+    blank()
+    var call_index = 0
+    while call_index < calls.count() {
+        var each = calls[call_index]
+        write_a_call(number, described, call_index, each)
+        call_index = call_index + 1
+    }
+}
+
+func write_a_call(number: Integer, described: Model.Type, index: Integer, call: PromptCall) {
+    var written = written_of(described)
+    out(0, "func call_{number}_{index}(value: {written}, at: Integer) \{")
+    if not is_callable(call) {
+        out(1, "prompt.cannot_take(at)")
+        out(0, "}")
+        blank()
+        return
+    }
+    var count = call.parameter_types.count()
+    out(1, "assert prompt.takes(at, {count})")
+    var check_index = 0
+    while check_index < count {
+        var checked_name = call.parameter_names[check_index]
+        var checked_type = call.parameter_types[check_index]
+        crash checked_name
+        var literal_kind = literal_kind_of(checked_type)
+        var checked_shown = shown_of(checked_type)
+        var quoted_checked = escaped(checked_shown)
+        out(
+            1,
+            "assert prompt.argument_fits(at, {check_index}, \"{checked_name}\", \"{literal_kind}\", \"{quoted_checked}\")",
+        )
+        check_index = check_index + 1
+    }
+    var arguments = List<String>()
+    var argument_index = 0
+    while argument_index < count {
+        var argument_type = call.parameter_types[argument_index]
+        crash argument_type
+        write_an_argument(argument_index, argument_type)
+        arguments.append("argument_{argument_index}")
+        argument_index = argument_index + 1
+    }
+    var passed = arguments.join(", ")
+    if call.answers_the_keys {
+        write_the_keys()
+    } else if call.answer {
+        out(1, "var answered = value.{call.name}({passed})")
+        var walked = walk_of(call.answer, "answered")
+        out(1, walked)
+    } else {
+        out(1, "value.{call.name}({passed})")
+        out(1, "prompt.answered_nothing(at)")
+    }
+    out(0, "}")
+    blank()
+}
+
+func write_an_argument(index: Integer, argument_type: Model.Type) {
+    var kind = kind_of(argument_type)
+    out(1, "var literal_{index} = prompt.argument_text(at, {index})")
+    if kind == "text" {
+        out(1, "var argument_{index} = prompt.text_of(literal_{index})")
+        return
+    }
+    if kind == "enum" {
+        var enum_number = number_of(argument_type)
+        out(1, "var written_{index} = prompt.symbol_of(literal_{index})")
+        out(1, "if not is_value_{enum_number}(written_{index}) \{")
+        out(2, "prompt.cannot_take(at)")
+        out(2, "return")
+        out(1, "}")
+        out(1, "var argument_{index} = value_{enum_number}(written_{index})")
+        return
+    }
+    var reader = reader_of(argument_type)
+    out(1, "var argument_{index} = prompt.{reader}(literal_{index})")
+}
+
+func write_the_keys() {
+    out(1, "var keys = value.keys()")
+    out(1, "if keys.is_empty() \{")
+    out(2, "prompt.no_keys(at)")
+    out(2, "return")
+    out(1, "}")
+    out(1, "var key_lines = List<String>()")
+    out(1, "var key_index = 0")
+    out(1, "while key_index < keys.count() \{")
+    out(2, "var each_key = keys[key_index]")
+    out(2, "crash each_key")
+    out(2, "var key_text = each_key.to_string()")
+    out(2, "key_lines.append(key_text)")
+    out(2, "key_index = key_index + 1")
+    out(1, "}")
+    out(1, "var joined = key_lines.join(\"\\n\")")
+    out(1, "prompt.say(joined)")
+}
+
+func shown_back(described: Model.Type, is_read_nullable: Boolean): String {
+    if kind_of(described) == "opaque" {
+        return "prompt.say(\"\")"
+    }
+    var number = number_of(described)
+    if described.is_nullable or is_read_nullable {
+        return "show_or_null_{number}(read_back)"
+    }
+    return "show_{number}(read_back)"
+}
+
+func write_assignment(
+    name: String,
+    owner: String,
+    slot_type: Model.Type,
+    slot: String,
+    is_read_nullable: Boolean,
+    extra_parameter: String,
+    extra_argument: String,
+) {
+    var kind = kind_of(slot_type)
+    var shown = shown_of(slot_type)
+    var quoted_shown = escaped(shown)
+    var shown_back_call = shown_back(slot_type, is_read_nullable)
+    out(0, "func {name}(value: {owner}{extra_parameter}) \{")
+    out(1, "if prompt.assigns_null() \{")
+    if slot_type.is_nullable {
+        var written_line = written_into(slot, "null")
+        out(2, written_line)
+        out(2, "prompt.say(\"null\")")
+    } else {
+        out(2, "prompt.never_null(\"{quoted_shown}\")")
+    }
+    out(2, "return")
+    out(1, "}")
+    out(1, "if prompt.assigns_a_literal() \{")
+    var takes_a_literal = is_literal_kind(slot_type)
+    if takes_a_literal {
+        out(2, "{name}_literal(value{extra_argument})")
+    } else if kind == "scalar" {
+        out(2, "prompt.unwritable(\"{quoted_shown}\")")
+    } else {
+        out(2, "prompt.mismatch(\"{quoted_shown}\")")
+    }
+    out(2, "return")
+    out(1, "}")
+    var classes = List<Model.Type>()
+    if kind == "union" {
+        classes = members_of(slot_type)
+    } else if kind != "opaque" {
+        var present = slot_type.present()
+        classes.append(present)
+    }
+    if not classes.is_empty() {
+        out(1, "var found = prompt.fetched")
+    }
+    var index = 0
+    while index < classes.count() {
+        var held = classes[index]
+        var held_written = written_of(held)
+        out(1, "if found == {held_written} \{")
+        var written_line = written_into(slot, "found")
+        out(2, written_line)
+        out(2, "var read_back = {slot_read(slot)}")
+        out(2, shown_back_call)
+        out(2, "return")
+        out(1, "}")
+        index = index + 1
+    }
+    out(1, "prompt.wrong_instance(\"{quoted_shown}\")")
+    out(0, "}")
+    blank()
+    if takes_a_literal {
+        write_literal_assignment(name, owner, slot_type, slot, shown_back_call, extra_parameter)
+    }
+}
+
+func is_literal_kind(slot_type: Model.Type): Boolean {
+    var present = slot_type.present()
+    return is_writable(present)
+}
+
+func written_into(slot: String, written: String): String {
+    if slot.starts_with("set_at(") {
+        var length = slot.length()
+        var inside = slot.slice(7, length - 1)
+        return "value.set_at({inside}, {written})"
+    }
+    return "value.{slot} = {written}"
+}
+
+func slot_read(slot: String): String {
+    if slot.starts_with("set_at(") {
+        var length = slot.length()
+        var inside = slot.slice(7, length - 1)
+        return "value.get_at({inside})"
+    }
+    return "value.{slot}"
+}
+
+func write_literal_assignment(
+    name: String,
+    owner: String,
+    slot_type: Model.Type,
+    slot: String,
+    shown_back_call: String,
+    extra_parameter: String,
+) {
+    var present = slot_type.present()
+    var kind = kind_of(present)
+    var shown = shown_of(slot_type)
+    var quoted_shown = escaped(shown)
+    var literal_kind = literal_kind_of(present)
+    out(0, "func {name}_literal(value: {owner}{extra_parameter}) \{")
+    out(1, "assert prompt.literal_fits(\"{literal_kind}\", \"{quoted_shown}\")")
+    if kind == "text" {
+        out(1, "var written = prompt.assigned_text()")
+        var written_line = written_into(slot, "written")
+        out(1, written_line)
+    } else if kind == "enum" {
+        var enum_number = number_of(present)
+        var enum_shown = shown_of(present)
+        var quoted_enum = escaped(enum_shown)
+        out(1, "var written = prompt.assigned_symbol()")
+        out(1, "if not is_value_{enum_number}(written) \{")
+        out(2, "prompt.not_a_value(\"{quoted_enum}\")")
+        out(2, "return")
+        out(1, "}")
+        out(1, "var chosen = value_{enum_number}(written)")
+        var written_line = written_into(slot, "chosen")
+        out(1, written_line)
+    } else {
+        var reader = reader_of(present)
+        out(1, "var literal = prompt.assigned")
+        out(1, "var written = prompt.{reader}(literal)")
+        var written_line = written_into(slot, "written")
+        out(1, written_line)
+    }
+    var read = slot_read(slot)
+    out(1, "var read_back = {read}")
+    out(1, shown_back_call)
+    out(0, "}")
+    blank()
+}
+
+func write_object_assignment(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    var refused = no_attribute_of(described)
+    out(0, "func assign_{number}(value: {written}, at: Integer) \{")
+    out(1, "var kind = prompt.step_kind(at)")
+    out(1, "if kind != \"name\" \{")
+    out(2, refused)
+    out(2, "return")
+    out(1, "}")
+    out(1, "var name = prompt.step_name(at)")
+    var cases = List<String>()
+    var statements = List<String>()
+    var attributes = attributes_of(described)
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        cases.append(attribute.name)
+        statements.append("put_{number}_{index}(value)")
+        index = index + 1
+    }
+    write_switch(1, "name", cases, statements, refused)
+    out(0, "}")
+    blank()
+    var put_index = 0
+    while put_index < attributes.count() {
+        var put = attributes[put_index]
+        write_assignment("put_{number}_{put_index}", written, put.attribute_type, put.name, false, "", "")
+        put_index = put_index + 1
+    }
+}
+
+func write_collection_step(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    out(0, "func step_{number}(value: {written}, at: Integer) \{")
+    out(1, "var kind = prompt.step_kind(at)")
+    var cases = List<String>()
+    var statements = List<String>()
+    cases.append("call")
+    statements.append("call_{number}(value, at)")
+    cases.append("index")
+    statements.append("index_{number}(value, at)")
+    var refused = no_element_of(described)
+    write_switch(1, "kind", cases, statements, refused)
+    out(0, "}")
+    blank()
+}
+
+func write_list_index(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    var element = element_of(described)
+    var element_number = number_of(element)
+    out(0, "func index_{number}(value: {written}, at: Integer) \{")
+    out(1, "var counted = value.count()")
+    out(1, "var index = prompt.index_of_a_list(at, counted)")
+    out(1, "assert index")
+    out(1, "var item = value.get_at(index)")
+    if element.is_nullable {
+        out(1, "reach_{element_number}(item, at + 1)")
+    } else {
+        out(1, "crash item")
+        out(1, "walk_{element_number}(item, at + 1)")
+    }
+    out(0, "}")
+    blank()
+}
+
+func write_list_assignment(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    var element = element_of(described)
+    var refused = no_element_of(described)
+    out(0, "func assign_{number}(value: {written}, at: Integer) \{")
+    out(1, "var kind = prompt.step_kind(at)")
+    out(1, "if kind != \"index\" \{")
+    out(2, refused)
+    out(2, "return")
+    out(1, "}")
+    out(1, "var counted = value.count()")
+    out(1, "var index = prompt.index_of_a_list(at, counted)")
+    out(1, "assert index")
+    out(1, "put_{number}(value, index)")
+    out(0, "}")
+    blank()
+    write_assignment("put_{number}", written, element, "set_at(index)", true, ", index: Integer", ", index")
+}
+
+func write_a_key(key: Model.Type) {
+    var kind = kind_of(key)
+    var literal_kind = literal_kind_of(key)
+    var shown = shown_of(key)
+    var quoted_shown = escaped(shown)
+    out(1, "assert prompt.key_fits(at, \"{literal_kind}\", \"{quoted_shown}\")")
+    out(1, "var literal = prompt.key(at)")
+    if kind == "text" {
+        out(1, "var key = prompt.text_of(literal)")
+    } else if kind == "enum" {
+        var enum_number = number_of(key)
+        out(1, "var written = prompt.symbol_of(literal)")
+        out(1, "if not is_value_{enum_number}(written) \{")
+        out(2, "prompt.no_key(at)")
+        out(2, "return")
+        out(1, "}")
+        out(1, "var key = value_{enum_number}(written)")
+    } else {
+        var reader = reader_of(key)
+        out(1, "var key = prompt.{reader}(literal)")
+    }
+}
+
+func write_dictionary_index(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    var key = key_of(described)
+    var held = held_of(described)
+    var held_number = number_of(held)
+    out(0, "func index_{number}(value: {written}, at: Integer) \{")
+    if not is_writable(key) {
+        var refused = no_element_of(described)
+        out(1, refused)
+        out(0, "}")
+        blank()
+        return
+    }
+    write_a_key(key)
+    out(1, "if not value.contains(key) \{")
+    out(2, "prompt.no_key(at)")
+    out(2, "return")
+    out(1, "}")
+    out(1, "var item = value.get_at(key)")
+    out(1, "reach_{held_number}(item, at + 1)")
+    out(0, "}")
+    blank()
+}
+
+func write_dictionary_assignment(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    var key = key_of(described)
+    var held = held_of(described)
+    var refused = no_element_of(described)
+    out(0, "func assign_{number}(value: {written}, at: Integer) \{")
+    if not is_writable(key) {
+        out(1, refused)
+        out(0, "}")
+        blank()
+        return
+    }
+    out(1, "var kind = prompt.step_kind(at)")
+    out(1, "if kind != \"index\" \{")
+    out(2, refused)
+    out(2, "return")
+    out(1, "}")
+    write_a_key(key)
+    out(1, "put_{number}(value, key)")
+    out(0, "}")
+    blank()
+    var key_written = written_of(key)
+    write_assignment("put_{number}", written, held, "set_at(key)", true, ", key: {key_written}", ", key")
+}
+
+func write_enum(number: Integer, described: Model.Type) {
+    var written = written_of(described)
+    var values = values_of(described)
+    var tests = List<String>()
+    var index = 0
+    while index < values.count() {
+        var value = values[index]
+        tests.append("written == \"{value}\"")
+        index = index + 1
+    }
+    var joined = tests.join(" or ")
+    out(0, "func is_value_{number}(written: String): Boolean \{")
+    out(1, "return {joined}")
+    out(0, "}")
+    blank()
+    out(0, "func value_{number}(written: String): {written} \{")
+    var cases = List<String>()
+    var statements = List<String>()
+    var last = values.count() - 1
+    var value_index = 0
+    while value_index < last {
+        var each = values[value_index]
+        cases.append(each)
+        statements.append("return '{each}'")
+        value_index = value_index + 1
+    }
+    var last_value = values[last]
+    crash last_value
+    write_switch(1, "written", cases, statements, "return '{last_value}'")
+    out(0, "}")
+    blank()
+}
