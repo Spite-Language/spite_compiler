@@ -17,7 +17,7 @@ func value_of(
 ): HighIntermediaryRepresentation.Values.Value {
     crash expression
     switch expression {
-        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return name_value(expression)
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return named_or_described(expression, expected)
         AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return literal_value(expression, expected)
         AbstractSyntaxTree.Shapes.Expressions.TextLiteral: return text_value(expression)
         AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return member_value(expression)
@@ -59,6 +59,29 @@ func same_signature(given: Model.Type, wanted: Model.Type): Boolean {
         return false
     }
     return given.answer.is_the_same_as(wanted.answer)
+}
+
+func named_or_described(
+    identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+    expected: Model.Type?,
+): HighIntermediaryRepresentation.Values.Value {
+    if expected and identifier.is_a_class_name {
+        if expected.kind == 'object' and expected.name == "Spite.Class" {
+            return class_named_as_a_value(identifier)
+        }
+    }
+    return name_value(identifier)
+}
+
+func class_named_as_a_value(
+    identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var path = List<String>()
+    path.append(identifier.name)
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+    var reflection = Reflection(context, this)
+    return reflection.class_object(described.name)
 }
 
 func fitted_value_of(
@@ -793,7 +816,8 @@ func member_value(
         var reflection = Reflection(context, this)
         return reflection.attributes_of_an_object(target, owner)
     }
-    if not attribute and target.value_type.kind == 'object' {
+    var can_be_bound = target.value_type.kind == 'object' or target.value_type.kind == 'scalar'
+    if not attribute and can_be_bound and not target.value_type.is_nullable {
         var named_function = owner.function_named(member.name)
         if named_function {
             return bound_function_value(named_function, target)
@@ -1101,6 +1125,12 @@ func reflected_member(
     if written == "Spite.Namespace" and member.name == "instances" {
         return reflection.every_namespace()
     }
+    if member.name == "size" {
+        var sized = shape_size_of(class_path)
+        if sized {
+            return sized
+        }
+    }
     var described_path = class_path_of(member.target)
     var no_type_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
     var found = context.resolver.symbols.find(written, context.current_class.file.namespace)
@@ -1117,6 +1147,45 @@ func reflected_member(
     assert getter
     var no_written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
     return called(getter, object, no_written)
+}
+
+func shape_size_of(path: List<String>): HighIntermediaryRepresentation.Values.Value? {
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+    assert described.kind == 'shape'
+    var shape = context.program.shape_keyed(described.name)
+    crash shape
+    var offset = 0
+    var widest = 1
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        crash member.answer
+        var width = width_in_a_type(member.answer)
+        if width > widest {
+            widest = width
+        }
+        var past = offset % width
+        if past > 0 {
+            offset = offset + width - past
+        }
+        offset = offset + width
+        index = index + 1
+    }
+    var tail = offset % widest
+    if tail > 0 {
+        offset = offset + widest - tail
+    }
+    var integer = context.scalar_type("Integer")
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, offset)
+}
+
+func width_in_a_type(held: Model.Type): Integer {
+    var scalar = scalars.of(held.name)
+    if held.kind == 'scalar' and scalar {
+        return scalar.size
+    }
+    return 8
 }
 
 func class_constant(
@@ -3127,6 +3196,74 @@ func folded_with_a_left(
         return left
     }
     return right
+}
+
+func with_its_links(
+    condition: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    if condition == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return linked_member(condition)
+    }
+    return condition
+}
+
+func linked_member(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var prefixes = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    var rooted = collect_prefixes(member.target, prefixes)
+    if not rooted {
+        return member
+    }
+    var outer_pending = context.pending
+    context.pending = List<HighIntermediaryRepresentation.Statements.Statement>()
+    context.scope.enter()
+    var chosen = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    var index = 0
+    while index < prefixes.count() {
+        var prefix = prefixes[index]
+        var probed = value_of(prefix, null)
+        if probed.value_type.is_nullable {
+            chosen.append(prefix)
+            var printer = Printers.Spite.ExpressionPrinter(prefix)
+            var path = printer.text()
+            var present = probed.value_type.present()
+            context.scope.narrow(path, present)
+        }
+        index = index + 1
+    }
+    context.scope.leave()
+    context.pending = outer_pending
+    if chosen.is_empty() {
+        return member
+    }
+    var joined = chosen[0]
+    var joined_index = 1
+    while joined_index < chosen.count() {
+        var next = chosen[joined_index]
+        joined = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(joined, 'and', next)
+        joined_index = joined_index + 1
+    }
+    return AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(joined, 'and', member)
+}
+
+func collect_prefixes(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    into: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var rooted = collect_prefixes(expression.target, into)
+        into.append(expression)
+        return rooted
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        if expression.is_a_class_name or expression.name.starts_with("$") {
+            return false
+        }
+        into.append(expression)
+        return true
+    }
+    return false
 }
 
 func condition_of(
