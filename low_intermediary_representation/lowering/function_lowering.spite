@@ -16,6 +16,8 @@ var waits: Waits? = null
 var makes_work = false
 var resumable_mode = false
 var resume_blocks = List<Integer>()
+var locks_its_singleton = false
+var locked_class = ""
 
 func FunctionLowering(
     starting_layout: Layout,
@@ -56,6 +58,13 @@ func lowered(
         switch_to(body)
     }
     high.function.parameters.each(hold_a_parameter)
+    var owner_key = high.function.owner
+    var guarded = waits and not high.function.is_constructor
+    if guarded and is_locked_here() {
+        locks_its_singleton = true
+        locked_class = owner_key
+        lock_the_singleton()
+    }
     lower_block(high.body)
     if not terminated {
         release_every_scope()
@@ -250,6 +259,9 @@ func release_every_scope() {
         crash scope
         scope.each(release)
         index = index - 1
+    }
+    if locks_its_singleton {
+        unlock_the_singleton()
     }
 }
 
@@ -754,17 +766,30 @@ func singleton_of(class_key: String, made: HighIntermediaryRepresentation.Values
     switch_to(making)
     halt_on_state(
         slot,
-        1,
-        "spite: singleton '{class_key}' is asked for while it is being made: a singleton cannot reach itself as it initialises\n",
-    )
-    halt_on_state(
-        slot,
         3,
         "spite: a drop() at exit used the singleton {class_key} after it was destroyed: singletons are destroyed in reverse order of when they were made, so keep {class_key} in an attribute of the singleton whose drop() uses it\n",
     )
+    var thread = new_register()
+    var no_arguments = List<Integer>()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
+    emit(asked)
+    var never_made = constant(0)
     var being_made = constant(1)
-    var marked = LowIntermediaryRepresentation.Instructions.Store(slot, 16, being_made, 'bits_64')
-    emit(marked)
+    var before = new_register()
+    var claimed = LowIntermediaryRepresentation.Instructions.CompareExchange(before, slot, 16, never_made, being_made)
+    emit(claimed)
+    var won = new_register()
+    var compared_claim = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, never_made)
+    emit(compared_claim)
+    var building = new_block()
+    var someone_else = new_block()
+    var claim_test = LowIntermediaryRepresentation.Instructions.Branch(won, building, someone_else)
+    emit(claim_test)
+    switch_to(someone_else)
+    wait_for_the_maker(slot, thread, class_key, object, after)
+    switch_to(building)
+    var kept_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 32, thread, 'bits_64')
+    emit(kept_thread)
     var fresh = make_object(class_key)
     call_the_constructor(fresh, made)
     var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 0, fresh, 'bits_64')
@@ -778,6 +803,169 @@ func singleton_of(class_key: String, made: HighIntermediaryRepresentation.Values
     jump_to(after)
     switch_to(after)
     return object
+}
+
+func lock_the_singleton() {
+    var label = slot_label_of(locked_class)
+    var slot = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    emit(addressed)
+    var thread = new_register()
+    var no_arguments = List<Integer>()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
+    emit(asked)
+    var trying = new_block()
+    var held = new_block()
+    var again = new_block()
+    var taken = new_block()
+    jump_to(trying)
+    switch_to(trying)
+    var free = constant(0)
+    var before = new_register()
+    var claimed = LowIntermediaryRepresentation.Instructions.CompareExchange(before, slot, 40, free, thread)
+    emit(claimed)
+    var won = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, free)
+    emit(compared)
+    var won_test = LowIntermediaryRepresentation.Instructions.Branch(won, taken, held)
+    emit(won_test)
+    switch_to(held)
+    var mine = new_register()
+    var compared_owner = LowIntermediaryRepresentation.Instructions.Compare(mine, 'equal', before, thread)
+    emit(compared_owner)
+    var owner_test = LowIntermediaryRepresentation.Instructions.Branch(mine, taken, again)
+    emit(owner_test)
+    switch_to(again)
+    var no_wait = constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    emit(paused)
+    jump_to(trying)
+    switch_to(taken)
+    var depth = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(depth, slot, 48, 'bits_64')
+    emit(loaded)
+    var one = constant(1)
+    var deeper = new_register()
+    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(deeper, 'add', depth, one)
+    added.is_checked = false
+    emit(added)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 48, deeper, 'bits_64')
+    emit(stored)
+}
+
+func unlock_the_singleton() {
+    var label = slot_label_of(locked_class)
+    var slot = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    emit(addressed)
+    var depth = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(depth, slot, 48, 'bits_64')
+    emit(loaded)
+    var one = constant(1)
+    var shallower = new_register()
+    var subtracted = LowIntermediaryRepresentation.Instructions.Arithmetic(shallower, 'subtract', depth, one)
+    subtracted.is_checked = false
+    emit(subtracted)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 48, shallower, 'bits_64')
+    emit(stored)
+    var zero = constant(0)
+    var released = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(released, 'equal', shallower, zero)
+    emit(compared)
+    var freeing = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(released, freeing, after)
+    emit(test)
+    switch_to(freeing)
+    var opened = LowIntermediaryRepresentation.Instructions.Store(slot, 40, zero, 'bits_64')
+    emit(opened)
+    jump_to(after)
+    switch_to(after)
+}
+
+func wait_for_the_filling(slot: Integer, thread: Integer, made: Integer, after: Integer) {
+    var maker = new_register()
+    var loaded_maker = LowIntermediaryRepresentation.Instructions.Load(maker, slot, 32, 'bits_64')
+    emit(loaded_maker)
+    var is_this_thread = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_this_thread, 'equal', maker, thread)
+    emit(compared)
+    var taking = new_block()
+    var waiting = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_this_thread, taking, waiting)
+    emit(test)
+    switch_to(waiting)
+    var state = new_register()
+    var loaded_state = LowIntermediaryRepresentation.Instructions.Load(state, slot, 16, 'bits_64')
+    emit(loaded_state)
+    var filled = constant(2)
+    var is_filled = new_register()
+    var compared_state = LowIntermediaryRepresentation.Instructions.Compare(is_filled, 'equal', state, filled)
+    emit(compared_state)
+    var pausing = new_block()
+    var filled_test = LowIntermediaryRepresentation.Instructions.Branch(is_filled, taking, pausing)
+    emit(filled_test)
+    switch_to(pausing)
+    var no_wait = constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    emit(paused)
+    jump_to(waiting)
+    switch_to(taking)
+    var taken = LowIntermediaryRepresentation.Instructions.Load(made, slot, 0, 'bits_64')
+    emit(taken)
+    jump_to(after)
+}
+
+func wait_for_the_maker(slot: Integer, thread: Integer, class_key: String, object: Integer, after: Integer) {
+    var maker = new_register()
+    var loaded_maker = LowIntermediaryRepresentation.Instructions.Load(maker, slot, 32, 'bits_64')
+    emit(loaded_maker)
+    var is_this_thread = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_this_thread, 'equal', maker, thread)
+    emit(compared)
+    var circling = new_block()
+    var waiting = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_this_thread, circling, waiting)
+    emit(test)
+    switch_to(circling)
+    var circle = ""
+    if waits {
+        circle = waits.circle_of(class_key)
+    }
+    var message = "spite: singleton '{class_key}' is asked for while it is being made: a singleton cannot reach itself as it initialises\n"
+    if not circle.is_empty() {
+        message = "spite: singleton {circle}: singletons initialise each other in a circle\n"
+    }
+    var label = text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+    switch_to(waiting)
+    var state = new_register()
+    var loaded_state = LowIntermediaryRepresentation.Instructions.Load(state, slot, 16, 'bits_64')
+    emit(loaded_state)
+    var made_state = constant(2)
+    var is_made = new_register()
+    var compared_state = LowIntermediaryRepresentation.Instructions.Compare(is_made, 'equal', state, made_state)
+    emit(compared_state)
+    var pausing = new_block()
+    var taking = new_block()
+    var made_test = LowIntermediaryRepresentation.Instructions.Branch(is_made, taking, pausing)
+    emit(made_test)
+    switch_to(pausing)
+    var no_wait = constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    emit(paused)
+    jump_to(waiting)
+    switch_to(taking)
+    var taken = LowIntermediaryRepresentation.Instructions.Load(object, slot, 0, 'bits_64')
+    emit(taken)
+    jump_to(after)
 }
 
 func halt_on_state(slot: Integer, state: Integer, message: String) {
@@ -833,7 +1021,7 @@ func record_label_of(class_key: String): Integer {
     }
     var empty = Buffer()
     var index = 0
-    while index < 32 {
+    while index < 56 {
         empty.append(0)
         index = index + 1
     }
@@ -1243,6 +1431,9 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
         check_the_decimal_range(converted.value, from_type, conversion.value_type)
         return decimal_converted(converted.value, from_type, conversion.value_type)
     }
+    if conversion.kind == 'address' {
+        return single(converted.value)
+    }
     if conversion.kind == 'unbox' {
         var unboxed = new_register()
         var loaded_box = LowIntermediaryRepresentation.Instructions.Load(unboxed, converted.value, 16, 'bits_64')
@@ -1294,17 +1485,44 @@ func lower_class_object(object: HighIntermediaryRepresentation.Values.ClassObjec
     var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
     emit(addressed)
     var made = new_register()
-    var loaded = LowIntermediaryRepresentation.Instructions.Load(made, slot, 0, 'bits_64')
-    emit(loaded)
-    var zero = constant(0)
-    var missing = new_register()
-    var compared = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', made, zero)
+    var state = new_register()
+    var loaded_state = LowIntermediaryRepresentation.Instructions.Load(state, slot, 16, 'bits_64')
+    emit(loaded_state)
+    var filled = constant(2)
+    var is_filled = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_filled, 'equal', state, filled)
     emit(compared)
     var making = new_block()
+    var ready = new_block()
     var after = new_block()
-    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, making, after)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_filled, ready, making)
     emit(test)
+    switch_to(ready)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(made, slot, 0, 'bits_64')
+    emit(loaded)
+    jump_to(after)
     switch_to(making)
+    var thread = new_register()
+    var no_arguments = List<Integer>()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
+    emit(asked)
+    var never_made = constant(0)
+    var being_made = constant(1)
+    var before = new_register()
+    var claimed = LowIntermediaryRepresentation.Instructions.CompareExchange(before, slot, 16, never_made, being_made)
+    emit(claimed)
+    var won = new_register()
+    var compared_claim = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, never_made)
+    emit(compared_claim)
+    var building = new_block()
+    var someone_else = new_block()
+    var claim_test = LowIntermediaryRepresentation.Instructions.Branch(won, building, someone_else)
+    emit(claim_test)
+    switch_to(someone_else)
+    wait_for_the_filling(slot, thread, made, after)
+    switch_to(building)
+    var kept_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 32, thread, 'bits_64')
+    emit(kept_thread)
     var fresh = make_object(kind)
     var name_text = HighIntermediaryRepresentation.Values.TextConstant(object.described)
     var parts = object.described.split(".")
@@ -1334,8 +1552,10 @@ func lower_class_object(object: HighIntermediaryRepresentation.Values.ClassObjec
     emit(stored)
     var fill_arguments = List<Integer>()
     fill_arguments.append(fresh)
-    var filled = LowIntermediaryRepresentation.Instructions.Call(-1, "{kind}._fill_{object.described}", fill_arguments)
-    emit(filled)
+    var filling = LowIntermediaryRepresentation.Instructions.Call(-1, "{kind}._fill_{object.described}", fill_arguments)
+    emit(filling)
+    var marked = LowIntermediaryRepresentation.Instructions.Store(slot, 16, filled, 'bits_64')
+    emit(marked)
     var copied = LowIntermediaryRepresentation.Instructions.Copy(made, fresh)
     emit(copied)
     jump_to(after)
@@ -1718,6 +1938,9 @@ func read_a_filling_attribute(
     var loaded = load_attribute(object, attribute)
     var copied = LowIntermediaryRepresentation.Instructions.Copy(target, loaded.value)
     emit(copied)
+    if is_a_pointer(call.value_type) {
+        retain(target)
+    }
     if presence >= 0 {
         var copied_presence = LowIntermediaryRepresentation.Instructions.Copy(presence, loaded.presence)
         emit(copied_presence)
