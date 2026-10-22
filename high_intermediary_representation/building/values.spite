@@ -939,6 +939,10 @@ func member_value(
     if reflected {
         return reflected
     }
+    var bound_singleton = bound_singleton_question(member)
+    if bound_singleton {
+        return bound_singleton
+    }
     var written_target = value_of(member.target, null)
     if written_target.value_type.kind == 'handle' {
         return handle_member(written_target, member.name)
@@ -1286,6 +1290,28 @@ func walk_specialized(
     return made
 }
 
+func bound_singleton_question(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var function = context.current_function
+    assert member.name == "is_singleton" and function.bound_member_type
+    var asked = member.target
+    var names_the_class = false
+    if asked == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var described = asked.target
+        if described == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+            names_the_class = asked.name == "class" and described.name == function.bound_parameter
+        }
+    }
+    assert names_the_class
+    var bound: Model.Type = function.bound_member_type
+    var model = context.program.class_named(bound.name)
+    if not model or bound.is_nullable {
+        return boolean_constant(false)
+    }
+    return boolean_constant(model.is_singleton)
+}
+
 func bound_class_object(function: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value {
     crash function.bound_member_type
     var reflection = Reflection(context, this)
@@ -1587,7 +1613,7 @@ func made_from_a_bound_type(
     }
     crash bound
     var made_type = bound.present()
-    var is_plain = made_type.kind == 'scalar' or made_type.name == "String"
+    var is_plain = made_type.kind == 'scalar' or made_type.name == "String" or made_type.kind == 'shape'
     if is_plain and call.arguments.is_empty() {
         var plain = default_of_a_type(made_type)
         crash plain
@@ -1729,7 +1755,16 @@ func result_of_handle(value: HighIntermediaryRepresentation.Values.Value): HighI
     }
     crash value.value_type.answer
     var answer: Model.Type = value.value_type.answer
+    need_the_settling(value.value_type)
     return HighIntermediaryRepresentation.Values.Conversion(answer, 'join', value)
+}
+
+func need_the_settling(handle: Model.Type) {
+    var carrier = context.program.class_named(handle.carrier)
+    crash carrier
+    var settled = carrier.function_named("_settled")
+    crash settled
+    need(settled)
 }
 
 func refuse_a_cast_by_name(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
@@ -2102,6 +2137,10 @@ func member_call(
         return work_call(written_receiver, "finished_value")
     }
     var receiver = result_of_handle(written_receiver)
+    var answered_text = folded_text_question(receiver, callee.name, call.arguments)
+    if answered_text {
+        return answered_text
+    }
     if receiver.value_type.kind == 'function' and callee.name == "call_function" {
         return value_call_of(receiver, call.arguments)
     }
@@ -2180,6 +2219,38 @@ func member_call(
     }
     crash function
     return called(function, receiver, call.arguments)
+}
+
+func folded_text_question(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value? {
+    var asks = name == "starts_with" or name == "ends_with"
+    assert asks and written.count() == 1
+    var known = known_text_of(receiver)
+    assert known
+    var argument = written[0]
+    var piece: String? = null
+    if argument == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        piece = plain_text_of(argument)
+    }
+    assert piece
+    var holds = known.ends_with(piece)
+    if name == "starts_with" {
+        holds = known.starts_with(piece)
+    }
+    return boolean_constant(holds)
+}
+
+func known_text_of(value: HighIntermediaryRepresentation.Values.Value): String? {
+    if value == HighIntermediaryRepresentation.Values.TextConstant {
+        return value.text
+    }
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        return context.text_locals[value.name]
+    }
+    return null
 }
 
 func member_template_of(owner: Model.ClassModel, name: String): Model.FunctionModel? {
@@ -3561,9 +3632,27 @@ func called(
     if takes_numbers(function) and written.count() == function.parameters.count() {
         return number_call(function, receiver, written)
     }
+    var schema = schema_of(function)
+    if schema {
+        return schema
+    }
     need(function)
     var arguments = fitted_arguments(function, written)
     return HighIntermediaryRepresentation.Values.Call(function, receiver, arguments)
+}
+
+func schema_of(function: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value? {
+    assert function.name == "schema" and not function.has_a_body()
+    var owner = context.program.class_named(function.owner)
+    assert owner
+    var is_binary = owner.key.starts_with("BinaryWriter_of_") or owner.key.starts_with("BinaryReader_of_")
+    assert is_binary
+    var described = owner.bound_types["$value_type"]
+    assert described
+    var schema = Schema(context)
+    var hashed = schema.hash_of(described)
+    var long = context.scalar_type("Long")
+    return HighIntermediaryRepresentation.Values.WholeNumber(long, hashed)
 }
 
 func takes_numbers(function: Model.FunctionModel): Boolean {
