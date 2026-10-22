@@ -40,6 +40,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ## The language
 
 - The runtime the library needs, as machine code: allocator, console, files, directories, clock, sockets, processes, dynamic library
+- A foreign call (D171) answers only `Integer`, `_as_long`, `_as_double` and `_as_float`: `_as_text`, a `type` passed as a pointer to its struct, a list passed as a pointer to its numbers with C's writes coming back, and a header's prototypes giving each argument its width (`float`, `unsigned long long`) are not built (`tests/foreign_library`), so a `Float` argument C declares `float` is passed as a `double`
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
 - `--debug-memory` counts and the leak report; an attribute read from an object made in the same expression (`Maker().part`) leaks that object; the counts a pass proves unneeded are still written
 - Chains of member templates as one loop, class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, two members with one plural, `map_is_alive`, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
@@ -68,7 +69,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)
 - The spec puts the inflection table at `library/string/inflection.spite` (`String.Inflection`), but a class file and a folder of one name are refused (`conformance/class_and_namespace`), so the table stays `common/inflection.spite`, and a program's `string/inflection.spite` is mapped onto it (D161). Needs a decision on whether a class may also be a namespace
-- `List<Symbol>` and `List<String>` (and every generic instance over `Symbol`) share one instance key, so `JsonReader<Symbol>` and `JsonReader<String>` are one class and whichever is made first reads both (silent under D244)
 
 - `shape_members` corrupts the heap (reported in `List<Spite.Internal.Running>.reserve`) once a `type`'s function is held as a value and run through `Parallel`: a count is released once too often
 

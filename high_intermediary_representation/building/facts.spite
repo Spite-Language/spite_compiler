@@ -8,6 +8,7 @@ var waits_callees = Dictionary<String, List<String>>()
 var same_class_callees = Dictionary<String, List<String>>()
 var waiting_keys = List<String>()
 var written = List<String>()
+var returned = List<String>()
 var read = List<String>()
 var changed = false
 var starting = false
@@ -265,11 +266,27 @@ func read_statement(statement: HighIntermediaryRepresentation.Statements.Stateme
         HighIntermediaryRepresentation.Statements.AssignAttribute: read_an_attribute_write(statement)
         HighIntermediaryRepresentation.Statements.AssignThroughShape: read_a_shape_write(statement)
         HighIntermediaryRepresentation.Statements.Evaluate: look(statement.value)
-        HighIntermediaryRepresentation.Statements.Return: look(statement.value)
+        HighIntermediaryRepresentation.Statements.Return: read_a_return(statement.value)
         HighIntermediaryRepresentation.Statements.If: read_an_if(statement)
         HighIntermediaryRepresentation.Statements.While: read_a_while(statement)
         HighIntermediaryRepresentation.Statements.Block: read_block(statement)
         _: return
+    }
+}
+
+func read_a_return(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    look(value)
+    var found = roots(value)
+    var index = 0
+    while index < found.count() {
+        var slot = found[index]
+        var entry = "{current_key}|{slot}"
+        if not returned.contains(entry) {
+            returned.append(entry)
+            changed = true
+        }
+        index = index + 1
     }
 }
 
@@ -481,7 +498,7 @@ func look_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
         }
         filler_index = filler_index + 1
     }
-    assert dispatched == 0
+    assert dispatched == 0 and not call.member.is_an_attribute
     var reached = roots(call.receiver)
     mark(reached)
     var index = 0
@@ -502,6 +519,9 @@ func dispatch_to(filler: Model.Type, call: HighIntermediaryRepresentation.Values
         return false
     }
     var reached = model.function_named(call.member.name)
+    if not reached and call.member.is_an_attribute {
+        reached = model.function_named("get_{call.member.name}")
+    }
     if not reached {
         return false
     }
@@ -552,11 +572,44 @@ func roots(value: HighIntermediaryRepresentation.Values.Value?): List<String> {
         HighIntermediaryRepresentation.Values.ThisRead: return own_slot()
         HighIntermediaryRepresentation.Values.AttributeRead: return roots_of_an_attribute(value)
         HighIntermediaryRepresentation.Values.Conversion: return roots(value.converted)
-        HighIntermediaryRepresentation.Values.Call: return roots_of_a_call(value.receiver, value.arguments)
+        HighIntermediaryRepresentation.Values.Call: return roots_of_a_known_call(value)
         HighIntermediaryRepresentation.Values.ShapeCall: return roots_of_a_call(value.receiver, value.arguments)
         HighIntermediaryRepresentation.Values.FunctionValueCall: return roots_of_a_call(value.called, value.arguments)
+        HighIntermediaryRepresentation.Values.MakeObject: return roots_of_a_call(null, value.arguments)
         _: return found
     }
+}
+
+func is_gathered(parameter: Model.ParameterModel): Boolean {
+    return parameter.is_variadic
+}
+
+func roots_of_a_known_call(call: HighIntermediaryRepresentation.Values.Call): List<String> {
+    var function = call.function
+    var receiver = call.receiver
+    var arguments = call.arguments
+    var key = function.key()
+    var body = bodies[key]
+    var gathers = function.parameters.any(is_gathered)
+    if not body or excluded.contains(key) or gathers {
+        return roots_of_a_call(receiver, arguments)
+    }
+    var found = List<String>()
+    if returned.contains("{key}|this") {
+        var from_the_receiver = roots(receiver)
+        aliases.add_all(found, from_the_receiver)
+    }
+    var index = 0
+    while index < function.parameters.count() and index < arguments.count() {
+        var parameter = function.parameters[index]
+        var argument = arguments[index]
+        if returned.contains("{key}|p:{parameter.name}") {
+            var passed = roots(argument)
+            aliases.add_all(found, passed)
+        }
+        index = index + 1
+    }
+    return found
 }
 
 func own_slot(): List<String> {
