@@ -1,0 +1,231 @@
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var definitions = List<Integer>()
+var known = List<Boolean>()
+var values = List<Long>()
+var changed = false
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if function.is_resumable {
+        return function
+    }
+    var register_total = operands.most_register_of(function)
+    var index = 0
+    while index < register_total {
+        definitions.append(0)
+        known.append(false)
+        values.append(0)
+        index = index + 1
+    }
+    count_the_definitions()
+    var round = 0
+    changed = true
+    while changed and round < 8 {
+        changed = false
+        note_the_constants()
+        fold_the_blocks()
+        round = round + 1
+    }
+    return function
+}
+
+func count_the_definitions() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            operands.read(instruction)
+            operands.defines.each(count_a_definition)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func count_a_definition(register: Integer) {
+    var count = definitions[register]
+    crash count
+    definitions[register] = count + 1
+}
+
+func note_the_constants() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_a_constant)
+        block_index = block_index + 1
+    }
+}
+
+func note_a_constant(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+        var target = instruction.target
+        if definitions[target] == 1 and target >= function.parameter_count {
+            known[target] = true
+            values[target] = instruction.number
+        }
+    }
+}
+
+func is_known(register: Integer): Boolean {
+    if register < 0 or register >= known.count() {
+        return false
+    }
+    return known[register] == true
+}
+
+func value_of(register: Integer): Long {
+    var value = values[register]
+    crash value
+    return value
+}
+
+func fold_the_blocks() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            var folded = folded_of(instruction)
+            if folded {
+                block.instructions[index] = folded
+                changed = true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func folded_of(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Compare: return folded_compare(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return folded_arithmetic(instruction)
+        LowIntermediaryRepresentation.Instructions.Branch: return folded_branch(instruction)
+        _: return null
+    }
+}
+
+func folded_branch(
+    branch: LowIntermediaryRepresentation.Instructions.Branch,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    if branch.when_true == branch.when_false {
+        return LowIntermediaryRepresentation.Instructions.Jump(branch.when_true)
+    }
+    assert is_known(branch.condition)
+    var condition = value_of(branch.condition)
+    if condition != 0 {
+        return LowIntermediaryRepresentation.Instructions.Jump(branch.when_true)
+    }
+    return LowIntermediaryRepresentation.Instructions.Jump(branch.when_false)
+}
+
+func folded_compare(
+    compare: LowIntermediaryRepresentation.Instructions.Compare,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    assert is_known(compare.left) and is_known(compare.right)
+    var left = value_of(compare.left)
+    var right = value_of(compare.right)
+    var holds = compared(compare.comparison, left, right, compare.is_signed)
+    var number: Long = 0
+    if holds {
+        number = 1
+    }
+    return LowIntermediaryRepresentation.Instructions.Constant(compare.target, number)
+}
+
+func compared(
+    comparison: LowIntermediaryRepresentation.Comparison,
+    left: Long,
+    right: Long,
+    is_signed: Boolean,
+): Boolean {
+    var less = left < right
+    if not is_signed and left < 0 != right < 0 {
+        less = left >= 0
+    }
+    switch comparison {
+        'equal': return left == right
+        'not_equal': return left != right
+        'less': return less
+        'less_or_equal': return less or left == right
+        'greater': return not less and left != right
+        'greater_or_equal': return not less
+    }
+}
+
+func folded_arithmetic(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    assert is_known(arithmetic.left) and is_known(arithmetic.right)
+    var left = value_of(arithmetic.left)
+    var right = value_of(arithmetic.right)
+    assert computable(arithmetic, left, right)
+    var result = computed(arithmetic.operator, left, right)
+    assert fits(result, arithmetic.width, arithmetic.is_signed)
+    return LowIntermediaryRepresentation.Instructions.Constant(arithmetic.target, result)
+}
+
+func computable(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, left: Long, right: Long): Boolean {
+    var small: Long = 4611686018427387904
+    var least: Long = -4611686018427387904
+    var tiny: Long = 2147483648
+    var least_tiny: Long = -2147483648
+    var operands_small = left < small and left > least and right < small and right > least
+    var operands_tiny = left < tiny and left > least_tiny and right < tiny and right > least_tiny
+    var unsigned_safe = arithmetic.is_signed or left >= 0 and right >= 0
+    switch arithmetic.operator {
+        'add': return operands_small and unsigned_safe
+        'subtract': return operands_small and unsigned_safe
+        'multiply': return operands_tiny and unsigned_safe
+        'divide': return right != 0 and right != -1 and unsigned_safe
+        'remainder': return right != 0 and right != -1 and unsigned_safe
+        'bits_and': return unsigned_safe
+        'bits_or': return unsigned_safe
+        'bits_xor': return unsigned_safe
+        _: return false
+    }
+}
+
+func computed(operator: LowIntermediaryRepresentation.ArithmeticOperator, left: Long, right: Long): Long {
+    switch operator {
+        'add': return left + right
+        'subtract': return left - right
+        'multiply': return left * right
+        'divide': return left / right
+        'remainder': return left % right
+        'bits_and': return left.bits_and(right)
+        'bits_or': return left.bits_or(right)
+        _: return left.bits_exclusive_or(right)
+    }
+}
+
+func fits(result: Long, width: LowIntermediaryRepresentation.Width, is_signed: Boolean): Boolean {
+    if not is_signed and result < 0 {
+        return false
+    }
+    switch width {
+        'bits_64': return true
+        'bits_32': return within(result, is_signed, 2147483648)
+        'bits_16': return within(result, is_signed, 32768)
+        'bits_8': return within(result, is_signed, 128)
+    }
+}
+
+func within(result: Long, is_signed: Boolean, half: Long): Boolean {
+    var lowest: Long = 0
+    lowest = lowest - half
+    if is_signed {
+        return result >= lowest and result < half
+    }
+    return result < half * 2
+}
