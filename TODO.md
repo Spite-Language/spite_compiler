@@ -48,11 +48,16 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Vector and Items keep their items inline: today they hold references, so changing a found item changes the one in the list
 - Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`), filled in by the compiler and folded where constant (D37): still missing are `.attributes` on an `Anything`, `function.arguments.each(f)` with an answer typed by the argument (`argument.class`), `Spite.Class.function_waits`, `source_files` and `call_function`, folding of constant reads, `Spite.Call`, `.accesses`, enums as classes, and a function value being the same object as its `Spite.Function`
 - `Parallel` starts a thread of its own for each handle: the thread pool behind it, `parallel_each_<function>()`, thread-safe singletons (a first fetch from two threads can make two), and the console's buffer shared by threads that print at once (D36)
-- `Concurrent` runs as a resumable frame only for a function called by name: a wait through a function value, a union's or a `type`'s function, a constructor that waits, and a wait inside a condition after its first part are not resumable yet; file, console and socket reads block instead of waiting on a helper thread; `run_ready()` and `resume_only_when_asked()`; a join halting when two `Concurrent`s wait for each other names neither (it stops at a line of the scheduler); a poll that never steps anything does not halt
+- `Concurrent` runs as a resumable frame only for a function called by name: a wait through a function value, a union's or a `type`'s function, a constructor that waits, a wait inside a condition after its first part, and a handle assigned again inside a `Concurrent` are not points it returns from yet; file reads and writes block instead of running on a helper thread; one scheduler serves every thread, so a `Concurrent` made inside a `Parallel` races (`concurrent_in_parallel`), and a singleton first fetched by two threads at once halts as a circle; `run_ready()` and `resume_only_when_asked()`; a join halting when two `Concurrent`s wait for each other names neither (it stops at a line of the scheduler); a poll that never steps anything does not halt
 - `foreign_callbacks` and `ipv6_addresses` still use `Memory.Address` and `Memory.Heap`: rewrite them with `Buffer` when foreign callbacks and sockets come (D36)
 - Allocation tests (frame objects, lent buffers, kept buffer addresses, the memory floor) come back as `--debug-memory` counts with the passes that place memory (D35)
 
 ## Faults found while porting
+
+- `Json` and the old type spellings (`Int`, `Bool`, `LocalDate`...) are refused by name even when the program declares a class of that name
+- A crash inside a library function names the library line, where the old compiler named the program's call (`smallest_absolute`, `negative_shift`, `items_remove_out_of_range`, `json_infinity`)
+- `Spite.Argument.is_mutated` (the study over every call) and `Spite.Class.function_waits` are not filled
+- `items_columns`, `sparse_rows` and `plain_items` stop reading a column after `Items.remove_swapping`; `bulk_removal` stops in `List.swap` with an index outside the list
 
 - A class object fills the class objects it names as it is filled, so the fills nest as deep as the classes reach one another (the main stack reserve was raised to 64 MB for it): fill them from a worklist, and fold the constant ones while compiling
 
