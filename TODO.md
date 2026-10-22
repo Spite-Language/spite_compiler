@@ -63,7 +63,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `Json` and the old type spellings (`Int`, `Bool`, `LocalDate`...) are refused by name even when the program declares a class of that name
 - A crash inside a library function names the library line, where the old compiler named the program's call (`smallest_absolute`, `negative_shift`, `items_remove_out_of_range`, `json_infinity`)
 - `Spite.Argument.is_mutated` (the study over every call) and `Spite.Class.function_waits` are not filled
-- `items_columns`, `sparse_rows` and `plain_items` stop reading a column after `Items.remove_swapping`; `bulk_removal` stops in `List.swap` with an index outside the list
+- `items_columns`, `sparse_rows` and `plain_items` stop reading a column after `Items.remove_swapping`
 
 - A class object fills the class objects it names as it is filled, so the fills nest as deep as the classes reach one another (the main stack reserve was raised to 64 MB for it): fill them from a worklist, and fold the constant ones while compiling
 
