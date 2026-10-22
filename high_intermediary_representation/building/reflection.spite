@@ -90,6 +90,10 @@ func fill_from_the_model(
     model: Model.ClassModel,
 ) {
     set_flag(own, class_model, "_is_singleton", model.is_singleton)
+    var stateful = is_stateful(model)
+    set_flag(own, class_model, "_is_stateful", stateful)
+    var fixed_size = is_fixed_size(model)
+    set_flag(own, class_model, "_is_fixed_size", fixed_size)
     var element = model.bound_types["$element_type"]
     var is_a_list = model.function_named("_read_value")
     if element and is_a_list {
@@ -112,6 +116,22 @@ func fill_from_the_model(
         add_the_attributes(own, class_model, model)
     }
     add_the_functions(own, class_model, model)
+}
+
+func is_stateful(model: Model.ClassModel): Boolean {
+    return not model.declared_attributes.is_empty()
+}
+
+func is_fixed_size(model: Model.ClassModel): Boolean {
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if attribute.attribute_type.kind != 'scalar' {
+            return false
+        }
+        index = index + 1
+    }
+    return true
 }
 
 func add_the_attributes(
@@ -160,6 +180,8 @@ func add_the_functions(
             var made = made_from(function_type, name, no_more)
             var local = kept(made, function_type)
             add_the_arguments(local, function_model, declared, argument_type)
+            add_the_answer(local, function_model, declared)
+            add_the_returned_literal(local, function_model, declared)
             appended(listed, local)
         }
         index = index + 1
@@ -190,6 +212,57 @@ func add_the_arguments(
     }
 }
 
+func add_the_answer(
+    function: HighIntermediaryRepresentation.Values.Value,
+    function_model: Model.ClassModel,
+    declared: Model.FunctionModel,
+) {
+    assert declared.answer
+    var answer: Model.Type = declared.answer
+    var described = class_object_of_type(answer)
+    assert described
+    set_value(function, function_model, "_returns", described)
+}
+
+func add_the_returned_literal(
+    function: HighIntermediaryRepresentation.Values.Value,
+    function_model: Model.ClassModel,
+    declared: Model.FunctionModel,
+) {
+    assert declared.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = declared.declaration
+    assert declaration.body
+    var body: AbstractSyntaxTree.Shapes.Statements.Block = declaration.body
+    assert body.statements.count() == 1
+    var only = body.statements[0]
+    if only == AbstractSyntaxTree.Shapes.Statements.ReturnStatement {
+        add_a_literal_return(function, function_model, only)
+    }
+}
+
+func add_a_literal_return(
+    function: HighIntermediaryRepresentation.Values.Value,
+    function_model: Model.ClassModel,
+    returned: AbstractSyntaxTree.Shapes.Statements.ReturnStatement,
+) {
+    var value = returned.value
+    if value == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        add_a_literal(function, function_model, value)
+    }
+}
+
+func add_a_literal(
+    function: HighIntermediaryRepresentation.Values.Value,
+    function_model: Model.ClassModel,
+    literal: AbstractSyntaxTree.Shapes.Expressions.TextLiteral,
+) {
+    assert literal.pieces.count() == 1
+    var piece = literal.pieces[0]
+    assert not piece.hole
+    var written = values.unescaped(piece.text)
+    set_text(function, function_model, "_returned_literal", written)
+}
+
 func class_object_of_type(of_type: Model.Type): HighIntermediaryRepresentation.Values.Value? {
     var is_a_class = of_type.kind == 'object' or of_type.kind == 'scalar'
     assert is_a_class
@@ -206,11 +279,65 @@ func fill_of_a_namespace(described: String): HighIntermediaryRepresentation.High
     var parent_name = namespace_of(described)
     var parent = namespace_object(parent_name)
     set_value(own, namespace_model, "_parent", parent)
+    var folder = context.resolver.symbols.namespace_folder(described)
+    if folder {
+        add_the_contents(own, namespace_model, folder)
+    }
     var function = Model.FunctionModel("_fill_{described}", namespace_model.key)
     var body = HighIntermediaryRepresentation.Statements.Block()
     body.statements = statements
     statements = outer
     return HighIntermediaryRepresentation.HighFunction(function, body)
+}
+
+func add_the_contents(
+    own: HighIntermediaryRepresentation.Values.Value,
+    namespace_model: Model.ClassModel,
+    folder: Mapping.MappedFolder,
+) {
+    var classes = read_attribute(own, namespace_model, "_classes")
+    var index = 0
+    while index < folder.files.count() {
+        var file = folder.files[index]
+        var model = context.program.class_named(file.namespace)
+        if model {
+            var described = class_object(model.key)
+            appended(classes, described)
+        }
+        index = index + 1
+    }
+    var namespaces = read_attribute(own, namespace_model, "_namespaces")
+    var folder_index = 0
+    while folder_index < folder.folders.count() {
+        var inner = folder.folders[folder_index]
+        var inner_object = namespace_object(inner.namespace)
+        appended(namespaces, inner_object)
+        folder_index = folder_index + 1
+    }
+}
+
+func every_namespace(): HighIntermediaryRepresentation.Values.Value {
+    var argument = Model.Type('object', "Spite.Namespace")
+    var list_type = context.resolver.list_type_of(argument)
+    var listed = values.new_list(list_type)
+    var entry = context.program.class_named(context.program.entry)
+    crash entry
+    var program_folder = folder_of(entry.file.path)
+    var folders = context.resolver.symbols.namespace_folders()
+    var index = 0
+    while index < folders.count() {
+        var folder = folders[index]
+        var path_length = folder.path.length()
+        var folder_length = program_folder.length()
+        var rest = folder.path.slice(folder_length, path_length)
+        var is_the_programs = folder.path.starts_with(program_folder) and not rest.contains("..")
+        if is_the_programs {
+            var described = namespace_object(folder.namespace)
+            values.append_to(listed, described)
+        }
+        index = index + 1
+    }
+    return listed
 }
 
 func namespace_of(described: String): String {

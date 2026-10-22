@@ -58,8 +58,14 @@ func fitted(
     if wanted.kind == 'union' and is_a_member_of(given, wanted) {
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_union', value)
     }
-    if wanted.kind == 'shape' and not given.is_nullable and given.kind != 'shape' {
-        filled_shape(given, wanted)
+    if wanted.kind == 'shape' and given.kind != 'shape' {
+        var present = given.present()
+        filled_shape(present, wanted)
+        if given.is_nullable {
+            need_text_constants()
+            var text_type = context.text()
+            filled_shape(text_type, wanted)
+        }
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
     }
     if is_wider(wanted, given) {
@@ -455,6 +461,19 @@ func name_value(
     if function {
         return function_value(function)
     }
+    var reflection = Reflection(context, this)
+    if identifier.name == "class" {
+        return reflection.class_object(context.current_class.key)
+    }
+    if identifier.name == "namespace" {
+        var own_namespace = reflection.namespace_of(context.current_class.key)
+        return reflection.namespace_object(own_namespace)
+    }
+    if identifier.name.starts_with("$") {
+        var bound = context.current_class.bound_types[identifier.name]
+        crash bound
+        return reflection.class_object(bound.name)
+    }
     typing.refuse_unknown_name(context, identifier.name)
     return unbuilt()
 }
@@ -503,6 +522,10 @@ func narrowed(
 func member_value(
     member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): HighIntermediaryRepresentation.Values.Value {
+    var named_namespace = namespace_named(member)
+    if named_namespace {
+        return named_namespace
+    }
     var reflected = reflected_member(member)
     if reflected {
         return reflected
@@ -537,38 +560,64 @@ func member_value(
     return narrowed(read, path)
 }
 
+func namespace_named(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): HighIntermediaryRepresentation.Values.Value? {
+    var path = class_path_of(expression)
+    assert not path.is_empty()
+    var written = path.join(".")
+    var folder = context.resolver.symbols.namespace_folder(written)
+    assert folder
+    var reflection = Reflection(context, this)
+    return reflection.namespace_object(folder.namespace)
+}
+
 func reflected_member(
     member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): HighIntermediaryRepresentation.Values.Value? {
     var class_path = class_path_of(member.target)
     assert not class_path.is_empty()
-    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
-    var described = context.resolver.class_type_in(class_path, no_arguments, context.current_class, context.line)
+    var written = class_path.join(".")
     var reflection = Reflection(context, this)
-    if described.name == "Spite.Class" and member.name == "instances" {
+    if written == "Spite.Class" and member.name == "instances" {
         return reflection.every_class()
     }
-    var is_a_class = described.kind == 'object' or described.kind == 'scalar'
-    assert is_a_class
-    var object = reflection.class_object(described.name)
-    var class_model = context.class_of(object.value_type)
-    var getter = class_model.function_named("get_{member.name}")
+    if written == "Spite.Namespace" and member.name == "instances" {
+        return reflection.every_namespace()
+    }
+    var object = reflected_object_of(member.target)
+    assert object
+    var reflection_model = context.class_of(object.value_type)
+    var getter = reflection_model.function_named("get_{member.name}")
     assert getter
     var no_written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
     return called(getter, object, no_written)
 }
 
-func reflected_receiver(
+func reflected_object_of(
     target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
 ): HighIntermediaryRepresentation.Values.Value? {
     var class_path = class_path_of(target)
     assert not class_path.is_empty()
+    var written = class_path.join(".")
+    var reflection = Reflection(context, this)
+    var folder = context.resolver.symbols.namespace_folder(written)
+    if folder {
+        return reflection.namespace_object(folder.namespace)
+    }
+    var found = context.resolver.symbols.find(written, context.current_class.file.namespace)
+    assert found or scalars.is_a_scalar(written)
     var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
     var described = context.resolver.class_type_in(class_path, no_arguments, context.current_class, context.line)
     var is_a_class = described.kind == 'object' or described.kind == 'scalar'
     assert is_a_class
-    var reflection = Reflection(context, this)
     return reflection.class_object(described.name)
+}
+
+func reflected_receiver(
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): HighIntermediaryRepresentation.Values.Value? {
+    return reflected_object_of(target)
 }
 
 func called_on_a_class(
@@ -578,6 +627,9 @@ func called_on_a_class(
 ): HighIntermediaryRepresentation.Values.Value {
     var owner = context.class_of(receiver.value_type)
     var function = owner.function_named(name)
+    if not function {
+        function = member_template_of(owner, name)
+    }
     if not function {
         var shown = context.shown(receiver.value_type)
         typing.refuse_unknown_member(context, shown, name)
@@ -831,9 +883,12 @@ func member_of(element_class: Model.ClassModel, written: String, is_plural: Bool
     }
     if written.ends_with("es") {
         var without_es = written.slice(0, length - 2)
-        return member_named(element_class, without_es)
+        var found_without_es = member_named(element_class, without_es)
+        if not found_without_es.is_empty() {
+            return found_without_es
+        }
     }
-    return ""
+    return member_named(element_class, written)
 }
 
 func member_named(element_class: Model.ClassModel, wanted: String): String {
@@ -841,6 +896,10 @@ func member_named(element_class: Model.ClassModel, wanted: String): String {
         return wanted
     }
     var function = element_class.function_named(wanted)
+    var getter = element_class.function_named("get_{wanted}")
+    if not function and getter {
+        return "get_{wanted}"
+    }
     if not function {
         return ""
     }
@@ -1148,6 +1207,15 @@ func index_value(
     }
     var target = value_of(index.target, null)
     var owner = present_class_of(target)
+    var named = name_index_of(index.index)
+    if named and owner.bound_types["$element_type"] {
+        var finder = member_template_of(owner, "find_by_name")
+        crash finder
+        need(finder)
+        var finder_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+        finder_arguments.append(named)
+        return HighIntermediaryRepresentation.Values.Call(finder, target, finder_arguments)
+    }
     var function = owner.function_named("get_at")
     if not function {
         var shown = context.shown(target.value_type)
@@ -1170,6 +1238,25 @@ func index_value(
         return proven
     }
     return read
+}
+
+func name_index_of(
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): HighIntermediaryRepresentation.Values.Value? {
+    if written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return symbol_name_of(written)
+    }
+    return null
+}
+
+func symbol_name_of(
+    literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert literal.kind == 'symbol_literal'
+    need_text_constants()
+    var made = HighIntermediaryRepresentation.Values.TextConstant(literal.text)
+    made.value_type = context.text()
+    return made
 }
 
 func binary_value(
