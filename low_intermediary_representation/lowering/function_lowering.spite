@@ -25,6 +25,9 @@ var resumable_mode = false
 var resume_blocks = List<Integer>()
 var locks_its_singleton = false
 var locked_class = ""
+var lowering_owner = ""
+var skips_the_lock = false
+var coarse_class = ""
 
 func FunctionLowering(
     starting_layout: Layout,
@@ -45,6 +48,10 @@ func lowered(
     if resumable_mode {
         key = "{key}$step"
     }
+    if skips_the_lock {
+        key = "{key}$unguarded"
+    }
+    lowering_owner = high.function.owner
     start(key)
     function.is_resumable = resumable_mode
     if high.function.declaration {
@@ -67,7 +74,7 @@ func lowered(
     }
     high.function.parameters.each(hold_a_parameter)
     var owner_key = high.function.owner
-    var guarded = waits and not high.function.is_constructor
+    var guarded = waits and not high.function.is_constructor and not skips_the_lock
     if guarded and is_locked_here() {
         locks_its_singleton = true
         locked_class = owner_key
@@ -576,6 +583,12 @@ func lower_assign(assign: HighIntermediaryRepresentation.Statements.Assign) {
 
 func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.AssignAttribute) {
     line = assign.line
+    var updates = AtomicUpdates(this)
+    var is_atomic_here = false
+    if waits {
+        is_atomic_here = waits.is_atomic(lowering_owner)
+    }
+    assert not is_atomic_here or not updates.lowered_an_update(assign)
     var object = lower_value(assign.object)
     var value = lower_value(assign.value)
     if layout.is_back(assign.attribute) {
@@ -766,6 +779,21 @@ func lower_if(branch: HighIntermediaryRepresentation.Statements.If) {
 }
 
 func lower_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    var coarse = CoarseLoops(this)
+    var held = coarse.singleton_held_by(loop)
+    if held.is_empty() {
+        lower_a_plain_while(loop)
+        return
+    }
+    lock_a_singleton(held)
+    var outer = coarse_class
+    coarse_class = held
+    lower_a_plain_while(loop)
+    coarse_class = outer
+    unlock_a_singleton(held)
+}
+
+func lower_a_plain_while(loop: HighIntermediaryRepresentation.Statements.While) {
     line = loop.line
     var header = new_block()
     var body = new_block()
@@ -1189,19 +1217,35 @@ func singleton_of(class_key: String, made: HighIntermediaryRepresentation.Values
 }
 
 func lock_the_singleton() {
-    var label = slot_label_of(locked_class)
+    lock_a_singleton(locked_class)
+}
+
+func lock_a_singleton(class_key: String) {
+    var label = slot_label_of(class_key)
     var slot = new_register()
     var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
     emit(addressed)
     var thread = new_register()
-    var no_arguments = List<Integer>()
-    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
+    var asked = LowIntermediaryRepresentation.Instructions.ThreadIdentity(thread)
     emit(asked)
     var trying = new_block()
-    var held = new_block()
     var again = new_block()
     var taken = new_block()
-    jump_to(trying)
+    var unowned = new_block()
+    var owner = new_register()
+    var loaded_owner = LowIntermediaryRepresentation.Instructions.Load(owner, slot, 40, 'bits_64')
+    emit(loaded_owner)
+    var mine = new_register()
+    var compared_owner = LowIntermediaryRepresentation.Instructions.Compare(mine, 'equal', owner, thread)
+    emit(compared_owner)
+    var owner_test = LowIntermediaryRepresentation.Instructions.Branch(mine, taken, unowned)
+    emit(owner_test)
+    switch_to(unowned)
+    if waits and waits.skips_locks_while_idle() {
+        claim_while_idle(slot, thread, trying, taken)
+    } else {
+        jump_to(trying)
+    }
     switch_to(trying)
     var free = constant(0)
     var before = new_register()
@@ -1210,14 +1254,8 @@ func lock_the_singleton() {
     var won = new_register()
     var compared = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, free)
     emit(compared)
-    var won_test = LowIntermediaryRepresentation.Instructions.Branch(won, taken, held)
+    var won_test = LowIntermediaryRepresentation.Instructions.Branch(won, taken, again)
     emit(won_test)
-    switch_to(held)
-    var mine = new_register()
-    var compared_owner = LowIntermediaryRepresentation.Instructions.Compare(mine, 'equal', before, thread)
-    emit(compared_owner)
-    var owner_test = LowIntermediaryRepresentation.Instructions.Branch(mine, taken, again)
-    emit(owner_test)
     switch_to(again)
     var no_wait = constant(0)
     var pause_arguments = List<Integer>()
@@ -1238,8 +1276,43 @@ func lock_the_singleton() {
     emit(stored)
 }
 
+func claim_while_idle(slot: Integer, thread: Integer, trying: Integer, taken: Integer) {
+    var tasks_label = record_label_of("$tasks")
+    var tasks = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(tasks, tasks_label)
+    emit(addressed)
+    var running = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(running, tasks, 0, 'bits_64')
+    emit(loaded)
+    var none_running = constant(0)
+    var idle = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(idle, 'equal', running, none_running)
+    emit(compared)
+    var claiming = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(idle, claiming, trying)
+    emit(test)
+    switch_to(claiming)
+    var claimed = LowIntermediaryRepresentation.Instructions.Store(slot, 40, thread, 'bits_64')
+    emit(claimed)
+    jump_to(taken)
+}
+
+func count_a_task(amount: Long) {
+    var tasks_label = record_label_of("$tasks")
+    var tasks = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(tasks, tasks_label)
+    emit(addressed)
+    var left = new_register()
+    var counted = LowIntermediaryRepresentation.Instructions.AtomicAdd(left, tasks, 0, amount)
+    emit(counted)
+}
+
 func unlock_the_singleton() {
-    var label = slot_label_of(locked_class)
+    unlock_a_singleton(locked_class)
+}
+
+func unlock_a_singleton(class_key: String) {
+    var label = slot_label_of(class_key)
     var slot = new_register()
     var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
     emit(addressed)
@@ -1593,7 +1666,8 @@ func finished_call(call: HighIntermediaryRepresentation.Values.Call, arguments: 
     if not call.value_type.is_nothing() {
         target = new_register()
     }
-    var function_key = call.function.key()
+    var written_key = call.function.key()
+    var function_key = unguarded_in_a_coarse_loop(written_key)
     var called = LowIntermediaryRepresentation.Instructions.Call(target, function_key, arguments)
     if is_a_nullable_scalar(call.value_type) {
         var presence = new_register()
@@ -1606,6 +1680,19 @@ func finished_call(call: HighIntermediaryRepresentation.Values.Call, arguments: 
         return owned(target)
     }
     return single(target)
+}
+
+func unguarded_in_a_coarse_loop(key: String): String {
+    if coarse_class.is_empty() or not waits {
+        return key
+    }
+    if waits.owner_of(key) != coarse_class or not waits.is_locked(key) {
+        return key
+    }
+    if not program.unguarded_keys.contains(key) {
+        program.unguarded_keys.append(key)
+    }
+    return "{key}$unguarded"
 }
 
 func lower_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation): Lowered {

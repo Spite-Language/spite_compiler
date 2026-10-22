@@ -18,6 +18,11 @@ var constructors = Dictionary<String, List<String>>()
 var pending_keys = List<String>()
 var seen_keys = List<String>()
 var found_singletons = List<String>()
+var steady_singletons = List<String>()
+var atomic_singletons = List<String>()
+var has_callbacks = false
+var starts_itself = List<String>()
+var is_starting = false
 var blocking = [
     "Socket.accept_handle"
     "Socket.receive_into"
@@ -42,7 +47,68 @@ func Waits(high: HighIntermediaryRepresentation.HighProgram) {
         }
         index = index + 1
     }
+    var forms = SingletonForms(high, locked)
+    steady_singletons = forms.steady
+    atomic_singletons = forms.atomic
+    var still_locked = List<String>()
+    var kept_index = 0
+    while kept_index < locked.count() {
+        var class_key = locked[kept_index]
+        var proven = steady_singletons.contains(class_key) or atomic_singletons.contains(class_key)
+        if not proven {
+            still_locked.append(class_key)
+        }
+        kept_index = kept_index + 1
+    }
+    locked = still_locked
     started.each(make_resumable)
+}
+
+func is_atomic(class_key: String): Boolean {
+    return atomic_singletons.contains(class_key)
+}
+
+func locks_any(): Boolean {
+    return not locked.is_empty()
+}
+
+func skips_locks_while_idle(): Boolean {
+    return not has_callbacks
+}
+
+func can_hold_for_a_loop(key: String, holder: String): Boolean {
+    if waits(key) {
+        return false
+    }
+    var seen = List<String>()
+    return holds_through(key, holder, seen)
+}
+
+func holds_through(key: String, holder: String, seen: List<String>): Boolean {
+    if seen.contains(key) {
+        return true
+    }
+    seen.append(key)
+    if key == "$value" or starts_itself.contains(key) {
+        return false
+    }
+    var owner_key = owner_of(key)
+    if owner_key != holder and is_locked(key) {
+        return false
+    }
+    var called = callees[key]
+    if not called {
+        return true
+    }
+    var index = 0
+    while index < called.count() {
+        var callee = called[index]
+        if not holds_through(callee, holder, seen) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
 }
 
 func reach_in_parallel(key: String) {
@@ -79,8 +145,12 @@ func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
     current_makes = List<String>()
     is_waiting = false
     touches_itself = false
+    is_starting = false
     read_a_block(function.body)
     var key = function.function.key()
+    if is_starting {
+        starts_itself.append(key)
+    }
     if touches_itself {
         touching.append(key)
     }
@@ -267,6 +337,9 @@ func note_itself() {
 func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
     var class_key = made.value_type.name
     current_makes.append(class_key)
+    if class_key == "ForeignCallback" {
+        has_callbacks = true
+    }
     made.arguments.each(read_a_present)
     assert made.constructor
     var constructor_key = made.constructor.key()
@@ -425,6 +498,7 @@ func read_a_conversion(conversion: HighIntermediaryRepresentation.Values.Convers
         is_waiting = true
     }
     if conversion.kind == 'into_handle' {
+        is_starting = true
         starting_name = conversion.value_type.name
         note_a_start(conversion.converted)
         return

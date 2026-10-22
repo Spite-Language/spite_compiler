@@ -1,0 +1,99 @@
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low = LowIntermediaryRepresentation.LowProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low, no_slots)
+
+func AtomicUpdates(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+func lowered_an_update(assign: HighIntermediaryRepresentation.Statements.AssignAttribute): Boolean {
+    var on_itself = assign.object == HighIntermediaryRepresentation.Values.ThisRead
+    if not on_itself {
+        return false
+    }
+    var value = assign.value
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        return lowered_with(assign, value)
+    }
+    return false
+}
+
+func lowered_with(
+    assign: HighIntermediaryRepresentation.Statements.AssignAttribute,
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+): Boolean {
+    var amount = amount_of(operation, assign.attribute)
+    if not amount {
+        return false
+    }
+    var attribute = assign.attribute
+    var width = lowering.width_of(attribute.attribute_type)
+    crash width == 'bits_32' or width == 'bits_64'
+    crash assign.object
+    var object = lowering.lower_value(assign.object)
+    var amount_value = lowering.lower_value(amount)
+    var trying = lowering.new_block()
+    var after = lowering.new_block()
+    lowering.jump_to(trying)
+    lowering.switch_to(trying)
+    var old = lowering.load_attribute(object.value, attribute)
+    var target = lowering.new_register()
+    var operator = lowering.arithmetic_of(operation.operator)
+    var computed = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        target,
+        operator,
+        old.value,
+        amount_value.value,
+    )
+    computed.width = width
+    computed.is_signed = lowering.is_signed(attribute.attribute_type)
+    computed.is_checked = not operation.is_proven_to_fit
+    computed.line = lowering.line
+    computed.shown = operation.shown
+    computed.type_name = attribute.attribute_type.name
+    computed.path = lowering.path
+    lowering.emit(computed)
+    var offset = lowering.layout.offset_of(attribute)
+    var before = lowering.new_register()
+    var exchanged = LowIntermediaryRepresentation.Instructions.CompareExchange(
+        before,
+        object.value,
+        offset,
+        old.value,
+        target,
+    )
+    exchanged.width = width
+    exchanged.is_signed = computed.is_signed
+    lowering.emit(exchanged)
+    var won = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, old.value)
+    lowering.emit(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(won, after, trying)
+    lowering.emit(test)
+    lowering.switch_to(after)
+    return true
+}
+
+func amount_of(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+    attribute: Model.AttributeModel,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert operation.operator == 'add' or operation.operator == 'subtract'
+    if reads_its_own(operation.left, attribute) {
+        return operation.right
+    }
+    if operation.operator == 'add' and reads_its_own(operation.right, attribute) {
+        return operation.left
+    }
+    return null
+}
+
+func reads_its_own(value: HighIntermediaryRepresentation.Values.Value?, attribute: Model.AttributeModel): Boolean {
+    if value == HighIntermediaryRepresentation.Values.AttributeRead {
+        var on_itself = value.object == HighIntermediaryRepresentation.Values.ThisRead
+        return on_itself and value.attribute.name == attribute.name and value.attribute.owner == attribute.owner
+    }
+    return false
+}

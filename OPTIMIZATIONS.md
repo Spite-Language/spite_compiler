@@ -725,3 +725,123 @@ variable, a write, `count()`, passing it, a second `var` of the same name in the
 attribute, and the interactive builds (`--repl`, `--repl-port`, `--development`, `--hot-reload`), which keep the
 dictionary a reader can inspect. What a user can observe: no dictionary, no allocation and no hashing for the
 folded ones, and nothing else.
+
+## Thread safety for singletons, the cheapest safe form
+
+In a program that makes a `Parallel`, every singleton the work a `Parallel` runs can reach (following calls from
+each function a `Parallel` starts) is made safe for threads in the first of these forms that holds for what its
+functions do. A singleton no such work reaches gets none of them, and a program without `Parallel` gets none at all.
+
+1. **Nothing, when it never changes after it is made.** No function of its own but its constructor (and the
+   attribute defaults run while it is made) assigns its attributes, no other class assigns them, no shape write
+   can reach them, and every attribute is a number, a `Boolean`, an enum, a `String` nothing calls a function on,
+   or another singleton. Its functions are compiled as in a program without threads, so a small one is inlined.
+2. **Atomics, when what changes is whole numbers or `Boolean`s and each function touches that state once.** Every
+   function but the constructor reads one attribute, or writes one, or updates one with `attribute = attribute + x`
+   or `attribute = attribute - x` (`x` reading none of its attributes), outside any `while`, and does nothing else
+   with `this`; no other class writes its attributes. A read is one load and a write one store, which are atomic
+   for an aligned slot. An update is a loop around one compare-exchange: it loads the attribute, computes the new
+   value with its overflow check, and stores it only if the slot still holds what it loaded, so an addition that
+   does not fit halts before anything is written and no two threads lose an update.
+3. **Its own lock, otherwise.** Each function of the singleton that reads `this` takes the singleton's lock for its
+   whole call. The lock is a word in the singleton's slot holding the thread that owns it, with a count of how
+   deep that thread holds it: a call by the owning thread only adds one to the count, a free lock is claimed with
+   one compare-exchange, and a held one is retried after giving the processor up. The thread is read from the
+   thread's own block (`gs:[0x48]`), not asked of the system.
+
+**What a program can observe:** only the time. A function that took the lock and one compiled in the first two
+forms run as if alone: a reader sees a value from before or after a call, never one half-way through it, and
+every update counts.
+
+```spite
+var counter = HitCounter()
+var settings = Settings()
+
+func run(): Integer {
+    var index = 0
+    while index < 1000000 {
+        var step = settings.step_size()
+        counter.record(step)
+        index = index + 1
+    }
+    return index
+}
+```
+
+With `Settings` only set in its constructor and `HitCounter.record` a single `hits = hits + amount`, `run` reads
+the step in place and adds with one compare-exchange, where every call took two locks before. Measured on
+`thread_safety_for_singletons_the_cheapest_safe_form` (four `Parallel`s running `run`).
+
+**Not built:** the readers' side shared by functions that change nothing, a read of a locked singleton's attribute
+from another class taking the lock, and the walk made again after tree shaking (form 1 decided over the whole
+program as written out).
+
+## While no task runs, a singleton's lock is claimed with a plain store
+
+Every thread a `Parallel` (or a helper for a blocking call) starts is counted in one word from just before it
+starts until its work has returned and let go of what it held. A call that takes a singleton's lock and finds the
+lock free and that count zero claims the lock with a plain store instead of a compare-exchange: with no task in
+flight the program's own thread is the only one running program code, so nothing can claim the lock at the same
+moment. A task started while the call holds the lock (by the call itself or anything it calls) finds the lock
+owned and waits for it as usual, so it never sees the singleton half-way through a call, and starting a thread
+publishes the plain store to it. This replaces the stack of skipped locks the language describes: the lock is
+still taken, only without the atomic instruction, so nothing needs to be taken again when a task starts.
+
+**When it does not apply:** in a program that makes a `ForeignCallback`, since C may call one from a thread of its
+own that is not counted; there every free lock is claimed with a compare-exchange.
+
+**What a program can observe:** only the time. Counting a task is one atomic addition when the thread starts and
+one when its work ends, made only in a program where some singleton takes a lock.
+
+```spite
+var tally = Tally()
+
+func add_many(count: Integer): Integer {
+    var worker = Worker()
+    var first: Integer = Parallel(worker.run)
+    var index = 0
+    while index < count {
+        index = tally.add(index)
+    }
+    return index + first
+}
+```
+
+With `Worker.run` calling `tally.add` too, `Tally` takes a lock; once the `Parallel` has been waited for, each `tally.add` claims and frees `Tally`'s lock with plain loads and
+stores (`while_no_task_runs_a_singletons_lock_is_skipped`).
+
+## A counted loop of calls to one singleton takes its lock once
+
+A `while` outside a singleton whose condition is `counter < bound` or `counter <= bound`, whose last statement is
+`counter = counter + n` with `n` a positive whole number written out and that assigns the counter nowhere else,
+holds the lock of one locked singleton for the whole loop when every call in it is a call to that singleton's
+functions answering a number, a `Boolean`, an enum or nothing, and nothing in it but local `var`s and assignments
+of plain values, `if`s, plain `crash`es and arithmetic. None of the singleton's functions it calls, nor anything
+they call, may wait, start work, call through a function value or take another singleton's lock. The lock is taken
+before the loop's first test and let go after its last, and each call inside goes to the function's body compiled
+without the lock (`<function>$unguarded`), which is small enough to be inlined where the locked one was not.
+
+It cannot hang: the loop ends on its own (its counter only grows, and an addition that does not fit halts), it
+takes no other lock while it holds this one, and it holds it across no wait.
+
+**What a program can observe:** only the time. Other threads calling the singleton wait for the whole loop instead
+of for each call, which is one of the orders they could already run in.
+
+```spite
+var tally = Tally()
+var rounds = 0
+
+func count_up(): Integer {
+    var index = 0
+    while index < rounds {
+        tally.add(index % 3)
+        index = index + 1
+    }
+    return rounds
+}
+```
+
+Four `Parallel`s running `count_up` each take `Tally`'s lock once
+(`a_counted_loop_of_calls_to_one_singleton_takes_its_lock_once`).
+
+**Not built:** a loop that is not counted testing the task count once before it starts.

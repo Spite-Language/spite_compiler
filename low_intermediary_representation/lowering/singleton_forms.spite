@@ -1,0 +1,455 @@
+var no_program = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(no_program)
+var scalars = Model.Scalars()
+var steady = List<String>()
+var atomic = List<String>()
+var written_from_outside = List<String>()
+var written_after_making = List<String>()
+var written_through_shapes = List<String>()
+var called_attributes = List<String>()
+var walked_owner = ""
+var walked_is_constructor = false
+var reads = 0
+var writes = 0
+var other_uses = 0
+var loop_depth = 0
+var touched_in_a_loop = false
+var refused = false
+
+func SingletonForms(starting_high: HighIntermediaryRepresentation.HighProgram, locked: List<String>) {
+    high = starting_high
+    high.built_functions.each(note_the_writes_of)
+    var index = 0
+    while index < locked.count() {
+        var class_key = locked[index]
+        if is_steady(class_key) {
+            steady.append(class_key)
+        } else {
+            note_if_atomic(class_key)
+        }
+        index = index + 1
+    }
+}
+
+func note_if_atomic(class_key: String) {
+    if is_atomic(class_key) {
+        atomic.append(class_key)
+    }
+}
+
+func note_the_writes_of(function: HighIntermediaryRepresentation.HighFunction) {
+    walked_owner = function.function.owner
+    walked_is_constructor = function.function.is_constructor or function.function.name == "_attribute_defaults"
+    note_writes_in_a_block(function.body)
+}
+
+func note_writes_in_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(note_writes_in_a_statement)
+}
+
+func note_writes_in_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: note_a_declare(statement)
+        HighIntermediaryRepresentation.Statements.Assign: note_an_assign(statement)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: note_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: note_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: note_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.Return: note_a_return(statement)
+        HighIntermediaryRepresentation.Statements.If: note_writes_in_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: note_writes_in_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Block: note_writes_in_a_block(statement)
+        HighIntermediaryRepresentation.Statements.Stop: note_a_stop(statement)
+    }
+}
+
+func note_a_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    note_calls_in(declare.value)
+}
+
+func note_an_assign(assign: HighIntermediaryRepresentation.Statements.Assign) {
+    note_calls_in(assign.value)
+}
+
+func note_a_return(returned: HighIntermediaryRepresentation.Statements.Return) {
+    note_calls_in(returned.value)
+}
+
+func note_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
+    note_calls_in(evaluated.value)
+    note_calls_in(evaluated.waited)
+}
+
+func note_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(note_calls_in_a_present)
+    note_calls_in(stop.then)
+}
+
+func note_writes_in_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    note_calls_in(branch.condition)
+    note_writes_in_a_block(branch.then_branch)
+    note_writes_in_a_block(branch.else_branch)
+}
+
+func note_writes_in_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    note_calls_in(loop.condition)
+    note_writes_in_a_block(loop.body)
+}
+
+func note_an_attribute_write(written: HighIntermediaryRepresentation.Statements.AssignAttribute) {
+    var class_key = written.attribute.owner
+    var is_its_own = written.object == HighIntermediaryRepresentation.Values.ThisRead and walked_owner == class_key
+    if not is_its_own {
+        add_once(written_from_outside, class_key)
+    }
+    if is_its_own and not walked_is_constructor {
+        add_once(written_after_making, class_key)
+    }
+    note_calls_in(written.object)
+    note_calls_in(written.value)
+}
+
+func note_a_shape_write(written: HighIntermediaryRepresentation.Statements.AssignThroughShape) {
+    var fillers = high.model.fillers_of(written.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        add_once(written_through_shapes, filler.name)
+        index = index + 1
+    }
+    note_calls_in(written.object)
+    note_calls_in(written.value)
+}
+
+func add_once(names: List<String>, name: String) {
+    if not names.contains(name) {
+        names.append(name)
+    }
+}
+
+func note_calls_in_a_present(value: HighIntermediaryRepresentation.Values.Value) {
+    note_calls_in(value)
+}
+
+func note_calls_in(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: note_a_call(value)
+        HighIntermediaryRepresentation.Values.ShapeCall: note_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.FunctionValue: note_a_receiver(value.receiver)
+        HighIntermediaryRepresentation.Values.FunctionValueCall: note_a_function_value_call(value)
+        HighIntermediaryRepresentation.Values.Conversion: note_calls_in(value.converted)
+        HighIntermediaryRepresentation.Values.AttributeRead: note_calls_in(value.object)
+        HighIntermediaryRepresentation.Values.ClassOfValue: note_calls_in(value.described)
+        HighIntermediaryRepresentation.Values.ClassTest: note_calls_in(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: note_calls_in(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: note_calls_in(value.number)
+        HighIntermediaryRepresentation.Values.ForeignCall: value.arguments.each(note_a_passed_value)
+        HighIntermediaryRepresentation.Values.MachineOperation: note_calls_in_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MakeObject: value.arguments.each(note_a_passed_value)
+        HighIntermediaryRepresentation.Values.Negation: note_calls_in(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: note_calls_in_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: note_calls_in(value.tested)
+        _: return
+    }
+}
+
+func note_calls_in_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    note_calls_in(first)
+    note_calls_in(second)
+}
+
+func note_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    note_a_receiver(call.receiver)
+    call.arguments.each(note_a_passed_value)
+}
+
+func note_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    note_a_receiver(call.receiver)
+    call.arguments.each(note_a_passed_value)
+}
+
+func note_a_function_value_call(call: HighIntermediaryRepresentation.Values.FunctionValueCall) {
+    note_a_receiver(call.called)
+    call.arguments.each(note_a_passed_value)
+}
+
+func note_a_passed_value(value: HighIntermediaryRepresentation.Values.Value) {
+    note_a_receiver(value)
+}
+
+func note_a_receiver(receiver: HighIntermediaryRepresentation.Values.Value?) {
+    assert receiver
+    if receiver == HighIntermediaryRepresentation.Values.AttributeRead {
+        var attribute = receiver.attribute
+        add_once(called_attributes, "{attribute.owner}.{attribute.name}")
+    }
+    note_calls_in(receiver)
+}
+
+func is_steady(class_key: String): Boolean {
+    var written = written_from_outside.contains(class_key) or written_after_making.contains(class_key)
+    if written or written_through_shapes.contains(class_key) {
+        return false
+    }
+    var model = high.model.class_named(class_key)
+    if not model {
+        return false
+    }
+    return model.declared_attributes.all(stays_the_same)
+}
+
+func stays_the_same(attribute: Model.AttributeModel): Boolean {
+    var attribute_type = attribute.attribute_type
+    if attribute_type.kind == 'scalar' or attribute_type.kind == 'enumeration' {
+        return true
+    }
+    if attribute_type.kind != 'object' or attribute_type.is_nullable {
+        return false
+    }
+    if attribute_type.name == "String" {
+        return not called_attributes.contains("{attribute.owner}.{attribute.name}")
+    }
+    var held = high.model.class_named(attribute_type.name)
+    if not held {
+        return false
+    }
+    return held.is_singleton
+}
+
+func is_atomic(class_key: String): Boolean {
+    if written_from_outside.contains(class_key) or written_through_shapes.contains(class_key) {
+        return false
+    }
+    var index = 0
+    while index < high.built_functions.count() {
+        var function = high.built_functions[index]
+        var makes_it = function.function.is_constructor or function.function.name == "_attribute_defaults"
+        var is_one_of_its_own = function.function.owner == class_key and not makes_it
+        if is_one_of_its_own and not touches_its_state_once(function) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func touches_its_state_once(function: HighIntermediaryRepresentation.HighFunction): Boolean {
+    reads = 0
+    writes = 0
+    other_uses = 0
+    loop_depth = 0
+    touched_in_a_loop = false
+    refused = false
+    walk_a_block(function.body)
+    if refused or other_uses > 0 or touched_in_a_loop {
+        return false
+    }
+    return reads + writes <= 1
+}
+
+func walk_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(walk_a_statement)
+}
+
+func walk_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: walk_a_declare(statement)
+        HighIntermediaryRepresentation.Statements.Assign: walk_an_assign(statement)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: walk_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: walk_both(statement.object, statement.value)
+        HighIntermediaryRepresentation.Statements.Evaluate: walk_both(statement.value, statement.waited)
+        HighIntermediaryRepresentation.Statements.Return: walk_a_return(statement)
+        HighIntermediaryRepresentation.Statements.If: walk_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: walk_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Block: walk_a_block(statement)
+        HighIntermediaryRepresentation.Statements.Stop: walk_a_stop(statement)
+    }
+}
+
+func walk_a_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    walk_a_value(declare.value)
+}
+
+func walk_an_assign(assign: HighIntermediaryRepresentation.Statements.Assign) {
+    walk_a_value(assign.value)
+}
+
+func walk_a_return(returned: HighIntermediaryRepresentation.Statements.Return) {
+    walk_a_value(returned.value)
+}
+
+func walk_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(walk_a_present)
+    walk_a_value(stop.then)
+}
+
+func walk_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    walk_a_value(branch.condition)
+    walk_a_block(branch.then_branch)
+    walk_a_block(branch.else_branch)
+}
+
+func walk_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    loop_depth = loop_depth + 1
+    walk_a_value(loop.condition)
+    walk_a_block(loop.body)
+    loop_depth = loop_depth - 1
+}
+
+func walk_an_attribute_write(written: HighIntermediaryRepresentation.Statements.AssignAttribute) {
+    var on_itself = written.object == HighIntermediaryRepresentation.Values.ThisRead
+    if not on_itself {
+        walk_both(written.object, written.value)
+        return
+    }
+    writes = writes + 1
+    note_a_touch()
+    var other = updated_amount(written)
+    if other {
+        var counts = is_a_counter(written.attribute.attribute_type)
+        refuse_unless(counts)
+        walk_a_value(other)
+        return
+    }
+    var plain = is_a_plain_slot(written.attribute.attribute_type)
+    refuse_unless(plain)
+    walk_a_value(written.value)
+}
+
+func refuse_unless(allowed: Boolean) {
+    if not allowed {
+        refused = true
+    }
+}
+
+func note_a_touch() {
+    if loop_depth > 0 {
+        touched_in_a_loop = true
+    }
+}
+
+func walk_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    walk_a_value(first)
+    walk_a_value(second)
+}
+
+func walk_a_present(value: HighIntermediaryRepresentation.Values.Value) {
+    walk_a_value(value)
+}
+
+func walk_a_value(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.AttributeRead: walk_an_attribute_read(value)
+        HighIntermediaryRepresentation.Values.ThisRead: note_another_use()
+        HighIntermediaryRepresentation.Values.Call: walk_a_call(value)
+        HighIntermediaryRepresentation.Values.ShapeCall: walk_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.FunctionValue: walk_a_value(value.receiver)
+        HighIntermediaryRepresentation.Values.FunctionValueCall: walk_a_function_value_call(value)
+        HighIntermediaryRepresentation.Values.Conversion: walk_a_value(value.converted)
+        HighIntermediaryRepresentation.Values.ClassOfValue: walk_a_value(value.described)
+        HighIntermediaryRepresentation.Values.ClassTest: walk_a_value(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: walk_a_value(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: walk_a_value(value.number)
+        HighIntermediaryRepresentation.Values.ForeignCall: value.arguments.each(walk_a_present)
+        HighIntermediaryRepresentation.Values.MachineOperation: walk_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MakeObject: value.arguments.each(walk_a_present)
+        HighIntermediaryRepresentation.Values.Negation: walk_a_value(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: walk_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: walk_a_value(value.tested)
+        _: return
+    }
+}
+
+func note_another_use() {
+    other_uses = other_uses + 1
+}
+
+func walk_an_attribute_read(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    var on_itself = read.object == HighIntermediaryRepresentation.Values.ThisRead
+    if not on_itself {
+        walk_a_value(read.object)
+        return
+    }
+    reads = reads + 1
+    note_a_touch()
+    var plain = is_a_plain_slot(read.attribute.attribute_type)
+    refuse_unless(plain)
+}
+
+func walk_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    walk_a_value(call.receiver)
+    call.arguments.each(walk_a_present)
+}
+
+func walk_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    walk_a_value(call.receiver)
+    call.arguments.each(walk_a_present)
+}
+
+func walk_a_function_value_call(call: HighIntermediaryRepresentation.Values.FunctionValueCall) {
+    walk_a_value(call.called)
+    call.arguments.each(walk_a_present)
+}
+
+func updated_amount(
+    written: HighIntermediaryRepresentation.Statements.AssignAttribute,
+): HighIntermediaryRepresentation.Values.Value? {
+    var value = written.value
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        return amount_of_an_update(value, written.attribute)
+    }
+    return null
+}
+
+func amount_of_an_update(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+    attribute: Model.AttributeModel,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert operation.operator == 'add' or operation.operator == 'subtract'
+    if reads_its_own(operation.left, attribute) {
+        return operation.right
+    }
+    if operation.operator == 'add' and reads_its_own(operation.right, attribute) {
+        return operation.left
+    }
+    return null
+}
+
+func reads_its_own(value: HighIntermediaryRepresentation.Values.Value?, attribute: Model.AttributeModel): Boolean {
+    if value == HighIntermediaryRepresentation.Values.AttributeRead {
+        var on_itself = value.object == HighIntermediaryRepresentation.Values.ThisRead
+        return on_itself and value.attribute.name == attribute.name and value.attribute.owner == attribute.owner
+    }
+    return false
+}
+
+func is_a_plain_slot(of_type: Model.Type): Boolean {
+    if of_type.kind != 'scalar' or of_type.is_nullable {
+        return false
+    }
+    var scalar = scalars.of(of_type.name)
+    if not scalar {
+        return false
+    }
+    return not scalar.is_decimal
+}
+
+func is_a_counter(of_type: Model.Type): Boolean {
+    if not is_a_plain_slot(of_type) or of_type.name == "Boolean" {
+        return false
+    }
+    var scalar = scalars.of(of_type.name)
+    if not scalar {
+        return false
+    }
+    return scalar.size == 4 or scalar.size == 8
+}

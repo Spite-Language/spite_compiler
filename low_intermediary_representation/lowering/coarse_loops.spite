@@ -1,0 +1,249 @@
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low = LowIntermediaryRepresentation.LowProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low, no_slots)
+var counter = ""
+var held = ""
+var locks_a_call = false
+var refused = false
+var steps = 0
+
+func CoarseLoops(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+func singleton_held_by(loop: HighIntermediaryRepresentation.Statements.While): String {
+    if not lowering.waits or lowering.resumable_mode {
+        return ""
+    }
+    if not is_counted(loop) {
+        return ""
+    }
+    held = ""
+    locks_a_call = false
+    refused = false
+    steps = 0
+    read_a_block(loop.body)
+    if refused or held.is_empty() or not locks_a_call or steps != 1 {
+        return ""
+    }
+    if held == lowering.lowering_owner {
+        return ""
+    }
+    return held
+}
+
+func is_counted(loop: HighIntermediaryRepresentation.Statements.While): Boolean {
+    var condition = loop.condition
+    if condition == HighIntermediaryRepresentation.Values.MachineOperation {
+        return counts_up(condition, loop.body)
+    }
+    return false
+}
+
+func counts_up(
+    condition: HighIntermediaryRepresentation.Values.MachineOperation,
+    body: HighIntermediaryRepresentation.Statements.Block,
+): Boolean {
+    if condition.operator != 'less' and condition.operator != 'less_or_equal' {
+        return false
+    }
+    var left = condition.left
+    if left == HighIntermediaryRepresentation.Values.LocalRead {
+        counter = left.name
+        return steps_last(body)
+    }
+    return false
+}
+
+func steps_last(body: HighIntermediaryRepresentation.Statements.Block): Boolean {
+    var last = body.statements.last()
+    if last == HighIntermediaryRepresentation.Statements.Assign {
+        return is_a_step(last)
+    }
+    return false
+}
+
+func is_a_step(assign: HighIntermediaryRepresentation.Statements.Assign): Boolean {
+    var value = assign.value
+    if assign.name != counter {
+        return false
+    }
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        return adds_to_the_counter(value)
+    }
+    return false
+}
+
+func adds_to_the_counter(operation: HighIntermediaryRepresentation.Values.MachineOperation): Boolean {
+    var left = operation.left
+    var right = operation.right
+    if operation.operator != 'add' {
+        return false
+    }
+    var reads_the_counter = false
+    if left == HighIntermediaryRepresentation.Values.LocalRead {
+        reads_the_counter = left.name == counter
+    }
+    if right == HighIntermediaryRepresentation.Values.WholeNumber {
+        return reads_the_counter and right.number > 0
+    }
+    return false
+}
+
+func refuse() {
+    refused = true
+}
+
+func read_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(read_a_statement)
+}
+
+func read_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: read_a_declare(statement)
+        HighIntermediaryRepresentation.Statements.Assign: read_an_assign(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: read_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.If: read_an_if(statement)
+        HighIntermediaryRepresentation.Statements.Block: read_a_block(statement)
+        HighIntermediaryRepresentation.Statements.Stop: read_a_stop(statement)
+        _: refuse()
+    }
+}
+
+func read_a_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    if not is_plain(declare.declared_type) {
+        refuse()
+    }
+    read_a_value(declare.value)
+}
+
+func read_an_assign(assign: HighIntermediaryRepresentation.Statements.Assign) {
+    if assign.name == counter {
+        steps = steps + 1
+    }
+    crash assign.value
+    if not is_plain(assign.value.value_type) {
+        refuse()
+    }
+    read_a_value(assign.value)
+}
+
+func read_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
+    if evaluated.waited {
+        refuse()
+    }
+    read_a_value(evaluated.value)
+}
+
+func read_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    read_a_value(branch.condition)
+    read_a_block(branch.then_branch)
+    read_a_block(branch.else_branch)
+}
+
+func read_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    if stop.then {
+        refuse()
+    }
+    stop.shown.each(read_a_present)
+}
+
+func is_plain(of_type: Model.Type): Boolean {
+    return of_type.kind == 'scalar' or of_type.kind == 'enumeration' or of_type.kind == 'nothing'
+}
+
+func read_a_present(value: HighIntermediaryRepresentation.Values.Value) {
+    read_a_value(value)
+}
+
+func read_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    read_a_value(first)
+    read_a_value(second)
+}
+
+func read_a_value(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return
+        HighIntermediaryRepresentation.Values.DecimalNumber: return
+        HighIntermediaryRepresentation.Values.LocalRead: return
+        HighIntermediaryRepresentation.Values.ThisRead: return
+        HighIntermediaryRepresentation.Values.NullConstant: return
+        HighIntermediaryRepresentation.Values.AttributeRead: read_an_attribute(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: read_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.Negation: read_a_value(value.negated)
+        HighIntermediaryRepresentation.Values.PresenceTest: read_a_value(value.tested)
+        HighIntermediaryRepresentation.Values.Conversion: read_a_conversion(value)
+        HighIntermediaryRepresentation.Values.MakeObject: read_a_making(value)
+        HighIntermediaryRepresentation.Values.Call: read_a_call(value)
+        _: refuse()
+    }
+}
+
+func read_an_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    var on_itself = read.object == HighIntermediaryRepresentation.Values.ThisRead
+    assert not on_itself
+    if is_plain(read.value_type) {
+        read_a_value(read.object)
+    } else {
+        refuse()
+    }
+}
+
+func read_a_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion) {
+    var kind = conversion.kind
+    var moves_work = kind == 'join' or kind == 'into_handle' or kind == 'into_shape' or kind == 'into_union'
+    if moves_work {
+        refuse()
+    }
+    read_a_value(conversion.converted)
+}
+
+func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var class_key = made.value_type.name
+    var made_model = lowering.layout.program.class_named(class_key)
+    if not made_model {
+        refuse()
+        return
+    }
+    if not made_model.is_singleton or not made.arguments.is_empty() {
+        refuse()
+    }
+}
+
+func read_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    crash lowering.waits
+    var waits = lowering.waits
+    var key = call.function.key()
+    var owner_key = call.function.owner
+    var owner_model = lowering.layout.program.class_named(owner_key)
+    if not owner_model {
+        refuse()
+        return
+    }
+    var answers_plainly = is_plain(call.value_type)
+    var one_singleton = held.is_empty() or held == owner_key
+    if not owner_model.is_singleton or not one_singleton or not answers_plainly {
+        refuse()
+        return
+    }
+    if not call.function.has_a_body() or not call.number_positions.is_empty() {
+        refuse()
+        return
+    }
+    held = owner_key
+    if waits.is_locked(key) {
+        locks_a_call = true
+    }
+    if not waits.can_hold_for_a_loop(key, owner_key) {
+        refuse()
+    }
+    read_a_value(call.receiver)
+    call.arguments.each(read_a_present)
+}

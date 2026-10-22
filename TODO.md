@@ -62,7 +62,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `deep_copy()` of a graph (D152): a class that reaches itself only through a union or a `type` attribute is not seen as one and is copied plainly, so a cycle through one still recurses until the stack runs out; `List.deep_copy()` gives each item a table of its own, so items that hold each other are copied twice; a `Dictionary`, `Items` or `Vector` reached inside a table copy is copied by its own `deep_copy()`, without the table; the table finds a copy by walking its keys (it waits for a hashed `Dictionary`); and a `deep_copy()` through a shape some number, text, enum or singleton fills (refused as not fitting); a copy runs the attribute defaults before it overwrites them; a walked row declared `var row: $row_type = null` when `$row_type` is a `type`
 - Vector and Items keep their items inline: today each write stores a copy of the item by reference (one allocation and one copy per write, and every move inside the library copies again), not its attributes in the block
 - Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`, `Spite.Access`), filled in by the compiler and folded where constant (D37, D50 to D55): still missing are `function.arguments.each(f)` with an answer typed by the argument (`argument.class`, `reflection_walks`), folding of constant reads (a constant list's `[]`, `filter`, `each` and member templates, so `hurt.arguments[1]` needs no run-time check, D53), the `if` on a late answer (`function_waits`, `function_writes_parameter`) dropping its other branch, `Spite.Call`, enums as classes, `Symbol<Spite.Class>` and the `Spite` namespace by name (`class_walk`), stand-ins for singletons, a function value known only at run time answering its `Spite.Function` (a parameter given a function the compiler knows is compiled once for it, and one the compiler knows is looked up by name), `is_stateful` following the singletons a class binds, and a reflection argument other than `Class.attributes['name']` compiled once for its constant (`attribute.class()` and `Spite.Debug<attribute.class>` on an attribute known only at run time)
-- A `Parallel`'s reach (`ThreadReach`) follows calls only to the work's own class, attributes and locals made by a constructor; work that never finishes counts as never waiting only when it calls nothing but the console; a singleton's lock is assumed for every function that names one of its attributes (not the four forms)
+- A `Parallel`'s reach (`ThreadReach`) follows calls only to the work's own class, attributes and locals made by a constructor; work that never finishes counts as never waiting only when it calls nothing but the console; a locked singleton's lock is taken by every function of its own that reads `this`, and not by another class reading or writing its attributes
 - `Parallel` starts a thread of its own for each handle (and `parallel_each_<function>()` one per piece): the thread pool behind it, the race rule of `parallel_each_` as a compile check, and the console's buffer shared by threads that print at once (D36)
 - `Concurrent` does not return to the scheduler where a handle it holds is let go while its work runs: a handle, an object or a list holding handles dropped at its scope's end, a handle or an attribute holding one assigned again, and a list of handles cleared all wait in place for the work instead (`waits_never_hang`, `dropped_handle_waits`); file writes block instead of running on a helper thread; a blocking call outside a `Concurrent` (a file read, a socket or console read) always runs on a helper thread and polls the scheduler, even where no `Concurrent` is alive and the spec blocks in place (D134); a thread finds its scheduler loop by its id under a lock instead of through a `ThreadLocal` (D132); `run_ready()` and `resume_only_when_asked()`; a join halting when two `Concurrent`s wait for each other names neither (it stops in `Scheduler.every_concurrent_waits_for_another`); a poll that never steps anything does not halt
 - A wait in a frame does not hold the frame: the check that no carried value is written back skips the library's own functions (D130)
@@ -206,12 +206,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Hidden async/await as compile-time state machines
 - Reads in a row overlap
 - The thread pool only where a `Parallel` is made
-- Singletons a `Parallel` reaches take a lock
-- Thread safety for singletons, the cheapest safe form
-- While no task runs, a singleton's lock is skipped
-- A singleton no other thread reaches takes no lock
+- Thread safety for singletons, the cheapest safe form (built: unreached, never changing, atomic and locked, D290 to D293): a read or write of a locked singleton's attribute from another class takes no lock yet
+- A singleton no other thread reaches takes no lock: the walk is made only from what a `Parallel` starts, not again over the tree-shaken program
 - A singleton's reading functions do not exclude each other
-- A counted loop of calls to one singleton takes its lock once
 - An attribute read only under its singleton's lock is a plain number
 - A loop of calls to one singleton tests for tasks once
 - Thread safety for singletons, the rest of the plan
@@ -323,10 +320,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A copy nothing changes is the original
 - Which singletons a `Parallel` reaches
 - No other thread touches a singleton
-- Read-only and atomic singletons
 - A function that touches no changing state takes no lock
 - Reading functions share the lock
-- A counted loop takes a singleton's lock once
 - A loop that starts no task tests for tasks once
 - No attribute is read past the lock
 - A lock that would wait forever is an error
