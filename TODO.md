@@ -126,8 +126,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - This compiler's own entry file names its library with `load`, when it builds itself
 
 ## Every optimisation the original does
-- Attributes always used together across classes become one shared layout block (D202: `Player` and `Monster`'s attack attributes as one `attacker`), dense and cache-aligned
-- Classes specialised by use (D201): one layout per set of attributes a use reads and writes, so an unused attribute costs nothing; then `String`'s inflection words become attributes (D187) instead of D200's functions
+- Classes specialised by use (D201, D240): one layout per allocation site, following each object to every place it reaches and merging or specialising the code at each meeting point by measured cost (built: one layout per class from the whole program, so an attribute only some objects use is still stored in all of them); an attribute only written is still stored; a member read through a union is never folded to its classes' constants; the functions only a dropped default called are still in the executable
+- Shared blocks across classes (D202, D240): built for a member read or written through a union; a class in two unions that place the same member at different offsets keeps the test of the class for one of them, and attributes read together without a union (two systems each taking one class) are not placed alike
+- A table rebuilt where it is read (D240) is built at every read, so a function that reads it called from a loop builds it on every call: one constant table built once needs objects whose counts never free them
 
 ### The tree shaking and the compile-time questions
 

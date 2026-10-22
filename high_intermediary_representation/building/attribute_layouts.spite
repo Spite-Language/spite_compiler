@@ -1,0 +1,742 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
+var no_functions = List<HighIntermediaryRepresentation.HighFunction>()
+var no_exclusions = List<String>()
+var facts = Facts(no_program, no_functions, no_exclusions)
+var written = List<String>()
+var read_keys = List<String>()
+var spoiled = List<String>()
+var looped = List<String>()
+var unplain = List<String>()
+var through_shapes = List<String>()
+var shared = List<String>()
+var receiving_calls = List<HighIntermediaryRepresentation.Values.Call>()
+var receiving_keys = List<String>()
+var held_locals = Dictionary<String, String>()
+var declared_names = List<String>()
+var loop_depth = 0
+var in_defaults = false
+var defaults = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var span_locals = List<String>()
+var pure_owners = ["List", "Dictionary", "String", "Buffer"]
+var protected_names = ["_buffer", "_length", "item_count", "handle", "address", "context", "_function", "_cell"]
+var plain_conversions = ['present', 'nullable', 'into_union', 'widen', 'into_shape', 'to_decimal']
+
+func AttributeLayouts(starting_context: Context, starting_program: HighIntermediaryRepresentation.HighProgram) {
+    context = starting_context
+    program = starting_program
+}
+
+func lay_out() {
+    var built = program.built_functions.copy()
+    built.each(read_a_function)
+    facts = Facts(context.program, built, no_exclusions)
+    judge_the_receivers()
+    if is_interactive() {
+        var text_class = context.program.class_named("String")
+        crash text_class
+        shrink_a_class(text_class)
+        return
+    }
+    program.packs_layouts = true
+    context.program.order.each(shrink_a_class)
+    program.shared_members = shared
+}
+
+func is_interactive(): Boolean {
+    var flags = context.build_flags
+    var asked = flags.has("repl") or flags.has("repl_port") or flags.has("development")
+    return asked or flags.has("hot_reload")
+}
+
+func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    if function.function.name == "_attribute_defaults" {
+        defaults[function.function.owner] = function
+    }
+    in_defaults = function.function.name == "_attribute_defaults"
+    held_locals = Dictionary<String, String>()
+    declared_names = List<String>()
+    loop_depth = 0
+    read_a_block(function.body)
+}
+
+func read_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(read_a_statement)
+}
+
+func read_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: read_a_declaration(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign: read_an_assignment(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: read_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: read_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: read_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.Return: look(statement.value)
+        HighIntermediaryRepresentation.Statements.If: read_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: read_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Stop: read_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: read_a_block(statement)
+    }
+}
+
+func read_an_evaluation(statement: HighIntermediaryRepresentation.Statements.Evaluate) {
+    look(statement.value)
+    look(statement.waited)
+}
+
+func read_a_stop(statement: HighIntermediaryRepresentation.Statements.Stop) {
+    statement.shown.each(look_present)
+    look(statement.then)
+}
+
+func read_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    look(branch.condition)
+    read_a_block(branch.then_branch)
+    read_a_block(branch.else_branch)
+}
+
+func read_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    loop_depth = loop_depth + 1
+    look(loop.condition)
+    read_a_block(loop.body)
+    loop_depth = loop_depth - 1
+}
+
+func read_a_declaration(name: String, value: HighIntermediaryRepresentation.Values.Value?) {
+    if declared_names.contains(name) {
+        spoil_the_local(name)
+    }
+    declared_names.append(name)
+    if value == HighIntermediaryRepresentation.Values.AttributeRead {
+        hold_in_a_local(name, value)
+        return
+    }
+    look(value)
+}
+
+func hold_in_a_local(name: String, read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    var key = key_of(read.attribute)
+    note_a_read(key, read)
+    held_locals[name] = key
+}
+
+func read_an_assignment(name: String, value: HighIntermediaryRepresentation.Values.Value?) {
+    spoil_the_local(name)
+    look(value)
+}
+
+func spoil_the_local(name: String) {
+    var key = held_locals[name]
+    assert key
+    add(spoiled, key)
+}
+
+func read_an_attribute_write(statement: HighIntermediaryRepresentation.Statements.AssignAttribute) {
+    var is_a_default = is_its_default(statement)
+    if not is_a_default {
+        var key = key_of(statement.attribute)
+        add(written, key)
+    }
+    look(statement.object)
+    look(statement.value)
+}
+
+func is_its_default(statement: HighIntermediaryRepresentation.Statements.AssignAttribute): Boolean {
+    var object = statement.object
+    if object == HighIntermediaryRepresentation.Values.ThisRead {
+        return in_defaults
+    }
+    return false
+}
+
+func read_a_shape_write(statement: HighIntermediaryRepresentation.Statements.AssignThroughShape) {
+    note_the_fillers(statement.shape.key, statement.member, true)
+    look(statement.object)
+    look(statement.value)
+}
+
+func note_the_fillers(shape_key: String, member: String, is_a_write: Boolean) {
+    var fillers = context.program.fillers_of(shape_key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        note_a_filler(filler, member, is_a_write)
+        index = index + 1
+    }
+    add(shared, "{shape_key}|{member}")
+}
+
+func note_a_filler(filler: Model.Type, member: String, is_a_write: Boolean) {
+    var model = context.program.class_named(filler.name)
+    assert model
+    var attribute = model.attribute_named(member)
+    assert attribute
+    var key = key_of(attribute)
+    add(through_shapes, key)
+    add(read_keys, key)
+    if is_a_write {
+        add(written, key)
+    }
+}
+
+func look_present(value: HighIntermediaryRepresentation.Values.Value) {
+    look(value)
+}
+
+func look_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    look(first)
+    look(second)
+}
+
+func look(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: look_a_call(value)
+        HighIntermediaryRepresentation.Values.AttributeRead: look_an_attribute(value)
+        HighIntermediaryRepresentation.Values.LocalRead: spoil_the_local(value.name)
+        HighIntermediaryRepresentation.Values.Conversion: look(value.converted)
+        HighIntermediaryRepresentation.Values.ClassOfValue: look(value.described)
+        HighIntermediaryRepresentation.Values.ClassTest: look(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: look(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: look(value.number)
+        HighIntermediaryRepresentation.Values.ForeignCall: look_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.FunctionValue: look(value.receiver)
+        HighIntermediaryRepresentation.Values.FunctionValueCall: look_a_value_call(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: look_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MakeObject: value.arguments.each(look_present)
+        HighIntermediaryRepresentation.Values.Negation: look(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: look_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: look(value.tested)
+        HighIntermediaryRepresentation.Values.ShapeCall: look_a_shape_call(value)
+        _: return
+    }
+}
+
+func look_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall) {
+    look(call.library)
+    call.arguments.each(look_present)
+}
+
+func look_a_value_call(call: HighIntermediaryRepresentation.Values.FunctionValueCall) {
+    look(call.called)
+    call.arguments.each(look_present)
+}
+
+func look_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    var reads_an_attribute = call.member.is_an_attribute or call.arguments.is_empty()
+    if reads_an_attribute {
+        note_the_shape_read(call.shape.key, call.member.name)
+    }
+    look(call.receiver)
+    call.arguments.each(look_present)
+}
+
+func note_the_shape_read(shape_key: String, member: String) {
+    var fillers = context.program.fillers_of(shape_key)
+    var every_filler_holds_it = true
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        if not holds_the_attribute(filler, member) {
+            every_filler_holds_it = false
+        }
+        note_a_filler(filler, member, false)
+        index = index + 1
+    }
+    if every_filler_holds_it {
+        add(shared, "{shape_key}|{member}")
+    }
+}
+
+func holds_the_attribute(filler: Model.Type, member: String): Boolean {
+    var model = context.program.class_named(filler.name)
+    if not model {
+        return false
+    }
+    if model.attribute_named(member) {
+        return true
+    }
+    return false
+}
+
+func look_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    var receiver = call.receiver
+    if receiver == HighIntermediaryRepresentation.Values.AttributeRead {
+        receive_a_read(call, receiver)
+    } else if receiver == HighIntermediaryRepresentation.Values.LocalRead {
+        receive_a_local(call, receiver)
+    } else {
+        look(receiver)
+    }
+    call.arguments.each(look_present)
+}
+
+func receive_a_read(
+    call: HighIntermediaryRepresentation.Values.Call,
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+) {
+    var key = key_of(read.attribute)
+    note_a_read(key, read)
+    receiving_calls.append(call)
+    receiving_keys.append(key)
+}
+
+func receive_a_local(
+    call: HighIntermediaryRepresentation.Values.Call,
+    local: HighIntermediaryRepresentation.Values.LocalRead,
+) {
+    var key = held_locals[local.name]
+    assert key
+    receiving_calls.append(call)
+    receiving_keys.append(key)
+}
+
+func note_a_read(key: String, read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    add(read_keys, key)
+    if loop_depth > 0 {
+        add(looped, key)
+    }
+    var object = read.object
+    var is_plain = object == HighIntermediaryRepresentation.Values.ThisRead
+    if object == HighIntermediaryRepresentation.Values.LocalRead {
+        is_plain = true
+        spoil_the_local(object.name)
+    }
+    if not is_plain {
+        add(unplain, key)
+        look(object)
+    }
+}
+
+func look_an_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    var key = key_of(read.attribute)
+    note_a_read(key, read)
+    add(spoiled, key)
+}
+
+func judge_the_receivers() {
+    var asked = List<String>()
+    var index = 0
+    while index < receiving_calls.count() {
+        var call = receiving_calls[index]
+        var key = call.function.key()
+        var is_built = facts.bodies.has(key)
+        if is_built and not asked.contains(key) {
+            asked.append(key)
+        }
+        index = index + 1
+    }
+    if not asked.is_empty() {
+        facts.study(asked)
+    }
+    var judged = 0
+    while judged < receiving_calls.count() {
+        var receiving = receiving_calls[judged]
+        var receiving_key = receiving_keys[judged]
+        crash receiving_key
+        if not leaves_its_receiver(receiving) {
+            add(spoiled, receiving_key)
+        }
+        judged = judged + 1
+    }
+}
+
+func leaves_its_receiver(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    var function = call.function
+    var key = function.key()
+    if not facts.bodies.has(key) {
+        return false
+    }
+    if facts.writes(function, "this") {
+        return false
+    }
+    if not function.answer {
+        return true
+    }
+    if facts.is_immutable(function.answer) {
+        return true
+    }
+    return not facts.returned.contains("{key}|this")
+}
+
+func shrink_a_class(model: Model.ClassModel) {
+    assert not keeps_its_declared_layout(model)
+    var found = defaults[model.key]
+    assert found
+    var spans = spans_of(model, found.body)
+    assert spans.count() == model.declared_attributes.count()
+    var kept = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var span = spans[index]
+        crash span
+        if not leaves_out(model, attribute, span) {
+            refuse_a_text_in_every_text(model, attribute, span)
+            keep_the_span(kept, span)
+        }
+        index = index + 1
+    }
+    found.body.statements = kept
+}
+
+func refuse_a_text_in_every_text(
+    model: Model.ClassModel,
+    attribute: Model.AttributeModel,
+    span: List<HighIntermediaryRepresentation.Statements.Statement>,
+) {
+    assert model.key == "String" and not protected_names.contains(attribute.name)
+    assert span.any(makes_a_text)
+    crash attribute.declaration
+    var failure = Validators.Failure()
+    failure.stop_at(
+        model.file.path,
+        attribute.declaration.line,
+        "String",
+        "the attribute '{attribute.name}' of String would be made with every text, and its default makes texts, so making a text would never end: never write it, and make its default only of literals, so the compiler rebuilds it where it is read",
+    )
+}
+
+func makes_a_text(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return holds_a_text(statement.value)
+        HighIntermediaryRepresentation.Statements.Assign: return holds_a_text(statement.value)
+        HighIntermediaryRepresentation.Statements.Evaluate: return holds_a_text(statement.value)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: return holds_a_text(statement.value)
+        _: return true
+    }
+}
+
+func holds_a_text(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if not value {
+        return false
+    }
+    if is_a_text(value.value_type) {
+        return true
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: return a_call_holds_a_text(value)
+        HighIntermediaryRepresentation.Values.MakeObject: return value.arguments.any(an_argument_holds_a_text)
+        HighIntermediaryRepresentation.Values.Conversion: return holds_a_text(value.converted)
+        HighIntermediaryRepresentation.Values.LocalRead: return false
+        HighIntermediaryRepresentation.Values.WholeNumber: return false
+        HighIntermediaryRepresentation.Values.DecimalNumber: return false
+        HighIntermediaryRepresentation.Values.NullConstant: return false
+        _: return true
+    }
+}
+
+func a_call_holds_a_text(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if holds_a_text(call.receiver) {
+        return true
+    }
+    return call.arguments.any(an_argument_holds_a_text)
+}
+
+func an_argument_holds_a_text(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    return holds_a_text(value)
+}
+
+func keep_the_span(
+    kept: List<HighIntermediaryRepresentation.Statements.Statement>,
+    span: List<HighIntermediaryRepresentation.Statements.Statement>,
+) {
+    var index = 0
+    while index < span.count() {
+        var statement = span[index]
+        kept.append(statement)
+        index = index + 1
+    }
+}
+
+func keeps_its_declared_layout(model: Model.ClassModel): Boolean {
+    var key = model.key
+    var is_fixed = key == "Buffer" or key == "ForeignCallback" or key.starts_with("Spite.")
+    var scalars = Model.Scalars()
+    return is_fixed or scalars.is_a_scalar(key)
+}
+
+func spans_of(
+    model: Model.ClassModel,
+    body: HighIntermediaryRepresentation.Statements.Block,
+): List<List<HighIntermediaryRepresentation.Statements.Statement>> {
+    var spans = List<List<HighIntermediaryRepresentation.Statements.Statement>>()
+    var unmatched = List<List<HighIntermediaryRepresentation.Statements.Statement>>()
+    var span = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var index = 0
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        span.append(statement)
+        var closed = closed_attribute(model, statement)
+        if closed != "" {
+            var position = spans.count()
+            if not is_the_next(model, position, closed) {
+                return unmatched
+            }
+            spans.append(span)
+            span = List<HighIntermediaryRepresentation.Statements.Statement>()
+        }
+        index = index + 1
+    }
+    if not span.is_empty() {
+        return unmatched
+    }
+    return spans
+}
+
+func is_the_next(model: Model.ClassModel, position: Integer, closed: String): Boolean {
+    var wanted = model.declared_attributes[position]
+    if not wanted {
+        return false
+    }
+    return wanted.name == closed
+}
+
+func closed_attribute(model: Model.ClassModel, statement: HighIntermediaryRepresentation.Statements.Statement): String {
+    if statement == HighIntermediaryRepresentation.Statements.AssignAttribute {
+        var object = statement.object
+        var is_its_own = object == HighIntermediaryRepresentation.Values.ThisRead
+        if is_its_own and statement.attribute.owner == model.key {
+            return statement.attribute.name
+        }
+    }
+    return ""
+}
+
+func leaves_out(
+    model: Model.ClassModel,
+    attribute: Model.AttributeModel,
+    span: List<HighIntermediaryRepresentation.Statements.Statement>,
+): Boolean {
+    var key = key_of(attribute)
+    var may_go = not protected_names.contains(attribute.name) and not written.contains(key)
+    if not may_go or not is_pure(span) {
+        return false
+    }
+    if not read_keys.contains(key) {
+        program.absent_attributes.append(key)
+        return true
+    }
+    var is_unchanging_value = is_unchanging(attribute.attribute_type)
+    if model.key == "String" and not is_unchanging_value {
+        rebuild(model, attribute, span)
+        return true
+    }
+    if through_shapes.contains(key) or unplain.contains(key) {
+        return false
+    }
+    if is_unchanging_value {
+        stand_in(model, attribute, span)
+        return true
+    }
+    var is_one_object = model.is_singleton or model.key == context.program.entry
+    var may_change = spoiled.contains(key) and not is_a_text(attribute.attribute_type)
+    if may_change or looped.contains(key) or is_one_object {
+        return false
+    }
+    rebuild(model, attribute, span)
+    return true
+}
+
+func is_a_text(of_type: Model.Type): Boolean {
+    return of_type.kind == 'object' and of_type.name == "String"
+}
+
+func is_unchanging(of_type: Model.Type): Boolean {
+    return of_type.kind == 'scalar' or of_type.kind == 'enumeration'
+}
+
+func stand_in(
+    model: Model.ClassModel,
+    attribute: Model.AttributeModel,
+    span: List<HighIntermediaryRepresentation.Statements.Statement>,
+) {
+    var key = key_of(attribute)
+    var only = span.first()
+    crash only
+    var value = assigned_value(only)
+    var is_constant = span.count() == 1 and is_a_constant(value)
+    if is_constant {
+        crash value
+        program.absent_attributes.append(key)
+        program.folded_attributes[key] = value
+        return
+    }
+    rebuild(model, attribute, span)
+}
+
+func assigned_value(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+): HighIntermediaryRepresentation.Values.Value? {
+    if statement == HighIntermediaryRepresentation.Statements.AssignAttribute {
+        return statement.value
+    }
+    return null
+}
+
+func is_a_constant(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if not value {
+        return false
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return true
+        HighIntermediaryRepresentation.Values.DecimalNumber: return true
+        HighIntermediaryRepresentation.Values.NullConstant: return true
+        _: return false
+    }
+}
+
+func rebuild(
+    model: Model.ClassModel,
+    attribute: Model.AttributeModel,
+    span: List<HighIntermediaryRepresentation.Statements.Statement>,
+) {
+    var key = key_of(attribute)
+    var made = Model.FunctionModel("_rebuilt_{attribute.name}", model.key)
+    made.is_synthetic = true
+    made.answer = attribute.attribute_type
+    model.declared_functions.append(made)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    var last_index = span.count() - 1
+    var index = 0
+    while index < last_index {
+        var statement = span[index]
+        body.statements.append(statement)
+        index = index + 1
+    }
+    var last = span.last()
+    crash last
+    var value = assigned_value(last)
+    crash value
+    var answered = HighIntermediaryRepresentation.Statements.Return(value)
+    body.statements.append(answered)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    program.built_functions.append(function)
+    program.absent_attributes.append(key)
+    program.rebuilt_attributes[key] = made
+}
+
+func is_pure(span: List<HighIntermediaryRepresentation.Statements.Statement>): Boolean {
+    span_locals = List<String>()
+    var last_index = span.count() - 1
+    var index = 0
+    while index < span.count() {
+        var statement = span[index]
+        if not is_a_pure_statement(statement, index == last_index) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_pure_statement(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+    is_the_last: Boolean,
+): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return is_a_pure_naming(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Evaluate: return is_pure_value(statement.value)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: return is_the_assignment(statement, is_the_last)
+        _: return false
+    }
+}
+
+func is_a_pure_naming(name: String, value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if not is_pure_value(value) {
+        return false
+    }
+    span_locals.append(name)
+    return true
+}
+
+func is_the_assignment(
+    statement: HighIntermediaryRepresentation.Statements.AssignAttribute,
+    is_the_last: Boolean,
+): Boolean {
+    var object = statement.object
+    var is_its_own = object == HighIntermediaryRepresentation.Values.ThisRead
+    return is_the_last and is_its_own and is_pure_value(statement.value)
+}
+
+func is_pure_value(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if not value {
+        return false
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return true
+        HighIntermediaryRepresentation.Values.DecimalNumber: return true
+        HighIntermediaryRepresentation.Values.TextConstant: return true
+        HighIntermediaryRepresentation.Values.NullConstant: return true
+        HighIntermediaryRepresentation.Values.LocalRead: return span_locals.contains(value.name)
+        HighIntermediaryRepresentation.Values.Negation: return is_pure_value(value.negated)
+        HighIntermediaryRepresentation.Values.Conversion: return is_a_pure_conversion(value)
+        HighIntermediaryRepresentation.Values.MakeObject: return is_a_pure_making(value)
+        HighIntermediaryRepresentation.Values.Call: return is_a_pure_call(value)
+        _: return false
+    }
+}
+
+func is_a_pure_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
+    if not plain_conversions.contains(conversion.kind) {
+        return false
+    }
+    return is_pure_value(conversion.converted)
+}
+
+func is_a_pure_making(made: HighIntermediaryRepresentation.Values.MakeObject): Boolean {
+    if not is_a_pure_owner(made.value_type.name) {
+        return false
+    }
+    if made.constructor {
+        if not is_a_pure_owner(made.constructor.owner) {
+            return false
+        }
+    }
+    return made.arguments.all(is_a_pure_argument)
+}
+
+func is_a_pure_call(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if not is_a_pure_owner(call.function.owner) {
+        return false
+    }
+    if not is_pure_value(call.receiver) {
+        return false
+    }
+    return call.arguments.all(is_a_pure_argument)
+}
+
+func is_a_pure_argument(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    return is_pure_value(value)
+}
+
+func is_a_pure_owner(owner: String): Boolean {
+    var simple = owner
+    var opening = owner.index_of("<")
+    if opening > 0 {
+        simple = owner.slice(0, opening)
+    }
+    var bound = simple.index_of("_of_")
+    if bound > 0 {
+        simple = simple.slice(0, bound)
+    }
+    return pure_owners.contains(simple)
+}
+
+func key_of(attribute: Model.AttributeModel): String {
+    return "{attribute.owner}.{attribute.name}"
+}
+
+func add(listed: List<String>, key: String) {
+    if not listed.contains(key) {
+        listed.append(key)
+    }
+}
