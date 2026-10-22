@@ -166,6 +166,7 @@ func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
     note_a_counted_list(name, statement.value)
     note_a_function_local(name, statement.name, value)
     note_a_null_local(name, statement.name, value)
+    note_a_text_local(name, statement.name, value)
     note_a_copy(statement, name, local_type)
     if value == HighIntermediaryRepresentation.Values.Conversion {
         if value.kind == 'proven' {
@@ -209,6 +210,14 @@ func note_a_null_local(name: String, written_name: String, value: HighIntermedia
     }
 }
 
+func note_a_text_local(name: String, written_name: String, value: HighIntermediaryRepresentation.Values.Value) {
+    if value == HighIntermediaryRepresentation.Values.TextConstant {
+        if not values.is_assigned_again(written_name) {
+            context.text_locals[name] = value.text
+        }
+    }
+}
+
 func note_a_named_function(name: String, written_name: String, function: Model.FunctionModel) {
     assert not values.is_assigned_again(written_name)
     context.function_locals[name] = function
@@ -227,6 +236,7 @@ func note_a_copy(
     crash statement.value
     var printer = Printers.Spite.ExpressionPrinter(statement.value)
     var source = printer.text()
+    assert not source.contains("[")
     assert context.current_function.declaration
     var assigned = AssignedPaths()
     var targets = assigned.of(context.current_function.declaration)
@@ -258,9 +268,18 @@ func last_line_of(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDe
     return last.line
 }
 
-func refuse_a_maybe_boolean(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+func refuse_a_maybe_boolean(
+    condition: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    linked: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+) {
     assert is_a_bare_path(condition)
+    context.scope.enter()
+    if linked == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        read_facts(linked.left)
+        narrow_all(facts_paths, facts_types)
+    }
     var written_value = values.value_of(condition, null)
+    context.scope.leave()
     var value = values.result_of_handle(written_value)
     var tested = value.value_type
     assert tested.is_nullable and tested.kind == 'scalar' and tested.name == "Boolean"
@@ -415,8 +434,13 @@ func assign_a_name(
         var declared_type = context.scope.types[internal_name]
         crash declared_type
         var value = values.fitted_value_of(statement.value, declared_type)
-        context.scope.forget(internal_name)
-        context.scope.forget_mentions(target.name)
+        if declared_type.is_nullable and is_present(value) {
+            var present = declared_type.present()
+            context.scope.keep_present(internal_name, target.name, present)
+        } else {
+            context.scope.forget(internal_name)
+            context.scope.forget_mentions(target.name)
+        }
         context.counted_lists.remove(internal_name)
         forget_an_index_local(internal_name)
         var made = HighIntermediaryRepresentation.Statements.Assign(internal_name, value)
@@ -570,6 +594,17 @@ func refuse_an_undone_loop_proof(statement: AbstractSyntaxTree.Shapes.Statements
     var printer = Printers.Spite.ExpressionPrinter(statement.target)
     var written = printer.text()
     typing.refuse_undone_loop_proof(context, written)
+}
+
+func is_present(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    if not value.value_type.is_nullable {
+        return true
+    }
+    if value == HighIntermediaryRepresentation.Values.Conversion {
+        crash value.converted
+        return not value.converted.value_type.is_nullable
+    }
+    return false
 }
 
 func narrow_a_present_assignment(
@@ -800,11 +835,12 @@ func build_return(statement: AbstractSyntaxTree.Shapes.Statements.ReturnStatemen
 }
 
 func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
-    refuse_a_maybe_boolean(statement.condition)
+    var written = statement.condition
     crash statement.condition
     var printer = Printers.Spite.ExpressionPrinter(statement.condition)
     var written_condition = printer.text()
     statement.condition = values.with_its_links(statement.condition)
+    refuse_a_maybe_boolean(written, statement.condition)
     var condition = values.condition_of(statement.condition)
     flush_the_pending()
     if condition == HighIntermediaryRepresentation.Values.WholeNumber {
@@ -884,7 +920,7 @@ func build_a_decided_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatem
 func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
     refuse_an_unstepped_poll(statement)
     refuse_a_loop_copy(statement.condition)
-    refuse_a_maybe_boolean(statement.condition)
+    refuse_a_maybe_boolean(statement.condition, statement.condition)
     var base = context.scope.narrowed.count()
     context.loop_bases.append(base)
     var condition = values.condition_of(statement.condition)
@@ -1117,6 +1153,14 @@ func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatemen
     }
     var leaving = default_return()
     failed.statements.append(leaving)
+    if condition == HighIntermediaryRepresentation.Values.WholeNumber {
+        if condition.number == 0 {
+            failed.line = statement.line
+            add(failed)
+            rest_is_folded_away = true
+            return
+        }
+    }
     var negated = HighIntermediaryRepresentation.Values.Negation(condition)
     var made = HighIntermediaryRepresentation.Statements.If(negated, failed, null)
     made.line = statement.line
@@ -1369,7 +1413,8 @@ func build_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatemen
     if is_closed(subject.value_type) {
         check_the_cover(statement, subject.value_type, path)
     }
-    var chain = switch_chain(statement, subject, path, 0)
+    var narrowed_path = path_of(statement.value, path)
+    var chain = switch_chain(statement, subject, narrowed_path, 0)
     crash chain
     add(chain)
 }
@@ -1642,6 +1687,8 @@ func read_a_binary_fact(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpr
         }
     }
     assert binary.operator == 'equal_equal'
+    var codegen_path = values.codegen_path_of(binary.left)
+    assert codegen_path.is_empty()
     var class_path = values.tested_class_path_of(binary.right)
     assert not class_path.is_empty()
     var type_arguments = values.tested_type_arguments(binary.right)
