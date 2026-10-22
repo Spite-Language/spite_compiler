@@ -65,10 +65,20 @@ func fill_of_a_class(described: String): HighIntermediaryRepresentation.HighFunc
     var class_type = reflection_type("Spite.Class")
     var class_model = context.class_of(class_type)
     var own = HighIntermediaryRepresentation.Values.ThisRead(class_type)
-    var model = context.program.class_named(described)
-    var shown = described
+    var is_optional = described.ends_with("?")
+    var base = described
+    if is_optional {
+        var described_length = described.length()
+        base = described.slice(0, described_length - 1)
+        set_flag(own, class_model, "_is_optional", true)
+    }
+    var model = context.program.class_named(base)
+    var shown = base
     if model {
         shown = model.shown
+    }
+    if is_optional {
+        shown = "{shown}?"
     }
     set_text(own, class_model, "_name_with_namespaces", shown)
     var simple = without_namespaces(shown)
@@ -85,8 +95,9 @@ func fill_of_a_class(described: String): HighIntermediaryRepresentation.HighFunc
         fill_from_the_model(own, class_model, model)
         var source_folder = folder_of(model.file.path)
         set_text(own, class_model, "_source_folder", source_folder)
+        add_the_source_files(own, class_model, base)
     } else {
-        fill_an_enum(own, class_model, described)
+        fill_an_enum(own, class_model, base)
     }
     var function = Model.FunctionModel("_fill_{described}", class_model.key)
     var body = HighIntermediaryRepresentation.Statements.Block()
@@ -149,6 +160,54 @@ func fill_an_enum(own: HighIntermediaryRepresentation.Values.Value, class_model:
         appended(listed, named)
         index = index + 1
     }
+}
+
+func add_the_source_files(
+    own: HighIntermediaryRepresentation.Values.Value,
+    class_model: Model.ClassModel,
+    described: String,
+) {
+    assert class_model.attribute_named("_source_files")
+    var listed = read_attribute(own, class_model, "_source_files")
+    var file_type = Model.Type('object', "File")
+    need_the_making(file_type)
+    var known = context.resolver.symbols.map.classes_by_namespace[described]
+    assert known
+    var index = 0
+    while index < known.count() {
+        var class_file = known[index]
+        var relative = written_path_of(class_file.path)
+        var named = text(relative)
+        var no_more = List<HighIntermediaryRepresentation.Values.Value>()
+        var made = made_from(file_type, named, no_more)
+        appended(listed, made)
+        index = index + 1
+    }
+}
+
+func add_the_source_directories(
+    own: HighIntermediaryRepresentation.Values.Value,
+    namespace_model: Model.ClassModel,
+    folder: Mapping.MappedFolder,
+) {
+    assert namespace_model.attribute_named("_source_directories")
+    var listed = read_attribute(own, namespace_model, "_source_directories")
+    var directory_type = Model.Type('object', "Directory")
+    need_the_making(directory_type)
+    var index = 0
+    while index < folder.paths.count() {
+        var folder_path = folder.paths[index]
+        var relative = written_path_of(folder_path)
+        var named = text(relative)
+        var no_more = List<HighIntermediaryRepresentation.Values.Value>()
+        var made = made_from(directory_type, named, no_more)
+        appended(listed, made)
+        index = index + 1
+    }
+}
+
+func written_path_of(path: String): String {
+    return path.replace("\\", "/")
 }
 
 func is_stateful(model: Model.ClassModel): Boolean {
@@ -334,6 +393,53 @@ func attributes_of_an_object(
     return listed
 }
 
+func no_attributes(): Model.FunctionModel {
+    var attribute_type = reflection_type("Spite.Attribute")
+    var attribute_model = context.class_of(attribute_type)
+    var known = attribute_model.function_named("_no_attributes")
+    if known {
+        return known
+    }
+    var list_type = context.resolver.list_type_of(attribute_type)
+    var made = Model.FunctionModel("_no_attributes", attribute_model.key)
+    made.is_synthetic = true
+    made.answer = list_type
+    attribute_model.declared_functions.append(made)
+    var empty = values.new_list(list_type)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    var answered = HighIntermediaryRepresentation.Statements.Return(empty)
+    body.statements.append(answered)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func attribute_list_of(model: Model.ClassModel): Model.FunctionModel {
+    var known = model.function_named("_attribute_list")
+    if known {
+        return known
+    }
+    var attribute_type = reflection_type("Spite.Attribute")
+    var list_type = context.resolver.list_type_of(attribute_type)
+    var made = Model.FunctionModel("_attribute_list", model.key)
+    made.is_synthetic = true
+    made.answer = list_type
+    model.declared_functions.append(made)
+    var outer_pending = context.pending
+    context.pending = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var own_type = model.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var listed = attributes_of_an_object(own, model)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements = context.pending
+    var answered = HighIntermediaryRepresentation.Statements.Return(listed)
+    body.statements.append(answered)
+    context.pending = outer_pending
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
 func kept_in_scope(
     made: HighIntermediaryRepresentation.Values.Value,
     made_type: Model.Type,
@@ -368,8 +474,11 @@ func without_namespaces(shown: String): String {
 }
 
 func class_object_of_type(of_type: Model.Type): HighIntermediaryRepresentation.Values.Value? {
-    var is_a_class = of_type.kind == 'object' or of_type.kind == 'scalar' or of_type.kind == 'enumeration'
+    var is_a_class = of_type.kind == 'object' or of_type.kind == 'scalar' or of_type.kind == 'enumeration' or of_type.kind == 'union'
     assert is_a_class
+    if of_type.is_nullable {
+        return class_object("{of_type.name}?")
+    }
     return class_object(of_type.name)
 }
 
@@ -386,6 +495,7 @@ func fill_of_a_namespace(described: String): HighIntermediaryRepresentation.High
     var folder = context.resolver.symbols.namespace_folder(described)
     if folder {
         add_the_contents(own, namespace_model, folder)
+        add_the_source_directories(own, namespace_model, folder)
     }
     var function = Model.FunctionModel("_fill_{described}", namespace_model.key)
     var body = HighIntermediaryRepresentation.Statements.Block()

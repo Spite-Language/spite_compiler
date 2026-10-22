@@ -237,7 +237,10 @@ func fits_as_an_enum(shape: Model.ShapeModel, shown: String) {
     var index = 0
     while index < shape.members.count() {
         var member = shape.members[index]
-        if member.name != "to_string" and member.name != "to_debug" {
+        if member.name == "_attribute_list" {
+            var reflection = Reflection(context, this)
+            reflection.no_attributes()
+        } else if member.name != "to_string" and member.name != "to_debug" {
             typing.refuse_not_a_fit(context, shown, shape.name, member.name)
         }
         index = index + 1
@@ -286,6 +289,10 @@ func need_a_filling_function(
     shown: String,
     shape: Model.ShapeModel,
 ) {
+    if member.name == "_attribute_list" {
+        var reflection = Reflection(context, this)
+        reflection.attribute_list_of(filler)
+    }
     var function = filler.function_named(member.name)
     var is_open = shape.key == "Anything" or shape.key == "Number"
     if not function and is_open and member.name == "to_string" {
@@ -473,6 +480,9 @@ func default_of_a_type(wanted: Model.Type): HighIntermediaryRepresentation.Value
         }
         return HighIntermediaryRepresentation.Values.WholeNumber(wanted, 0)
     }
+    if wanted.kind == 'shape' {
+        return default_of_a_shape(wanted)
+    }
     assert wanted.kind == 'object'
     var made = context.class_of(wanted)
     context.need_defaults(made.key)
@@ -485,6 +495,51 @@ func default_of_a_type(wanted: Model.Type): HighIntermediaryRepresentation.Value
         need(constructor)
     }
     return HighIntermediaryRepresentation.Values.MakeObject(wanted, constructor, arguments)
+}
+
+func default_of_a_shape(wanted: Model.Type): HighIntermediaryRepresentation.Values.Value? {
+    var shape = context.program.shape_keyed(wanted.name)
+    assert shape
+    context.object_count = context.object_count + 1
+    var key = "Object{context.object_count}"
+    var model = Model.ClassModel(key, "Object", context.current_class.file)
+    var defaults = List<HighIntermediaryRepresentation.Values.Value>()
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.is_an_attribute {
+            crash member.answer
+            var field_type: Model.Type = member.answer
+            var field = default_of_a_type(field_type)
+            crash field
+            var attribute = Model.AttributeModel(member.name, key, field_type)
+            model.declared_attributes.append(attribute)
+            defaults.append(field)
+        }
+        index = index + 1
+    }
+    context.program.add(model)
+    context.need_defaults(key)
+    var object_type = Model.Type('object', key)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var made = HighIntermediaryRepresentation.Values.MakeObject(object_type, null, no_arguments)
+    temporary_count = temporary_count + 1
+    var name = context.scope.declare("made_{temporary_count}", object_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, object_type, made)
+    declared.line = context.line
+    context.pending.append(declared)
+    var local = HighIntermediaryRepresentation.Values.LocalRead(object_type, name)
+    var field_index = 0
+    while field_index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[field_index]
+        var value = defaults[field_index]
+        crash value
+        var assigned = HighIntermediaryRepresentation.Statements.AssignAttribute(local, attribute, value)
+        assigned.line = context.line
+        context.pending.append(assigned)
+        field_index = field_index + 1
+    }
+    return fitted(local, wanted)
 }
 
 func symbol_value(name: String, expected: Model.Type?): HighIntermediaryRepresentation.Values.Value {
@@ -820,6 +875,10 @@ func member_value(
     }
     if target.value_type.kind == 'shape' {
         var no_arguments = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+        if member.name == "attributes" {
+            listing_attributes(target.value_type)
+            return shape_call(target, "_attribute_list", no_arguments)
+        }
         return shape_call(target, member.name, no_arguments)
     }
     if target.value_type.kind == 'union' {
@@ -2273,6 +2332,30 @@ func member_answered_by(model: Model.ClassModel, name: String, shown: String): M
     crash function
     need(function)
     return function
+}
+
+func listing_attributes(shape_type: Model.Type) {
+    var shape = context.program.shape_keyed(shape_type.name)
+    crash shape
+    assert not shape.member_named("_attribute_list")
+    var reflection = Reflection(context, this)
+    var attribute_type = reflection.reflection_type("Spite.Attribute")
+    var list_type = context.resolver.list_type_of(attribute_type)
+    var member = Model.FunctionModel("_attribute_list", shape.key)
+    member.answer = list_type
+    shape.members.append(member)
+    var fillers = context.program.fillers_of(shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        if context.has_a_class(filler) {
+            var model = context.class_of(filler)
+            reflection.attribute_list_of(model)
+        } else {
+            reflection.no_attributes()
+        }
+        index = index + 1
+    }
 }
 
 func shape_call(

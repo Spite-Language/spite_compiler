@@ -1204,6 +1204,9 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
     if conversion.kind == 'into_shape' {
         crash conversion.converted
         var boxed = conversion.converted.value_type
+        if conversion.value_type.is_nullable and boxed.is_nullable {
+            return boxed_into_a_maybe(converted, boxed)
+        }
         return boxed_into_a_shape(converted, boxed)
     }
     crash conversion.converted
@@ -1449,6 +1452,34 @@ func boxed_into_a_shape(converted: Lowered, boxed: Model.Type): Lowered {
     return present_boxed(converted, boxed)
 }
 
+func boxed_into_a_maybe(converted: Lowered, boxed: Model.Type): Lowered {
+    if is_a_pointer(boxed) {
+        return carried(converted)
+    }
+    var presence = converted.presence
+    crash presence >= 0
+    var target = new_register()
+    var boxing = new_block()
+    var missing = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(presence, boxing, missing)
+    emit(test)
+    switch_to(boxing)
+    var present_type = boxed.present()
+    var present = Lowered(converted.value, -1)
+    var made = present_boxed(present, present_type)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, made.value)
+    emit(copied)
+    jump_to(after)
+    switch_to(missing)
+    var nothing = constant(0)
+    var copied_nothing = LowIntermediaryRepresentation.Instructions.Copy(target, nothing)
+    emit(copied_nothing)
+    jump_to(after)
+    switch_to(after)
+    return owned(target)
+}
+
 func maybe_boxed(converted: Lowered, boxed: Model.Type): Lowered {
     var presence = converted.presence
     if presence < 0 {
@@ -1579,6 +1610,21 @@ func call_a_filler(
         own = new_register()
         var unboxed = LowIntermediaryRepresentation.Instructions.Load(own, receiver, 16, 'bits_64')
         emit(unboxed)
+    }
+    var lists_no_attributes = filler.kind == 'enumeration' and call.member.name == "_attribute_list"
+    if lists_no_attributes {
+        var nothing_held = constant(0)
+        var none_given = List<Integer>()
+        none_given.append(nothing_held)
+        var listed = LowIntermediaryRepresentation.Instructions.Call(
+            target,
+            "Spite.Attribute._no_attributes",
+            none_given,
+        )
+        emit(listed)
+        jump_to(after)
+        switch_to(next)
+        return
     }
     if filler.kind == 'enumeration' {
         var enumeration = enum_model_of(filler.name)

@@ -54,6 +54,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found while porting
 
+- A class object fills the class objects it names as it is filled, so the fills nest as deep as the classes reach one another (the main stack reserve was raised to 64 MB for it): fill them from a worklist, and fold the constant ones while compiling
+
 - A program can name `Spite.Internal` classes: refuse it outside the standard library (`conformance/internal_use`)
 
 - A decimal `%` is computed as `x - trunc(x / y) * y`, which loses digits once the quotient passes 2^53: compute it exactly, as `fmod` does
