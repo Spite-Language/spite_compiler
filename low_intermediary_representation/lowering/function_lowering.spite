@@ -5,6 +5,7 @@ var function = LowIntermediaryRepresentation.LowFunction("", 0)
 var current = 0
 var terminated = false
 var locals = Dictionary<String, Integer>()
+var held_types = Dictionary<Integer, Model.Type>()
 var local_presences = Dictionary<String, Integer>()
 var scalars = Model.Scalars()
 var path = ""
@@ -216,6 +217,27 @@ func retain(register: Integer) {
     emit(retained)
 }
 
+func release_held(register: Integer) {
+    var held_type = held_types[register]
+    if held_type {
+        settle_before_letting_go(register, held_type)
+    }
+    release(register)
+}
+
+func settle_before_letting_go(register: Integer, of_type: Model.Type) {
+    assert resumable_mode
+    var settling = Settling(this)
+    assert settling.may_hold_work(of_type)
+    settling.wait_until_settled(register, of_type)
+}
+
+func settle_before_clearing(call: HighIntermediaryRepresentation.Values.Call, receiver: Integer) {
+    assert resumable_mode and call.function.name == "clear"
+    crash call.receiver
+    settle_before_letting_go(receiver, call.receiver.value_type)
+}
+
 func release(register: Integer) {
     var arguments = List<Integer>()
     arguments.append(register)
@@ -257,7 +279,7 @@ func release_every_scope() {
     while index >= 0 {
         var scope = scopes[index]
         crash scope
-        scope.each(release)
+        scope.each(release_held)
         index = index - 1
     }
     if locks_its_singleton {
@@ -330,7 +352,7 @@ func lower_block(block: HighIntermediaryRepresentation.Statements.Block?) {
     scopes.append(held)
     block.statements.each(lower_statement)
     if not terminated {
-        held.each(release)
+        held.each(release_held)
     }
     var last = scopes.count() - 1
     scopes.remove_at(last)
@@ -361,6 +383,7 @@ func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
     emit(copied)
     if is_a_pointer(declare.declared_type) {
         hold(register)
+        held_types[register] = declare.declared_type
     }
     if is_a_nullable_scalar(declare.declared_type) {
         var presence = new_register()
@@ -384,6 +407,7 @@ func lower_assign(assign: HighIntermediaryRepresentation.Statements.Assign) {
     var copied = LowIntermediaryRepresentation.Instructions.Copy(register, value.value)
     emit(copied)
     if is_a_pointer(assigned_type) {
+        settle_before_letting_go(old, assigned_type)
         release(old)
     }
     var presence = local_presences[assign.name]
@@ -408,6 +432,7 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
     var stored = LowIntermediaryRepresentation.Instructions.Store(object.value, offset, value.value, width)
     emit(stored)
     if is_a_pointer(attribute_type) {
+        settle_before_letting_go(old, attribute_type)
         release(old)
     }
     crash assign.object
@@ -1151,6 +1176,7 @@ func lower_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var receiver = lower_value(call.receiver)
     crash call.receiver
     release_later(receiver, call.receiver.value_type)
+    settle_before_clearing(call, receiver.value)
     arguments.append(receiver.value)
     add_arguments(arguments, call.arguments)
     var answer = finished_call(call, arguments)

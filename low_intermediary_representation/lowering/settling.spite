@@ -1,0 +1,216 @@
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low = LowIntermediaryRepresentation.LowProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low, no_slots)
+var visiting = List<String>()
+
+func Settling(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+func may_hold_work(of_type: Model.Type): Boolean {
+    if of_type.kind == 'handle' {
+        return true
+    }
+    if of_type.kind != 'object' {
+        return false
+    }
+    var model = lowering.layout.program.class_named(of_type.name)
+    if not model {
+        return false
+    }
+    if model.is_singleton or visiting.contains(model.key) {
+        return false
+    }
+    visiting.append(model.key)
+    var holds = class_holds_work(model)
+    var last = visiting.count() - 1
+    visiting.remove_at(last)
+    return holds
+}
+
+func class_holds_work(model: Model.ClassModel): Boolean {
+    var element = list_element_of(model)
+    if element {
+        return may_hold_work(element)
+    }
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if may_hold_work(attribute.attribute_type) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func list_element_of(model: Model.ClassModel): Model.Type? {
+    var buffer = model.attribute_named("_buffer")
+    var length = model.attribute_named("_length")
+    assert buffer and length
+    return model.bound_types["$element_type"]
+}
+
+func wait_until_settled(register: Integer, of_type: Model.Type) {
+    assert lowering.resumable_mode and may_hold_work(of_type)
+    var key = settled_function(of_type)
+    var point = lowering.resume_point()
+    var passed = List<Integer>()
+    passed.append(register)
+    var settled = lowering.new_register()
+    var asked = LowIntermediaryRepresentation.Instructions.Call(settled, key, passed)
+    lowering.emit(asked)
+    lowering.suspend_unless(settled, point)
+}
+
+func settled_function(of_type: Model.Type): String {
+    var simple = of_type.name.replace(".", "_").replace("<", "_").replace(">", "_").replace(",", "_").replace(" ", "")
+    var key = "_settled_{of_type.kind}_{simple}"
+    if lowering.program.settled_keys.contains(key) {
+        return key
+    }
+    lowering.program.settled_keys.append(key)
+    var writing = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    writing.start(key)
+    writing.function.parameter_count = 1
+    var object = writing.new_register()
+    var inner = Settling(writing)
+    inner.write_the_check(object, of_type)
+    lowering.program.lowered_functions.append(writing.function)
+    return key
+}
+
+func write_the_check(object: Integer, of_type: Model.Type) {
+    var zero = lowering.constant(0)
+    var one = lowering.constant(1)
+    var is_empty = lowering.new_register()
+    var compared_empty = LowIntermediaryRepresentation.Instructions.Compare(is_empty, 'equal', object, zero)
+    lowering.emit(compared_empty)
+    answer_yes_when(is_empty, one)
+    var count = lowering.new_register()
+    var loaded_count = LowIntermediaryRepresentation.Instructions.Load(count, object, 8, 'bits_64')
+    lowering.emit(loaded_count)
+    var shared = lowering.new_register()
+    var compared_count = LowIntermediaryRepresentation.Instructions.Compare(shared, 'greater', count, one)
+    compared_count.is_signed = true
+    lowering.emit(compared_count)
+    answer_yes_when(shared, one)
+    if of_type.kind == 'handle' {
+        var finished = lowering.new_register()
+        var passed = List<Integer>()
+        passed.append(object)
+        var asked = LowIntermediaryRepresentation.Instructions.Call(finished, "{of_type.carrier}.get_finished", passed)
+        lowering.emit(asked)
+        var answered = LowIntermediaryRepresentation.Instructions.Return(finished)
+        lowering.emit(answered)
+        return
+    }
+    var model = lowering.layout.program.class_named(of_type.name)
+    crash model
+    var element = list_element_of(model)
+    if element {
+        check_the_items(object, model, element, zero, one)
+    } else {
+        check_the_attributes(object, model, zero)
+    }
+    var settled = LowIntermediaryRepresentation.Instructions.Return(one)
+    lowering.emit(settled)
+}
+
+func answer_yes_when(holds: Integer, one: Integer) {
+    var answering = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(holds, answering, after)
+    lowering.emit(test)
+    lowering.switch_to(answering)
+    var answered = LowIntermediaryRepresentation.Instructions.Return(one)
+    lowering.emit(answered)
+    lowering.switch_to(after)
+}
+
+func answer_no_unless(holds: Integer, zero: Integer) {
+    var refusing = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(holds, after, refusing)
+    lowering.emit(test)
+    lowering.switch_to(refusing)
+    var answered = LowIntermediaryRepresentation.Instructions.Return(zero)
+    lowering.emit(answered)
+    lowering.switch_to(after)
+}
+
+func check_the_attributes(object: Integer, model: Model.ClassModel, zero: Integer) {
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if may_hold_work(attribute.attribute_type) {
+            var held = lowering.new_register()
+            var offset = lowering.layout.offset_of(attribute)
+            var loaded = LowIntermediaryRepresentation.Instructions.Load(held, object, offset, 'bits_64')
+            lowering.emit(loaded)
+            var key = settled_function(attribute.attribute_type)
+            var passed = List<Integer>()
+            passed.append(held)
+            var settled = lowering.new_register()
+            var asked = LowIntermediaryRepresentation.Instructions.Call(settled, key, passed)
+            lowering.emit(asked)
+            answer_no_unless(settled, zero)
+        }
+        index = index + 1
+    }
+}
+
+func check_the_items(object: Integer, model: Model.ClassModel, element: Model.Type, zero: Integer, one: Integer) {
+    var buffer_attribute = model.attribute_named("_buffer")
+    var length_attribute = model.attribute_named("_length")
+    crash buffer_attribute
+    crash length_attribute
+    var buffer = lowering.new_register()
+    var buffer_offset = lowering.layout.offset_of(buffer_attribute)
+    var loaded_buffer = LowIntermediaryRepresentation.Instructions.Load(buffer, object, buffer_offset, 'bits_64')
+    lowering.emit(loaded_buffer)
+    var storage = lowering.storage_of(buffer)
+    var length = lowering.new_register()
+    var length_offset = lowering.layout.offset_of(length_attribute)
+    var loaded_length = LowIntermediaryRepresentation.Instructions.Load(length, object, length_offset, 'bits_32')
+    loaded_length.is_signed = true
+    lowering.emit(loaded_length)
+    var index = lowering.new_register()
+    var started = LowIntermediaryRepresentation.Instructions.Copy(index, zero)
+    lowering.emit(started)
+    var testing = lowering.new_block()
+    var looking = lowering.new_block()
+    var done = lowering.new_block()
+    lowering.jump_to(testing)
+    lowering.switch_to(testing)
+    var going_on = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(going_on, 'less', index, length)
+    compared.is_signed = true
+    lowering.emit(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(going_on, looking, done)
+    lowering.emit(test)
+    lowering.switch_to(looking)
+    var eight = lowering.constant(8)
+    var scaled = lowering.new_register()
+    var multiplied = LowIntermediaryRepresentation.Instructions.Arithmetic(scaled, 'multiply', index, eight)
+    multiplied.is_checked = false
+    lowering.emit(multiplied)
+    var address = lowering.address_plus(storage, scaled)
+    var item = lowering.new_register()
+    var loaded_item = LowIntermediaryRepresentation.Instructions.Load(item, address, 0, 'bits_64')
+    lowering.emit(loaded_item)
+    var key = settled_function(element)
+    var passed = List<Integer>()
+    passed.append(item)
+    var settled = lowering.new_register()
+    var asked = LowIntermediaryRepresentation.Instructions.Call(settled, key, passed)
+    lowering.emit(asked)
+    answer_no_unless(settled, zero)
+    var stepped = LowIntermediaryRepresentation.Instructions.Arithmetic(index, 'add', index, one)
+    stepped.is_checked = false
+    lowering.emit(stepped)
+    lowering.jump_to(testing)
+    lowering.switch_to(done)
+}
