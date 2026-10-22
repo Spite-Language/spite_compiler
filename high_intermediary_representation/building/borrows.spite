@@ -1,0 +1,2244 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var refusals = Validators.HighIntermediaryRepresentation.Borrows.Validator()
+var library = Validators.LibraryFile()
+var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var blocks = List<BorrowBlock>()
+var held = List<BorrowedItem>()
+var next_is_a_loop = false
+var known_effects = Dictionary<String, List<String>>()
+var following = List<String>()
+var known_lends = Dictionary<String, BorrowSource>()
+var lending_checked = List<String>()
+var block_ended = false
+var typing_depth = 0
+var resizing_names = [
+    "append"
+    "prepend"
+    "insert"
+    "reserve"
+    "remove_at"
+    "remove_first"
+    "remove_last"
+    "remove_swapping"
+    "truncate"
+    "swap"
+    "clear"
+    "make_room"
+    "_make_room"
+    "_reserve_exactly"
+]
+var listing_names = ["append", "prepend", "insert", "set_at"]
+
+func Borrows(starting_context: Context) {
+    context = starting_context
+}
+
+func enter(written: List<AbstractSyntaxTree.Shapes.Statements.Statement>) {
+    if blocks.is_empty() {
+        held = List<BorrowedItem>()
+    }
+    var block = BorrowBlock(written, next_is_a_loop)
+    next_is_a_loop = false
+    blocks.append(block)
+}
+
+func leave() {
+    var depth = blocks.count() - 1
+    var kept = List<BorrowedItem>()
+    var index = 0
+    while index < held.count() {
+        var item = held[index]
+        if item.depth < depth {
+            kept.append(item)
+        }
+        index = index + 1
+    }
+    held = kept
+    blocks.remove_last()
+}
+
+func function_key(): String {
+    return "{context.current_class.key}.{context.current_function.name}"
+}
+
+func is_checked(): Boolean {
+    var function = context.current_function
+    if not function.declaration {
+        return false
+    }
+    if function.is_synthetic or function.is_a_walk_copy {
+        return false
+    }
+    var path = context.path()
+    return not library.holds(path)
+}
+
+func check(index: Integer) {
+    var top = blocks.last()
+    crash top
+    top.index = index
+    assert is_checked()
+    var statement = top.statements[index]
+    crash statement
+    var frame = BorrowFrame(context.current_class, context.current_function)
+    frame.is_the_built_function = true
+    frame.line = statement.line
+    check_the_resizes(frame, statement)
+    check_the_lends(frame, statement)
+    check_the_keeping(frame, statement)
+    if statement == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        note_a_declaration(frame, statement, index)
+    }
+}
+
+func live_items(): List<BorrowedItem> {
+    var key = function_key()
+    var live = List<BorrowedItem>()
+    var index = 0
+    while index < held.count() {
+        var item = held[index]
+        if item.function_key == key {
+            live.append(item)
+        }
+        index = index + 1
+    }
+    return live
+}
+
+func held_named(name: String): BorrowedItem? {
+    var live = live_items()
+    var index = live.count() - 1
+    while index >= 0 {
+        var item = live[index]
+        crash item
+        if item.name == name {
+            return item
+        }
+        index = index - 1
+    }
+    return null
+}
+
+func held_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): BorrowedItem? {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return held_named(expression.name)
+    }
+    return null
+}
+
+func first_source(item: BorrowedItem): BorrowSource {
+    var source = item.sources[0]
+    crash source
+    return source
+}
+
+func sources_text(item: BorrowedItem): String {
+    var written = List<String>()
+    var index = 0
+    while index < item.sources.count() {
+        var source = item.sources[index]
+        var quoted = "'{source.written}'"
+        if not written.contains(quoted) {
+            written.append(quoted)
+        }
+        index = index + 1
+    }
+    var count = written.count()
+    if count == 1 {
+        var only = written[0]
+        crash only
+        return only
+    }
+    var last = written[count - 1]
+    crash last
+    var others = List<String>()
+    var index = 0
+    while index < count - 1 {
+        var other = written[index]
+        crash other
+        others.append(other)
+        index = index + 1
+    }
+    var joined = others.join(", ")
+    return "{joined} and {last}"
+}
+
+func printed(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if not expression {
+        return ""
+    }
+    var printer = Printers.Spite.ExpressionPrinter(expression)
+    return printer.text()
+}
+
+func own_parts_of(statement: AbstractSyntaxTree.Shapes.Statements.Statement): AbstractSyntaxTree.Walk.Walk {
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.line = statement.line
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: walk.read_expression(statement.condition)
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: walk.read_expression(statement.condition)
+        AbstractSyntaxTree.Shapes.Statements.SwitchStatement: walk.read_expression(statement.value)
+        AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: walk.read_statement(statement)
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: walk.read_statement(statement)
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: walk.read_statement(statement)
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: walk.read_statement(statement)
+        AbstractSyntaxTree.Shapes.Statements.AssertStatement: walk.read_statement(statement)
+        AbstractSyntaxTree.Shapes.Statements.CrashStatement: walk.read_statement(statement)
+        _: return walk
+    }
+    return walk
+}
+
+func check_the_resizes(frame: BorrowFrame, statement: AbstractSyntaxTree.Shapes.Statements.Statement) {
+    var live = live_items()
+    assert not live.is_empty()
+    var walk = own_parts_of(statement)
+    var index = 0
+    while index < live.count() {
+        var item = live[index]
+        check_an_item_past(frame, statement, walk, item)
+        index = index + 1
+    }
+}
+
+func check_an_item_past(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.Statement,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    item: BorrowedItem,
+) {
+    var index = 0
+    while index < item.sources.count() {
+        var source = item.sources[index]
+        var resizer = resizer_of(frame, statement, walk, source)
+        if not resizer.is_empty() and is_read_after(item.name, item.depth) {
+            context.line = statement.line
+            refuse_a_read_past(item, source, resizer)
+        }
+        index = index + 1
+    }
+}
+
+func refuse_a_read_past(item: BorrowedItem, source: BorrowSource, resizer: String) {
+    if item.is_row {
+        refusals.refuse_a_row_read_past_a_resize(context, item.name, source, resizer)
+    }
+    refusals.refuse_a_read_past_a_resize(context, item.name, source, resizer)
+}
+
+func resizer_of(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.Statement,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    source: BorrowSource,
+): String {
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var effects = effects_of_expression(frame, found.expression)
+        if reaches(effects, source) {
+            return resizer_text(found.expression)
+        }
+        index = index + 1
+    }
+    if statement == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        var assigned = assignment_effects(frame, statement)
+        if reaches(assigned, source) {
+            return printed(statement.target)
+        }
+    }
+    return ""
+}
+
+func resizer_text(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        var callee = printed(expression.callee)
+        return "{callee}()"
+    }
+    return printed(expression)
+}
+
+func is_read_after(name: String, depth: Integer): Boolean {
+    var level = blocks.count() - 1
+    while level >= depth and level >= 0 {
+        var block = blocks[level]
+        crash block
+        var count = block.statements.count()
+        if level > depth and block.is_a_loop {
+            if names_in(block.statements, 0, count, name) {
+                return true
+            }
+        }
+        if names_in(block.statements, block.index + 1, count, name) {
+            return true
+        }
+        level = level - 1
+    }
+    return false
+}
+
+func names_in(
+    statements: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    from: Integer,
+    to: Integer,
+    name: String,
+): Boolean {
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    var index = from
+    while index < to {
+        var statement = statements[index]
+        crash statement
+        walk.read_statement(statement)
+        index = index + 1
+    }
+    var found_index = 0
+    while found_index < walk.expressions.count() {
+        var found = walk.expressions[found_index]
+        if is_the_name(found.expression, name) {
+            return true
+        }
+        found_index = found_index + 1
+    }
+    return false
+}
+
+func is_the_name(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, name: String): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return expression.name == name
+    }
+    return false
+}
+
+func reaches(effects: List<String>, source: BorrowSource): Boolean {
+    var index = 0
+    while index < effects.count() {
+        var effect = effects[index]
+        if matches(effect, source) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func matches(effect: String, source: BorrowSource): Boolean {
+    if effect == "anything" {
+        return true
+    }
+    var key = key_part(effect)
+    var collection = collection_part(effect)
+    if key == source.key {
+        return true
+    }
+    var is_by_class = key == "anything" or key.starts_with("element:")
+    var is_a_named_vector = source.key.starts_with("local:") or source.key.starts_with("param:")
+    if is_a_named_vector and not key.starts_with("local:") {
+        is_by_class = true
+    }
+    return is_by_class and not collection.is_empty() and collection == source.collection
+}
+
+func key_part(effect: String): String {
+    var at = effect.index_of("|")
+    if at < 0 {
+        return effect
+    }
+    return effect.slice(0, at)
+}
+
+func collection_part(effect: String): String {
+    var at = effect.index_of("|")
+    if at < 0 {
+        return ""
+    }
+    var length = effect.length()
+    return effect.slice(at + 1, length)
+}
+
+func add_effects(found: List<String>, more: List<String>) {
+    var index = 0
+    while index < more.count() {
+        var effect = more[index]
+        if not found.contains(effect) {
+            found.append(effect)
+        }
+        index = index + 1
+    }
+}
+
+func anything(): List<String> {
+    var found = List<String>()
+    found.append("anything")
+    return found
+}
+
+func effects_of_expression(
+    frame: BorrowFrame,
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): List<String> {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return effects_of_call(frame, expression)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        return effects_of_holes(frame, expression)
+    }
+    return List<String>()
+}
+
+func effects_of_holes(frame: BorrowFrame, text: AbstractSyntaxTree.Shapes.Expressions.TextLiteral): List<String> {
+    var found = List<String>()
+    var index = 0
+    while index < text.pieces.count() {
+        var piece = text.pieces[index]
+        if piece.hole {
+            var shown = effects_of_a_member_on(frame, piece.hole, "to_string")
+            add_effects(found, shown)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func effects_of_a_member_on(
+    frame: BorrowFrame,
+    value: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    name: String,
+): List<String> {
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    var value_type = type_of(frame, value)
+    if not value_type {
+        return effects_of_every(frame, name, no_arguments)
+    }
+    var present = value_type.present()
+    if present.kind == 'shape' or present.kind == 'union' {
+        return effects_of_every(frame, name, no_arguments)
+    }
+    var model = program_class_of(present)
+    assert model
+    var function = model.function_named(name)
+    assert function
+    return effects_through(frame, model, function, no_arguments)
+}
+
+func program_class_of(of_type: Model.Type): Model.ClassModel? {
+    assert of_type.kind == 'object'
+    var model = context.program.class_named(of_type.name)
+    assert model
+    assert not library.holds(model.file.path)
+    return model
+}
+
+func class_of_type(of_type: Model.Type): Model.ClassModel? {
+    assert of_type.kind == 'object'
+    return context.program.class_named(of_type.name)
+}
+
+func effects_of_call(frame: BorrowFrame, call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): List<String> {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return effects_of_a_named_call(frame, call, callee)
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return effects_of_a_member_call(frame, call, callee)
+    }
+    return List<String>()
+}
+
+func effects_of_a_named_call(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): List<String> {
+    if callee.is_a_class_name {
+        return effects_of_a_construction(frame, call)
+    }
+    var named_type = type_of_a_name(frame, callee.name)
+    if named_type {
+        if named_type.kind == 'function' {
+            return anything()
+        }
+    }
+    var function = frame.model.function_named(callee.name)
+    if function {
+        return effects_through(frame, frame.model, function, call.arguments)
+    }
+    return List<String>()
+}
+
+func effects_of_a_construction(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): List<String> {
+    var made = constructed_type(frame, call)
+    assert made
+    var model = program_class_of(made)
+    assert model
+    var index = 0
+    while index < model.declared_functions.count() {
+        var function = model.declared_functions[index]
+        if function.is_constructor {
+            return effects_through(frame, model, function, call.arguments)
+        }
+        index = index + 1
+    }
+    return List<String>()
+}
+
+func effects_of_a_member_call(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): List<String> {
+    if callee.is_a_class_name {
+        return effects_of_a_construction(frame, call)
+    }
+    var receiver = type_of(frame, callee.target)
+    if not receiver {
+        return effects_of_every(frame, callee.name, call.arguments)
+    }
+    var present = receiver.present()
+    if present.kind == 'function' {
+        return anything()
+    }
+    if present.kind == 'shape' or present.kind == 'union' {
+        return effects_of_every(frame, callee.name, call.arguments)
+    }
+    var model = class_of_type(present)
+    assert model
+    var function = model.function_named(callee.name)
+    if function {
+        if is_a_program_function(model, function) {
+            return effects_through(frame, model, function, call.arguments)
+        }
+    }
+    if library.holds(model.file.path) {
+        return effects_of_a_library_call(frame, call, callee, model)
+    }
+    var attribute = model.attribute_named(callee.name)
+    if attribute {
+        if attribute.attribute_type.kind == 'function' {
+            return anything()
+        }
+    }
+    return List<String>()
+}
+
+func is_a_program_function(model: Model.ClassModel, function: Model.FunctionModel): Boolean {
+    if not function.declaration {
+        return false
+    }
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    var path = declaration.path
+    if path.is_empty() {
+        path = model.file.path
+    }
+    return not library.holds(path)
+}
+
+func is_resizing(name: String): Boolean {
+    return resizing_names.contains(name) or name.starts_with("remove_where")
+}
+
+func is_a_borrowing_collection(model: Model.ClassModel): Boolean {
+    var namespace = model.file.namespace
+    return namespace == "Vector" or namespace == "Items"
+}
+
+func effects_of_a_library_call(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    model: Model.ClassModel,
+): List<String> {
+    var found = List<String>()
+    if is_a_borrowing_collection(model) and is_resizing(callee.name) {
+        var key = key_of_collection(frame, callee.target)
+        found.append("{key}|{model.key}")
+    }
+    var function = model.function_named(callee.name)
+    if not function {
+        return found
+    }
+    if listing_names.contains(callee.name) {
+        return found
+    }
+    var handed = effects_of_the_handed_arguments(frame, call, function)
+    add_effects(found, handed)
+    return found
+}
+
+func effects_of_the_handed_arguments(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    function: Model.FunctionModel,
+): List<String> {
+    var found = List<String>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var parameter = parameter_at(function, index)
+        if parameter {
+            var handed = effects_of_a_handed_argument(frame, argument, parameter)
+            add_effects(found, handed)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func parameter_at(function: Model.FunctionModel, index: Integer): Model.ParameterModel? {
+    var count = function.parameters.count()
+    assert count != 0
+    if index < count {
+        return function.parameters[index]
+    }
+    var last = function.parameters[count - 1]
+    crash last
+    if last.is_variadic {
+        return last
+    }
+    return null
+}
+
+func effects_of_a_handed_argument(
+    frame: BorrowFrame,
+    argument: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    parameter: Model.ParameterModel,
+): List<String> {
+    var wanted = handed_type(parameter)
+    assert wanted
+    var present = wanted.present()
+    if present.kind == 'shape' {
+        return effects_of_a_shape_argument(frame, argument, present)
+    }
+    if present.kind == 'function' {
+        return effects_of_a_function_argument(frame, argument)
+    }
+    return List<String>()
+}
+
+func handed_type(parameter: Model.ParameterModel): Model.Type? {
+    if parameter.is_variadic {
+        return element_of(parameter.parameter_type)
+    }
+    return parameter.parameter_type
+}
+
+func element_of(collection: Model.Type): Model.Type? {
+    var model = class_of_type(collection)
+    assert model
+    return model.bound_types["$element_type"]
+}
+
+func effects_of_a_shape_argument(
+    frame: BorrowFrame,
+    argument: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    shape_type: Model.Type,
+): List<String> {
+    var found = List<String>()
+    var shape = context.program.shape_keyed(shape_type.name)
+    if not shape {
+        return found
+    }
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if not member.is_an_attribute {
+            var reached = effects_of_a_member_on(frame, argument, member.name)
+            add_effects(found, reached)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func effects_of_a_function_argument(
+    frame: BorrowFrame,
+    argument: AbstractSyntaxTree.Shapes.Expressions.Expression,
+): List<String> {
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    if argument == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var function = frame.model.function_named(argument.name)
+        if function {
+            return effects_through(frame, frame.model, function, no_arguments)
+        }
+        return anything()
+    }
+    if argument == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return effects_of_a_member_on(frame, argument.target, argument.name)
+    }
+    return anything()
+}
+
+func effects_of_every(
+    frame: BorrowFrame,
+    name: String,
+    arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): List<String> {
+    var found = List<String>()
+    var index = 0
+    while index < context.program.order.count() {
+        var model = context.program.order[index]
+        var function = model.function_named(name)
+        if function {
+            add_the_program_effects(found, frame, model, function, arguments)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func add_the_program_effects(
+    found: List<String>,
+    frame: BorrowFrame,
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+) {
+    assert is_a_program_function(model, function)
+    var reached = effects_through(frame, model, function, arguments)
+    add_effects(found, reached)
+}
+
+func effects_through(
+    frame: BorrowFrame,
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): List<String> {
+    var own = effects_of_function(model, function)
+    var mapped = List<String>()
+    var index = 0
+    while index < own.count() {
+        var effect = own[index]
+        var placed = placed_effect(frame, effect, arguments)
+        if not mapped.contains(placed) {
+            mapped.append(placed)
+        }
+        index = index + 1
+    }
+    return mapped
+}
+
+func placed_effect(
+    frame: BorrowFrame,
+    effect: String,
+    arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): String {
+    if not effect.starts_with("param:") {
+        return effect
+    }
+    var key = key_part(effect)
+    var collection = collection_part(effect)
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        if key == "param:{index}" {
+            var placed = key_of_collection(frame, argument)
+            return "{placed}|{collection}"
+        }
+        index = index + 1
+    }
+    return "anything|{collection}"
+}
+
+func effects_of_function(model: Model.ClassModel, function: Model.FunctionModel): List<String> {
+    var key = "{model.key}.{function.name}"
+    var known = known_effects[key]
+    if known {
+        return known
+    }
+    var found = List<String>()
+    if following.contains(key) {
+        return found
+    }
+    if not function.declaration {
+        return found
+    }
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    if not declaration.body {
+        return found
+    }
+    following.append(key)
+    var frame = BorrowFrame(model, function)
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_block(declaration.body)
+    note_the_locals(frame, walk)
+    var index = 0
+    while index < walk.expressions.count() {
+        var expression = walk.expressions[index]
+        frame.line = expression.line
+        var reached = effects_of_expression(frame, expression.expression)
+        add_the_kept_effects(found, reached)
+        index = index + 1
+    }
+    var statement_index = 0
+    while statement_index < walk.statements.count() {
+        var statement = walk.statements[statement_index]
+        add_the_assigned_effects(found, frame, statement.statement)
+        statement_index = statement_index + 1
+    }
+    following.remove_last()
+    known_effects[key] = found
+    return found
+}
+
+func add_the_kept_effects(found: List<String>, reached: List<String>) {
+    var index = 0
+    while index < reached.count() {
+        var effect = reached[index]
+        if not effect.starts_with("local:") and not found.contains(effect) {
+            found.append(effect)
+        }
+        index = index + 1
+    }
+}
+
+func add_the_assigned_effects(
+    found: List<String>,
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.Statement?,
+) {
+    if statement == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        var assigned = assignment_effects(frame, statement)
+        add_the_kept_effects(found, assigned)
+    }
+}
+
+func note_the_locals(frame: BorrowFrame, walk: AbstractSyntaxTree.Walk.Walk) {
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        var statement = found.statement
+        if statement == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+            frame.locals[statement.name] = statement
+        }
+        index = index + 1
+    }
+}
+
+func assignment_effects(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+): List<String> {
+    var found = List<String>()
+    var target = statement.target
+    var assigned_type = type_of(frame, target)
+    if not assigned_type {
+        return found
+    }
+    var model = class_of_type(assigned_type)
+    if not model {
+        return found
+    }
+    if not is_a_borrowing_collection(model) {
+        return found
+    }
+    var is_a_path = target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        is_a_path = frame.model.attribute_named(target.name) and not is_a_local(frame, target.name)
+    }
+    if is_a_path {
+        var key = key_of_collection(frame, target)
+        found.append("{key}|{model.key}")
+    }
+    return found
+}
+
+func is_a_local(frame: BorrowFrame, name: String): Boolean {
+    if parameter_index(frame, name) >= 0 {
+        return true
+    }
+    if frame.is_the_built_function {
+        if context.scope.internal_name_of(name) {
+            return true
+        }
+    }
+    return frame.locals.has(name)
+}
+
+func parameter_index(frame: BorrowFrame, name: String): Integer {
+    var index = 0
+    while index < frame.function.parameters.count() {
+        var parameter = frame.function.parameters[index]
+        if parameter.name == name {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func key_of_collection(frame: BorrowFrame, expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return key_of_a_name(frame, expression.name)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return key_of_a_member(frame, expression)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        var element = type_of(frame, expression)
+        if element {
+            return "element:{element.name}"
+        }
+    }
+    return "anything"
+}
+
+func key_of_a_name(frame: BorrowFrame, name: String): String {
+    var at = parameter_index(frame, name)
+    if at >= 0 {
+        return "param:{at}"
+    }
+    if is_a_local(frame, name) {
+        return "local:{name}"
+    }
+    if frame.model.attribute_named(name) {
+        return "{frame.model.key}.{name}"
+    }
+    return "anything"
+}
+
+func key_of_a_member(frame: BorrowFrame, member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): String {
+    var owner = type_of(frame, member.target)
+    if not owner {
+        return "anything"
+    }
+    var present = owner.present()
+    if present.kind != 'object' {
+        return "anything"
+    }
+    return "{present.name}.{member.name}"
+}
+
+func type_of(frame: BorrowFrame, expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Model.Type? {
+    assert typing_depth < 24
+    typing_depth = typing_depth + 1
+    var found = type_of_a_value(frame, expression)
+    typing_depth = typing_depth - 1
+    return found
+}
+
+func type_of_a_value(frame: BorrowFrame, expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Model.Type? {
+    assert expression
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return type_of_an_identifier(frame, expression)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return type_of_a_member(frame, expression)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return type_of_an_index(frame, expression)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return type_of_a_call(frame, expression)
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: return context.text()
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return type_of_a_literal(expression)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return type_of(frame, expression.left)
+        _: return null
+    }
+    return null
+}
+
+func type_of_a_literal(literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression): Model.Type? {
+    assert literal.kind != 'keyword_null'
+    return context.scalar_type("Integer")
+}
+
+func type_of_an_identifier(
+    frame: BorrowFrame,
+    identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): Model.Type? {
+    assert not identifier.is_a_class_name
+    return type_of_a_name(frame, identifier.name)
+}
+
+func type_of_a_name(frame: BorrowFrame, name: String): Model.Type? {
+    if frame.is_the_built_function {
+        var internal_name = context.scope.internal_name_of(name)
+        if internal_name {
+            return context.scope.type_of(internal_name)
+        }
+    }
+    var at = parameter_index(frame, name)
+    if at >= 0 {
+        var parameter = frame.function.parameters[at]
+        crash parameter
+        return parameter.parameter_type
+    }
+    var local = frame.locals[name]
+    if local {
+        return type_of_a_local(frame, local)
+    }
+    var attribute = frame.model.attribute_named(name)
+    if attribute {
+        return attribute.attribute_type
+    }
+    return null
+}
+
+func type_of_a_local(frame: BorrowFrame, local: AbstractSyntaxTree.Shapes.Statements.VariableStatement): Model.Type? {
+    if local.declared_type {
+        return type_of_a_written(frame, local.declared_type, local.line)
+    }
+    return type_of(frame, local.value)
+}
+
+func type_of_a_written(frame: BorrowFrame, written: AbstractSyntaxTree.Shapes.Types.Type, line: Integer): Model.Type? {
+    var first = written.path[0]
+    crash first
+    var initial = first.slice(0, 1)
+    var is_plain = initial == "$" or initial != initial.lower_case()
+    assert is_plain and are_plain_arguments(written.arguments)
+    return context.resolver.type_in(written, frame.model, line)
+}
+
+func are_plain_arguments(arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>): Boolean {
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        if argument.text.contains("attribute.") or argument.text.contains("argument.") {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func type_of_a_member(frame: BorrowFrame, member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Model.Type? {
+    var owner = type_of(frame, member.target)
+    assert owner
+    var present = owner.present()
+    if present.kind == 'shape' {
+        return shape_member_type(present, member.name)
+    }
+    var model = class_of_type(present)
+    assert model
+    var attribute = model.attribute_named(member.name)
+    if attribute {
+        return attribute.attribute_type
+    }
+    return null
+}
+
+func shape_member_type(shape_type: Model.Type, name: String): Model.Type? {
+    var shape = context.program.shape_keyed(shape_type.name)
+    assert shape
+    var member = shape.member_named(name)
+    assert member
+    assert member.is_an_attribute
+    return member.answer
+}
+
+func type_of_an_index(frame: BorrowFrame, index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): Model.Type? {
+    var collection = type_of(frame, index.target)
+    assert collection
+    var present = collection.present()
+    return element_of(present)
+}
+
+func type_of_a_call(frame: BorrowFrame, call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Model.Type? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return type_of_a_named_call(frame, call, callee)
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return type_of_a_member_call(frame, call, callee)
+    }
+    return null
+}
+
+func type_of_a_named_call(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): Model.Type? {
+    if callee.is_a_class_name {
+        return constructed_type(frame, call)
+    }
+    var function = frame.model.function_named(callee.name)
+    if function {
+        return function.answer
+    }
+    return null
+}
+
+func type_of_a_member_call(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): Model.Type? {
+    if callee.is_a_class_name {
+        return constructed_type(frame, call)
+    }
+    var owner = type_of(frame, callee.target)
+    assert owner
+    var present = owner.present()
+    var model = class_of_type(present)
+    assert model
+    var function = model.function_named(callee.name)
+    if function {
+        return function.answer
+    }
+    return null
+}
+
+func constructed_type(frame: BorrowFrame, call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Model.Type? {
+    var inference = NameResolution.Inference()
+    var path = inference.class_path_of(call.callee)
+    assert not path.is_empty() and are_plain_arguments(call.generic_arguments)
+    var made = context.resolver.class_type_in(path, call.generic_arguments, frame.model, frame.line)
+    assert made.kind == 'object'
+    return made
+}
+
+func fits_a_vector(element: Model.Type): Boolean {
+    var is_an_object = element.kind == 'object' and not element.is_nullable and element.name != "String"
+    if not is_an_object or not context.has_a_class(element) {
+        return false
+    }
+    var model = context.class_of(element)
+    if model.function_named("drop") {
+        return false
+    }
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if not is_kept_inline(attribute.attribute_type) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_kept_inline(kept: Model.Type): Boolean {
+    if kept.kind == 'scalar' or kept.kind == 'enumeration' {
+        return true
+    }
+    if kept.kind != 'object' {
+        return false
+    }
+    if kept.name == "String" {
+        return true
+    }
+    if not context.has_a_class(kept) {
+        return false
+    }
+    var model = context.class_of(kept)
+    return model.is_singleton
+}
+
+func lends_its_items(collection: Model.ClassModel, element: Model.Type): Boolean {
+    if collection.file.namespace == "Items" {
+        return fits_a_vector(element)
+    }
+    var is_an_object = element.kind == 'object' and element.name != "String"
+    return is_an_object and context.has_a_class(element)
+}
+
+func source_of_collection(
+    frame: BorrowFrame,
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): BorrowSource? {
+    var collection_type = type_of(frame, target)
+    assert collection_type
+    var present = collection_type.present()
+    var model = class_of_type(present)
+    assert model
+    assert is_a_borrowing_collection(model) and library.holds(model.file.path)
+    var element = model.bound_types["$element_type"]
+    assert element
+    var element_present = element.present()
+    assert lends_its_items(model, element_present)
+    var written = printed(target)
+    var key = key_of_collection(frame, target)
+    var source = BorrowSource(written, key, model.key)
+    source.element = context.shown(element_present)
+    source.is_items = model.file.namespace == "Items"
+    return source
+}
+
+func borrowed_read(frame: BorrowFrame, expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): BorrowSource? {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return source_of_collection(frame, expression.target)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return borrowed_by_a_call(frame, expression)
+    }
+    return null
+}
+
+func borrowed_by_a_call(frame: BorrowFrame, call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): BorrowSource? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if callee.name == "get_at" or callee.name.starts_with("find_by_") {
+            return source_of_collection(frame, callee.target)
+        }
+    }
+    return lent_source(frame, call)
+}
+
+func collection_read_by(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return expression.target
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return collection_read_by_a_call(expression)
+    }
+    return null
+}
+
+func collection_read_by_a_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if callee.name == "get_at" or callee.name.starts_with("find_by_") {
+            return callee.target
+        }
+    }
+    return null
+}
+
+func called_function_of(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): Model.FunctionModel? {
+    var model = called_class_of(frame, call)
+    assert model
+    var callee = call.callee
+    var name = ""
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        name = callee.name
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        name = callee.name
+    }
+    var function = model.function_named(name)
+    assert function
+    assert is_a_program_function(model, function)
+    return function
+}
+
+func called_class_of(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): Model.ClassModel? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        assert not callee.is_a_class_name and not is_a_local(frame, callee.name)
+        return frame.model
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return called_member_class_of(frame, callee)
+    }
+    return null
+}
+
+func called_member_class_of(
+    frame: BorrowFrame,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): Model.ClassModel? {
+    assert not callee.is_a_class_name
+    var owner = type_of(frame, callee.target)
+    assert owner
+    var present = owner.present()
+    return class_of_type(present)
+}
+
+func lent_source(frame: BorrowFrame, call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): BorrowSource? {
+    var model = called_class_of(frame, call)
+    assert model
+    var function = called_function_of(frame, call)
+    assert function
+    return lends(model, function)
+}
+
+func lends(model: Model.ClassModel, function: Model.FunctionModel): BorrowSource? {
+    var key = "{model.key}.{function.name}"
+    if lending_checked.contains(key) {
+        return known_lends[key]
+    }
+    lending_checked.append(key)
+    assert function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    var returns = List<AbstractSyntaxTree.Shapes.Statements.ReturnStatement>()
+    collect_returns(model, declaration.body, returns)
+    var index = 0
+    while index < returns.count() {
+        var returned = returns[index]
+        var source = storage_read(model, returned.value)
+        if source {
+            known_lends[key] = source
+            return source
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func collect_returns(
+    model: Model.ClassModel,
+    block: AbstractSyntaxTree.Shapes.Statements.Block?,
+    returns: List<AbstractSyntaxTree.Shapes.Statements.ReturnStatement>,
+) {
+    block_ended = false
+    assert block
+    var index = 0
+    while index < block.statements.count() and not block_ended {
+        var statement = block.statements[index]
+        collect_from_a_statement(model, statement, returns)
+        index = index + 1
+    }
+}
+
+func collect_from_a_statement(
+    model: Model.ClassModel,
+    statement: AbstractSyntaxTree.Shapes.Statements.Statement,
+    returns: List<AbstractSyntaxTree.Shapes.Statements.ReturnStatement>,
+) {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: collect_a_return(statement, returns)
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: collect_from_an_if(model, statement, returns)
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: collect_from_a_loop(model, statement.body, returns)
+        AbstractSyntaxTree.Shapes.Statements.Block: collect_from_a_loop(model, statement, returns)
+        _: return
+    }
+}
+
+func collect_a_return(
+    statement: AbstractSyntaxTree.Shapes.Statements.ReturnStatement,
+    returns: List<AbstractSyntaxTree.Shapes.Statements.ReturnStatement>,
+) {
+    returns.append(statement)
+    block_ended = true
+}
+
+func collect_from_a_loop(
+    model: Model.ClassModel,
+    block: AbstractSyntaxTree.Shapes.Statements.Block?,
+    returns: List<AbstractSyntaxTree.Shapes.Statements.ReturnStatement>,
+) {
+    collect_returns(model, block, returns)
+    block_ended = false
+}
+
+func collect_from_an_if(
+    model: Model.ClassModel,
+    statement: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+    returns: List<AbstractSyntaxTree.Shapes.Statements.ReturnStatement>,
+) {
+    var decided = folded(model, statement.condition)
+    if decided == 1 {
+        collect_returns(model, statement.then_branch, returns)
+        return
+    }
+    if decided == 0 {
+        collect_returns(model, statement.else_branch, returns)
+        return
+    }
+    collect_returns(model, statement.then_branch, returns)
+    var then_ended = block_ended
+    collect_returns(model, statement.else_branch, returns)
+    block_ended = then_ended and block_ended
+}
+
+func folded(model: Model.ClassModel, condition: AbstractSyntaxTree.Shapes.Expressions.Expression?): Integer {
+    if not condition {
+        return -1
+    }
+    switch condition {
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return folded_negation(model, condition)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return folded_binary(model, condition)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return folded_question(model, condition)
+        _: return -1
+    }
+    return -1
+}
+
+func folded_negation(
+    model: Model.ClassModel,
+    negation: AbstractSyntaxTree.Shapes.Expressions.UnaryExpression,
+): Integer {
+    if negation.operator != 'not' {
+        return -1
+    }
+    var inner = folded(model, negation.operand)
+    if inner < 0 {
+        return -1
+    }
+    return 1 - inner
+}
+
+func folded_binary(model: Model.ClassModel, binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Integer {
+    if binary.operator == 'and' or binary.operator == 'or' {
+        return folded_logic(model, binary)
+    }
+    if binary.operator == 'equal_equal' {
+        return folded_comparison(model, binary.left, binary.right)
+    }
+    if binary.operator == 'not_equal' {
+        var compared = folded_comparison(model, binary.left, binary.right)
+        if compared < 0 {
+            return -1
+        }
+        return 1 - compared
+    }
+    return -1
+}
+
+func folded_logic(model: Model.ClassModel, binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Integer {
+    var left = folded(model, binary.left)
+    var right = folded(model, binary.right)
+    if binary.operator == 'and' {
+        if left == 0 or right == 0 {
+            return 0
+        }
+        if left == 1 and right == 1 {
+            return 1
+        }
+        return -1
+    }
+    if left == 1 or right == 1 {
+        return 1
+    }
+    if left == 0 and right == 0 {
+        return 0
+    }
+    return -1
+}
+
+func folded_comparison(
+    model: Model.ClassModel,
+    left: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    right: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): Integer {
+    var bound = bound_class_of(model, left)
+    if not bound {
+        return -1
+    }
+    if right == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        if right.is_a_class_name {
+            return same_class(bound, right.name)
+        }
+    }
+    return -1
+}
+
+func same_class(bound: Model.Type, name: String): Integer {
+    if bound.name == name or bound.name.ends_with(".{name}") {
+        return 1
+    }
+    return 0
+}
+
+func bound_class_of(
+    model: Model.ClassModel,
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): Model.Type? {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        if expression.name.starts_with("$") {
+            return model.bound_types[expression.name]
+        }
+    }
+    return null
+}
+
+func folded_question(model: Model.ClassModel, call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Integer {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if callee.name == "fits_vector" {
+            return folded_fit(model, callee.target)
+        }
+    }
+    return -1
+}
+
+func folded_fit(model: Model.ClassModel, asked: AbstractSyntaxTree.Shapes.Expressions.Expression?): Integer {
+    var bound = bound_class_of(model, asked)
+    if not bound {
+        return -1
+    }
+    var is_plain = bound.kind == 'scalar' or bound.kind == 'enumeration'
+    if is_plain or fits_a_vector(bound) {
+        return 1
+    }
+    return 0
+}
+
+func storage_read(model: Model.ClassModel, value: AbstractSyntaxTree.Shapes.Expressions.Expression?): BorrowSource? {
+    var collection: AbstractSyntaxTree.Shapes.Expressions.Expression? = null
+    if value == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        collection = value.target
+    }
+    if value == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        collection = collection_read_by_a_call(value)
+    }
+    if collection == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return storage_of(model, collection.name)
+    }
+    if collection == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return storage_through(model, collection)
+    }
+    return null
+}
+
+func storage_through(
+    model: Model.ClassModel,
+    collection: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): BorrowSource? {
+    var holder = collection.target
+    if holder == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var attribute = model.attribute_named(holder.name)
+        if attribute {
+            var holding = attribute.attribute_type
+            var held_model = class_of_type(holding)
+            if held_model {
+                return storage_of(held_model, collection.name)
+            }
+        }
+    }
+    return null
+}
+
+func storage_of(holder: Model.ClassModel, name: String): BorrowSource? {
+    assert holder.is_singleton
+    var attribute = holder.attribute_named(name)
+    assert attribute
+    var model = class_of_type(attribute.attribute_type)
+    assert model
+    assert is_a_borrowing_collection(model)
+    var element = model.bound_types["$element_type"]
+    assert element
+    var element_present = element.present()
+    assert lends_its_items(model, element_present)
+    var source = BorrowSource("{holder.shown}().{name}", "{holder.key}.{name}", model.key)
+    source.element = context.shown(element_present)
+    source.is_items = model.file.namespace == "Items"
+    source.is_lent = true
+    return source
+}
+
+func check_the_lends(frame: BorrowFrame, statement: AbstractSyntaxTree.Shapes.Statements.Statement) {
+    var walk = own_parts_of(statement)
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var expression = found.expression
+        if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            check_a_lending_call(frame, statement, expression)
+        }
+        index = index + 1
+    }
+}
+
+func check_a_lending_call(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.Statement,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        check_a_lent_argument(frame, statement, call, argument)
+        index = index + 1
+    }
+}
+
+func check_a_lent_argument(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.Statement,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    argument: AbstractSyntaxTree.Shapes.Expressions.Expression,
+) {
+    var sources = List<BorrowSource>()
+    var item = held_of(argument)
+    if item {
+        assert not item.is_row
+        sources = item.sources
+    } else {
+        var read = borrowed_read(frame, argument)
+        if read {
+            sources.append(read)
+        }
+    }
+    assert not sources.is_empty()
+    var function = called_function_of(frame, call)
+    assert function
+    var effects = effects_of_call(frame, call)
+    var callee = printed(call.callee)
+    var name = printed(argument)
+    var index = 0
+    while index < sources.count() {
+        var source = sources[index]
+        if reaches(effects, source) {
+            context.line = statement.line
+            refusals.refuse_a_resizing_lend(context, name, source, function.name, "{callee}()")
+        }
+        index = index + 1
+    }
+}
+
+func check_the_keeping(frame: BorrowFrame, statement: AbstractSyntaxTree.Shapes.Statements.Statement) {
+    context.line = statement.line
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: check_an_assignment(frame, statement)
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: check_a_named_value(statement)
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: check_a_return(frame, statement)
+        _: context.line = statement.line
+    }
+    check_the_listing(frame, statement)
+}
+
+func check_an_assignment(frame: BorrowFrame, statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    var target = statement.target
+    var assigned = held_of(target)
+    if assigned {
+        refuse_an_assigned(assigned)
+    }
+    check_a_function_value(statement.value)
+    var item = held_of(statement.value)
+    if item {
+        check_a_kept_item(frame, target, item)
+        return
+    }
+    assert not is_a_local_target(frame, target)
+    var read = borrowed_read(frame, statement.value)
+    assert read
+    var name = printed(statement.value)
+    check_a_kept_read(frame, target, name, read)
+}
+
+func refuse_an_assigned(item: BorrowedItem) {
+    var sources = sources_text(item)
+    if item.is_row {
+        refusals.refuse_an_assigned_row(context, item.name, sources)
+    }
+    var source = first_source(item)
+    refusals.refuse_an_assigned_item(context, item.name, source)
+}
+
+func is_a_local_target(frame: BorrowFrame, target: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return is_a_local(frame, target.name)
+    }
+    return false
+}
+
+func check_a_kept_item(
+    frame: BorrowFrame,
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    item: BorrowedItem,
+) {
+    var sources = sources_text(item)
+    var source = first_source(item)
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        if is_a_local(frame, target.name) {
+            refuse_a_second_name(item, target.name)
+        }
+        assert frame.model.attribute_named(target.name)
+        refuse_a_kept(item, sources, source, target.name)
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        refuse_a_kept(item, sources, source, target.name)
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        assert is_a_list(frame, target.target)
+        refuse_a_listed(item)
+    }
+}
+
+func refuse_a_kept(item: BorrowedItem, sources: String, source: BorrowSource, attribute: String) {
+    if item.is_row {
+        refusals.refuse_a_kept_row(context, item.name, sources, attribute)
+    }
+    refusals.refuse_a_kept_item(context, item.name, source, attribute)
+}
+
+func refuse_a_listed(item: BorrowedItem) {
+    if item.is_row {
+        var sources = sources_text(item)
+        refusals.refuse_a_listed_row(context, item.name, sources)
+    }
+    var source = first_source(item)
+    refusals.refuse_a_listed_item(context, item.name, source)
+}
+
+func refuse_a_second_name(item: BorrowedItem, alias: String) {
+    if item.is_row {
+        var sources = sources_text(item)
+        refusals.refuse_a_second_row_name(context, item.name, sources, alias)
+    }
+    var source = first_source(item)
+    refusals.refuse_a_second_name(context, item.name, source, alias)
+}
+
+func check_a_kept_read(
+    frame: BorrowFrame,
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    name: String,
+    read: BorrowSource,
+) {
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        assert frame.model.attribute_named(target.name)
+        refusals.refuse_a_kept_item(context, name, read, target.name)
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        refusals.refuse_a_kept_item(context, name, read, target.name)
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        assert is_a_list(frame, target.target)
+        refusals.refuse_a_listed_item(context, name, read)
+    }
+}
+
+func is_a_list(frame: BorrowFrame, listed: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    var listed_type = type_of(frame, listed)
+    if not listed_type {
+        return false
+    }
+    var present = listed_type.present()
+    var model = class_of_type(present)
+    if not model {
+        return false
+    }
+    return model.file.namespace == "List" and library.holds(model.file.path)
+}
+
+func check_a_named_value(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    check_a_function_value(statement.value)
+    var item = held_of(statement.value)
+    assert item
+    refuse_a_second_name(item, statement.name)
+}
+
+func check_a_function_value(value: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    if value == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        check_a_bound_member(value)
+    }
+}
+
+func check_a_bound_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var item = held_of(member.target)
+    assert item
+    assert not item.is_row
+    var source = first_source(item)
+    var internal_name = context.scope.internal_name_of(item.name)
+    assert internal_name
+    var local_type = context.scope.type_of(internal_name)
+    assert local_type
+    var present = local_type.present()
+    var model = class_of_type(present)
+    assert model
+    assert model.function_named(member.name)
+    refusals.refuse_a_function_value(context, item.name, member.name, source)
+}
+
+func check_a_return(frame: BorrowFrame, statement: AbstractSyntaxTree.Shapes.Statements.ReturnStatement) {
+    var item = held_of(statement.value)
+    if item {
+        refuse_a_returned(item)
+    }
+    var read = borrowed_read(frame, statement.value)
+    assert read
+    assert not storage_read(frame.model, statement.value)
+    var name = printed(statement.value)
+    refusals.refuse_a_returned_item(context, name, read)
+}
+
+func refuse_a_returned(item: BorrowedItem) {
+    if item.is_row {
+        var sources = sources_text(item)
+        refusals.refuse_a_returned_row(context, item.name, sources)
+    }
+    var source = first_source(item)
+    refusals.refuse_a_returned_item(context, item.name, source)
+}
+
+func check_the_listing(frame: BorrowFrame, statement: AbstractSyntaxTree.Shapes.Statements.Statement) {
+    var walk = own_parts_of(statement)
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var expression = found.expression
+        if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            check_a_listing_call(frame, expression)
+        }
+        index = index + 1
+    }
+}
+
+func check_a_listing_call(frame: BorrowFrame, call: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        check_a_listing_member(frame, call, callee)
+    }
+}
+
+func check_a_listing_member(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+) {
+    assert listing_names.contains(callee.name) and is_a_list(frame, callee.target)
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        check_a_listed_argument(frame, argument)
+        index = index + 1
+    }
+}
+
+func check_a_listed_argument(frame: BorrowFrame, argument: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    var item = held_of(argument)
+    if item {
+        refuse_a_listed(item)
+    }
+    var read = borrowed_read(frame, argument)
+    assert read
+    var name = printed(argument)
+    refusals.refuse_a_listed_item(context, name, read)
+}
+
+func note_a_declaration(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    index: Integer,
+) {
+    forget_the_name(statement.name)
+    assert statement.value
+    var source = borrowed_read(frame, statement.value)
+    if source {
+        check_an_unkept_collection(statement)
+        var item = made_item(statement.name)
+        item.sources.append(source)
+        held.append(item)
+        return
+    }
+    note_a_row(frame, statement, statement.value, index)
+}
+
+func note_a_row(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    value: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    index: Integer,
+) {
+    if value == AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral {
+        note_a_row_literal(frame, statement, value, index)
+        return
+    }
+    if value == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        if value.kind == 'keyword_null' and statement.declared_type {
+            note_a_walked_row(frame, statement, index)
+        }
+    }
+}
+
+func forget_the_name(name: String) {
+    var key = function_key()
+    var kept = List<BorrowedItem>()
+    var index = 0
+    while index < held.count() {
+        var item = held[index]
+        if item.name != name or item.function_key != key {
+            kept.append(item)
+        }
+        index = index + 1
+    }
+    held = kept
+}
+
+func made_item(name: String): BorrowedItem {
+    var depth = blocks.count() - 1
+    var key = function_key()
+    return BorrowedItem(name, depth, key)
+}
+
+func check_an_unkept_collection(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    var collection = collection_read_by(statement.value)
+    if collection == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        var written = printed(collection)
+        refusals.refuse_an_unkept_collection(context, statement.name, written)
+    }
+}
+
+func note_a_row_literal(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    literal: AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral,
+    index: Integer,
+) {
+    var row = made_item(statement.name)
+    row.is_row = true
+    var pair_index = 0
+    while pair_index < literal.pairs.count() {
+        var pair = literal.pairs[pair_index]
+        if pair == AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
+            add_a_row_source(frame, row, pair.value)
+        }
+        pair_index = pair_index + 1
+    }
+    assert not row.sources.is_empty()
+    held.append(row)
+    check_the_row_calls(frame, row, index + 1)
+}
+
+func add_a_row_source(frame: BorrowFrame, row: BorrowedItem, value: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    var item = held_of(value)
+    if item {
+        add_the_sources(row, item.sources)
+        return
+    }
+    var read = borrowed_read(frame, value)
+    assert read
+    row.sources.append(read)
+}
+
+func add_the_sources(row: BorrowedItem, sources: List<BorrowSource>) {
+    var index = 0
+    while index < sources.count() {
+        var source = sources[index]
+        row.sources.append(source)
+        index = index + 1
+    }
+}
+
+func check_the_row_calls(frame: BorrowFrame, row: BorrowedItem, from: Integer) {
+    var top = blocks.last()
+    crash top
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    var index = from
+    while index < top.statements.count() {
+        var statement = top.statements[index]
+        walk.read_statement(statement)
+        index = index + 1
+    }
+    note_the_locals(frame, walk)
+    var found_index = 0
+    while found_index < walk.expressions.count() {
+        var found = walk.expressions[found_index]
+        var expression = found.expression
+        if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            frame.line = found.line
+            check_a_row_call(frame, row, expression, found.line)
+        }
+        found_index = found_index + 1
+    }
+}
+
+func check_a_row_call(
+    frame: BorrowFrame,
+    row: BorrowedItem,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    line: Integer,
+) {
+    assert passes_the_row(call, row.name)
+    var effects = effects_of_call(frame, call)
+    var callee = printed(call.callee)
+    var index = 0
+    while index < row.sources.count() {
+        var source = row.sources[index]
+        if reaches(effects, source) {
+            context.line = line
+            refusals.refuse_a_resizing_row_call(context, row.name, source, "{callee}()")
+        }
+        index = index + 1
+    }
+}
+
+func passes_the_row(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, name: String): Boolean {
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if is_the_name(argument, name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func note_a_walked_row(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    index: Integer,
+) {
+    var top = blocks.last()
+    crash top
+    assert index + 1 < top.statements.count()
+    var next = top.statements[index + 1]
+    if next == AbstractSyntaxTree.Shapes.Statements.ExpressionStatement {
+        var walk_call = next.value
+        if walk_call == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            note_a_walk(frame, statement, walk_call, index)
+        }
+    }
+}
+
+func note_a_walk(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    walk_call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    index: Integer,
+) {
+    var plural = printed(walk_call.callee)
+    var is_a_name = not plural.contains(".") and not plural.contains("(") and not plural.contains("<")
+    assert is_a_name and plural.ends_with("s") and not walk_call.arguments.is_empty()
+    var first = walk_call.arguments[0]
+    assert is_the_name(first, statement.name)
+    var plural_length = plural.length()
+    var singular = plural.slice(0, plural_length - 1)
+    var template = context.current_class.function_named(singular)
+    assert template
+    assert template.parameters.count() == walk_call.arguments.count() + 1
+    assert template.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = template.declaration
+    assert declaration.body
+    var symbol = template.parameters[0]
+    crash symbol
+    crash statement.declared_type
+    var row_type = context.resolver.type_in(statement.declared_type, context.current_class, statement.line)
+    assert row_type.kind == 'shape'
+    var shape = context.program.shape_keyed(row_type.name)
+    assert shape
+    var template_frame = BorrowFrame(context.current_class, template)
+    template_frame.line = statement.line
+    var row = made_item(statement.name)
+    row.is_row = true
+    var member_index = 0
+    while member_index < shape.members.count() {
+        var member = shape.members[member_index]
+        add_a_walked_source(template_frame, row, declaration.body, symbol.name, member)
+        member_index = member_index + 1
+    }
+    assert not row.sources.is_empty()
+    held.append(row)
+    check_the_row_calls(frame, row, index + 2)
+}
+
+func add_a_walked_source(
+    template_frame: BorrowFrame,
+    row: BorrowedItem,
+    body: AbstractSyntaxTree.Shapes.Statements.Block?,
+    symbol: String,
+    member: Model.FunctionModel,
+) {
+    assert member.is_an_attribute and member.answer
+    var member_type: Model.Type = member.answer
+    var fill = filled_value(body, symbol, member_type)
+    assert fill
+    if fill == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        var source = walked_collection(template_frame, fill.target, symbol, member.name, member_type)
+        if source {
+            row.sources.append(source)
+        }
+    }
+}
+
+func filled_value(
+    block: AbstractSyntaxTree.Shapes.Statements.Block?,
+    symbol: String,
+    member_type: Model.Type,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        var found = filled_by(statement, symbol, member_type)
+        if found {
+            return found
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func filled_by(
+    statement: AbstractSyntaxTree.Shapes.Statements.Statement?,
+    symbol: String,
+    member_type: Model.Type,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    if statement == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        if is_an_attributes_read(statement.target, symbol) {
+            return statement.value
+        }
+    }
+    if statement == AbstractSyntaxTree.Shapes.Statements.IfStatement {
+        return filled_by_a_choice(statement, symbol, member_type)
+    }
+    return null
+}
+
+func filled_by_a_choice(
+    statement: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+    symbol: String,
+    member_type: Model.Type,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    var decided = folded_for_an_attribute(statement.condition, symbol, member_type)
+    if decided == 1 {
+        return filled_value(statement.then_branch, symbol, member_type)
+    }
+    if decided == 0 {
+        return filled_value(statement.else_branch, symbol, member_type)
+    }
+    return null
+}
+
+func folded_for_an_attribute(
+    condition: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    symbol: String,
+    member_type: Model.Type,
+): Integer {
+    if condition == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        return folded_attribute_comparison(condition, symbol, member_type)
+    }
+    if condition == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return folded_attribute_fit(condition, symbol, member_type)
+    }
+    return -1
+}
+
+func folded_attribute_comparison(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    symbol: String,
+    member_type: Model.Type,
+): Integer {
+    var is_a_comparison = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    if not is_a_comparison or not is_the_class_of(binary.left, symbol) {
+        return -1
+    }
+    var right = binary.right
+    var compared = -1
+    if right == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        compared = same_class(member_type, right.name)
+    }
+    if compared < 0 or binary.operator == 'equal_equal' {
+        return compared
+    }
+    return 1 - compared
+}
+
+func folded_attribute_fit(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    symbol: String,
+    member_type: Model.Type,
+): Integer {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if callee.name == "fits_vector" and is_the_class_of(callee.target, symbol) {
+            return fit_of(member_type)
+        }
+    }
+    return -1
+}
+
+func fit_of(member_type: Model.Type): Integer {
+    if fits_a_vector(member_type) {
+        return 1
+    }
+    return 0
+}
+
+func is_the_class_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, symbol: String): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return expression.name == "class" and is_the_name(expression.target, symbol)
+    }
+    return false
+}
+
+func is_an_attributes_read(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, symbol: String): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return is_the_name(expression.index, symbol) and is_named_attributes(expression.target)
+    }
+    return false
+}
+
+func is_named_attributes(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return expression.name == "attributes"
+    }
+    return false
+}
+
+func walked_collection(
+    template_frame: BorrowFrame,
+    collection: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    symbol: String,
+    member_name: String,
+    member_type: Model.Type,
+): BorrowSource? {
+    if collection == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        assert is_an_attributes_read(collection, symbol)
+        var attributes = collection.target
+        if attributes == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+            return walked_path(template_frame, attributes.target, member_name)
+        }
+    }
+    if collection == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walked_singleton(collection, member_type)
+    }
+    return null
+}
+
+func walked_path(
+    template_frame: BorrowFrame,
+    holder: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    member_name: String,
+): BorrowSource? {
+    var holder_type = type_of(template_frame, holder)
+    assert holder_type
+    var present = holder_type.present()
+    var model = class_of_type(present)
+    assert model
+    var path = printed(holder)
+    var key = "{model.key}.{member_name}"
+    return walked_source_of(model, member_name, "{path}.{member_name}", key)
+}
+
+func walked_singleton(
+    collection: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    member_type: Model.Type,
+): BorrowSource? {
+    var made = collection.target
+    if made == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        var callee = made.callee
+        if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+            return walked_instance(callee.name, collection.name, member_type)
+        }
+    }
+    return null
+}
+
+func walked_instance(class_name: String, attribute_name: String, member_type: Model.Type): BorrowSource? {
+    var argument = context.shown(member_type)
+    var wanted = "{class_name}<{argument}>"
+    var index = 0
+    while index < context.program.order.count() {
+        var model = context.program.order[index]
+        if model.shown == wanted {
+            var written = "{model.shown}().{attribute_name}"
+            var key = "{model.key}.{attribute_name}"
+            return walked_source_of(model, attribute_name, written, key)
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func walked_source_of(holder: Model.ClassModel, name: String, written: String, key: String): BorrowSource? {
+    var attribute = holder.attribute_named(name)
+    assert attribute
+    var model = class_of_type(attribute.attribute_type)
+    assert model
+    assert is_a_borrowing_collection(model)
+    var element = model.bound_types["$element_type"]
+    assert element
+    var element_present = element.present()
+    assert lends_its_items(model, element_present)
+    var source = BorrowSource(written, key, model.key)
+    source.element = context.shown(element_present)
+    source.is_items = model.file.namespace == "Items"
+    return source
+}
