@@ -12,6 +12,9 @@ func Copying(starting_context: Context, starting_values: Values) {
 }
 
 func copy_of(model: Model.ClassModel, is_deep: Boolean): Model.FunctionModel {
+    if is_deep and uses_a_table(model) {
+        return table_copy_of(model)
+    }
     var name = "copy"
     if is_deep {
         name = "deep_copy"
@@ -103,4 +106,242 @@ func deep_copied(value: HighIntermediaryRepresentation.Values.Value): HighInterm
     }
     crash not value.value_type.is_nullable
     return deep_copy_call(value)
+}
+
+func uses_a_table(model: Model.ClassModel): Boolean {
+    var seen = List<String>()
+    var waiting = List<Model.ClassModel>()
+    waiting.append(model)
+    while not waiting.is_empty() {
+        var current = waiting.remove_first()
+        crash current
+        var held = held_class_keys(current)
+        var index = 0
+        while index < held.count() {
+            var key = held[index]
+            var reached = context.program.class_named(key)
+            if key == model.key or holds_weakly(reached) {
+                return true
+            }
+            if reached and not seen.contains(key) and not reached.is_singleton {
+                seen.append(key)
+                waiting.append(reached)
+            }
+            index = index + 1
+        }
+    }
+    return false
+}
+
+func holds_weakly(reached: Model.ClassModel?): Boolean {
+    if not reached {
+        return false
+    }
+    if reached.function_named("_box_of") {
+        return true
+    }
+    return false
+}
+
+func held_class_keys(model: Model.ClassModel): List<String> {
+    var keys = List<String>()
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        add_a_held_key(keys, attribute.attribute_type)
+        index = index + 1
+    }
+    var bound = model.bound_types.keys()
+    var bound_index = 0
+    while bound_index < bound.count() {
+        var name = bound[bound_index]
+        var bound_type = model.bound_types[name]
+        crash bound_type
+        add_a_held_key(keys, bound_type)
+        bound_index = bound_index + 1
+    }
+    return keys
+}
+
+func add_a_held_key(keys: List<String>, held: Model.Type) {
+    assert held.kind == 'object' and held.name != "String"
+    assert context.program.has(held.name)
+    keys.append(held.name)
+}
+
+func copy_table(): Model.ClassModel {
+    var found = context.resolver.class_model_named("Spite.Internal.CopyTable")
+    crash found
+    context.need_defaults(found.key)
+    return found
+}
+
+func table_copy_of(model: Model.ClassModel): Model.FunctionModel {
+    var own_type = model.type_of_an_instance()
+    var made = Model.FunctionModel("deep_copy", model.key)
+    made.is_synthetic = true
+    made.answer = own_type
+    model.declared_functions.append(made)
+    var table_model = copy_table()
+    var table_type = table_model.type_of_an_instance()
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var fresh_table = HighIntermediaryRepresentation.Values.MakeObject(table_type, null, no_arguments)
+    var declared_table = HighIntermediaryRepresentation.Statements.Declare("table", table_type, fresh_table)
+    body.statements.append(declared_table)
+    var table = HighIntermediaryRepresentation.Values.LocalRead(table_type, "table")
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var passed = List<HighIntermediaryRepresentation.Values.Value>()
+    passed.append(table)
+    var inside = values.method_call(own, "_deep_copy_in", passed)
+    var declared_copy = HighIntermediaryRepresentation.Statements.Declare("copied", own_type, inside)
+    body.statements.append(declared_copy)
+    var settled = values.method_call(table, "settle", no_arguments)
+    var settling = HighIntermediaryRepresentation.Statements.Evaluate(settled)
+    body.statements.append(settling)
+    var copied = HighIntermediaryRepresentation.Values.LocalRead(own_type, "copied")
+    var answered = HighIntermediaryRepresentation.Statements.Return(copied)
+    body.statements.append(answered)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func copy_in_of(model: Model.ClassModel): Model.FunctionModel {
+    var own_type = model.type_of_an_instance()
+    var table_model = copy_table()
+    var table_type = table_model.type_of_an_instance()
+    var made = Model.FunctionModel("_deep_copy_in", model.key)
+    made.is_synthetic = true
+    made.answer = own_type
+    var parameter = Model.ParameterModel("table", table_type, false)
+    made.parameters.append(parameter)
+    var declared = model.function_named("deep_copy")
+    model.declared_functions.append(made)
+    var outer = statements
+    statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+    if copies_itself(declared) {
+        var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+        var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+        var own_copy = values.method_call(own, "deep_copy", no_arguments)
+        var answered_own = HighIntermediaryRepresentation.Statements.Return(own_copy)
+        statements.append(answered_own)
+    } else {
+        copy_through_the_table(model, own_type, table_type)
+    }
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements = statements
+    statements = outer
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func copies_itself(declared: Model.FunctionModel?): Boolean {
+    if declared {
+        return not declared.is_synthetic
+    }
+    return false
+}
+
+func copy_through_the_table(model: Model.ClassModel, own_type: Model.Type, table_type: Model.Type) {
+    var table = HighIntermediaryRepresentation.Values.LocalRead(table_type, "table")
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var long_type = context.scalar_type("Long")
+    var own_address = HighIntermediaryRepresentation.Values.Conversion(long_type, 'address', own)
+    var looking = List<HighIntermediaryRepresentation.Values.Value>()
+    looking.append(own_address)
+    var looked = values.method_call(table, "copy_at", looking)
+    var found_declared = HighIntermediaryRepresentation.Statements.Declare("found", looked.value_type, looked)
+    statements.append(found_declared)
+    var found = HighIntermediaryRepresentation.Values.LocalRead(looked.value_type, "found")
+    var present = HighIntermediaryRepresentation.Values.Conversion(long_type, 'present', found)
+    var as_object = HighIntermediaryRepresentation.Values.Conversion(own_type, 'address', present)
+    var known = HighIntermediaryRepresentation.Statements.Block()
+    var answered_known = HighIntermediaryRepresentation.Statements.Return(as_object)
+    known.statements.append(answered_known)
+    var tested = HighIntermediaryRepresentation.Values.PresenceTest(found)
+    var branch = HighIntermediaryRepresentation.Statements.If(tested, known, null)
+    statements.append(branch)
+    context.need_defaults(model.key)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var fresh = HighIntermediaryRepresentation.Values.MakeObject(own_type, null, no_arguments)
+    var declared = HighIntermediaryRepresentation.Statements.Declare("copied", own_type, fresh)
+    statements.append(declared)
+    var copied = HighIntermediaryRepresentation.Values.LocalRead(own_type, "copied")
+    var copied_address = HighIntermediaryRepresentation.Values.Conversion(long_type, 'address', copied)
+    var remembered_address = HighIntermediaryRepresentation.Values.Conversion(long_type, 'address', own)
+    var remembering = List<HighIntermediaryRepresentation.Values.Value>()
+    remembering.append(remembered_address)
+    remembering.append(copied_address)
+    var remembered = values.method_call(table, "remember", remembering)
+    var noted = HighIntermediaryRepresentation.Statements.Evaluate(remembered)
+    statements.append(noted)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var read = HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
+        if needs_its_own(attribute.attribute_type) {
+            copy_in_deeply(copied, attribute, read, table)
+        } else {
+            var assigned = HighIntermediaryRepresentation.Statements.AssignAttribute(copied, attribute, read)
+            statements.append(assigned)
+        }
+        index = index + 1
+    }
+    var answered = HighIntermediaryRepresentation.Statements.Return(copied)
+    statements.append(answered)
+}
+
+func copy_in_deeply(
+    copied: HighIntermediaryRepresentation.Values.Value,
+    attribute: Model.AttributeModel,
+    read: HighIntermediaryRepresentation.Values.Value,
+    table: HighIntermediaryRepresentation.Values.Value,
+) {
+    var held = attribute.attribute_type
+    if not held.is_nullable {
+        var deep = copy_in_call(read, table)
+        var assigned = HighIntermediaryRepresentation.Statements.AssignAttribute(copied, attribute, deep)
+        statements.append(assigned)
+        return
+    }
+    var present_type = held.present()
+    var present = HighIntermediaryRepresentation.Values.Conversion(present_type, 'present', read)
+    var deep_present = copy_in_call(present, table)
+    var again_nullable = HighIntermediaryRepresentation.Values.Conversion(held, 'nullable', deep_present)
+    var then_branch = HighIntermediaryRepresentation.Statements.Block()
+    var assigned_present = HighIntermediaryRepresentation.Statements.AssignAttribute(copied, attribute, again_nullable)
+    then_branch.statements.append(assigned_present)
+    var else_branch = HighIntermediaryRepresentation.Statements.Block()
+    var nothing = HighIntermediaryRepresentation.Values.NullConstant(held)
+    var assigned_nothing = HighIntermediaryRepresentation.Statements.AssignAttribute(copied, attribute, nothing)
+    else_branch.statements.append(assigned_nothing)
+    var tested = HighIntermediaryRepresentation.Values.PresenceTest(read)
+    var branch = HighIntermediaryRepresentation.Statements.If(tested, then_branch, else_branch)
+    statements.append(branch)
+}
+
+func copy_in_call(
+    value: HighIntermediaryRepresentation.Values.Value,
+    table: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    if value.value_type.kind != 'object' {
+        return deep_copy_call(value)
+    }
+    var passed = List<HighIntermediaryRepresentation.Values.Value>()
+    passed.append(table)
+    return values.method_call(value, "_deep_copy_in", passed)
+}
+
+func deep_copied_in(
+    value: HighIntermediaryRepresentation.Values.Value,
+    table: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    var held = value.value_type.present()
+    if not needs_its_own(held) {
+        return value
+    }
+    crash not value.value_type.is_nullable
+    return copy_in_call(value, table)
 }

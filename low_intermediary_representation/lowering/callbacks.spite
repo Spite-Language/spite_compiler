@@ -1,0 +1,656 @@
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low_program = LowIntermediaryRepresentation.LowProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
+var slots = List<Integer>()
+var old_values = List<Integer>()
+var old_threads = List<Integer>()
+
+func Callbacks(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+func handed_for_the_call(argument: HighIntermediaryRepresentation.Values.Value): Integer {
+    var value = lowering.lower_value(argument)
+    lowering.release_later(value, argument.value_type)
+    var room = zeroed(16)
+    var label = lowering.data_label(room)
+    var name = passed_name(argument)
+    var source = lowering.path
+    var line = lowering.line
+    var message = "spite: C called '{name}' ({source}:{line}) after the foreign call that handed it over had returned, or on another thread: a function C keeps, or calls from a thread of its own, is handed over as a ForeignCallback the program keeps for as long as C may call it\n"
+    var key = call_trampoline(argument.value_type, label, message)
+    var slot = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    lowering.emit(addressed)
+    var old_value = lowering.new_register()
+    var loaded_value = LowIntermediaryRepresentation.Instructions.Load(old_value, slot, 0, 'bits_64')
+    lowering.emit(loaded_value)
+    var old_thread = lowering.new_register()
+    var loaded_thread = LowIntermediaryRepresentation.Instructions.Load(old_thread, slot, 8, 'bits_64')
+    lowering.emit(loaded_thread)
+    var thread = current_thread()
+    var stored_value = LowIntermediaryRepresentation.Instructions.Store(slot, 0, value.value, 'bits_64')
+    lowering.emit(stored_value)
+    var stored_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 8, thread, 'bits_64')
+    lowering.emit(stored_thread)
+    slots.append(slot)
+    old_values.append(old_value)
+    old_threads.append(old_thread)
+    var address = lowering.new_register()
+    var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(address, key)
+    lowering.emit(found)
+    return address
+}
+
+func restore() {
+    var index = 0
+    while index < slots.count() {
+        var slot = slots[index]
+        var old_value = old_values[index]
+        var old_thread = old_threads[index]
+        crash old_value
+        crash old_thread
+        var stored_value = LowIntermediaryRepresentation.Instructions.Store(slot, 0, old_value, 'bits_64')
+        lowering.emit(stored_value)
+        var stored_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 8, old_thread, 'bits_64')
+        lowering.emit(stored_thread)
+        index = index + 1
+    }
+}
+
+func passed_name(argument: HighIntermediaryRepresentation.Values.Value): String {
+    if argument == HighIntermediaryRepresentation.Values.FunctionValue {
+        return argument.function.name
+    }
+    if argument == HighIntermediaryRepresentation.Values.LocalRead {
+        return argument.name
+    }
+    return "the function"
+}
+
+func zeroed(size: Integer): Buffer {
+    var room = Buffer()
+    var index = 0
+    while index < size {
+        room.append(0)
+        index = index + 1
+    }
+    return room
+}
+
+func current_thread(): Integer {
+    var thread = lowering.new_register()
+    var no_arguments = List<Integer>()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
+    lowering.emit(asked)
+    return thread
+}
+
+func call_trampoline(function_type: Model.Type, label: Integer, message: String): String {
+    var key = trampoline_key()
+    var making = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    making.start(key)
+    var parameters = take_the_c_parameters(making, function_type.parameters, -1)
+    var slot = making.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    making.emit(addressed)
+    var value = making.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(value, slot, 0, 'bits_64')
+    making.emit(loaded)
+    var checking = making.new_block()
+    var stopping = making.new_block()
+    var calling = making.new_block()
+    stop_when_zero(making, value, stopping, checking)
+    making.switch_to(checking)
+    var kept_thread = making.new_register()
+    var loaded_thread = LowIntermediaryRepresentation.Instructions.Load(kept_thread, slot, 8, 'bits_64')
+    making.emit(loaded_thread)
+    var thread = making.new_register()
+    var no_arguments = List<Integer>()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
+    making.emit(asked)
+    var same = making.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(same, 'equal', kept_thread, thread)
+    making.emit(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(same, calling, stopping)
+    making.emit(test)
+    stop_in(making, stopping, message)
+    making.switch_to(calling)
+    call_through(making, value, parameters, function_type)
+    lowering.program.lowered_functions.append(making.function)
+    return key
+}
+
+func trampoline_key(): String {
+    var number = lowering.program.lowered_functions.count()
+    return "_called_from_c_{number}"
+}
+
+func take_the_c_parameters(
+    making: FunctionLowering,
+    parameter_types: List<Model.Type>,
+    context_at: Integer,
+): List<Integer> {
+    var count = parameter_types.count()
+    if context_at >= 0 {
+        count = count + 1
+    }
+    var registers = List<Integer>()
+    var index = 0
+    while index < count {
+        var register = making.new_register()
+        registers.append(register)
+        index = index + 1
+    }
+    making.function.parameter_count = count
+    var converted = List<Integer>()
+    var written_index = 0
+    var parameter_index = 0
+    while written_index < count {
+        var register = registers[written_index]
+        crash register
+        if written_index == context_at {
+            making.function.parameter_decimal_sizes.append(0)
+        } else {
+            var parameter_type = parameter_types[parameter_index]
+            crash parameter_type
+            var decimal_size = making.decimal_size_of(parameter_type)
+            making.function.parameter_decimal_sizes.append(decimal_size)
+            var taken = taken_from_c(making, register, parameter_type)
+            converted.append(taken)
+            parameter_index = parameter_index + 1
+        }
+        written_index = written_index + 1
+    }
+    return converted
+}
+
+func taken_from_c(making: FunctionLowering, register: Integer, parameter_type: Model.Type): Integer {
+    if parameter_type.name == "Boolean" {
+        var whole = narrowed(making, register, 32, false)
+        var zero = making.constant(0)
+        var truth = making.new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(truth, 'not_equal', whole, zero)
+        making.emit(compared)
+        return truth
+    }
+    var scalar = making.scalars.of(parameter_type.name)
+    crash scalar
+    if scalar.size >= 8 {
+        return register
+    }
+    var keeps_the_sign = scalar.is_signed and not scalar.is_decimal
+    return narrowed(making, register, scalar.size * 8, keeps_the_sign)
+}
+
+func narrowed(making: FunctionLowering, register: Integer, bits: Integer, keeps_the_sign: Boolean): Integer {
+    var shift = making.constant(64 - bits)
+    var raised = unchecked(making, 'shift_left', register, shift)
+    var lowered = making.new_register()
+    var shifted = LowIntermediaryRepresentation.Instructions.Arithmetic(lowered, 'shift_right', raised, shift)
+    shifted.is_checked = false
+    shifted.is_signed = keeps_the_sign
+    making.emit(shifted)
+    return lowered
+}
+
+func unchecked(
+    making: FunctionLowering,
+    operator: LowIntermediaryRepresentation.ArithmeticOperator,
+    left: Integer,
+    right: Integer,
+): Integer {
+    var target = making.new_register()
+    var computed = LowIntermediaryRepresentation.Instructions.Arithmetic(target, operator, left, right)
+    computed.is_checked = false
+    computed.is_signed = false
+    making.emit(computed)
+    return target
+}
+
+func stop_when_zero(making: FunctionLowering, value: Integer, stopping: Integer, going_on: Integer) {
+    var zero = making.constant(0)
+    var empty = making.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(empty, 'equal', value, zero)
+    making.emit(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(empty, stopping, going_on)
+    making.emit(test)
+}
+
+func stop_in(making: FunctionLowering, stopping: Integer, message: String) {
+    making.switch_to(stopping)
+    var label = making.text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    making.emit(stopped)
+}
+
+func call_through(making: FunctionLowering, value: Integer, parameters: List<Integer>, function_type: Model.Type) {
+    var address = making.new_register()
+    var loaded_address = LowIntermediaryRepresentation.Instructions.Load(address, value, 16, 'bits_64')
+    making.emit(loaded_address)
+    var receiver = making.new_register()
+    var loaded_receiver = LowIntermediaryRepresentation.Instructions.Load(receiver, value, 24, 'bits_64')
+    making.emit(loaded_receiver)
+    var arguments = List<Integer>()
+    arguments.append(receiver)
+    var index = 0
+    while index < parameters.count() {
+        var parameter = parameters[index]
+        arguments.append(parameter)
+        index = index + 1
+    }
+    var target = -1
+    if function_type.answer {
+        target = making.new_register()
+        making.function.answer_decimal_size = making.decimal_size_of(function_type.answer)
+    }
+    var called = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments)
+    making.emit(called)
+    var answered = LowIntermediaryRepresentation.Instructions.Return(target)
+    making.emit(answered)
+}
+
+func handed_over(object: Integer, made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var passed = made.arguments[0]
+    crash passed
+    if passed == HighIntermediaryRepresentation.Values.FunctionValue {
+        hand_over(object, passed, made.foreign_place)
+    } else {
+        var buildable = Validators.HighIntermediaryRepresentation.Buildable.Validator()
+        buildable.refuse(lowering.path, lowering.line, lowering.function.key)
+    }
+}
+
+func hand_over(object: Integer, passed: HighIntermediaryRepresentation.Values.FunctionValue, place: String) {
+    lowering.program.uses_threads = true
+    var model = lowering.layout.program.class_named("ForeignCallback")
+    crash model
+    var value = lowering.new_register()
+    var function_offset = offset_in(model, "_function")
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(value, object, function_offset, 'bits_64')
+    lowering.emit(loaded)
+    var owner = lowering.layout.program.class_named(passed.function.owner)
+    crash owner
+    var shown = owner.shown
+    var function_name = passed.function.name
+    var named = "{shown}.{function_name}"
+    var source = lowering.path
+    var line = lowering.line
+    var dropped = "spite: C called '{named}' ({source}:{line}) after its ForeignCallback was dropped: keep the ForeignCallback for as long as C may call it\n"
+    var key = ""
+    if place == "no_context" {
+        key = kept_without_a_context(object, model, value, passed, named, dropped)
+    } else {
+        key = kept_with_a_context(object, model, value, passed, place == "context_first", dropped)
+    }
+    var address = lowering.new_register()
+    var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(address, key)
+    lowering.emit(found)
+    var address_offset = offset_in(model, "address")
+    var stored = LowIntermediaryRepresentation.Instructions.Store(object, address_offset, address, 'bits_64')
+    lowering.emit(stored)
+}
+
+func offset_in(model: Model.ClassModel, name: String): Integer {
+    var attribute = model.attribute_named(name)
+    crash attribute
+    return lowering.layout.offset_of(attribute)
+}
+
+func kept_without_a_context(
+    object: Integer,
+    model: Model.ClassModel,
+    value: Integer,
+    passed: HighIntermediaryRepresentation.Values.FunctionValue,
+    named: String,
+    dropped: String,
+): String {
+    var function_key = passed.function.key()
+    var label = lowering.record_label_of("_called_from_c {function_key}")
+    var slot = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    lowering.emit(addressed)
+    var held = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(held, slot, 0, 'bits_64')
+    lowering.emit(loaded)
+    var taking = lowering.new_block()
+    var stopping = lowering.new_block()
+    stop_when_taken(held, stopping, taking)
+    var source = lowering.path
+    var line = lowering.line
+    var second = "spite: '{named}' ({source}:{line}) was handed to C by a second ForeignCallback while the first is alive: C calls it with no context, so a function has one at a time; keep the first and hand C its address\n"
+    stop_in(lowering, stopping, second)
+    lowering.switch_to(taking)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 0, value, 'bits_64')
+    lowering.emit(stored)
+    var cell_offset = offset_in(model, "_cell")
+    var kept = LowIntermediaryRepresentation.Instructions.Store(object, cell_offset, slot, 'bits_64')
+    lowering.emit(kept)
+    var key = trampoline_key()
+    var making = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    making.start(key)
+    var parameters = take_the_c_parameters(making, passed.value_type.parameters, -1)
+    var trampoline_slot = making.new_register()
+    var trampoline_addressed = LowIntermediaryRepresentation.Instructions.DataAddress(trampoline_slot, label)
+    making.emit(trampoline_addressed)
+    var called = making.new_register()
+    var loaded_called = LowIntermediaryRepresentation.Instructions.Load(called, trampoline_slot, 0, 'bits_64')
+    making.emit(loaded_called)
+    var calling = making.new_block()
+    var trampoline_stopping = making.new_block()
+    stop_when_zero(making, called, trampoline_stopping, calling)
+    stop_in(making, trampoline_stopping, dropped)
+    making.switch_to(calling)
+    call_through(making, called, parameters, passed.value_type)
+    lowering.program.lowered_functions.append(making.function)
+    return key
+}
+
+func stop_when_taken(held: Integer, stopping: Integer, going_on: Integer) {
+    var zero = lowering.constant(0)
+    var empty = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(empty, 'equal', held, zero)
+    lowering.emit(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(empty, going_on, stopping)
+    lowering.emit(test)
+}
+
+func kept_with_a_context(
+    object: Integer,
+    model: Model.ClassModel,
+    value: Integer,
+    passed: HighIntermediaryRepresentation.Values.FunctionValue,
+    is_first: Boolean,
+    dropped: String,
+): String {
+    write_the_place_taker()
+    var arguments = List<Integer>()
+    arguments.append(value)
+    var ticket = lowering.new_register()
+    var taken = LowIntermediaryRepresentation.Instructions.Call(ticket, "_take_a_callback_place", arguments)
+    var cell = lowering.new_register()
+    taken.presence = cell
+    lowering.emit(taken)
+    var context_offset = offset_in(model, "context")
+    var stored_ticket = LowIntermediaryRepresentation.Instructions.Store(object, context_offset, ticket, 'bits_64')
+    lowering.emit(stored_ticket)
+    var cell_offset = offset_in(model, "_cell")
+    var stored_cell = LowIntermediaryRepresentation.Instructions.Store(object, cell_offset, cell, 'bits_64')
+    lowering.emit(stored_cell)
+    var key = trampoline_key()
+    var making = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    making.start(key)
+    var parameter_types = passed.value_type.parameters
+    var context_at = parameter_types.count()
+    if is_first {
+        context_at = 0
+    }
+    var parameters = take_the_c_parameters(making, parameter_types, context_at)
+    var called = value_of_the_ticket(making, context_at, dropped)
+    call_through(making, called, parameters, passed.value_type)
+    lowering.program.lowered_functions.append(making.function)
+    return key
+}
+
+func value_of_the_ticket(making: FunctionLowering, ticket: Integer, dropped: String): Integer {
+    var stopping = making.new_block()
+    var place_mask = making.constant(16777215)
+    var place = unchecked(making, 'bits_and', ticket, place_mask)
+    var count_shift = making.constant(24)
+    var count = unchecked(making, 'shift_right', ticket, count_shift)
+    var block_shift = making.constant(12)
+    var block_number = unchecked(making, 'shift_right', place, block_shift)
+    var index_mask = making.constant(4095)
+    var index = unchecked(making, 'bits_and', place, index_mask)
+    var label = making.record_label_of("_callback_table")
+    var record = making.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(record, label)
+    making.emit(addressed)
+    var blocks = making.new_register()
+    var loaded_blocks = LowIntermediaryRepresentation.Instructions.Load(blocks, record, 16, 'bits_64')
+    making.emit(loaded_blocks)
+    var inside = making.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(inside, 'less', block_number, blocks)
+    compared.is_signed = false
+    making.emit(compared)
+    var reading = making.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(inside, reading, stopping)
+    making.emit(test)
+    making.switch_to(reading)
+    var directory = making.new_register()
+    var loaded_directory = LowIntermediaryRepresentation.Instructions.Load(directory, record, 8, 'bits_64')
+    making.emit(loaded_directory)
+    var eight = making.constant(8)
+    var block_offset = unchecked(making, 'multiply', block_number, eight)
+    var block_address = making.address_plus(directory, block_offset)
+    var base = making.new_register()
+    var loaded_base = LowIntermediaryRepresentation.Instructions.Load(base, block_address, 0, 'bits_64')
+    making.emit(loaded_base)
+    var sixteen = making.constant(16)
+    var entry_offset = unchecked(making, 'multiply', index, sixteen)
+    var entry = making.address_plus(base, entry_offset)
+    var kept_count = making.new_register()
+    var loaded_count = LowIntermediaryRepresentation.Instructions.Load(kept_count, entry, 8, 'bits_64')
+    making.emit(loaded_count)
+    var same = making.new_register()
+    var compared_count = LowIntermediaryRepresentation.Instructions.Compare(same, 'equal', kept_count, count)
+    making.emit(compared_count)
+    var counted = making.new_block()
+    var count_test = LowIntermediaryRepresentation.Instructions.Branch(same, counted, stopping)
+    making.emit(count_test)
+    making.switch_to(counted)
+    var value = making.new_register()
+    var loaded_value = LowIntermediaryRepresentation.Instructions.Load(value, entry, 0, 'bits_64')
+    making.emit(loaded_value)
+    var calling = making.new_block()
+    stop_when_zero(making, value, stopping, calling)
+    stop_in(making, stopping, dropped)
+    making.switch_to(calling)
+    return value
+}
+
+func write_the_place_taker() {
+    assert not lowering.program.takes_callback_places
+    lowering.program.takes_callback_places = true
+    var making = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    making.start("_take_a_callback_place")
+    var value = making.new_register()
+    making.function.parameter_count = 1
+    var label = making.record_label_of("_callback_table")
+    var record = making.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(record, label)
+    making.emit(addressed)
+    var locking = making.new_block()
+    var locked = making.new_block()
+    making.jump_to(locking)
+    making.switch_to(locking)
+    var zero = making.constant(0)
+    var one = making.constant(1)
+    var before = making.new_register()
+    var exchanged = LowIntermediaryRepresentation.Instructions.CompareExchange(before, record, 0, zero, one)
+    making.emit(exchanged)
+    var was_free = making.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(was_free, 'equal', before, zero)
+    making.emit(compared)
+    var lock_test = LowIntermediaryRepresentation.Instructions.Branch(was_free, locked, locking)
+    making.emit(lock_test)
+    making.switch_to(locked)
+    var directory = making.new_register()
+    var loaded_directory = LowIntermediaryRepresentation.Instructions.Load(directory, record, 8, 'bits_64')
+    making.emit(loaded_directory)
+    var making_the_directory = making.new_block()
+    var directory_ready = making.new_block()
+    var missing = making.new_register()
+    var compared_directory = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', directory, zero)
+    making.emit(compared_directory)
+    var directory_test = LowIntermediaryRepresentation.Instructions.Branch(
+        missing,
+        making_the_directory,
+        directory_ready,
+    )
+    making.emit(directory_test)
+    making.switch_to(making_the_directory)
+    var directory_size = making.constant(32768)
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(directory, directory_size)
+    making.emit(allocated)
+    var stored_directory = LowIntermediaryRepresentation.Instructions.Store(record, 8, directory, 'bits_64')
+    making.emit(stored_directory)
+    making.jump_to(directory_ready)
+    making.switch_to(directory_ready)
+    look_for_a_place(making, record, directory, value)
+    making.function.parameter_count = 1
+    lowering.program.lowered_functions.append(making.function)
+}
+
+func look_for_a_place(making: FunctionLowering, record: Integer, directory: Integer, value: Integer) {
+    var blocks = making.new_register()
+    var loaded_blocks = LowIntermediaryRepresentation.Instructions.Load(blocks, record, 16, 'bits_64')
+    making.emit(loaded_blocks)
+    var zero = making.constant(0)
+    var one = making.constant(1)
+    var block_number = making.constant(0)
+    var index = making.constant(0)
+    var base = making.constant(0)
+    var entry = making.constant(0)
+    var block_header = making.new_block()
+    var block_body = making.new_block()
+    var place_header = making.new_block()
+    var place_body = making.new_block()
+    var next_block = making.new_block()
+    var growing = making.new_block()
+    var found = making.new_block()
+    making.jump_to(block_header)
+    making.switch_to(block_header)
+    var more_blocks = making.new_register()
+    var compared_blocks = LowIntermediaryRepresentation.Instructions.Compare(more_blocks, 'less', block_number, blocks)
+    making.emit(compared_blocks)
+    var block_test = LowIntermediaryRepresentation.Instructions.Branch(more_blocks, block_body, growing)
+    making.emit(block_test)
+    making.switch_to(block_body)
+    var eight = making.constant(8)
+    var block_offset = unchecked(making, 'multiply', block_number, eight)
+    var block_address = making.address_plus(directory, block_offset)
+    var loaded_base = LowIntermediaryRepresentation.Instructions.Load(base, block_address, 0, 'bits_64')
+    making.emit(loaded_base)
+    var cleared_index = LowIntermediaryRepresentation.Instructions.Copy(index, zero)
+    making.emit(cleared_index)
+    making.jump_to(place_header)
+    making.switch_to(place_header)
+    var places = making.constant(4096)
+    var more_places = making.new_register()
+    var compared_places = LowIntermediaryRepresentation.Instructions.Compare(more_places, 'less', index, places)
+    making.emit(compared_places)
+    var place_test = LowIntermediaryRepresentation.Instructions.Branch(more_places, place_body, next_block)
+    making.emit(place_test)
+    making.switch_to(place_body)
+    var sixteen = making.constant(16)
+    var entry_offset = unchecked(making, 'multiply', index, sixteen)
+    var entry_address = making.address_plus(base, entry_offset)
+    var copied_entry = LowIntermediaryRepresentation.Instructions.Copy(entry, entry_address)
+    making.emit(copied_entry)
+    var held = making.new_register()
+    var loaded_held = LowIntermediaryRepresentation.Instructions.Load(held, entry, 0, 'bits_64')
+    making.emit(loaded_held)
+    var free = making.new_register()
+    var compared_held = LowIntermediaryRepresentation.Instructions.Compare(free, 'equal', held, zero)
+    making.emit(compared_held)
+    var stepping = making.new_block()
+    var free_test = LowIntermediaryRepresentation.Instructions.Branch(free, found, stepping)
+    making.emit(free_test)
+    making.switch_to(stepping)
+    var next_index = unchecked(making, 'add', index, one)
+    var stepped = LowIntermediaryRepresentation.Instructions.Copy(index, next_index)
+    making.emit(stepped)
+    making.jump_to(place_header)
+    making.switch_to(next_block)
+    var following = unchecked(making, 'add', block_number, one)
+    var advanced = LowIntermediaryRepresentation.Instructions.Copy(block_number, following)
+    making.emit(advanced)
+    making.jump_to(block_header)
+    making.switch_to(growing)
+    grow_the_table(making, record, directory, blocks, block_number, index, base, entry)
+    making.jump_to(found)
+    making.switch_to(found)
+    take_the_place(making, record, value, block_number, index, entry)
+}
+
+func grow_the_table(
+    making: FunctionLowering,
+    record: Integer,
+    directory: Integer,
+    blocks: Integer,
+    block_number: Integer,
+    index: Integer,
+    base: Integer,
+    entry: Integer,
+) {
+    var most = making.constant(4096)
+    var full = making.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(full, 'equal', blocks, most)
+    making.emit(compared)
+    var stopping = making.new_block()
+    var adding = making.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(full, stopping, adding)
+    making.emit(test)
+    stop_in(
+        making,
+        stopping,
+        "spite: a program holds at most 16777216 ForeignCallbacks with a context alive at once, and this one is one more: drop the ones C no longer calls\n",
+    )
+    making.switch_to(adding)
+    var block_size = making.constant(65536)
+    var made = making.new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(made, block_size)
+    making.emit(allocated)
+    var eight = making.constant(8)
+    var block_offset = unchecked(making, 'multiply', blocks, eight)
+    var block_address = making.address_plus(directory, block_offset)
+    var stored_block = LowIntermediaryRepresentation.Instructions.Store(block_address, 0, made, 'bits_64')
+    making.emit(stored_block)
+    var one = making.constant(1)
+    var grown = unchecked(making, 'add', blocks, one)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(record, 16, grown, 'bits_64')
+    making.emit(stored_count)
+    var chosen_block = LowIntermediaryRepresentation.Instructions.Copy(block_number, blocks)
+    making.emit(chosen_block)
+    var zero = making.constant(0)
+    var chosen_index = LowIntermediaryRepresentation.Instructions.Copy(index, zero)
+    making.emit(chosen_index)
+    var chosen_base = LowIntermediaryRepresentation.Instructions.Copy(base, made)
+    making.emit(chosen_base)
+    var chosen_entry = LowIntermediaryRepresentation.Instructions.Copy(entry, made)
+    making.emit(chosen_entry)
+}
+
+func take_the_place(
+    making: FunctionLowering,
+    record: Integer,
+    value: Integer,
+    block_number: Integer,
+    index: Integer,
+    entry: Integer,
+) {
+    var count = making.new_register()
+    var loaded_count = LowIntermediaryRepresentation.Instructions.Load(count, entry, 8, 'bits_64')
+    making.emit(loaded_count)
+    var one = making.constant(1)
+    var counted = unchecked(making, 'add', count, one)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(entry, 8, counted, 'bits_64')
+    making.emit(stored_count)
+    var stored_value = LowIntermediaryRepresentation.Instructions.Store(entry, 0, value, 'bits_64')
+    making.emit(stored_value)
+    var zero = making.constant(0)
+    var unlocked = LowIntermediaryRepresentation.Instructions.Store(record, 0, zero, 'bits_64')
+    making.emit(unlocked)
+    var block_shift = making.constant(12)
+    var block_part = unchecked(making, 'shift_left', block_number, block_shift)
+    var place = unchecked(making, 'bits_or', block_part, index)
+    var count_shift = making.constant(24)
+    var count_part = unchecked(making, 'shift_left', counted, count_shift)
+    var ticket = unchecked(making, 'bits_or', count_part, place)
+    var answered = LowIntermediaryRepresentation.Instructions.Return(ticket)
+    answered.presence = entry
+    making.emit(answered)
+}

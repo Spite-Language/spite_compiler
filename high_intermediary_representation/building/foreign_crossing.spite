@@ -1,0 +1,221 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+var foreign = Validators.HighIntermediaryRepresentation.Foreign.Validator()
+
+func ForeignCrossing(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func check_an_argument(value: HighIntermediaryRepresentation.Values.Value) {
+    var crossing = value.value_type
+    if crossing.kind == 'function' {
+        var written = passed_name(value)
+        var names = List<String>()
+        var index = 0
+        while index < crossing.parameters.count() {
+            var position = index + 1
+            names.append("argument {position}")
+            index = index + 1
+        }
+        check_a_callback(crossing, written, names)
+        return
+    }
+    assert not crosses(crossing)
+    var shown = context.shown(crossing)
+    foreign.refuse_a_crossing(context, shown)
+}
+
+func passed_name(value: HighIntermediaryRepresentation.Values.Value): String {
+    if value == HighIntermediaryRepresentation.Values.FunctionValue {
+        return value.function.name
+    }
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        return value.name
+    }
+    return "the function"
+}
+
+func crosses(crossing: Model.Type): Boolean {
+    var kind = crossing.kind
+    if kind == 'scalar' or kind == 'enumeration' or kind == 'shape' {
+        return true
+    }
+    if kind != 'object' {
+        return false
+    }
+    if crossing.name == "String" or crossing.name == "Buffer" {
+        return true
+    }
+    return holds_numbers(crossing)
+}
+
+func holds_numbers(crossing: Model.Type): Boolean {
+    if not context.has_a_class(crossing) {
+        return false
+    }
+    var model = context.class_of(crossing)
+    if not model.function_named("_read_value") {
+        return false
+    }
+    var element = model.bound_types["$element_type"]
+    if not element {
+        return false
+    }
+    return element.kind == 'scalar'
+}
+
+func check_a_callback(function_type: Model.Type, written: String, names: List<String>) {
+    var index = 0
+    while index < function_type.parameters.count() {
+        var parameter = function_type.parameters[index]
+        var name = names[index]
+        crash name
+        if not is_a_c_number(parameter) {
+            var shown = context.shown(parameter)
+            foreign.refuse_a_callback_parameter(context, written, name, shown)
+        }
+        index = index + 1
+    }
+    assert function_type.answer
+    check_a_callback_answer(function_type.answer, written)
+}
+
+func check_a_callback_answer(answer: Model.Type, written: String) {
+    assert not answer.is_nothing()
+    assert not is_a_c_number(answer)
+    var shown = context.shown(answer)
+    foreign.refuse_a_callback_answer(context, written, shown)
+}
+
+func is_a_c_number(of_type: Model.Type): Boolean {
+    return of_type.kind == 'scalar' and not of_type.is_nullable
+}
+
+func handover_place(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): String {
+    if call.arguments.count() != 2 {
+        foreign.refuse_an_unnamed_callback(context)
+    }
+    var written_place = call.arguments[1]
+    var place = values.symbol_text_of(written_place)
+    if not place {
+        foreign.refuse_an_unnamed_callback(context)
+    }
+    crash place
+    var is_known = place == "no_context" or place == "context_first" or place == "context_last"
+    if not is_known {
+        foreign.refuse_an_unknown_place(context, place)
+    }
+    var written_function = call.arguments[0]
+    crash written_function
+    var value = values.value_of(written_function, null)
+    if value == HighIntermediaryRepresentation.Values.FunctionValue {
+        check_a_named_handover(value, written_function, place)
+    } else {
+        foreign.refuse_an_unnamed_callback(context)
+    }
+    return place
+}
+
+func handover_arguments(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    constructor: Model.FunctionModel,
+): List<HighIntermediaryRepresentation.Values.Value> {
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var written_function = call.arguments[0]
+    crash written_function
+    var function_value = values.value_of(written_function, null)
+    arguments.append(function_value)
+    var written_place = call.arguments[1]
+    crash written_place
+    var parameter = constructor.parameters[1]
+    crash parameter
+    var place = values.value_of(written_place, parameter.parameter_type)
+    arguments.append(place)
+    return arguments
+}
+
+func check_a_named_handover(
+    value: HighIntermediaryRepresentation.Values.FunctionValue,
+    written_function: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    place: String,
+) {
+    var printer = Printers.Spite.ExpressionPrinter(written_function)
+    var function_text = printer.text()
+    var written = "ForeignCallback({function_text}, '{place}')"
+    var owner = context.program.class_named(value.function.owner)
+    crash owner
+    if place == "no_context" and not owner.is_singleton {
+        var plain = plain_name(owner.shown)
+        foreign.refuse_a_contextless_owner(context, function_text, plain)
+    }
+    var names = value.function.parameters.map_names()
+    check_a_callback(value.value_type, written, names)
+    if not owner.is_singleton {
+        check_the_reach(owner, value.function, written)
+    }
+}
+
+func check_the_reach(owner: Model.ClassModel, function: Model.FunctionModel, written: String) {
+    assert function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    assert declaration.body
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_block(declaration.body)
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        check_a_reached_name(owner, function, found.expression, written)
+        index = index + 1
+    }
+}
+
+func check_a_reached_name(
+    owner: Model.ClassModel,
+    function: Model.FunctionModel,
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    written: String,
+) {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        check_a_reached_attribute(owner, function, expression.name, written)
+    }
+}
+
+func check_a_reached_attribute(owner: Model.ClassModel, function: Model.FunctionModel, name: String, written: String) {
+    var attribute = owner.attribute_named(name)
+    assert attribute
+    assert not holds_a_value(attribute.attribute_type)
+    var plain = plain_name(owner.shown)
+    var shown = context.shown(attribute.attribute_type)
+    foreign.refuse_a_shared_attribute(context, written, function.name, plain, attribute.name, shown)
+}
+
+func holds_a_value(held: Model.Type): Boolean {
+    var kind = held.kind
+    if kind == 'scalar' or kind == 'enumeration' {
+        return true
+    }
+    if kind != 'object' {
+        return false
+    }
+    if held.name == "String" {
+        return true
+    }
+    if not context.has_a_class(held) {
+        return false
+    }
+    var model = context.class_of(held)
+    return model.is_singleton
+}
+
+func plain_name(shown: String): String {
+    var parts = shown.split(".")
+    var last = parts.last()
+    crash last
+    return last
+}
