@@ -420,33 +420,64 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
     line = assign.line
     var object = lower_value(assign.object)
     var value = lower_value(assign.value)
-    var offset = layout.offset_of(assign.attribute)
-    var attribute_type = assign.attribute.attribute_type
+    if layout.is_back(assign.attribute) {
+        store_a_back_reference(object.value, assign.attribute, value)
+    } else {
+        store_an_attribute(object.value, assign.attribute, value)
+    }
+    crash assign.object
+    discard(object, assign.object.value_type)
+}
+
+func store_an_attribute(object: Integer, attribute: Model.AttributeModel, value: Lowered) {
+    var offset = layout.offset_of(attribute)
+    var attribute_type = attribute.attribute_type
     var width = width_of(attribute_type)
     kept(value, attribute_type)
     var old = new_register()
     if is_a_pointer(attribute_type) {
-        var loaded_old = LowIntermediaryRepresentation.Instructions.Load(old, object.value, offset, 'bits_64')
+        var loaded_old = LowIntermediaryRepresentation.Instructions.Load(old, object, offset, 'bits_64')
         emit(loaded_old)
     }
-    var stored = LowIntermediaryRepresentation.Instructions.Store(object.value, offset, value.value, width)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(object, offset, value.value, width)
     emit(stored)
     if is_a_pointer(attribute_type) {
         settle_before_letting_go(old, attribute_type)
         release(old)
     }
-    crash assign.object
-    discard(object, assign.object.value_type)
-    if is_a_nullable_scalar(assign.attribute.attribute_type) {
-        var presence_offset = offset + 8
-        var stored_presence = LowIntermediaryRepresentation.Instructions.Store(
-            object.value,
-            presence_offset,
-            value.presence,
-            'bits_64',
-        )
-        emit(stored_presence)
+    assert is_a_nullable_scalar(attribute_type)
+    var presence_offset = offset + 8
+    var stored_presence = LowIntermediaryRepresentation.Instructions.Store(
+        object,
+        presence_offset,
+        value.presence,
+        'bits_64',
+    )
+    emit(stored_presence)
+}
+
+func store_a_back_reference(object: Integer, attribute: Model.AttributeModel, value: Lowered) {
+    var offset = layout.offset_of(attribute)
+    var old = new_register()
+    var loaded_old = LowIntermediaryRepresentation.Instructions.Load(old, object, offset, 'bits_64')
+    emit(loaded_old)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(object, offset, value.value, 'bits_64')
+    emit(stored)
+    var slot = layout.back_slot_of(attribute)
+    count_back(value.value, slot, "_point_back")
+    if value.owned {
+        release(value.value)
     }
+    count_back(old, slot, "_let_go_back")
+}
+
+func count_back(object: Integer, slot: Integer, helper: String) {
+    var slot_register = constant(slot)
+    var arguments = List<Integer>()
+    arguments.append(object)
+    arguments.append(slot_register)
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, helper, arguments)
+    emit(called)
 }
 
 func lower_assign_through_shape(assign: HighIntermediaryRepresentation.Statements.AssignThroughShape) {
@@ -496,6 +527,17 @@ func store_in_a_filler(
     var test = LowIntermediaryRepresentation.Instructions.Branch(matches, storing, next)
     emit(test)
     switch_to(storing)
+    if layout.is_back(attribute) {
+        var held = owned(value.value)
+        store_a_back_reference(object, attribute, held)
+    } else {
+        store_in_place(object, attribute, value, value_type)
+    }
+    jump_to(after)
+    switch_to(next)
+}
+
+func store_in_place(object: Integer, attribute: Model.AttributeModel, value: Lowered, value_type: Model.Type) {
     var offset = layout.offset_of(attribute)
     var width = width_of(attribute.attribute_type)
     var old = new_register()
@@ -505,11 +547,8 @@ func store_in_a_filler(
     }
     var stored = LowIntermediaryRepresentation.Instructions.Store(object, offset, value.value, width)
     emit(stored)
-    if is_a_pointer(value_type) {
-        release(old)
-    }
-    jump_to(after)
-    switch_to(next)
+    assert is_a_pointer(value_type)
+    release(old)
 }
 
 func lower_evaluate(evaluate: HighIntermediaryRepresentation.Statements.Evaluate) {
@@ -742,6 +781,9 @@ func load_attribute(object_register: Integer, attribute: Model.AttributeModel): 
     var loaded = LowIntermediaryRepresentation.Instructions.Load(target, object.value, offset, width)
     loaded.is_signed = is_signed(attribute_type)
     emit(loaded)
+    if layout.is_back(attribute) {
+        return held_back(target)
+    }
     if not is_a_nullable_scalar(attribute_type) {
         return single(target)
     }
@@ -755,6 +797,15 @@ func load_attribute(object_register: Integer, attribute: Model.AttributeModel): 
     )
     emit(loaded_presence)
     return Lowered(target, presence)
+}
+
+func held_back(object: Integer): Lowered {
+    var held = new_register()
+    var arguments = List<Integer>()
+    arguments.append(object)
+    var called = LowIntermediaryRepresentation.Instructions.Call(held, "_back_if_alive", arguments)
+    emit(called)
+    return single(held)
 }
 
 func lower_text(text: HighIntermediaryRepresentation.Values.TextConstant): Lowered {
@@ -828,6 +879,11 @@ func make_object(class_key: String): Integer {
     var one = constant(1)
     var stored_count = LowIntermediaryRepresentation.Instructions.Store(object, 8, one, 'bits_64')
     emit(stored_count)
+    if layout.is_back_held(class_key) {
+        var back_slot = layout.back_offset_of(class_key)
+        var stored_back = LowIntermediaryRepresentation.Instructions.Store(object, back_slot, one, 'bits_64')
+        emit(stored_back)
+    }
     var arguments = List<Integer>()
     arguments.append(object)
     var defaults = LowIntermediaryRepresentation.Instructions.Call(-1, "{class_key}._attribute_defaults", arguments)
