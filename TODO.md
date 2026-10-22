@@ -7,7 +7,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ## Architecture (now)
 
 - Rules that need types, after the typed high representation: template walks (`template_walk`, `vector_template_walk`, `walk_with_function`), a condition that is not a Boolean, foreign libraries and callbacks, codegen value questions (`argument_count`, `function_reflection`, `parameter_write_question`, `returned_text`), a `_:` that answers for nothing, and the rest of level 5 of `../SpiteLanguage/diagnostics`
-- Rules that need name resolution (level 4 of `../SpiteLanguage/diagnostics`): a class name that reaches nothing, attributes never read (reopenings can read them), reopening rules, the parameters of a function that replaces another (exempt from the unread rule)
+- Rules that need name resolution (level 4 of `../SpiteLanguage/diagnostics`): a class name that reaches nothing, attributes never read (reopenings can read them, and walks, `to_debug()` and the JSON writers read them only in the high representation, so it needs both), reopening rules, the parameters of a function that replaces another (exempt from the unread rule)
 - A comment inside an enum, union or type body is not refused yet (only function bodies have their closing line)
 - Port the rest of the mapping rules: a class named like a namespace, a hidden class, a class named like a library class, `spite/` folders
 - The emitter's refusals have no place (`validators/low_intermediary_representation/emittable`): each becomes a validator one level up once the high representation carries places
@@ -73,7 +73,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - A decimal `%` is computed as `x - trunc(x / y) * y`, which loses digits once the quotient passes 2^53: compute it exactly, as `fmod` does
 
-- A singleton circle closed at run time halts with the message for one singleton; it should name the chain (`singleton 'Registry' binds 'Catalog', which binds 'Registry'`), and the compile-time circle check is not built
+- A singleton circle closed at run time halts with the message for one singleton; it should name the chain (`singleton 'Registry' binds 'Catalog', which binds 'Registry'`). The compile-time check follows only a singleton binding another directly, not a circle through an object that is not one (`Metronome` binds a `Tick` that binds `Metronome`)
 - A list of `Parallel` handles read with a proven index stops as if the item were missing (`singleton_function_values`)
 - `private_walk` crashes the compiler (`class_of` of an unknown class while building a JSON or binary reader of a class with a private union attribute)
 - A shape declared inside a class, or in a namespace's own file (`tools/tools.spite`), is not found by its short name (`nearest_type`)
