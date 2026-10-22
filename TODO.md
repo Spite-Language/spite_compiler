@@ -57,6 +57,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found while porting
 
+- The spec puts the inflection table at `library/string/inflection.spite` (`String.Inflection`), but a class file and a folder of one name are refused (`conformance/class_and_namespace`), so the table stays `common/inflection.spite` and the plural templates fall back to the compiler's own rules: a program reopening the table (`inflection_table`) is not read yet. Needs a decision on whether a class may also be a namespace
+
 - `shape_members` corrupts the heap (reported in `List<Spite.Internal.Running>.reserve`) once a `type`'s function is held as a value and run through `Parallel`: a count is released once too often
 
 - `tests/system` expects `Arguments.get(3)` to answer "" for a missing argument, a default nobody can tell from a real answer (D244): the library stops instead, and the test needs a decision
