@@ -1,0 +1,630 @@
+var no_model = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(no_model)
+var no_folders = Mapping.FolderMap()
+var symbols = Symbols.SymbolTable(no_folders)
+var report_path = ""
+var program_name = ""
+var working_folder = ""
+var references = Section("Lists that hold references")
+var heap_lists = Section("Lists not in the frame")
+var heap_objects = Section("Objects not in the frame")
+var copies = Section("Copies not elided")
+var checks = Section("Overflow checks kept")
+var waits = Section("Waits that hold the frame")
+var source_lines = Dictionary<String, List<String>>()
+var list_places = Dictionary<String, String>()
+var list_lines = Dictionary<String, Integer>()
+var current_path = ""
+var flat = List<HighIntermediaryRepresentation.Statements.Statement>()
+var depths = List<Integer>()
+var depth = 0
+var statement_line = 0
+var whole_numbers = ["Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong"]
+var growing = ["append", "prepend", "insert"]
+
+func Printer(
+    starting_high: HighIntermediaryRepresentation.HighProgram,
+    starting_symbols: Symbols.SymbolTable,
+    starting_report_path: String,
+    starting_program_name: String,
+    starting_working_folder: String,
+) {
+    high = starting_high
+    symbols = starting_symbols
+    report_path = starting_report_path.replace("\\", "/")
+    program_name = starting_program_name
+    working_folder = starting_working_folder.replace("\\", "/")
+}
+
+func text(): String {
+    high.built_functions.each(read_a_function)
+    add_the_list_references()
+    add_the_held_waits()
+    var written = List<String>()
+    written.append("# Optimisation report")
+    written.append("")
+    written.append(
+        "What the compiler could not optimise in `{program_name}`, and why: each line is a place in the source and what kept the optimisation from it.",
+    )
+    add_a_section(written, references)
+    add_a_section(written, heap_lists)
+    add_a_section(written, heap_objects)
+    add_a_section(written, copies)
+    add_a_section(written, checks)
+    add_a_section(written, waits)
+    written.append("")
+    return written.join("\n")
+}
+
+func add_a_section(written: List<String>, section: Section) {
+    var counted = section.count()
+    written.append("")
+    written.append("## {section.title} ({counted})")
+    written.append("")
+    if counted == 0 {
+        written.append("None.")
+        return
+    }
+    var index = 0
+    while index < section.texts.count() {
+        var entry_text = section.texts[index]
+        var path = section.paths[index]
+        var line = section.lines[index]
+        crash path
+        crash line
+        var link = link_to(path)
+        written.append("- [{path}:{line}]({link}#L{line}): {entry_text}")
+        index = index + 1
+    }
+}
+
+func link_to(path: String): String {
+    var forward = path.replace("\\", "/")
+    if is_absolute(report_path) {
+        if is_absolute(forward) {
+            return forward
+        }
+        return "{working_folder}/{forward}"
+    }
+    var segments = report_path.split("/")
+    segments.remove_last()
+    var climbs = List<String>()
+    var index = 0
+    while index < segments.count() {
+        var segment = segments[index]
+        if not segment.is_empty() and segment != "." {
+            climbs.append("..")
+        }
+        index = index + 1
+    }
+    climbs.append(forward)
+    return climbs.join("/")
+}
+
+func is_absolute(path: String): Boolean {
+    return path.starts_with("/") or path.contains(":")
+}
+
+func read_a_function(built: HighIntermediaryRepresentation.HighFunction) {
+    var owner = high.model.class_named(built.function.owner)
+    assert owner
+    current_path = owner.file.path.replace("\\", "/")
+    flat = List<HighIntermediaryRepresentation.Statements.Statement>()
+    depths = List<Integer>()
+    depth = 0
+    flatten(built.body)
+    flat.each(read_the_lists_made)
+    assert built.function.declaration and not built.function.is_synthetic
+    var place = 0
+    while place < flat.count() {
+        var declared = flat[place]
+        read_a_declaration(declared, place)
+        read_the_arithmetic(declared)
+        place = place + 1
+    }
+}
+
+func flatten(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(flatten_a_statement)
+}
+
+func flatten_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    flat.append(statement)
+    depths.append(depth)
+    switch statement {
+        HighIntermediaryRepresentation.Statements.If: flatten_branches(statement)
+        HighIntermediaryRepresentation.Statements.While: flatten_a_loop(statement)
+        HighIntermediaryRepresentation.Statements.Block: flatten(statement)
+        _: return
+    }
+}
+
+func flatten_branches(branch: HighIntermediaryRepresentation.Statements.If) {
+    flatten(branch.then_branch)
+    flatten(branch.else_branch)
+}
+
+func flatten_a_loop(loop: HighIntermediaryRepresentation.Statements.While) {
+    depth = depth + 1
+    flatten(loop.body)
+    depth = depth - 1
+}
+
+func line_of(statement: HighIntermediaryRepresentation.Statements.Statement): Integer {
+    return statement.line
+}
+
+func read_the_lists_made(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    statement_line = line_of(statement)
+    assert statement_line > 0
+    var found = values_of(statement)
+    found.each(find_lists_made)
+}
+
+func values_of(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+): List<HighIntermediaryRepresentation.Values.Value> {
+    var found = List<HighIntermediaryRepresentation.Values.Value>()
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: add_present(found, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign: add_present(found, statement.value)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: add_both(found, statement.object, statement.value)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: add_both(found, statement.object, statement.value)
+        HighIntermediaryRepresentation.Statements.Evaluate: add_present(found, statement.value)
+        HighIntermediaryRepresentation.Statements.If: add_present(found, statement.condition)
+        HighIntermediaryRepresentation.Statements.While: add_present(found, statement.condition)
+        HighIntermediaryRepresentation.Statements.Return: add_present(found, statement.value)
+        _: return found
+    }
+    return found
+}
+
+func add_present(
+    found: List<HighIntermediaryRepresentation.Values.Value>,
+    value: HighIntermediaryRepresentation.Values.Value?,
+) {
+    assert value
+    found.append(value)
+}
+
+func add_both(
+    found: List<HighIntermediaryRepresentation.Values.Value>,
+    first_value: HighIntermediaryRepresentation.Values.Value?,
+    second_value: HighIntermediaryRepresentation.Values.Value?,
+) {
+    add_present(found, first_value)
+    add_present(found, second_value)
+}
+
+func inner_values_of(
+    value: HighIntermediaryRepresentation.Values.Value,
+): List<HighIntermediaryRepresentation.Values.Value> {
+    var found = List<HighIntermediaryRepresentation.Values.Value>()
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: add_a_call(found, value.receiver, value.arguments)
+        HighIntermediaryRepresentation.Values.ShapeCall: add_a_call(found, value.receiver, value.arguments)
+        HighIntermediaryRepresentation.Values.FunctionValueCall: add_a_call(found, value.called, value.arguments)
+        HighIntermediaryRepresentation.Values.ForeignCall: add_a_call(found, value.library, value.arguments)
+        HighIntermediaryRepresentation.Values.MakeObject: add_a_call(found, null, value.arguments)
+        HighIntermediaryRepresentation.Values.MachineOperation: add_both(found, value.left, value.right)
+        HighIntermediaryRepresentation.Values.Conversion: add_present(found, value.converted)
+        HighIntermediaryRepresentation.Values.Negation: add_present(found, value.negated)
+        HighIntermediaryRepresentation.Values.PresenceTest: add_present(found, value.tested)
+        HighIntermediaryRepresentation.Values.ClassTest: add_present(found, value.tested)
+        HighIntermediaryRepresentation.Values.ClassOfValue: add_present(found, value.described)
+        HighIntermediaryRepresentation.Values.AttributeRead: add_present(found, value.object)
+        HighIntermediaryRepresentation.Values.FunctionValue: add_present(found, value.receiver)
+        HighIntermediaryRepresentation.Values.NumberRoom: add_both(found, value.made, value.number)
+        HighIntermediaryRepresentation.Values.EnumText: add_present(found, value.number)
+        HighIntermediaryRepresentation.Values.EnumFromText: add_present(found, value.text)
+        _: return found
+    }
+    return found
+}
+
+func add_a_call(
+    found: List<HighIntermediaryRepresentation.Values.Value>,
+    receiver: HighIntermediaryRepresentation.Values.Value?,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+) {
+    add_present(found, receiver)
+    arguments.each(found.append)
+}
+
+func find_lists_made(value: HighIntermediaryRepresentation.Values.Value) {
+    if value == HighIntermediaryRepresentation.Values.MakeObject {
+        note_a_list_made(value)
+    }
+    var inner = inner_values_of(value)
+    inner.each(find_lists_made)
+}
+
+func note_a_list_made(made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var list_key = made.value_type.name
+    assert list_key.starts_with("List_of_")
+    assert not is_known_earlier(list_key)
+    list_places[list_key] = current_path
+    list_lines[list_key] = statement_line
+}
+
+func is_known_earlier(list_key: String): Boolean {
+    var earlier = list_places[list_key]
+    var earlier_line = list_lines[list_key]
+    if not earlier or not earlier_line {
+        return false
+    }
+    if earlier == current_path {
+        return earlier_line <= statement_line
+    }
+    return earlier < current_path
+}
+
+func add_the_list_references() {
+    var keys = list_places.keys()
+    keys.each(add_a_list_reference)
+}
+
+func add_a_list_reference(list_key: String) {
+    var listed = high.model.class_named(list_key)
+    var path = list_places[list_key]
+    var line = list_lines[list_key]
+    crash listed
+    crash path
+    crash line
+    var element = listed.bound_types["$element_type"]
+    crash element
+    var held = high.model.class_named(element.name)
+    var is_a_class = element.kind == 'object' and element.name != "String"
+    assert is_a_class and held
+    assert held.shown != "Object"
+    var why = why_it_is_a_reference(element, held)
+    references.add(path, line, "`{listed.shown}` keeps a reference to each item: {why}")
+}
+
+func why_it_is_a_reference(element: Model.Type, held: Model.ClassModel): String {
+    if element.is_nullable {
+        return "an item may be null, and only an item that is always there is laid inline"
+    }
+    if held.function_named("drop") {
+        return "'{held.shown}' has a drop(), which runs on the object itself"
+    }
+    var index = 0
+    while index < held.declared_attributes.count() {
+        var attribute = held.declared_attributes[index]
+        if not is_inline(attribute.attribute_type) {
+            var shown = shown_type(attribute.attribute_type)
+            var article = article_of(shown)
+            return "its attribute '{attribute.name}' is {article} {shown}, which cannot be laid inline"
+        }
+        index = index + 1
+    }
+    return "'{held.shown}' is made only of numbers, text and enum values and would fit inline, as it does in a 'Vector<{held.shown}>'"
+}
+
+func is_inline(held: Model.Type): Boolean {
+    if held.is_nullable {
+        return false
+    }
+    if held.kind == 'scalar' or held.kind == 'enumeration' {
+        return true
+    }
+    return held.kind == 'object' and held.name == "String"
+}
+
+func holds_only_numbers(held: Model.ClassModel): Boolean {
+    var index = 0
+    while index < held.declared_attributes.count() {
+        var attribute = held.declared_attributes[index]
+        var kind = attribute.attribute_type.kind
+        var is_plain = kind == 'scalar' or kind == 'enumeration'
+        if not is_plain or attribute.attribute_type.is_nullable {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func shown_type(of_type: Model.Type): String {
+    var shown = of_type.name
+    var model = high.model.class_named(of_type.name)
+    if model {
+        shown = model.shown
+    }
+    if of_type.is_nullable {
+        return "{shown}?"
+    }
+    return shown
+}
+
+func article_of(shown: String): String {
+    var first_character = shown.slice(0, 1)
+    var first_letter = first_character.lower_case()
+    var vowels = ["a", "e", "i", "o", "u"]
+    if vowels.contains(first_letter) {
+        return "an"
+    }
+    return "a"
+}
+
+func read_a_declaration(statement: HighIntermediaryRepresentation.Statements.Statement, place: Integer) {
+    if statement == HighIntermediaryRepresentation.Statements.Declare {
+        read_a_local(statement, place)
+    }
+}
+
+func read_a_local(declared: HighIntermediaryRepresentation.Statements.Declare, place: Integer) {
+    read_a_local_value(declared, declared.value, place)
+}
+
+func read_a_local_value(
+    declared: HighIntermediaryRepresentation.Statements.Declare,
+    value: HighIntermediaryRepresentation.Values.Value?,
+    place: Integer,
+) {
+    if value == HighIntermediaryRepresentation.Values.MakeObject {
+        read_a_made_local(declared, value, place)
+    }
+    if value == HighIntermediaryRepresentation.Values.Call {
+        read_a_copy(declared, value, place)
+    }
+}
+
+func read_a_made_local(
+    declared: HighIntermediaryRepresentation.Statements.Declare,
+    made: HighIntermediaryRepresentation.Values.MakeObject,
+    place: Integer,
+) {
+    var made_key = made.value_type.name
+    var model = high.model.class_named(made_key)
+    assert model and made.value_type.kind == 'object'
+    var is_plain_text = made_key == "String" or model.shown == "Object"
+    assert not is_plain_text and not model.is_singleton
+    var shown_name = written_name(declared)
+    var is_a_list = made_key.starts_with("List_of_")
+    var why = what_lets_it_go(declared.name, place, is_a_list)
+    if is_a_list {
+        if why.is_empty() {
+            why = "the compiler makes every list on the heap"
+        }
+        heap_lists.add(current_path, declared.line, "`{shown_name}` is made on the heap: {why}")
+        return
+    }
+    if why.is_empty() {
+        why = "the compiler makes every object on the heap"
+    }
+    heap_objects.add(current_path, declared.line, "`{shown_name}` (`{model.shown}`) is made on the heap: {why}")
+}
+
+func read_a_copy(
+    declared: HighIntermediaryRepresentation.Statements.Declare,
+    copied: HighIntermediaryRepresentation.Values.Call,
+    place: Integer,
+) {
+    assert copied.function.name == "copy" and copied.arguments.is_empty()
+    var copied_type = copied.value_type
+    var model = high.model.class_named(copied_type.name)
+    assert model and copied_type.kind == 'object'
+    var written = source_line(current_path, declared.line)
+    var why = what_lets_it_go(declared.name, place, false)
+    if why.is_empty() and not holds_only_numbers(model) {
+        why = "'{model.shown}' holds text, a list or another object, and only a copy of a class of numbers is laid in the frame"
+    }
+    if why.is_empty() {
+        why = "the compiler makes every copy on the heap"
+    }
+    copies.add(current_path, declared.line, "`{written}` allocates a copy: {why}")
+}
+
+func written_name(declared: HighIntermediaryRepresentation.Statements.Declare): String {
+    var written = source_line(current_path, declared.line)
+    if not written.starts_with("var ") {
+        return declared.name
+    }
+    var written_length = written.length()
+    var rest = written.slice(4, written_length)
+    var pieces = rest.split(" ")
+    var named = pieces.first()
+    crash named
+    var before_type = named.split(":")
+    var bare = before_type.first()
+    crash bare
+    return bare
+}
+
+func source_line(path: String, line: Integer): String {
+    var known = source_lines[path]
+    if not known {
+        var source_text = symbols.text_of_the_class(path)
+        var unix_text = source_text.replace("\r", "")
+        var split_lines = unix_text.split("\n")
+        source_lines[path] = split_lines
+        known = split_lines
+    }
+    crash known
+    var found = known[line - 1]
+    if not found {
+        return ""
+    }
+    return found.trim()
+}
+
+func what_lets_it_go(name: String, place: Integer, is_a_list: Boolean): String {
+    var declared_depth = depths[place]
+    crash declared_depth
+    var index = place + 1
+    while index < flat.count() {
+        var later = flat[index]
+        var later_depth = depths[index]
+        crash later_depth
+        var later_line = line_of(later)
+        if is_a_list and later_depth > declared_depth and grows(later, name) {
+            return "line {later_line} appends to it in a loop, so how many items it holds is not known while compiling"
+        }
+        if lets_go(later, name) {
+            var written = source_line(current_path, later_line)
+            return "line {later_line} lets it go: `{written}`"
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func grows(statement: HighIntermediaryRepresentation.Statements.Statement, name: String): Boolean {
+    if statement == HighIntermediaryRepresentation.Statements.Evaluate {
+        return grows_by_a_call(statement.value, name)
+    }
+    return false
+}
+
+func grows_by_a_call(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        return growing.contains(value.function.name) and holds(value.receiver, name)
+    }
+    return false
+}
+
+func lets_go(statement: HighIntermediaryRepresentation.Statements.Statement, name: String): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return is_kept(statement.value, name)
+        HighIntermediaryRepresentation.Statements.Assign: return is_kept(statement.value, name)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: return is_kept(statement.value, name) or escapes(statement.object, name)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: return is_kept(statement.value, name) or escapes(statement.object, name)
+        HighIntermediaryRepresentation.Statements.Evaluate: return escapes(statement.value, name)
+        HighIntermediaryRepresentation.Statements.Return: return is_kept(statement.value, name)
+        HighIntermediaryRepresentation.Statements.If: return escapes(statement.condition, name)
+        HighIntermediaryRepresentation.Statements.While: return escapes(statement.condition, name)
+        _: return false
+    }
+}
+
+func is_kept(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
+    return holds(value, name) or escapes(value, name)
+}
+
+func holds(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        return value.name == name
+    }
+    if value == HighIntermediaryRepresentation.Values.Conversion {
+        return holds(value.converted, name)
+    }
+    return false
+}
+
+func escapes(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
+    if not value {
+        return false
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: return escapes_from_a_call(value.receiver, value.arguments, name)
+        HighIntermediaryRepresentation.Values.ShapeCall: return escapes_from_a_call(value.receiver, value.arguments, name)
+        HighIntermediaryRepresentation.Values.FunctionValueCall: return escapes_from_a_call(value.called, value.arguments, name)
+        HighIntermediaryRepresentation.Values.ForeignCall: return passes(value.arguments, name)
+        HighIntermediaryRepresentation.Values.MakeObject: return passes(value.arguments, name)
+        HighIntermediaryRepresentation.Values.FunctionValue: return is_kept(value.receiver, name)
+        _: return any_inner_escapes(value, name)
+    }
+}
+
+func any_inner_escapes(value: HighIntermediaryRepresentation.Values.Value, name: String): Boolean {
+    var inner = inner_values_of(value)
+    var index = 0
+    while index < inner.count() {
+        var held = inner[index]
+        if escapes(held, name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func escapes_from_a_call(
+    receiver: HighIntermediaryRepresentation.Values.Value?,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+    name: String,
+): Boolean {
+    if passes(arguments, name) {
+        return true
+    }
+    if holds(receiver, name) {
+        return false
+    }
+    return escapes(receiver, name)
+}
+
+func passes(arguments: List<HighIntermediaryRepresentation.Values.Value>, name: String): Boolean {
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        if is_kept(argument, name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func read_the_arithmetic(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    statement_line = line_of(statement)
+    assert statement_line > 0
+    var found = values_of(statement)
+    found.each(find_checked_arithmetic)
+}
+
+func find_checked_arithmetic(value: HighIntermediaryRepresentation.Values.Value) {
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        note_a_check(value)
+    }
+    var inner = inner_values_of(value)
+    inner.each(find_checked_arithmetic)
+}
+
+func note_a_check(operation: HighIntermediaryRepresentation.Values.MachineOperation) {
+    var is_checked = operation.operator == 'add' or operation.operator == 'subtract' or operation.operator == 'multiply'
+    var answer = operation.value_type
+    var is_whole = answer.kind == 'scalar' and whole_numbers.contains(answer.name)
+    assert is_checked and is_whole and not operation.shown.is_empty()
+    var article = article_of(answer.name)
+    var why = ""
+    if not is_a_number(operation.shown_left) {
+        why = "'{operation.shown_left}' can be any value {article} {answer.name} holds, and nothing proves a smaller range for it"
+    } else if not is_a_number(operation.shown_right) {
+        why = "'{operation.shown_right}' can be any value {article} {answer.name} holds, and nothing proves a smaller range for it"
+    } else {
+        why = "'{operation.shown_left}' is {operation.shown_left} and '{operation.shown_right}' is {operation.shown_right}, so the answer may not fit in {article} {answer.name}"
+    }
+    checks.add(current_path, statement_line, "`{operation.shown}` keeps its overflow check: {why}")
+}
+
+func is_a_number(written: String): Boolean {
+    if written.is_empty() {
+        return false
+    }
+    var index = 0
+    while index < written.length() {
+        var code = written.code_at(index)
+        var is_a_digit = code >= 48 and code <= 57
+        var is_a_sign = index == 0 and code == 45
+        if not is_a_digit and not is_a_sign {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func add_the_held_waits() {
+    var index = 0
+    while index < high.frame_hold_texts.count() {
+        var held_text = high.frame_hold_texts[index]
+        var path = high.frame_hold_paths[index]
+        var line = high.frame_hold_lines[index]
+        crash path
+        crash line
+        waits.add(path, line, held_text)
+        index = index + 1
+    }
+}
