@@ -11,7 +11,142 @@ func Working(starting_lowering: FunctionLowering) {
 }
 
 func started(conversion: HighIntermediaryRepresentation.Values.Conversion): Lowered {
+    var is_parallel = conversion.value_type.name == "Parallel"
+    if is_parallel {
+        return started_in_parallel(conversion.converted, conversion.value_type.carrier)
+    }
     return started_from(conversion.converted, conversion.value_type.carrier)
+}
+
+func started_in_parallel(work: HighIntermediaryRepresentation.Values.Value?, carrier: String): Lowered {
+    crash work
+    if work == HighIntermediaryRepresentation.Values.Call {
+        return started_on_a_thread(work, carrier)
+    }
+    return finished_at_once(work, carrier)
+}
+
+func started_on_a_thread(work: HighIntermediaryRepresentation.Values.Call, carrier: String): Lowered {
+    var outer = lowering.pending_releases
+    lowering.pending_releases = List<Integer>()
+    var registers = List<Integer>()
+    var pointers = List<Boolean>()
+    var receiver = lowering.lower_value(work.receiver)
+    crash work.receiver
+    lowering.release_later(receiver, work.receiver.value_type)
+    registers.append(receiver.value)
+    var receiver_is_a_pointer = lowering.is_a_pointer(work.receiver.value_type)
+    pointers.append(receiver_is_a_pointer)
+    var index = 0
+    while index < work.arguments.count() {
+        var argument = work.arguments[index]
+        var lowered_argument = lowering.lower_value(argument)
+        lowering.release_later(lowered_argument, argument.value_type)
+        registers.append(lowered_argument.value)
+        var argument_is_a_pointer = lowering.is_a_pointer(argument.value_type)
+        pointers.append(argument_is_a_pointer)
+        if lowered_argument.presence >= 0 {
+            registers.append(lowered_argument.presence)
+            pointers.append(false)
+        }
+        index = index + 1
+    }
+    var register_count = registers.count()
+    var size = lowering.constant(40 + 8 * register_count)
+    var block = lowering.new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(block, size)
+    lowering.emit(allocated)
+    var stored_index = 0
+    while stored_index < registers.count() {
+        var register = registers[stored_index]
+        var is_a_pointer = pointers[stored_index] == true
+        if is_a_pointer {
+            lowering.retain(register)
+        }
+        var stored = LowIntermediaryRepresentation.Instructions.Store(block, 40 + 8 * stored_index, register, 'bits_64')
+        lowering.emit(stored)
+        stored_index = stored_index + 1
+    }
+    lowering.release_the_pending()
+    lowering.pending_releases = outer
+    var entry = thread_entry(work, pointers)
+    var thread = lowering.new_register()
+    var starting = LowIntermediaryRepresentation.Instructions.StartThread(thread, entry, block)
+    lowering.emit(starting)
+    lowering.program.uses_threads = true
+    var kept_thread = LowIntermediaryRepresentation.Instructions.Store(block, 32, thread, 'bits_64')
+    lowering.emit(kept_thread)
+    var running = lowering.make_object(running_key)
+    var running_arguments = List<Integer>()
+    running_arguments.append(running)
+    running_arguments.append(block)
+    call_by_name(running_key, "Running", running_arguments)
+    var marking = List<Integer>()
+    marking.append(running)
+    call_by_name(running_key, "runs_on_a_thread", marking)
+    var made = lowering.make_object(carrier)
+    var work_arguments = List<Integer>()
+    work_arguments.append(made)
+    work_arguments.append(running)
+    call_by_name(carrier, "Work", work_arguments)
+    lowering.release(running)
+    return lowering.owned(made)
+}
+
+func thread_entry(work: HighIntermediaryRepresentation.Values.Call, pointers: List<Boolean>): String {
+    var number = lowering.program.lowered_functions.count()
+    var key = "_parallel_{number}"
+    var entering = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    entering.start(key)
+    var block = entering.new_register()
+    entering.function.parameter_count = 1
+    var arguments = List<Integer>()
+    var index = 0
+    while index < pointers.count() {
+        var register = entering.new_register()
+        var loaded = LowIntermediaryRepresentation.Instructions.Load(register, block, 40 + 8 * index, 'bits_64')
+        entering.emit(loaded)
+        arguments.append(register)
+        index = index + 1
+    }
+    var answer = -1
+    if not work.value_type.is_nothing() {
+        answer = entering.new_register()
+    }
+    var function_key = work.function.key()
+    var called = LowIntermediaryRepresentation.Instructions.Call(answer, function_key, arguments)
+    var presence = -1
+    if entering.is_a_nullable_scalar(work.value_type) {
+        presence = entering.new_register()
+        called.presence = presence
+    }
+    entering.emit(called)
+    if answer >= 0 {
+        var stored_answer = LowIntermediaryRepresentation.Instructions.Store(block, 16, answer, 'bits_64')
+        entering.emit(stored_answer)
+    }
+    if presence >= 0 {
+        var stored_presence = LowIntermediaryRepresentation.Instructions.Store(block, 24, presence, 'bits_64')
+        entering.emit(stored_presence)
+    }
+    var released = 0
+    while released < pointers.count() {
+        var is_a_pointer = pointers[released] == true
+        var register = arguments[released]
+        crash register
+        if is_a_pointer {
+            entering.release(register)
+        }
+        released = released + 1
+    }
+    var one = entering.constant(1)
+    var finished = LowIntermediaryRepresentation.Instructions.Store(block, 8, one, 'bits_64')
+    entering.emit(finished)
+    var zero = entering.constant(0)
+    var returned = LowIntermediaryRepresentation.Instructions.Return(zero)
+    entering.emit(returned)
+    lowering.program.lowered_functions.append(entering.function)
+    return key
 }
 
 func started_from(work: HighIntermediaryRepresentation.Values.Value?, carrier: String): Lowered {
