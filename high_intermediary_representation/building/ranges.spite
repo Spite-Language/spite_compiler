@@ -1,0 +1,1029 @@
+# ../../OPTIMIZATIONS.md#arithmetic-a-range-proves-is-not-checked
+var scalars = Model.Scalars()
+var program = Model.ProgramModel()
+var ranges = Dictionary<String, NumberRange>()
+var declared = Dictionary<String, Model.Type>()
+var is_reaching = true
+var is_studied = true
+var limit: Long = 4611686018427387904
+
+func prove(
+    function: Model.FunctionModel,
+    body: HighIntermediaryRepresentation.Statements.Block,
+    starting_program: Model.ProgramModel,
+    studied: Boolean,
+) {
+    program = starting_program
+    is_studied = studied
+    ranges = Dictionary<String, NumberRange>()
+    declared = Dictionary<String, Model.Type>()
+    is_reaching = true
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        declared[parameter.name] = parameter.parameter_type
+        index = index + 1
+    }
+    prove_block(body)
+}
+
+func prove_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        prove_statement(statement)
+        index = index + 1
+    }
+}
+
+func prove_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: prove_a_declaration(statement)
+        HighIntermediaryRepresentation.Statements.Assign: prove_an_assignment(statement)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: prove_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: prove_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: prove_both(statement.value, statement.waited)
+        HighIntermediaryRepresentation.Statements.If: prove_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: prove_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Return: prove_a_return(statement)
+        HighIntermediaryRepresentation.Statements.Stop: prove_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: prove_block(statement)
+    }
+}
+
+func prove_an_attribute_write(written: HighIntermediaryRepresentation.Statements.AssignAttribute) {
+    prove_both(written.object, written.value)
+}
+
+func prove_a_shape_write(written: HighIntermediaryRepresentation.Statements.AssignThroughShape) {
+    prove_both(written.object, written.value)
+}
+
+func prove_a_declaration(declaration: HighIntermediaryRepresentation.Statements.Declare) {
+    prove_value(declaration.value)
+    declared[declaration.name] = declaration.declared_type
+    set_the_range(declaration.name, declaration.value)
+}
+
+func prove_an_assignment(assignment: HighIntermediaryRepresentation.Statements.Assign) {
+    prove_value(assignment.value)
+    set_the_range(assignment.name, assignment.value)
+}
+
+func prove_a_return(returned: HighIntermediaryRepresentation.Statements.Return) {
+    prove_value(returned.value)
+    is_reaching = false
+}
+
+func prove_a_stop(stopped: HighIntermediaryRepresentation.Statements.Stop) {
+    stopped.shown.each(prove_present)
+    prove_value(stopped.then)
+    is_reaching = false
+}
+
+func set_the_range(name: String, value: HighIntermediaryRepresentation.Values.Value?) {
+    ranges.remove(name)
+    var named_type = declared[name]
+    assert named_type and value
+    assert is_whole(named_type)
+    var found = range_of(value)
+    assert found
+    var cut = cut_to(found, named_type)
+    assert cut
+    ranges[name] = cut
+}
+
+func prove_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    prove_value(branch.condition)
+    var entry = ranges.copy()
+    var entry_reaching = is_reaching
+    narrow(branch.condition, true)
+    prove_block(branch.then_branch)
+    var then_ranges = ranges
+    var then_reaching = is_reaching
+    ranges = entry.copy()
+    is_reaching = entry_reaching
+    if branch.else_branch {
+        prove_block(branch.else_branch)
+    } else if not then_reaching {
+        narrow(branch.condition, false)
+    }
+    var else_reaching = is_reaching
+    assert then_reaching
+    if not else_reaching {
+        ranges = then_ranges
+        is_reaching = then_reaching
+        return
+    }
+    ranges = joined(then_ranges, ranges)
+}
+
+func joined(
+    first: Dictionary<String, NumberRange>,
+    second: Dictionary<String, NumberRange>,
+): Dictionary<String, NumberRange> {
+    var made = Dictionary<String, NumberRange>()
+    var names = first.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var from_first = first[name]
+        var from_second = second[name]
+        if from_first and from_second {
+            var low = smaller(from_first.lowest, from_second.lowest)
+            var high = larger(from_first.highest, from_second.highest)
+            made[name] = NumberRange(low, high)
+        }
+        index = index + 1
+    }
+    return made
+}
+
+func prove_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    var assigned = List<String>()
+    assigned_in_block(loop.body, assigned)
+    var widened = Dictionary<String, NumberRange>()
+    var index = 0
+    while index < assigned.count() {
+        var name = assigned[index]
+        var counted = counter_range(loop, name)
+        if counted {
+            widened[name] = counted
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < assigned.count() {
+        var name = assigned[index]
+        ranges.remove(name)
+        var kept = widened[name]
+        if kept {
+            ranges[name] = kept
+        }
+        index = index + 1
+    }
+    var entry_reaching = is_reaching
+    prove_value(loop.condition)
+    var at_the_condition = ranges.copy()
+    narrow(loop.condition, true)
+    prove_block(loop.body)
+    ranges = at_the_condition
+    is_reaching = entry_reaching
+}
+
+func assigned_in_block(block: HighIntermediaryRepresentation.Statements.Block?, assigned: List<String>) {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        assigned_in(statement, assigned)
+        index = index + 1
+    }
+}
+
+func assigned_in(statement: HighIntermediaryRepresentation.Statements.Statement, assigned: List<String>) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: add_once(assigned, statement.name)
+        HighIntermediaryRepresentation.Statements.Assign: add_once(assigned, statement.name)
+        HighIntermediaryRepresentation.Statements.If: assigned_in_branches(statement, assigned)
+        HighIntermediaryRepresentation.Statements.While: assigned_in_block(statement.body, assigned)
+        HighIntermediaryRepresentation.Statements.Block: assigned_in_block(statement, assigned)
+        _: return
+    }
+}
+
+func assigned_in_branches(branch: HighIntermediaryRepresentation.Statements.If, assigned: List<String>) {
+    assigned_in_block(branch.then_branch, assigned)
+    assigned_in_block(branch.else_branch, assigned)
+}
+
+func add_once(names: List<String>, name: String) {
+    if not names.contains(name) {
+        names.append(name)
+    }
+}
+
+func counter_range(loop: HighIntermediaryRepresentation.Statements.While, name: String): NumberRange? {
+    var named_type = declared[name]
+    assert named_type
+    assert is_whole(named_type)
+    var entry = ranges[name]
+    assert entry
+    var steps = CounterSteps()
+    steps.name = name
+    steps_in_block(loop.body, steps, false)
+    assert steps.is_a_counter and steps.total > 0
+    var ceiling = type_highest(named_type)
+    var has_a_ceiling = is_bounded(named_type)
+    if not steps.is_nested {
+        var bound = loop_bound_of(loop.condition, name, loop)
+        if bound {
+            var stepped: Long = bound.highest + steps.total
+            ceiling = larger(entry.highest, stepped)
+            has_a_ceiling = true
+        }
+    }
+    assert has_a_ceiling and ceiling < limit
+    var counted = NumberRange(entry.lowest, ceiling)
+    return cut_to(counted, named_type)
+}
+
+func steps_in_block(block: HighIntermediaryRepresentation.Statements.Block?, steps: CounterSteps, nested: Boolean) {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        steps_in(statement, steps, nested)
+        index = index + 1
+    }
+}
+
+func steps_in(statement: HighIntermediaryRepresentation.Statements.Statement, steps: CounterSteps, nested: Boolean) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: steps_in_a_declaration(statement, steps)
+        HighIntermediaryRepresentation.Statements.Assign: steps_in_an_assignment(statement, steps, nested)
+        HighIntermediaryRepresentation.Statements.If: steps_in_branches(statement, steps, nested)
+        HighIntermediaryRepresentation.Statements.While: steps_in_block(statement.body, steps, true)
+        HighIntermediaryRepresentation.Statements.Block: steps_in_block(statement, steps, nested)
+        _: return
+    }
+}
+
+func steps_in_branches(branch: HighIntermediaryRepresentation.Statements.If, steps: CounterSteps, nested: Boolean) {
+    steps_in_block(branch.then_branch, steps, nested)
+    steps_in_block(branch.else_branch, steps, nested)
+}
+
+func steps_in_a_declaration(declaration: HighIntermediaryRepresentation.Statements.Declare, steps: CounterSteps) {
+    if declaration.name == steps.name {
+        steps.is_a_counter = false
+    }
+}
+
+func steps_in_an_assignment(
+    assignment: HighIntermediaryRepresentation.Statements.Assign,
+    steps: CounterSteps,
+    nested: Boolean,
+) {
+    assert assignment.name == steps.name
+    var step = step_of(assignment.value, steps.name)
+    if step < 0 {
+        steps.is_a_counter = false
+        return
+    }
+    steps.total = steps.total + step
+    if nested {
+        steps.is_nested = true
+    }
+}
+
+func step_of(value: HighIntermediaryRepresentation.Values.Value?, name: String): Long {
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        return step_of_an_operation(value, name)
+    }
+    return -1
+}
+
+func step_of_an_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation, name: String): Long {
+    if operation.operator != 'add' {
+        return -1
+    }
+    var right_step = constant_beside(operation.left, operation.right, name)
+    if right_step >= 0 {
+        return right_step
+    }
+    return constant_beside(operation.right, operation.left, name)
+}
+
+func constant_beside(
+    read: HighIntermediaryRepresentation.Values.Value?,
+    added: HighIntermediaryRepresentation.Values.Value?,
+    name: String,
+): Long {
+    var read_name = local_name_of(read)
+    if read_name != name {
+        return -1
+    }
+    if added == HighIntermediaryRepresentation.Values.WholeNumber {
+        return step_size(added.number)
+    }
+    return -1
+}
+
+func step_size(number: Long): Long {
+    if number < 0 or number >= limit {
+        return -1
+    }
+    return number
+}
+
+func loop_bound_of(
+    condition: HighIntermediaryRepresentation.Values.Value?,
+    name: String,
+    loop: HighIntermediaryRepresentation.Statements.While,
+): NumberRange? {
+    if condition == HighIntermediaryRepresentation.Values.MachineOperation {
+        return loop_bound_of_an_operation(condition, name, loop)
+    }
+    return null
+}
+
+func loop_bound_of_an_operation(
+    condition: HighIntermediaryRepresentation.Values.MachineOperation,
+    name: String,
+    loop: HighIntermediaryRepresentation.Statements.While,
+): NumberRange? {
+    if condition.operator == 'and' {
+        var on_the_left = loop_bound_of(condition.left, name, loop)
+        if on_the_left {
+            return on_the_left
+        }
+        return loop_bound_of(condition.right, name, loop)
+    }
+    var below = condition.operator == 'less'
+    var at_most = condition.operator == 'less_or_equal'
+    assert below or at_most
+    var read_name = local_name_of(condition.left)
+    var shift: Long = 0
+    if read_name != name {
+        read_name = shifted_name_of(condition.left)
+        shift = shift_of(condition.left)
+    }
+    assert read_name == name
+    var bound = bound_range_of(condition.right, loop)
+    assert bound
+    var highest: Long = bound.highest - shift
+    if below {
+        highest = highest - 1
+    }
+    return NumberRange(highest, highest)
+}
+
+func bound_range_of(
+    bound: HighIntermediaryRepresentation.Values.Value?,
+    loop: HighIntermediaryRepresentation.Statements.While,
+): NumberRange? {
+    var assigned = List<String>()
+    assigned_in_block(loop.body, assigned)
+    var saved = ranges.copy()
+    var index = 0
+    while index < assigned.count() {
+        var name = assigned[index]
+        ranges.remove(name)
+        index = index + 1
+    }
+    var found = range_of(bound)
+    ranges = saved
+    return found
+}
+
+func narrow(condition: HighIntermediaryRepresentation.Values.Value?, holds: Boolean) {
+    assert condition
+    switch condition {
+        HighIntermediaryRepresentation.Values.MachineOperation: narrow_an_operation(condition, holds)
+        HighIntermediaryRepresentation.Values.Negation: narrow_a_negation(condition, holds)
+        _: return
+    }
+}
+
+func narrow_a_negation(negation: HighIntermediaryRepresentation.Values.Negation, holds: Boolean) {
+    narrow(negation.negated, not holds)
+}
+
+func narrow_an_operation(condition: HighIntermediaryRepresentation.Values.MachineOperation, holds: Boolean) {
+    if condition.operator == 'and' {
+        narrow_both_sides(condition, holds)
+        return
+    }
+    assert condition.operator != 'or'
+    var comparison = condition.operator
+    if not holds {
+        comparison = turned_around(comparison)
+    }
+    var mirrored = mirrored_comparison(comparison)
+    narrow_one_side(comparison, condition.left, condition.right)
+    narrow_one_side(mirrored, condition.right, condition.left)
+}
+
+func narrow_both_sides(condition: HighIntermediaryRepresentation.Values.MachineOperation, holds: Boolean) {
+    assert holds
+    narrow(condition.left, true)
+    narrow(condition.right, true)
+}
+
+func turned_around(
+    comparison: HighIntermediaryRepresentation.Values.Operator,
+): HighIntermediaryRepresentation.Values.Operator {
+    switch comparison {
+        'less': return 'greater_or_equal'
+        'less_or_equal': return 'greater'
+        'greater': return 'less_or_equal'
+        'greater_or_equal': return 'less'
+        'equal': return 'not_equal'
+        _: return 'equal'
+    }
+}
+
+func mirrored_comparison(
+    comparison: HighIntermediaryRepresentation.Values.Operator,
+): HighIntermediaryRepresentation.Values.Operator {
+    switch comparison {
+        'less': return 'greater'
+        'less_or_equal': return 'greater_or_equal'
+        'greater': return 'less'
+        'greater_or_equal': return 'less_or_equal'
+        _: return comparison
+    }
+}
+
+func narrow_one_side(
+    comparison: HighIntermediaryRepresentation.Values.Operator,
+    subject: HighIntermediaryRepresentation.Values.Value?,
+    other: HighIntermediaryRepresentation.Values.Value?,
+) {
+    var name = local_name_of(subject)
+    var shift: Long = 0
+    if name == "" {
+        name = shifted_name_of(subject)
+        shift = shift_of(subject)
+    }
+    assert name != ""
+    var named_type = declared[name]
+    assert named_type
+    assert is_whole(named_type)
+    var bound = range_of(other)
+    assert bound
+    var current = ranges[name]
+    var low = type_lowest(named_type)
+    var high = type_highest(named_type)
+    if current {
+        low = current.lowest
+        high = current.highest
+    }
+    var known_before = is_bounded(named_type)
+    if current {
+        known_before = true
+    }
+    var bound_low: Long = bound.lowest - shift
+    var bound_high: Long = bound.highest - shift
+    switch comparison {
+        'less': high = smaller(high, bound_high - 1)
+        'less_or_equal': high = smaller(high, bound_high)
+        'greater': low = larger(low, bound_low + 1)
+        'greater_or_equal': low = larger(low, bound_low)
+        'equal': low = larger(low, bound_low)
+        _: return
+    }
+    if comparison == 'equal' {
+        high = smaller(high, bound_high)
+    }
+    var is_two_sided = known_before or comparison == 'equal'
+    assert is_two_sided and low <= high
+    var narrowed = NumberRange(low, high)
+    assert is_within_the_limit(narrowed)
+    var cut = cut_to(narrowed, named_type)
+    assert cut
+    ranges[name] = cut
+}
+
+func local_name_of(value: HighIntermediaryRepresentation.Values.Value?): String {
+    if not value {
+        return ""
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.LocalRead: return whole_local_name(value)
+        HighIntermediaryRepresentation.Values.Conversion: return widened_name_of(value)
+        _: return ""
+    }
+}
+
+func whole_local_name(read: HighIntermediaryRepresentation.Values.LocalRead): String {
+    if not is_whole(read.value_type) {
+        return ""
+    }
+    return read.name
+}
+
+func widened_name_of(conversion: HighIntermediaryRepresentation.Values.Conversion): String {
+    if conversion.kind != 'widen' {
+        return ""
+    }
+    return local_name_of(conversion.converted)
+}
+
+func shifted_name_of(value: HighIntermediaryRepresentation.Values.Value?): String {
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        return shifted_operation_name(value)
+    }
+    return ""
+}
+
+func shifted_operation_name(operation: HighIntermediaryRepresentation.Values.MachineOperation): String {
+    var is_a_shift = operation.operator == 'add' or operation.operator == 'subtract'
+    if not is_a_shift or not is_a_small_constant(operation.right) {
+        return ""
+    }
+    return local_name_of(operation.left)
+}
+
+func shift_of(value: HighIntermediaryRepresentation.Values.Value?): Long {
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        return operation_shift(value)
+    }
+    return 0
+}
+
+func operation_shift(operation: HighIntermediaryRepresentation.Values.MachineOperation): Long {
+    var right = operation.right
+    if right == HighIntermediaryRepresentation.Values.WholeNumber {
+        if operation.operator == 'subtract' {
+            var zero: Long = 0
+            return zero - right.number
+        }
+        return right.number
+    }
+    return 0
+}
+
+func is_a_small_constant(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if value == HighIntermediaryRepresentation.Values.WholeNumber {
+        var zero_point: Long = 0
+        var negative_limit: Long = zero_point - limit
+        return value.number < limit and value.number > negative_limit
+    }
+    return false
+}
+
+func prove_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    prove_value(first)
+    prove_value(second)
+}
+
+func prove_value(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    prove_present(value)
+}
+
+func prove_present(value: HighIntermediaryRepresentation.Values.Value) {
+    switch value {
+        HighIntermediaryRepresentation.Values.AttributeRead: prove_value(value.object)
+        HighIntermediaryRepresentation.Values.Call: prove_a_call(value)
+        HighIntermediaryRepresentation.Values.MakeObject: value.arguments.each(prove_present)
+        HighIntermediaryRepresentation.Values.MachineOperation: prove_an_operation(value)
+        HighIntermediaryRepresentation.Values.Negation: prove_value(value.negated)
+        HighIntermediaryRepresentation.Values.ForeignCall: prove_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.ClassTest: prove_value(value.tested)
+        HighIntermediaryRepresentation.Values.PresenceTest: prove_value(value.tested)
+        HighIntermediaryRepresentation.Values.Conversion: prove_value(value.converted)
+        HighIntermediaryRepresentation.Values.FunctionValue: prove_value(value.receiver)
+        HighIntermediaryRepresentation.Values.FunctionValueCall: prove_a_value_call(value)
+        HighIntermediaryRepresentation.Values.NumberRoom: prove_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.ShapeCall: prove_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.EnumText: prove_value(value.number)
+        HighIntermediaryRepresentation.Values.EnumFromText: prove_value(value.text)
+        HighIntermediaryRepresentation.Values.ClassOfValue: prove_value(value.described)
+        _: return
+    }
+}
+
+func prove_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    prove_value(call.receiver)
+    call.arguments.each(prove_present)
+}
+
+func prove_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall) {
+    prove_value(call.library)
+    call.arguments.each(prove_present)
+}
+
+func prove_a_value_call(call: HighIntermediaryRepresentation.Values.FunctionValueCall) {
+    prove_value(call.called)
+    call.arguments.each(prove_present)
+}
+
+func prove_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    prove_value(call.receiver)
+    call.arguments.each(prove_present)
+}
+
+func prove_an_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation) {
+    prove_both(operation.left, operation.right)
+    assert is_checked_arithmetic(operation)
+    operation.are_ranges_studied = true
+    operation.proves_no_ranges = not is_studied
+    assert is_studied
+    var left = range_of(operation.left)
+    var right = range_of(operation.right)
+    if left {
+        operation.is_left_ranged = true
+        operation.left_lowest = left.lowest
+        operation.left_highest = left.highest
+    }
+    if right {
+        operation.is_right_ranged = true
+        operation.right_lowest = right.lowest
+        operation.right_highest = right.highest
+    }
+    assert left and right
+    var answer = combined(operation.operator, left, right)
+    assert answer
+    operation.is_proven_to_fit = fits(answer, operation.value_type)
+    assert operation.is_proven_to_fit and answer.holds_one_value()
+    var both_plain = is_plain(operation.left) and is_plain(operation.right)
+    assert both_plain
+    operation.is_folded = true
+    operation.folded_number = answer.lowest
+}
+
+func is_plain(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if not value {
+        return false
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return true
+        HighIntermediaryRepresentation.Values.LocalRead: return true
+        HighIntermediaryRepresentation.Values.Conversion: return is_a_plain_widening(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: return value.is_proven_to_fit
+        _: return false
+    }
+}
+
+func is_a_plain_widening(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
+    if conversion.kind != 'widen' {
+        return false
+    }
+    return is_plain(conversion.converted)
+}
+
+func is_checked_arithmetic(operation: HighIntermediaryRepresentation.Values.MachineOperation): Boolean {
+    var operator = operation.operator
+    var is_checked = operator == 'add' or operator == 'subtract' or operator == 'multiply'
+    return is_checked and is_whole(operation.value_type)
+}
+
+func range_of(value: HighIntermediaryRepresentation.Values.Value?): NumberRange? {
+    assert is_studied and value
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return constant_range(value)
+        HighIntermediaryRepresentation.Values.LocalRead: return local_range(value)
+        HighIntermediaryRepresentation.Values.Conversion: return converted_range(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: return operation_range(value)
+        HighIntermediaryRepresentation.Values.Call: return call_range(value)
+        _: return any_value_of(value)
+    }
+}
+
+func any_value_of(value: HighIntermediaryRepresentation.Values.Value?): NumberRange? {
+    assert value
+    return type_range(value.value_type)
+}
+
+func constant_range(number: HighIntermediaryRepresentation.Values.WholeNumber): NumberRange? {
+    assert is_whole(number.value_type)
+    var zero_point: Long = 0
+    var negative_limit: Long = zero_point - limit
+    assert number.number < limit and number.number > negative_limit
+    return NumberRange(number.number, number.number)
+}
+
+func local_range(read: HighIntermediaryRepresentation.Values.LocalRead): NumberRange? {
+    assert is_whole(read.value_type)
+    var known = ranges[read.name]
+    if known {
+        return known
+    }
+    return type_range(read.value_type)
+}
+
+func converted_range(conversion: HighIntermediaryRepresentation.Values.Conversion): NumberRange? {
+    assert is_whole(conversion.value_type)
+    var is_kept = conversion.kind == 'widen' or conversion.kind == 'narrow'
+    if not is_kept {
+        return type_range(conversion.value_type)
+    }
+    var inner = range_of(conversion.converted)
+    if not inner {
+        return type_range(conversion.value_type)
+    }
+    var cut = cut_to(inner, conversion.value_type)
+    if cut {
+        return cut
+    }
+    return type_range(conversion.value_type)
+}
+
+func operation_range(operation: HighIntermediaryRepresentation.Values.MachineOperation): NumberRange? {
+    assert is_whole(operation.value_type)
+    var left = range_of(operation.left)
+    var right = range_of(operation.right)
+    var answer: NumberRange? = null
+    if left and right {
+        answer = combined(operation.operator, left, right)
+    }
+    if not answer and left {
+        answer = divided_by_anything(operation.operator, left)
+    }
+    if answer {
+        var cut = cut_to(answer, operation.value_type)
+        if cut {
+            return cut
+        }
+    }
+    return type_range(operation.value_type)
+}
+
+func divided_by_anything(operator: HighIntermediaryRepresentation.Values.Operator, left: NumberRange): NumberRange? {
+    var low_size = magnitude(left.lowest)
+    var high_size = magnitude(left.highest)
+    var size = larger(low_size, high_size)
+    var zero: Long = 0
+    if operator == 'divide' {
+        return NumberRange(zero - size, size)
+    }
+    if operator == 'remainder' {
+        var low = smaller(left.lowest, zero)
+        var high = larger(left.highest, zero)
+        return NumberRange(low, high)
+    }
+    return null
+}
+
+func combined(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: NumberRange,
+    right: NumberRange,
+): NumberRange? {
+    switch operator {
+        'add': return within_the_limit(left.lowest + right.lowest, left.highest + right.highest)
+        'subtract': return within_the_limit(left.lowest - right.highest, left.highest - right.lowest)
+        'multiply': return multiplied(left, right)
+        'divide': return divided(left, right)
+        'remainder': return remainder_of(left, right)
+        _: return null
+    }
+}
+
+func is_within_the_limit(found: NumberRange): Boolean {
+    var zero_point: Long = 0
+    var negative_limit: Long = zero_point - limit
+    return found.lowest > negative_limit and found.highest < limit
+}
+
+func within_the_limit(low: Long, high: Long): NumberRange? {
+    var zero_point: Long = 0
+    var negative_limit: Long = zero_point - limit
+    var is_within = low > negative_limit and high < limit
+    assert is_within
+    return NumberRange(low, high)
+}
+
+func multiplied(left: NumberRange, right: NumberRange): NumberRange? {
+    var products = List<Long>()
+    var fit = product_into(left.lowest, right.lowest, products)
+    fit = fit and product_into(left.lowest, right.highest, products)
+    fit = fit and product_into(left.highest, right.lowest, products)
+    fit = fit and product_into(left.highest, right.highest, products)
+    assert fit
+    var zero: Long = 0
+    var low: Long = limit
+    var high: Long = zero - limit
+    var index = 0
+    while index < products.count() {
+        var product = products[index]
+        low = smaller(low, product)
+        high = larger(high, product)
+        index = index + 1
+    }
+    return within_the_limit(low, high)
+}
+
+func product_into(first: Long, second: Long, products: List<Long>): Boolean {
+    if first == 0 or second == 0 {
+        products.append(0)
+        return true
+    }
+    var first_size = magnitude(first)
+    var second_size = magnitude(second)
+    var room: Long = limit / second_size
+    if first_size >= room {
+        return false
+    }
+    products.append(first * second)
+    return true
+}
+
+func divided(left: NumberRange, right: NumberRange): NumberRange? {
+    if not right.holds_one_value() or right.lowest == 0 {
+        return divided_by_anything('divide', left)
+    }
+    var first: Long = left.lowest / right.lowest
+    var second: Long = left.highest / right.lowest
+    var low = smaller(first, second)
+    var high = larger(first, second)
+    return NumberRange(low, high)
+}
+
+func remainder_of(left: NumberRange, right: NumberRange): NumberRange? {
+    var low_size = magnitude(right.lowest)
+    var high_size = magnitude(right.highest)
+    var divisor_size = larger(low_size, high_size)
+    if divisor_size == 0 {
+        return divided_by_anything('remainder', left)
+    }
+    var zero: Long = 0
+    var room: Long = divisor_size - 1
+    var low = larger(left.lowest, zero - room)
+    var high = smaller(left.highest, room)
+    low = smaller(low, zero)
+    high = larger(high, zero)
+    if left.lowest >= 0 {
+        low = zero
+    }
+    if left.highest <= 0 {
+        high = zero
+    }
+    return NumberRange(low, high)
+}
+
+func call_range(call: HighIntermediaryRepresentation.Values.Call): NumberRange? {
+    assert is_whole(call.value_type)
+    var owner = program.class_named(call.function.owner)
+    if not owner {
+        return type_range(call.value_type)
+    }
+    var library = Validators.LibraryFile()
+    if not library.holds(owner.file.path) {
+        return type_range(call.value_type)
+    }
+    if is_a_count(call, owner) {
+        var largest: Long = 2147483647
+        return NumberRange(0, largest)
+    }
+    var bounded = number_function_range(call)
+    if bounded {
+        var cut = cut_to(bounded, call.value_type)
+        if cut {
+            return cut
+        }
+    }
+    return type_range(call.value_type)
+}
+
+func is_a_count(call: HighIntermediaryRepresentation.Values.Call, owner: Model.ClassModel): Boolean {
+    if not call.arguments.is_empty() {
+        return false
+    }
+    var name = call.function.name
+    if name == "length" {
+        return owner.key == "String"
+    }
+    if name != "count" {
+        return false
+    }
+    var shown = owner.shown
+    var is_listed = shown.starts_with("List<") or shown.starts_with("Dictionary<")
+    return is_listed or shown.starts_with("Vector<") or shown.starts_with("Items<")
+}
+
+func number_function_range(call: HighIntermediaryRepresentation.Values.Call): NumberRange? {
+    assert scalars.is_a_scalar(call.function.owner)
+    var receiver = range_of(call.receiver)
+    assert receiver
+    var name = call.function.name
+    if name == "to_long" or name == "to_integer" {
+        return receiver
+    }
+    var first = argument_range(call, 0)
+    assert first
+    switch name {
+        "minimum": return smallest_of(receiver, first)
+        "maximum": return largest_of(receiver, first)
+        "clamp": return clamped(call, first)
+        _: return null
+    }
+}
+
+func smallest_of(first: NumberRange, second: NumberRange): NumberRange {
+    var low = smaller(first.lowest, second.lowest)
+    var high = smaller(first.highest, second.highest)
+    return NumberRange(low, high)
+}
+
+func largest_of(first: NumberRange, second: NumberRange): NumberRange {
+    var low = larger(first.lowest, second.lowest)
+    var high = larger(first.highest, second.highest)
+    return NumberRange(low, high)
+}
+
+func clamped(call: HighIntermediaryRepresentation.Values.Call, low_bound: NumberRange): NumberRange? {
+    var high_bound = argument_range(call, 1)
+    assert high_bound
+    var low = smaller(low_bound.lowest, high_bound.lowest)
+    return NumberRange(low, high_bound.highest)
+}
+
+func argument_range(call: HighIntermediaryRepresentation.Values.Call, index: Integer): NumberRange? {
+    assert index < call.arguments.count()
+    var argument = call.arguments[index]
+    return range_of(argument)
+}
+
+func fits(answer: NumberRange, of_type: Model.Type): Boolean {
+    return answer.lowest >= type_lowest(of_type) and answer.highest <= type_highest(of_type)
+}
+
+func cut_to(found: NumberRange, of_type: Model.Type): NumberRange? {
+    var type_low = type_lowest(of_type)
+    var type_high = type_highest(of_type)
+    var low = larger(found.lowest, type_low)
+    var high = smaller(found.highest, type_high)
+    assert low <= high
+    return NumberRange(low, high)
+}
+
+func is_whole(of_type: Model.Type): Boolean {
+    if of_type.kind != 'scalar' or of_type.is_nullable or of_type.name == "Boolean" {
+        return false
+    }
+    var scalar = scalars.of(of_type.name)
+    if not scalar {
+        return false
+    }
+    return not scalar.is_decimal
+}
+
+func is_bounded(of_type: Model.Type): Boolean {
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    return scalar.size <= 4
+}
+
+func type_range(of_type: Model.Type): NumberRange? {
+    assert is_whole(of_type) and is_bounded(of_type)
+    var low = type_lowest(of_type)
+    var high = type_highest(of_type)
+    return NumberRange(low, high)
+}
+
+func type_lowest(of_type: Model.Type): Long {
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    if not scalar.is_signed {
+        return 0
+    }
+    var zero: Long = 0
+    var widest: Long = 9223372036854775807
+    if scalar.size == 8 {
+        return zero - widest
+    }
+    var half = half_of_the_span(scalar.size)
+    return zero - half
+}
+
+func type_highest(of_type: Model.Type): Long {
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    var widest: Long = 9223372036854775807
+    if scalar.size == 8 {
+        return widest
+    }
+    var half = half_of_the_span(scalar.size)
+    if scalar.is_signed {
+        return half - 1
+    }
+    return half + half - 1
+}
+
+func half_of_the_span(size: Integer): Long {
+    switch size {
+        1: return 128
+        2: return 32768
+        _: return 2147483648
+    }
+}
+
+func magnitude(number: Long): Long {
+    if number < 0 {
+        var zero: Long = 0
+        return zero - number
+    }
+    return number
+}
+
+func smaller(first: Long, second: Long): Long {
+    if first < second {
+        return first
+    }
+    return second
+}
+
+func larger(first: Long, second: Long): Long {
+    if first > second {
+        return first
+    }
+    return second
+}
