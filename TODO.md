@@ -125,6 +125,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - This compiler's own entry file names its library with `load`, when it builds itself
 
 ## Every optimisation the original does
+- Classes specialised by use (D201): one layout per set of attributes a use reads and writes, so an unused attribute costs nothing; then `String`'s inflection words become attributes (D187) instead of D200's functions
 
 ### The tree shaking and the compile-time questions
 
