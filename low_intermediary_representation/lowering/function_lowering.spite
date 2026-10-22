@@ -798,10 +798,21 @@ func call_the_constructor(object: Integer, made: HighIntermediaryRepresentation.
     var arguments = List<Integer>()
     arguments.append(object)
     add_arguments(arguments, made.arguments)
-    var called = LowIntermediaryRepresentation.Instructions.Call(-1, constructor_key, arguments)
-    emit(called)
+    if resumable_mode and is_resumable(constructor_key) and not is_a_singleton_class(made.value_type.name) {
+        var working = Working(this)
+        working.waited_into(constructor_key, arguments, -1, -1)
+    } else {
+        var called = LowIntermediaryRepresentation.Instructions.Call(-1, constructor_key, arguments)
+        emit(called)
+    }
     release_the_pending()
     pending_releases = outer
+}
+
+func is_a_singleton_class(class_key: String): Boolean {
+    var made_model = layout.program.class_named(class_key)
+    crash made_model
+    return made_model.is_singleton
 }
 
 func singleton_of(class_key: String, made: HighIntermediaryRepresentation.Values.MakeObject): Integer {
@@ -1960,6 +1971,13 @@ func call_a_filler(
         }
     }
     var key = "{filler.name}.{member_name}"
+    if resumable_mode and is_resumable(key) {
+        var working = Working(this)
+        working.waited_into(key, passed, target, presence)
+        jump_to(after)
+        switch_to(next)
+        return
+    }
     var called = LowIntermediaryRepresentation.Instructions.Call(target, key, passed)
     called.presence = presence
     emit(called)
@@ -2035,13 +2053,27 @@ func lower_function_value(made: HighIntermediaryRepresentation.Values.FunctionVa
     if not is_a_pointer(made.receiver.value_type) {
         value_class = "Spite.FunctionValueOfANumber"
     }
-    var object = small_object(value_class, 32)
+    var object = small_object(value_class, 48)
     var address = new_register()
     var key = made.function.key()
     var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(address, key)
     emit(found)
     var stored_address = LowIntermediaryRepresentation.Instructions.Store(object, 16, address, 'bits_64')
     emit(stored_address)
+    var frame_maker = constant(0)
+    var stepper = constant(0)
+    if is_resumable(key) {
+        frame_maker = new_register()
+        var found_maker = LowIntermediaryRepresentation.Instructions.FunctionAddress(frame_maker, "{key}$frame")
+        emit(found_maker)
+        stepper = new_register()
+        var found_stepper = LowIntermediaryRepresentation.Instructions.FunctionAddress(stepper, "{key}$step")
+        emit(found_stepper)
+    }
+    var stored_maker = LowIntermediaryRepresentation.Instructions.Store(object, 32, frame_maker, 'bits_64')
+    emit(stored_maker)
+    var stored_stepper = LowIntermediaryRepresentation.Instructions.Store(object, 40, stepper, 'bits_64')
+    emit(stored_stepper)
     kept(receiver, made.receiver.value_type)
     var stored_receiver = LowIntermediaryRepresentation.Instructions.Store(object, 24, receiver.value, 'bits_64')
     emit(stored_receiver)
@@ -2073,12 +2105,51 @@ func lower_function_value_call(call: HighIntermediaryRepresentation.Values.Funct
         presence = new_register()
         made.presence = presence
     }
-    emit(made)
+    if resumable_mode {
+        call_a_value_that_may_wait(made, called.value, arguments, target, presence)
+    } else {
+        emit(made)
+    }
     release_the_pending()
     pending_releases = outer
     var answer = Lowered(target, presence)
     answer.owned = is_a_pointer(call.value_type)
     return answer
+}
+
+func call_a_value_that_may_wait(
+    plain: LowIntermediaryRepresentation.Instructions.CallAt,
+    called: Integer,
+    arguments: List<Integer>,
+    target: Integer,
+    presence: Integer,
+) {
+    var frame_maker = new_register()
+    var loaded_maker = LowIntermediaryRepresentation.Instructions.Load(frame_maker, called, 32, 'bits_64')
+    emit(loaded_maker)
+    var zero = constant(0)
+    var is_plain = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_plain, 'equal', frame_maker, zero)
+    emit(compared)
+    var calling = new_block()
+    var framing = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_plain, calling, framing)
+    emit(test)
+    switch_to(calling)
+    emit(plain)
+    jump_to(after)
+    switch_to(framing)
+    var stepper = new_register()
+    var loaded_stepper = LowIntermediaryRepresentation.Instructions.Load(stepper, called, 40, 'bits_64')
+    emit(loaded_stepper)
+    var frame = new_register()
+    var made_frame = LowIntermediaryRepresentation.Instructions.CallAt(frame, frame_maker, arguments)
+    emit(made_frame)
+    var working = Working(this)
+    working.finish_the_frame(frame, "", stepper, target, presence)
+    jump_to(after)
+    switch_to(after)
 }
 
 func decimal_converted(source: Integer, from_type: Model.Type, to_type: Model.Type): Lowered {
