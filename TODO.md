@@ -232,7 +232,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Loop-invariant code motion (built, D282): a load moves before its loop only from the loop's first block and only when nothing in the loop writes memory or calls; a load in a later block, and anything in a loop that writes memory, is still made on every pass
 - Common subexpressions across blocks only for registers written once (D282): a computation over a register written twice (a loop counter) is still made again in a later block, and a repeated comparison is made again
 - An unsigned 64-bit division by a constant that is not a power of two keeps the `div` (D283)
-- A function inlined into a loop keeps its bounds checks (ranges are proved before inlining), and a callee of more than 40 instructions, or that waits, is called (D281)
+- A function inlined into a loop keeps its bounds checks (ranges are proved before inlining), and a callee of more than 40 instructions, or that waits, is called (D281); inlining is chosen by size alone, with no estimate of the registers a loop then needs (`template_chains_run_as_one_loop` is about a quarter slower than before this inlining, likely from spills)
 - A division and a remainder of the same two numbers are two divisions, not one `idiv`
 - A value read across a call in a loop and spilled is reloaded on each use: no interval splitting and no rematerialisation of loads
 - Loops are not rotated (each pass jumps back to the test at the top)

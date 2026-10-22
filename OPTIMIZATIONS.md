@@ -508,8 +508,8 @@ before these passes run, and a value must be in the frame when the function resu
 ## Small functions are inlined
 
 A call to a function that waits for nothing and holds at most 24 instructions (an accessor, a list's `get_at` and
-`set_at`, a tiny helper), or at most 40 when it calls other functions, makes objects or frees them, is replaced by
-a copy of the function's body. Its parameters become the caller's argument registers when the body never writes
+`set_at`, a tiny helper), at most 12 when it calls other functions, or at most 40 when it makes an object or is
+passed one the caller made, is replaced by a copy of the function's body. Its parameters become the caller's argument registers when the body never writes
 them, and a copy otherwise; its answers are copied into the call's answer registers; its blocks are added at the
 end of the caller and the call becomes a jump into them. A call to a function whose whole body is a bare `return`
 (an empty `_attribute_defaults`, a constructor's `$defaults` with nothing to set) is removed.

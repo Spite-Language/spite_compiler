@@ -5,6 +5,9 @@ var doing_nothing = List<String>()
 var largest_callee = 24
 var largest_calling_callee = 40
 var calls_on = false
+var makes_on = false
+var largest_plain_calling_callee = 12
+var wanting_a_made_argument = List<String>()
 var largest_caller = 4000
 var most_inlined = 64
 var register_base = 0
@@ -36,6 +39,7 @@ func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
     var count = 0
     var copyable = true
     calls_on = false
+    makes_on = false
     var block_index = 0
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
@@ -50,7 +54,14 @@ func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
     }
     var largest = largest_callee
     if calls_on {
+        largest = largest_plain_calling_callee
+    }
+    if makes_on {
         largest = largest_calling_callee
+    }
+    if calls_on and not makes_on and count > largest {
+        largest = largest_calling_callee
+        wanting_a_made_argument.append(function.key)
     }
     assert copyable and count <= largest
     inlinable[function.key] = function
@@ -89,10 +100,15 @@ func is_copyable(instruction: LowIntermediaryRepresentation.Instructions.Instruc
         LowIntermediaryRepresentation.Instructions.FrameRoom: return true
         LowIntermediaryRepresentation.Instructions.Retain: return true
         LowIntermediaryRepresentation.Instructions.Call: return calls_a_function()
-        LowIntermediaryRepresentation.Instructions.Allocate: return calls_a_function()
+        LowIntermediaryRepresentation.Instructions.Allocate: return makes_an_object()
         LowIntermediaryRepresentation.Instructions.Free: return calls_a_function()
         _: return false
     }
+}
+
+func makes_an_object(): Boolean {
+    makes_on = true
+    return calls_a_function()
 }
 
 func calls_a_function(): Boolean {
@@ -163,12 +179,66 @@ func callee_of(
     if instruction == LowIntermediaryRepresentation.Instructions.Call {
         var found = inlinable[instruction.function]
         if found and found.key != caller.key {
-            if instruction.arguments.count() == found.parameter_count {
+            var fits = instruction.arguments.count() == found.parameter_count
+            if fits and is_worth_it(found, instruction, caller) {
                 return found
             }
         }
     }
     return null
+}
+
+func is_worth_it(
+    callee: LowIntermediaryRepresentation.LowFunction,
+    call: LowIntermediaryRepresentation.Instructions.Call,
+    caller: LowIntermediaryRepresentation.LowFunction,
+): Boolean {
+    if not wanting_a_made_argument.contains(callee.key) {
+        return true
+    }
+    var made = made_registers_of(caller)
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if made.contains(argument) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func made_registers_of(caller: LowIntermediaryRepresentation.LowFunction): List<Integer> {
+    var made = List<Integer>()
+    var round = 0
+    while round < 2 {
+        var block_index = 0
+        while block_index < caller.blocks.count() {
+            var block = caller.blocks[block_index]
+            var index = 0
+            while index < block.instructions.count() {
+                var instruction = block.instructions[index]
+                note_a_made_register(instruction, made)
+                index = index + 1
+            }
+            block_index = block_index + 1
+        }
+        round = round + 1
+    }
+    return made
+}
+
+func note_a_made_register(instruction: LowIntermediaryRepresentation.Instructions.Instruction, made: List<Integer>) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Allocate {
+        if not made.contains(instruction.target) {
+            made.append(instruction.target)
+        }
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        if made.contains(instruction.source) and not made.contains(instruction.target) {
+            made.append(instruction.target)
+        }
+    }
 }
 
 func inline_the_call(
