@@ -8,6 +8,8 @@ var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
 var built = List<HighIntermediaryRepresentation.Statements.Statement>()
 var facts_paths = List<String>()
 var facts_types = List<Model.Type>()
+var endings = Endings()
+var rest_is_folded_away = false
 
 func Statements(starting_context: Context) {
     context = starting_context
@@ -19,13 +21,24 @@ func block_of(written: AbstractSyntaxTree.Shapes.Statements.Block?): HighInterme
     var outer = built
     built = List<HighIntermediaryRepresentation.Statements.Statement>()
     context.scope.enter()
-    written.statements.each(build)
+    build_all(written.statements)
     context.scope.leave()
     var made = HighIntermediaryRepresentation.Statements.Block()
     made.statements = built
     made.line = written.line
     built = outer
     return made
+}
+
+func build_all(written: List<AbstractSyntaxTree.Shapes.Statements.Statement>) {
+    rest_is_folded_away = false
+    var index = 0
+    while index < written.count() and not rest_is_folded_away {
+        var statement = written[index]
+        build(statement)
+        index = index + 1
+    }
+    rest_is_folded_away = false
 }
 
 func narrowed_block_of(
@@ -38,7 +51,7 @@ func narrowed_block_of(
     built = List<HighIntermediaryRepresentation.Statements.Statement>()
     context.scope.enter()
     narrow_all(paths, types)
-    written.statements.each(build)
+    build_all(written.statements)
     context.scope.leave()
     var made = HighIntermediaryRepresentation.Statements.Block()
     made.statements = built
@@ -348,6 +361,10 @@ func assign_a_member(
     assert not assigns_a_walked_value(statement, target)
     refuse_a_constant(target)
     var object = values.value_of(target.target, null)
+    if object.value_type.kind == 'shape' and not object.value_type.is_nullable {
+        assign_through_a_shape(statement, object, target.name)
+        return
+    }
     var owner = values.present_class_of(object)
     var attribute = owner.attribute_named(target.name)
     var is_outside = owner.key != context.current_class.key
@@ -379,6 +396,29 @@ func refuse_a_constant(target: AbstractSyntaxTree.Shapes.Expressions.MemberExpre
     var written = class_path.join(".")
     assert values.scalars.is_a_scalar(written)
     typing.refuse_constant_assigned(context, "{written}.{target.name}")
+}
+
+func assign_through_a_shape(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    object: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+) {
+    var shape = context.program.shape_keyed(object.value_type.name)
+    crash shape
+    var member = shape.member_named(name)
+    var shown = context.shown(object.value_type)
+    if not member {
+        typing.refuse_unknown_member(context, shown, name)
+    }
+    crash member
+    if not member.is_an_attribute {
+        typing.refuse_read_only(context, shown, name)
+    }
+    crash member.answer
+    var value = values.fitted_value_of(statement.value, member.answer)
+    var made = HighIntermediaryRepresentation.Statements.AssignThroughShape(object, shape, name, value)
+    made.line = statement.line
+    add(made)
 }
 
 func assigns_a_walked_value(
@@ -674,11 +714,13 @@ func build_a_decided_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatem
     if holds {
         var taken = block_of(statement.then_branch)
         add(taken)
+        rest_is_folded_away = endings.always_leaves(taken)
         return
     }
     assert statement.else_branch
     var other = block_of(statement.else_branch)
     add(other)
+    rest_is_folded_away = endings.always_leaves(other)
 }
 
 func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
@@ -1117,6 +1159,13 @@ func switch_chain(
     if written == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
         is_the_rest = written.name == "_"
     }
+    var is_a_union = subject.value_type.kind == 'union' and not subject.value_type.is_nullable
+    if is_the_rest and is_a_union {
+        var rest_type = rest_of_the_union(statement, subject.value_type, index)
+        paths.append(path)
+        types.append(rest_type)
+        return narrowed_block_of(switch_case.body, paths, types)
+    }
     if is_the_rest {
         return block_of(switch_case.body)
     }
@@ -1136,6 +1185,63 @@ func switch_chain(
     var made = HighIntermediaryRepresentation.Statements.If(condition, body, else_branch)
     made.line = statement.line
     return made
+}
+
+func rest_of_the_union(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    union_type: Model.Type,
+    rest_index: Integer,
+): Model.Type {
+    var covered = List<String>()
+    var index = 0
+    while index < rest_index {
+        var switch_case = statement.cases[index]
+        crash switch_case
+        var class_path = values.class_path_of(switch_case.value)
+        if not class_path.is_empty() {
+            var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+            var member = context.resolver.class_type_in(class_path, no_arguments, context.current_class, context.line)
+            covered.append(member.name)
+        }
+        index = index + 1
+    }
+    var united = values.union_model_of(union_type)
+    var left = List<Model.Type>()
+    var left_names = List<String>()
+    var member_index = 0
+    while member_index < united.members.count() {
+        var held = united.members[member_index]
+        if not covered.contains(held.name) {
+            left.append(held)
+            var segments = held.name.split(".")
+            var simple = segments.last()
+            crash simple
+            left_names.append(simple)
+        }
+        member_index = member_index + 1
+    }
+    if left.count() != 1 {
+        return rest_union(united, left, left_names)
+    }
+    return left[0]
+}
+
+func rest_union(united: Model.UnionModel, left: List<Model.Type>, left_names: List<String>): Model.Type {
+    var parts = united.key.split(".")
+    var last = parts.count() - 1
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = context.program.class_named(owner_key)
+    crash owner
+    var joined = left_names.join("_or_")
+    var simple = "{united.name}_of_{joined}"
+    var known = owner.union_named(simple)
+    if not known {
+        var made = Model.UnionModel("{owner_key}.{simple}", simple)
+        made.members = left
+        owner.unions.append(made)
+    }
+    return Model.Type('union', "{owner_key}.{simple}")
 }
 
 func check_the_cover(
@@ -1292,8 +1398,8 @@ func read_a_binary_fact(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpr
     assert binary.operator == 'equal_equal'
     var class_path = values.tested_class_path_of(binary.right)
     assert not class_path.is_empty()
-    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
-    var member = context.resolver.class_type_in(class_path, no_arguments, context.current_class, context.line)
+    var type_arguments = values.tested_type_arguments(binary.right)
+    var member = context.resolver.class_type_in(class_path, type_arguments, context.current_class, context.line)
     crash binary.left
     var printer = Printers.Spite.ExpressionPrinter(binary.left)
     var path = printer.text()

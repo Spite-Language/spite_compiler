@@ -806,6 +806,10 @@ func function_value(function: Model.FunctionModel): HighIntermediaryRepresentati
     var parameter_types = function.parameters.map_parameter_types()
     function_type.parameters = parameter_types
     function_type.answer = function.answer
+    var last = function.parameters.last()
+    if last {
+        function_type.is_variadic = last.is_variadic
+    }
     var own = this_value()
     return HighIntermediaryRepresentation.Values.FunctionValue(function_type, function, own)
 }
@@ -1038,6 +1042,24 @@ func bound_type_question(
     if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
         return bound_has_function(target.name, call)
     }
+    if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return member_class_has_function(target, call)
+    }
+    return null
+}
+
+func member_class_has_function(
+    target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var function = context.current_function
+    assert target.name == "class" and function.bound_member_type
+    var described = target.target
+    if described == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        if described.name == function.bound_parameter {
+            return has_function_answer(function.bound_member_type, call)
+        }
+    }
     return null
 }
 
@@ -1048,6 +1070,13 @@ func bound_has_function(
     assert bound_name.starts_with("$")
     var bound = context.current_class.bound_types[bound_name]
     assert bound
+    return has_function_answer(bound, call)
+}
+
+func has_function_answer(
+    bound: Model.Type,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): HighIntermediaryRepresentation.Values.Value? {
     var asked = call.arguments[0]
     var function_name = ""
     if asked == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
@@ -1271,6 +1300,12 @@ func reflected_member(
             return sized
         }
     }
+    if member.name == "values" {
+        var listed_values = enum_values_of(class_path)
+        if listed_values {
+            return listed_values
+        }
+    }
     var described_path = class_path_of(member.target)
     var no_type_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
     var found = context.resolver.symbols.find(written, context.current_class.file.namespace)
@@ -1290,6 +1325,23 @@ func reflected_member(
     var printer = Printers.Spite.ExpressionPrinter(member)
     var path = printer.text()
     return narrowed(read, path)
+}
+
+func enum_values_of(path: List<String>): HighIntermediaryRepresentation.Values.Value? {
+    var declared = context.resolver.declared_type_in(path, context.current_class)
+    assert declared
+    assert declared.kind == 'enumeration'
+    var enumeration = enum_model_of(declared)
+    var list_type = context.resolver.list_type_of(declared)
+    var listed = new_list(list_type)
+    var index = 0
+    while index < enumeration.numbers.count() {
+        var number = enumeration.numbers[index]
+        var value = HighIntermediaryRepresentation.Values.WholeNumber(declared, number)
+        append_to(listed, value)
+        index = index + 1
+    }
+    return listed
 }
 
 func shape_size_of(path: List<String>): HighIntermediaryRepresentation.Values.Value? {
@@ -1916,15 +1968,48 @@ func function_value_call(
         typing.refuse_not_callable(context, name, shown)
     }
     var called_value = HighIntermediaryRepresentation.Values.LocalRead(local_type, internal_name)
+    return call_through_a_value(called_value, local_type, call)
+}
+
+func attribute_function_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    attribute: Model.AttributeModel,
+): HighIntermediaryRepresentation.Values.Value {
+    var own = this_value()
+    var read = HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
+    var held = narrowed(read, attribute.name)
+    var held_type = held.value_type
+    if held_type.is_nullable {
+        var shown = context.shown(held_type)
+        typing.refuse_maybe_null(context, shown)
+    }
+    return call_through_a_value(held, held_type, call)
+}
+
+func call_through_a_value(
+    called_value: HighIntermediaryRepresentation.Values.Value,
+    local_type: Model.Type,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): HighIntermediaryRepresentation.Values.Value {
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var fixed_count = call.arguments.count()
+    if local_type.is_variadic {
+        fixed_count = local_type.parameters.count() - 1
+    }
     var index = 0
-    while index < call.arguments.count() {
+    while index < fixed_count {
         var argument = call.arguments[index]
         var wanted = local_type.parameters[index]
         crash wanted
         var value = fitted_value_of(argument, wanted)
         arguments.append(value)
         index = index + 1
+    }
+    if local_type.is_variadic {
+        var listed_type = local_type.parameters.last()
+        crash listed_type
+        var gathered = gathered_list(listed_type, call.arguments, fixed_count)
+        arguments.append(gathered)
     }
     var made = HighIntermediaryRepresentation.Values.FunctionValueCall(called_value, arguments)
     if local_type.answer {
@@ -1982,6 +2067,10 @@ func member_call(
         var debugging = Debugging(context, this)
         return debugging.debug_text_of(receiver)
     }
+    if is_an_enum and callee.name == "to_integer" and call.arguments.is_empty() {
+        var integer = context.scalar_type("Integer")
+        return HighIntermediaryRepresentation.Values.Conversion(integer, 'widen', receiver)
+    }
     var read_enum = enum_read_from(receiver, callee.name, call.arguments)
     if read_enum {
         return read_enum
@@ -1996,6 +2085,11 @@ func member_call(
         return filtered_by_class
     }
     var function = owner.function_named(callee.name)
+    var stands_for = context.current_function.bound_function
+    var names_the_pattern = callee.name == context.current_function.bound_pattern and not stands_for.is_empty()
+    if not function and names_the_pattern {
+        function = owner.function_named(stands_for)
+    }
     if not function {
         function = member_template_of(owner, callee.name)
     }
@@ -2062,10 +2156,158 @@ func dictionary_template(
 func specialized_for(owner: Model.ClassModel, template: Model.FunctionModel, name: String): Model.FunctionModel? {
     var member_owner = context.resolver.template_owner_of(template, owner)
     assert member_owner
-    var owner_type: Model.Type = member_owner
+    var written_owner: Model.Type = member_owner
     var match = template_match(template, name)
     assert match
+    var owner_type = bound_parameters(template, written_owner)
+    var is_rebound = owner_type.name != written_owner.name
+    var known_name = name
+    if is_rebound and owner_type.kind == 'parameters' {
+        known_name = "{name}_in_{context.current_function.bound_function}"
+    }
+    var known = owner.function_named(known_name)
+    if known and is_rebound {
+        return known
+    }
+    var made = specialized_by_kind(owner, template, owner_type, name, match)
+    if made and is_rebound and owner_type.kind == 'parameters' {
+        made.name = known_name
+        made.bound_pattern = context.current_function.bound_pattern
+        made.bound_function = context.current_function.bound_function
+    }
+    return made
+}
+
+func bound_parameters(template: Model.FunctionModel, owner_type: Model.Type): Model.Type {
+    if owner_type.kind != 'parameters' {
+        return owner_type
+    }
+    var parts = owner_type.name.split("|")
+    var class_key = parts[0]
+    var function_part = parts[1]
+    crash class_key
+    crash function_part
+    var word = walked_word(template)
+    var words = function_part.split("_")
+    if words.contains(word) {
+        return Model.Type('pattern', owner_type.name)
+    }
+    var function = context.current_function
+    var is_bound = function.bound_pattern == function_part and not function.bound_function.is_empty()
+    if is_bound {
+        return Model.Type('parameters', "{class_key}|{function.bound_function}")
+    }
+    return owner_type
+}
+
+func replaced_word(text: String, word: String, replacement: String): String {
+    var words = text.split("_")
+    var renamed = List<String>()
+    var index = 0
+    while index < words.count() {
+        var each_word = words[index]
+        if each_word == word {
+            renamed.append(replacement)
+        } else {
+            renamed.append(each_word)
+        }
+        index = index + 1
+    }
+    return renamed.join("_")
+}
+
+func hole_enum(word: String, owner: Model.ClassModel): Model.Type? {
+    var path = List<String>()
+    var enum_name = pascal_case_of(word)
+    path.append(enum_name)
+    var declared = context.resolver.declared_type_in(path, owner)
+    assert declared
+    assert declared.kind == 'enumeration'
+    return declared
+}
+
+func pattern_names(template: Model.FunctionModel, owner: Model.ClassModel, pattern: Model.Type): List<String> {
+    var names = List<String>()
+    var parts = pattern.name.split("|")
+    var class_key = parts[0]
+    var function_part = parts[1]
+    crash class_key
+    crash function_part
+    var word = walked_word(template)
+    var enum_type = hole_enum(word, owner)
+    crash enum_type
+    var enumeration = enum_model_of(enum_type)
+    var walked_class = context.program.class_named(class_key)
+    crash walked_class
+    var index = 0
+    while index < enumeration.values.count() {
+        var value = enumeration.values[index]
+        var function_name = replaced_word(function_part, word, value)
+        if walked_class.function_named(function_name) {
+            names.append(value)
+        }
+        index = index + 1
+    }
+    return names
+}
+
+func specialized_over_a_pattern(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    pattern: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var match_parts = match.split("|")
+    var written = match_parts[0]
+    crash written
+    var parts = pattern.name.split("|")
+    var class_key = parts[0]
+    var function_part = parts[1]
+    crash class_key
+    crash function_part
+    var word = walked_word(template)
+    var enum_type = hole_enum(word, owner)
+    assert enum_type
+    var enumeration = enum_model_of(enum_type)
+    var place = enumeration.values.index_of(written)
+    assert place
+    var bound_function = replaced_word(function_part, word, written)
+    var walked_class = context.program.class_named(class_key)
+    crash walked_class
+    assert walked_class.function_named(bound_function)
+    var made = context.resolver.specialized(template, name, written, enum_type, false, owner)
+    made.bound_member_index = place
+    made.bound_pattern = function_part
+    made.bound_function = bound_function
+    owner.declared_functions.append(made)
+    return made
+}
+
+func specialized_over_a_handle(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var asks_if_finished = match == "finished" or match == "is_finished"
+    assert asks_if_finished
+    var boolean = context.boolean()
+    var made = context.resolver.specialized(template, name, "finished", boolean, false, owner)
+    owner.declared_functions.append(made)
+    return made
+}
+
+func specialized_by_kind(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
     switch owner_type.kind {
+        'pattern': return specialized_over_a_pattern(owner, template, owner_type, name, match)
+        'handle': return specialized_over_a_handle(owner, template, name, match)
         'shape': return specialized_over_a_shape(owner, template, owner_type, name, match)
         'namespace': return specialized_over_a_namespace(owner, template, name, match)
         'parameters': return specialized_over_parameters(owner, template, owner_type, name, match)
@@ -2092,6 +2334,15 @@ func specialized_over_a_class(
     if member.is_empty() {
         member = member_of(element_class, "is_{written}", is_plural)
     }
+    if member.is_empty() and not is_plural {
+        var chained = specialized_through_a_function(owner, template, element_class, name, written)
+        if chained {
+            return chained
+        }
+    }
+    if member.is_empty() and asks_a_question(template) {
+        return specialized_over_an_enum_value(owner, template, element_class, name, written)
+    }
     assert not member.is_empty()
     var attribute = element_class.attribute_named(member)
     var member_type = context.boolean()
@@ -2110,6 +2361,102 @@ func specialized_over_a_class(
     made.bound_member_index = member_index
     owner.declared_functions.append(made)
     return made
+}
+
+func asks_a_question(template: Model.FunctionModel): Boolean {
+    var asking = List<String>()
+    asking.append("filter_")
+    asking.append("count_")
+    asking.append("any_")
+    asking.append("all_")
+    asking.append("remove_where_")
+    var index = 0
+    while index < asking.count() {
+        var prefix = asking[index]
+        if template.name.starts_with(prefix) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func enum_members_of(element_class: Model.ClassModel): List<String> {
+    var names = List<String>()
+    var index = 0
+    while index < element_class.declared_attributes.count() {
+        var attribute = element_class.declared_attributes[index]
+        var held = attribute.attribute_type
+        if held.kind == 'enumeration' and not held.is_nullable {
+            names.append(attribute.name)
+        }
+        index = index + 1
+    }
+    var function_index = 0
+    while function_index < element_class.declared_functions.count() {
+        var function = element_class.declared_functions[function_index]
+        var answer = answer_or_nothing(function)
+        var answers_an_enum = answer.kind == 'enumeration' and not answer.is_nullable
+        var is_plain = function.parameters.is_empty() and not function.is_a_member_template
+        if answers_an_enum and is_plain {
+            names.append(function.name)
+        }
+        function_index = function_index + 1
+    }
+    return names
+}
+
+func enum_type_of_member(element_class: Model.ClassModel, member: String): Model.Type {
+    var attribute = element_class.attribute_named(member)
+    if attribute {
+        return attribute.attribute_type
+    }
+    var function = element_class.function_named(member)
+    crash function
+    return answer_or_nothing(function)
+}
+
+func specialized_over_an_enum_value(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    element_class: Model.ClassModel,
+    name: String,
+    written: String,
+): Model.FunctionModel? {
+    var candidates = enum_members_of(element_class)
+    var chosen = ""
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var enum_type = enum_type_of_member(element_class, candidate)
+        var enumeration = enum_model_of(enum_type)
+        if enumeration.values.contains(written) {
+            if not chosen.is_empty() {
+                typing.refuse_two_enum_members(context, name, chosen, candidate, written, element_class.shown)
+            }
+            chosen = candidate
+        }
+        index = index + 1
+    }
+    assert not chosen.is_empty()
+    var chosen_type = enum_type_of_member(element_class, chosen)
+    var is_a_function = not element_class.attribute_named(chosen)
+    var boolean = context.boolean()
+    var made = context.resolver.specialized(template, name, chosen, boolean, is_a_function, owner)
+    made.bound_member_index = attribute_index_of(element_class, chosen)
+    compare_with_the_value(made, chosen_type, written)
+    owner.declared_functions.append(made)
+    return made
+}
+
+func compare_with_the_value(made: Model.FunctionModel, enum_type: Model.Type, written: String) {
+    var enumeration = enum_model_of(enum_type)
+    var place = enumeration.values.index_of(written)
+    crash place
+    var number = enumeration.numbers[place]
+    crash number
+    made.compared_value = enum_type
+    made.compared_number = number
 }
 
 func specialized_over_a_shape(
@@ -2183,6 +2530,146 @@ func specialized_over_a_union(
         }
         index = index + 1
     }
+    assert not is_plural
+    var chained = union_through_a_function(owner, template, owner_type, name, written)
+    if chained {
+        return chained
+    }
+    assert asks_a_question(template)
+    return union_enum_value(owner, template, owner_type, name, written)
+}
+
+func split_words(written: String, start: Integer, end: Integer): String {
+    var words = written.split("_")
+    var kept = List<String>()
+    var index = start
+    while index < end {
+        var word = words[index]
+        crash word
+        kept.append(word)
+        index = index + 1
+    }
+    return kept.join("_")
+}
+
+func specialized_through_a_function(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    element_class: Model.ClassModel,
+    name: String,
+    written: String,
+): Model.FunctionModel? {
+    var word_count = written.split("_").count()
+    var split = 1
+    while split < word_count {
+        var member_name = split_words(written, 0, split)
+        var function_name = split_words(written, split, word_count)
+        var member = member_named(element_class, member_name)
+        if not member.is_empty() {
+            var member_type = enum_type_of_member(element_class, member)
+            var chained = chained_specialization(owner, template, member_type, member, function_name, name)
+            if chained {
+                chained.bound_member_is_a_function = not element_class.attribute_named(member)
+                chained.bound_member_index = attribute_index_of(element_class, member)
+                return chained
+            }
+        }
+        split = split + 1
+    }
+    return null
+}
+
+func union_through_a_function(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    written: String,
+): Model.FunctionModel? {
+    var word_count = written.split("_").count()
+    var split = 1
+    while split < word_count {
+        var member_name = split_words(written, 0, split)
+        var function_name = split_words(written, split, word_count)
+        var answered = union_member_name(owner_type, member_name)
+        if not answered.is_empty() {
+            var shape = union_shape_of(owner_type, answered)
+            var member = shape.members[0]
+            crash member
+            var member_type = answer_or_nothing(member)
+            var chained = chained_specialization(owner, template, member_type, answered, function_name, name)
+            if chained {
+                chained.bound_shape = shape.key
+                return chained
+            }
+        }
+        split = split + 1
+    }
+    return null
+}
+
+func chained_specialization(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    member_type: Model.Type,
+    member: String,
+    function_name: String,
+    name: String,
+): Model.FunctionModel? {
+    assert context.has_a_class(member_type) and not member_type.is_nullable
+    var through_class = context.class_of(member_type)
+    var function = through_class.function_named(function_name)
+    assert function
+    var answer = answer_or_nothing(function)
+    var made = context.resolver.specialized(template, name, member, answer, false, owner)
+    made.chained_function = function_name
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var chained = Model.ParameterModel("_chained_{parameter.name}", parameter.parameter_type, false)
+        made.parameters.append(chained)
+        index = index + 1
+    }
+    owner.declared_functions.append(made)
+    return made
+}
+
+func union_enum_value(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    written: String,
+): Model.FunctionModel? {
+    var united = union_model_of(owner_type)
+    var first_member = united.members[0]
+    assert first_member
+    assert context.has_a_class(first_member)
+    var first_class = context.class_of(first_member)
+    var candidates = enum_members_of(first_class)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var enum_type = enum_type_of_member(first_class, candidate)
+        var enumeration = enum_model_of(enum_type)
+        var read_name = candidate
+        if read_name.starts_with("get_") {
+            var length = read_name.length()
+            read_name = read_name.slice(4, length)
+        }
+        var answered = union_member_name(owner_type, read_name)
+        var fits = enumeration.values.contains(written) and not answered.is_empty()
+        if fits {
+            var shape = union_shape_of(owner_type, answered)
+            var boolean = context.boolean()
+            var made = context.resolver.specialized(template, name, answered, boolean, false, owner)
+            made.bound_shape = shape.key
+            compare_with_the_value(made, enum_type, written)
+            owner.declared_functions.append(made)
+            return made
+        }
+        index = index + 1
+    }
     return null
 }
 
@@ -2207,6 +2694,8 @@ func every_member_has(united: Model.UnionModel, wanted: String): Boolean {
         }
         var model = context.class_of(held)
         var has_it = model.attribute_named(wanted) or model.function_named(wanted)
+        var getter_name = "get_{wanted}"
+        has_it = has_it or model.function_named(getter_name)
         if not has_it {
             return false
         }
@@ -2355,12 +2844,37 @@ func walk_of(
     while index < owner.declared_functions.count() {
         var template = owner.declared_functions[index]
         var is_singular = template.is_a_member_template and not template_takes_a_plural(template)
-        if is_singular and "{template.name}s" == name {
+        if is_singular and walks_by_the_name(template, name) {
             return walked_over(owner, template, written)
         }
         index = index + 1
     }
     return null
+}
+
+func walks_by_the_name(template: Model.FunctionModel, name: String): Boolean {
+    if "{template.name}s" == name {
+        return true
+    }
+    var word = walked_word(template)
+    var plurals = List<String>()
+    plurals.append("{word}s")
+    plurals.append("{word}es")
+    if word.ends_with("y") {
+        var length = word.length()
+        var stem = word.slice(0, length - 1)
+        plurals.append("{stem}ies")
+    }
+    var index = 0
+    while index < plurals.count() {
+        var plural = plurals[index]
+        var walked_name = replaced_word(template.name, word, plural)
+        if walked_name == name {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func template_takes_a_plural(template: Model.FunctionModel): Boolean {
@@ -2377,14 +2891,18 @@ func walked_over(
     template: Model.FunctionModel,
     written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ): HighIntermediaryRepresentation.Values.Value {
-    var member_owner = context.resolver.template_owner_of(template, owner)
-    crash member_owner
+    var written_owner = context.resolver.template_owner_of(template, owner)
+    crash written_owner
+    var member_owner = bound_parameters(template, written_owner)
     var names = walked_names(member_owner)
+    if member_owner.kind == 'pattern' {
+        names = pattern_names(template, owner, member_owner)
+    }
     var index = 0
     while index < names.count() {
         var member = names[index]
         var word = walked_word(template)
-        var called_name = template.name.replace(word, member)
+        var called_name = replaced_word(template.name, word, member)
         var function = member_template_of(owner, called_name)
         crash function
         var own = this_value()
@@ -2457,7 +2975,9 @@ func parameters_of(owner: Model.Type): List<String> {
 func classes_of_a_namespace(namespace: String): List<String> {
     var names = List<String>()
     var folder = context.resolver.symbols.namespace_folder(namespace)
-    crash folder
+    if not folder {
+        return names
+    }
     var index = 0
     while index < folder.files.count() {
         var file = folder.files[index]
@@ -2493,6 +3013,10 @@ func member_of(element_class: Model.ClassModel, written: String, is_plural: Bool
     if not is_plural {
         return member_named(element_class, written)
     }
+    var inflected = member_by_plural(element_class, written)
+    if not inflected.is_empty() {
+        return inflected
+    }
     var length = written.length()
     if written.ends_with("ies") {
         var stem = written.slice(0, length - 3)
@@ -2516,6 +3040,135 @@ func member_of(element_class: Model.ClassModel, written: String, is_plural: Bool
         }
     }
     return member_named(element_class, written)
+}
+
+func member_by_plural(element_class: Model.ClassModel, written: String): String {
+    var names = element_class.declared_attributes.map_names()
+    var function_index = 0
+    while function_index < element_class.declared_functions.count() {
+        var function = element_class.declared_functions[function_index]
+        var is_plain = function.parameters.is_empty() and not function.is_a_member_template
+        if is_plain and function.name.starts_with("get_") {
+            var length = function.name.length()
+            var getter_name = function.name.slice(4, length)
+            names.append(getter_name)
+        } else if is_plain {
+            names.append(function.name)
+        }
+        function_index = function_index + 1
+    }
+    var name_index = 0
+    while name_index < names.count() {
+        var name = names[name_index]
+        var plural = plural_of(name)
+        if plural == written {
+            return member_named(element_class, name)
+        }
+        name_index = name_index + 1
+    }
+    return ""
+}
+
+func plural_of(word: String): String {
+    var words = word.split("_")
+    var last_word = words.remove_last()
+    crash last_word
+    var head = words.join("_")
+    if not head.is_empty() {
+        head = "{head}_"
+    }
+    var inflection = context.resolver.class_model_named("String.Inflection")
+    if not inflection {
+        return word.pluralize()
+    }
+    if inflection_lists(inflection, "uncountables", last_word) {
+        return word
+    }
+    var irregular = irregular_plural(inflection, last_word)
+    if not irregular.is_empty() {
+        return "{head}{irregular}"
+    }
+    return word.pluralize()
+}
+
+func inflection_lists(inflection: Model.ClassModel, name: String, word: String): Boolean {
+    var attribute = inflection.attribute_named(name)
+    if not attribute {
+        return false
+    }
+    crash attribute.declaration
+    var listed = attribute.declaration.value
+    if listed == AbstractSyntaxTree.Shapes.Expressions.ListLiteral {
+        return lists_the_word(listed, word)
+    }
+    return false
+}
+
+func lists_the_word(listed: AbstractSyntaxTree.Shapes.Expressions.ListLiteral, word: String): Boolean {
+    var index = 0
+    while index < listed.entries.count() {
+        var entry = listed.entries[index]
+        if entry == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+            var text = constant_text_of(entry)
+            if text == word {
+                return true
+            }
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func irregular_plural(inflection: Model.ClassModel, word: String): String {
+    var attribute = inflection.attribute_named("irregulars")
+    if not attribute {
+        return ""
+    }
+    crash attribute.declaration
+    var table = attribute.declaration.value
+    if table == AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral {
+        return plural_in_the_table(table, word)
+    }
+    return ""
+}
+
+func plural_in_the_table(table: AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral, word: String): String {
+    var index = 0
+    while index < table.pairs.count() {
+        var pair = table.pairs[index]
+        if pair == AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
+            var answered = entry_plural(pair, word)
+            if not answered.is_empty() {
+                return answered
+            }
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func entry_plural(pair: AbstractSyntaxTree.Shapes.Expressions.EntryLiteral, word: String): String {
+    var key = pair.key
+    if key == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        var singular = constant_text_of(key)
+        return plural_of_an_entry(singular, pair.value, word)
+    }
+    return ""
+}
+
+func plural_of_an_entry(
+    singular: String,
+    value: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    word: String,
+): String {
+    if value == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        var plural = constant_text_of(value)
+        var names_it = singular == word or plural == word
+        if names_it {
+            return plural
+        }
+    }
+    return ""
 }
 
 func member_named(element_class: Model.ClassModel, wanted: String): String {
@@ -2574,6 +3227,48 @@ func bound_member_of(
     item: HighIntermediaryRepresentation.Values.Value,
     function: Model.FunctionModel,
 ): HighIntermediaryRepresentation.Values.Value {
+    var read = bound_member_value(item, function)
+    if not function.chained_function.is_empty() {
+        read = chained_call(read, function)
+    }
+    if not function.compared_value {
+        return read
+    }
+    var value = HighIntermediaryRepresentation.Values.WholeNumber(function.compared_value, function.compared_number)
+    var boolean = context.boolean()
+    return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', read, value)
+}
+
+func chained_call(
+    read: HighIntermediaryRepresentation.Values.Value,
+    function: Model.FunctionModel,
+): HighIntermediaryRepresentation.Values.Value {
+    var through = present_class_of(read)
+    var called_function = through.function_named(function.chained_function)
+    crash called_function
+    need(called_function)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if parameter.name.starts_with("_chained_") {
+            var internal_name = context.scope.internal_name_of(parameter.name)
+            crash internal_name
+            var passed = HighIntermediaryRepresentation.Values.LocalRead(parameter.parameter_type, internal_name)
+            arguments.append(passed)
+        }
+        index = index + 1
+    }
+    return HighIntermediaryRepresentation.Values.Call(called_function, read, arguments)
+}
+
+func bound_member_value(
+    item: HighIntermediaryRepresentation.Values.Value,
+    function: Model.FunctionModel,
+): HighIntermediaryRepresentation.Values.Value {
+    if item.value_type.kind == 'handle' {
+        return handle_member(item, function.bound_member)
+    }
     if item.value_type.kind == 'shape' {
         var no_written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
         return shape_call(item, function.bound_member, no_written)
@@ -2662,6 +3357,9 @@ func member_answered_by(model: Model.ClassModel, name: String, shown: String): M
         return read
     }
     var function = model.function_named(name)
+    if not function {
+        function = model.function_named("get_{name}")
+    }
     if not function {
         typing.refuse_unknown_member(context, shown, name)
     }
@@ -3036,7 +3734,7 @@ func spread_by(
     while index < owner.declared_functions.count() {
         var template = owner.declared_functions[index]
         var is_singular = template.is_a_member_template and not template_takes_a_plural(template)
-        if is_singular and "{template.name}s" == name {
+        if is_singular and walks_by_the_name(template, name) {
             return spread_over(function, owner, template, written)
         }
         index = index + 1
@@ -3390,7 +4088,8 @@ func index_value(
         need(finder)
         var finder_arguments = List<HighIntermediaryRepresentation.Values.Value>()
         finder_arguments.append(named)
-        return HighIntermediaryRepresentation.Values.Call(finder, target, finder_arguments)
+        var found = HighIntermediaryRepresentation.Values.Call(finder, target, finder_arguments)
+        return proven_by_its_path(found, index)
     }
     var function = owner.function_named("get_at")
     if not function {
@@ -3405,6 +4104,24 @@ func index_value(
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
     arguments.append(position)
     var read = HighIntermediaryRepresentation.Values.Call(function, target, arguments)
+    var shown_path = path_of_an_index(index)
+    var unchecked = context.scope.narrowed_type_of(shown_path)
+    var checks_a_literal = is_a_reflection_list(owner) and is_a_number_literal(index.index)
+    if checks_a_literal and not unchecked {
+        return checked_item(read, shown_path)
+    }
+    return proven_by_its_path(read, index)
+}
+
+func path_of_an_index(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): String {
+    var printer = Printers.Spite.ExpressionPrinter(index)
+    return printer.text()
+}
+
+func proven_by_its_path(
+    read: HighIntermediaryRepresentation.Values.Value,
+    index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+): HighIntermediaryRepresentation.Values.Value {
     var printer = Printers.Spite.ExpressionPrinter(index)
     var path = printer.text()
     var narrowed_type = context.scope.narrowed_type_of(path)
@@ -3412,9 +4129,6 @@ func index_value(
         var proven = HighIntermediaryRepresentation.Values.Conversion(narrowed_type, 'proven', read)
         proven.shown = path
         return proven
-    }
-    if is_a_reflection_list(owner) and is_a_number_literal(index.index) {
-        return checked_item(read, path)
     }
     return read
 }
@@ -3518,7 +4232,21 @@ func binary_value(
         made.shown = printer.text()
         return made
     }
-    return operator_call(operator, left, right)
+    var answered = operator_call(operator, left, right)
+    var printed = Printers.Spite.ExpressionPrinter(binary)
+    var shown = printed.text()
+    show_the_operation(answered, shown)
+    return answered
+}
+
+func show_the_operation(answered: HighIntermediaryRepresentation.Values.Value, shown: String) {
+    if answered == HighIntermediaryRepresentation.Values.ShapeCall {
+        answered.shown = shown
+    }
+    if answered == HighIntermediaryRepresentation.Values.Negation {
+        crash answered.negated
+        show_the_operation(answered.negated, shown)
+    }
 }
 
 func refuse_a_division_by_zero(
@@ -3549,9 +4277,82 @@ func codegen_test(
         return codegen_test_of(binary, left)
     }
     if left == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var codegen_path = codegen_path_of(left)
+        if not codegen_path.is_empty() {
+            return codegen_member_test(binary, codegen_path)
+        }
         return bound_class_test(binary, left)
     }
     return null
+}
+
+func codegen_path_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): List<String> {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var started = List<String>()
+        if expression.name.starts_with("$") {
+            started.append(expression.name)
+        }
+        return started
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var path = codegen_path_of(expression.target)
+        if not path.is_empty() {
+            path.append(expression.name)
+        }
+        return path
+    }
+    return List<String>()
+}
+
+func codegen_member_test(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    codegen_path: List<String>,
+): HighIntermediaryRepresentation.Values.Value? {
+    var compares = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    assert compares
+    var first = codegen_path[0]
+    crash first
+    var found = context.current_class.bound_types[first]
+    assert found
+    var bound: Model.Type = found
+    var index = 1
+    while index < codegen_path.count() {
+        var member = codegen_path[index]
+        bound = codegen_member_of(bound, member)
+        index = index + 1
+    }
+    var path = class_path_of(binary.right)
+    assert not path.is_empty()
+    var written = path.join(".")
+    var answer = bound_is(bound, written)
+    if binary.operator == 'not_equal' {
+        answer = not answer
+    }
+    var number = 0
+    if answer {
+        number = 1
+    }
+    var boolean = context.boolean()
+    return HighIntermediaryRepresentation.Values.WholeNumber(boolean, number)
+}
+
+func codegen_member_of(bound: Model.Type, member: String): Model.Type {
+    if member == "value_type" and bound.is_nullable {
+        return bound.present()
+    }
+    var shown = context.shown(bound)
+    var inner: Model.Type? = null
+    if context.has_a_class(bound) and not bound.is_nullable {
+        var model = context.class_of(bound)
+        inner = model.bound_types["${member}"]
+    }
+    if not inner {
+        var member_rule = Validators.NameResolution.TypeMember.Validator()
+        var path = context.path()
+        member_rule.refuse(path, context.line, shown, member)
+    }
+    crash inner
+    return inner
 }
 
 func bound_class_test(
@@ -3886,9 +4687,33 @@ func operator_call(
 
 func compares_identity(left: HighIntermediaryRepresentation.Values.Value): Boolean {
     var left_type = left.value_type
+    if left_type.kind == 'union' and not left_type.is_nullable {
+        return union_compares_identity(left_type)
+    }
     if left_type.kind != 'object' or left_type.is_nullable {
         return false
     }
+    return class_compares_identity(left_type)
+}
+
+func union_compares_identity(union_type: Model.Type): Boolean {
+    var united = union_model_of(union_type)
+    var index = 0
+    while index < united.members.count() {
+        var held = united.members[index]
+        var is_a_reference = held.kind == 'object' and held.name != "String" and not held.is_nullable
+        if not is_a_reference {
+            return false
+        }
+        if not class_compares_identity(held) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func class_compares_identity(left_type: Model.Type): Boolean {
     var model = context.class_of(left_type)
     var equals = model.function_named("equals")
     if not equals {
@@ -3929,8 +4754,8 @@ func class_test_value(
 ): HighIntermediaryRepresentation.Values.Value {
     var tested = value_of(binary.left, null)
     var path = tested_class_path_of(binary.right)
-    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
-    var member = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+    var type_arguments = tested_type_arguments(binary.right)
+    var member = context.resolver.class_type_in(path, type_arguments, context.current_class, context.line)
     if tested.value_type.name == "Spite.Class" {
         return same_class(binary, tested, member)
     }
@@ -3939,6 +4764,15 @@ func class_test_value(
         return HighIntermediaryRepresentation.Values.Negation(test)
     }
     return test
+}
+
+func tested_type_arguments(
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): List<AbstractSyntaxTree.Shapes.Types.GenericArgument> {
+    if written == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return written.generic_arguments
+    }
+    return List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
 }
 
 func same_class(

@@ -304,6 +304,15 @@ func owner_named(
     if folder and not named_class {
         return Model.Type('namespace', folder.namespace)
     }
+    var is_plain_name = not named_class and not written.starts_with("$")
+    if is_plain_name and not scalars.is_a_scalar(written) {
+        var single = List<String>()
+        single.append(written)
+        var declared = declared_type_in(single, model)
+        if not declared {
+            return Model.Type('namespace', written)
+        }
+    }
     var outer = context
     context = model
     line = declaration.line
@@ -744,19 +753,30 @@ func declared_type_of(path: List<String>): Model.Type? {
     assert path.count() == 1
     var named_class = symbols.find(name, context.file.namespace)
     if named_class {
-        return declared_in_its_file(named_class.path, name)
+        return declared_by_its_file(named_class, name)
     }
     return declared_anywhere(name)
 }
 
-func declared_in_its_file(path: String, name: String): Model.Type? {
-    var index = 0
-    while index < program.order.count() {
-        var model = program.order[index]
-        if model.file.path == path {
-            return declared_in(model, name)
-        }
-        index = index + 1
+func declared_by_its_file(found: Mapping.ClassFile, name: String): Model.Type? {
+    if not symbols.file_for(found.path) {
+        read_later_class(found)
+    }
+    var file = symbols.file_for(found.path)
+    crash file
+    assert file.declarations.count() == 1
+    var only = file.declarations[0]
+    var declared_name = symbols.name_of(only)
+    assert declared_name == name
+    var key = "{found.namespace}.{name}"
+    if only == AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration {
+        return Model.Type('enumeration', key)
+    }
+    if only == AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration {
+        return Model.Type('union', key)
+    }
+    if only == AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration {
+        return Model.Type('shape', key)
     }
     return null
 }
@@ -777,6 +797,14 @@ func declared_in(model: Model.ClassModel, name: String): Model.Type? {
     return null
 }
 
+func declared_type_in(path: List<String>, model: Model.ClassModel): Model.Type? {
+    var outer = context
+    context = model
+    var found = declared_type_of(path)
+    context = outer
+    return found
+}
+
 func declared_anywhere(name: String): Model.Type? {
     var outer_context = context
     var outer_line = line
@@ -785,25 +813,84 @@ func declared_anywhere(name: String): Model.Type? {
     context = outer_context
     line = outer_line
     read_parameters = outer_parameters
-    var own = declared_among(name, false)
-    if own {
-        return own
-    }
-    return declared_among(name, true)
-}
-
-func declared_among(name: String, in_the_library: Boolean): Model.Type? {
+    var owners = List<Model.ClassModel>()
     var index = 0
     while index < program.order.count() {
         var model = program.order[index]
-        var is_the_library = symbols.is_library_path(model.file.path)
-        if is_the_library == in_the_library {
-            var found = declared_in(model, name)
-            if found {
-                return found
-            }
+        if declares_a_type(model, name) {
+            owners.append(model)
         }
         index = index + 1
+    }
+    assert not owners.is_empty()
+    var level = symbols.enclosing(context.file.namespace)
+    var keep_going = true
+    while keep_going {
+        var nearest = nearest_at(owners, level)
+        if nearest {
+            return type_declared_in(nearest, name)
+        }
+        keep_going = not level.is_empty()
+        level = symbols.enclosing(level)
+    }
+    var anywhere = owners[0]
+    return type_declared_in(anywhere, name)
+}
+
+func declares_a_type(model: Model.ClassModel, name: String): Boolean {
+    if model.enum_named(name) or model.union_named(name) {
+        return true
+    }
+    if model.shape_named(name) {
+        return true
+    }
+    return false
+}
+
+func nearest_at(owners: List<Model.ClassModel>, level: String): Model.ClassModel? {
+    var chosen: Model.ClassModel? = null
+    var chosen_shared = -1
+    var index = 0
+    while index < owners.count() {
+        var owner = owners[index]
+        var folder = symbols.enclosing(owner.file.namespace)
+        var shared = shared_length(owner.file.path, context.file.path)
+        if folder == level and shared > chosen_shared {
+            chosen = owner
+            chosen_shared = shared
+        }
+        index = index + 1
+    }
+    return chosen
+}
+
+func shared_length(left: String, right: String): Integer {
+    var index = 0
+    var keep_going = index < left.length() and index < right.length()
+    while keep_going {
+        var left_letter = left.slice(index, index + 1)
+        var right_letter = right.slice(index, index + 1)
+        if left_letter != right_letter {
+            return index
+        }
+        index = index + 1
+        keep_going = index < left.length() and index < right.length()
+    }
+    return index
+}
+
+func type_declared_in(model: Model.ClassModel, name: String): Model.Type? {
+    var made_enum = model.enum_named(name)
+    if made_enum {
+        return Model.Type('enumeration', made_enum.key)
+    }
+    var made_union = model.union_named(name)
+    if made_union {
+        return Model.Type('union', made_union.key)
+    }
+    var made_shape = model.shape_named(name)
+    if made_shape {
+        return Model.Type('shape', made_shape.key)
     }
     return null
 }
@@ -897,12 +984,85 @@ func bound_by_the_arguments(
         var parameter = constructor.parameters[index]
         var written = parameter.declared_type
         var given = argument_types[index]
-        if names_the_generic(written, name) and given {
-            return given.present()
+        if given {
+            var found = bound_inside(written, name, given)
+            if found {
+                return found
+            }
         }
         index = index + 1
     }
     return null
+}
+
+func bound_inside(written: AbstractSyntaxTree.Shapes.Types.Type?, name: String, given: Model.Type): Model.Type? {
+    if names_the_generic(written, name) {
+        return given.present()
+    }
+    if written == AbstractSyntaxTree.Shapes.Types.NamedType {
+        return bound_inside_a_named(written, name, given)
+    }
+    return null
+}
+
+func bound_inside_a_named(
+    written: AbstractSyntaxTree.Shapes.Types.NamedType,
+    name: String,
+    given: Model.Type,
+): Model.Type? {
+    var joined = written.path.join(".")
+    if joined == "Spite.Function" and given.kind == 'function' {
+        return bound_inside_a_function(written, name, given)
+    }
+    assert given.kind == 'object' and not written.arguments.is_empty()
+    var model = program.class_named(given.name)
+    assert model
+    var names = List<String>()
+    if joined == "List" {
+        names.append("$element_type")
+    }
+    if joined == "Dictionary" {
+        names.append("$key_type")
+        names.append("$value_type")
+    }
+    var index = 0
+    while index < names.count() and index < written.arguments.count() {
+        var argument = written.arguments[index]
+        var codegen_name = names[index]
+        var inner = model.bound_types[codegen_name]
+        if inner {
+            var found = bound_inside(argument.type_reference, name, inner)
+            if found {
+                return found
+            }
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func bound_inside_a_function(
+    written: AbstractSyntaxTree.Shapes.Types.NamedType,
+    name: String,
+    given: Model.Type,
+): Model.Type? {
+    var last = written.arguments.count() - 1
+    var index = 0
+    while index < last {
+        var argument = written.arguments[index]
+        var inner = given.parameters[index]
+        if inner {
+            var found = bound_inside(argument.type_reference, name, inner)
+            if found {
+                return found
+            }
+        }
+        index = index + 1
+    }
+    var answered = written.arguments[last]
+    assert answered
+    assert given.answer
+    return bound_inside(answered.type_reference, name, given.answer)
 }
 
 func names_the_generic(written: AbstractSyntaxTree.Shapes.Types.Type?, name: String): Boolean {
