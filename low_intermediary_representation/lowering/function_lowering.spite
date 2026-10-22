@@ -261,6 +261,9 @@ func lower_value(value: HighIntermediaryRepresentation.Values.Value?): Lowered {
         HighIntermediaryRepresentation.Values.PresenceTest: return lower_presence_test(value)
         HighIntermediaryRepresentation.Values.Conversion: return lower_conversion(value)
         HighIntermediaryRepresentation.Values.NumberRoom: return lower_number_room(value)
+        HighIntermediaryRepresentation.Values.ShapeCall: return lower_shape_call(value)
+        HighIntermediaryRepresentation.Values.FunctionValue: return lower_function_value(value)
+        HighIntermediaryRepresentation.Values.FunctionValueCall: return lower_function_value_call(value)
         _: return unbuilt()
     }
 }
@@ -633,12 +636,154 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
     if conversion.kind == 'nullable' {
         return made_nullable(converted, conversion.value_type)
     }
+    if conversion.kind == 'into_shape' {
+        crash conversion.converted
+        var boxed = conversion.converted.value_type
+        return boxed_into_a_shape(converted, boxed)
+    }
     if conversion.kind == 'narrow' {
         crash conversion.converted
         var given = conversion.converted.value_type
         check_the_range(converted.value, given, conversion.value_type)
     }
     return single(converted.value)
+}
+
+func boxed_into_a_shape(converted: Lowered, boxed: Model.Type): Lowered {
+    if boxed.kind != 'scalar' {
+        return single(converted.value)
+    }
+    var box = small_object(boxed.name, 24)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(box, 16, converted.value, 'bits_64')
+    emit(stored)
+    return single(box)
+}
+
+func small_object(class_key: String, size: Integer): Integer {
+    var size_register = constant(size)
+    var object = new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(object, size_register)
+    emit(allocated)
+    var class_id = layout.class_id_of(class_key)
+    var id_register = constant(class_id)
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(object, 0, id_register, 'bits_64')
+    emit(stored_id)
+    var one = constant(1)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(object, 8, one, 'bits_64')
+    emit(stored_count)
+    return object
+}
+
+func lower_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall): Lowered {
+    var receiver = lower_value(call.receiver)
+    var arguments = List<Integer>()
+    add_arguments(arguments, call.arguments)
+    var target = -1
+    var presence = -1
+    if not call.value_type.is_nothing() {
+        target = new_register()
+    }
+    if is_a_nullable_scalar(call.value_type) {
+        presence = new_register()
+    }
+    var class_id = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, receiver.value, 0, 'bits_64')
+    emit(loaded)
+    var after = new_block()
+    var fillers = layout.program.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        call_a_filler(call, filler, receiver.value, class_id, arguments, target, presence, after)
+        index = index + 1
+    }
+    var label = text_label("spite: no class fills '{call.shape.name}' here, at {path}:{line}\n")
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+    switch_to(after)
+    return Lowered(target, presence)
+}
+
+func call_a_filler(
+    call: HighIntermediaryRepresentation.Values.ShapeCall,
+    filler: Model.Type,
+    receiver: Integer,
+    class_id: Integer,
+    arguments: List<Integer>,
+    target: Integer,
+    presence: Integer,
+    after: Integer,
+) {
+    var wanted = layout.class_id_of(filler.name)
+    var wanted_register = constant(wanted)
+    var matches = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', class_id, wanted_register)
+    emit(compared)
+    var calling = new_block()
+    var next = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(matches, calling, next)
+    emit(test)
+    switch_to(calling)
+    var own = receiver
+    if filler.kind == 'scalar' {
+        own = new_register()
+        var unboxed = LowIntermediaryRepresentation.Instructions.Load(own, receiver, 16, 'bits_64')
+        emit(unboxed)
+    }
+    var passed = List<Integer>()
+    passed.append(own)
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        passed.append(argument)
+        index = index + 1
+    }
+    var key = "{filler.name}.{call.member.name}"
+    var called = LowIntermediaryRepresentation.Instructions.Call(target, key, passed)
+    called.presence = presence
+    emit(called)
+    jump_to(after)
+    switch_to(next)
+}
+
+func lower_function_value(made: HighIntermediaryRepresentation.Values.FunctionValue): Lowered {
+    var receiver = lower_value(made.receiver)
+    var object = small_object("Spite.Function", 32)
+    var address = new_register()
+    var key = made.function.key()
+    var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(address, key)
+    emit(found)
+    var stored_address = LowIntermediaryRepresentation.Instructions.Store(object, 16, address, 'bits_64')
+    emit(stored_address)
+    var stored_receiver = LowIntermediaryRepresentation.Instructions.Store(object, 24, receiver.value, 'bits_64')
+    emit(stored_receiver)
+    return single(object)
+}
+
+func lower_function_value_call(call: HighIntermediaryRepresentation.Values.FunctionValueCall): Lowered {
+    var called = lower_value(call.called)
+    var address = new_register()
+    var loaded_address = LowIntermediaryRepresentation.Instructions.Load(address, called.value, 16, 'bits_64')
+    emit(loaded_address)
+    var receiver = new_register()
+    var loaded_receiver = LowIntermediaryRepresentation.Instructions.Load(receiver, called.value, 24, 'bits_64')
+    emit(loaded_receiver)
+    var arguments = List<Integer>()
+    arguments.append(receiver)
+    add_arguments(arguments, call.arguments)
+    var target = -1
+    if not call.value_type.is_nothing() {
+        target = new_register()
+    }
+    var made = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments)
+    if is_a_nullable_scalar(call.value_type) {
+        var presence = new_register()
+        made.presence = presence
+        emit(made)
+        return Lowered(target, presence)
+    }
+    emit(made)
+    return single(target)
 }
 
 func check_the_range(value: Integer, given: Model.Type, wanted: Model.Type) {

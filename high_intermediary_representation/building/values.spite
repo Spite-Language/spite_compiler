@@ -26,6 +26,7 @@ func value_of(
         AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return binary_value(expression)
         AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return unary_value(expression, expected)
         AbstractSyntaxTree.Shapes.Expressions.ListLiteral: return list_value(expression, expected)
+        AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: return dictionary_value(expression, expected)
         _: return unbuilt()
     }
 }
@@ -57,6 +58,10 @@ func fitted(
     if wanted.kind == 'union' and is_a_member_of(given, wanted) {
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_union', value)
     }
+    if wanted.kind == 'shape' and not given.is_nullable and given.kind != 'shape' {
+        filled_shape(given, wanted)
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
+    }
     if is_wider(wanted, given) {
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'widen', value)
     }
@@ -67,6 +72,43 @@ func fitted(
     var shown_wanted = context.shown(wanted)
     typing.refuse_mismatch(context, shown_given, shown_wanted)
     return value
+}
+
+func filled_shape(given: Model.Type, wanted: Model.Type) {
+    var shape = context.program.shape_keyed(wanted.name)
+    crash shape
+    var shown = context.shown(given)
+    if not context.has_a_class(given) {
+        var first = shape.members[0]
+        crash first
+        typing.refuse_not_a_fit(context, shown, shape.name, first.name)
+    }
+    var filler = context.class_of(given)
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        var function = filler.function_named(member.name)
+        if not function {
+            typing.refuse_not_a_fit(context, shown, shape.name, member.name)
+        }
+        crash function
+        need(function)
+        index = index + 1
+    }
+    var fillers = context.program.fillers_of(shape.key)
+    var known = false
+    index = 0
+    while index < fillers.count() {
+        var filling = fillers[index]
+        if filling.name == given.name {
+            known = true
+        }
+        index = index + 1
+    }
+    if not known {
+        var present = given.present()
+        fillers.append(present)
+    }
 }
 
 func is_a_member_of(given: Model.Type, wanted: Model.Type): Boolean {
@@ -242,7 +284,9 @@ func text_value(
     while index < literal.pieces.count() {
         var piece = literal.pieces[index]
         if not piece.text.is_empty() or literal.pieces.count() == 1 {
-            var constant = HighIntermediaryRepresentation.Values.TextConstant(piece.text)
+            need_text_constants()
+            var written = unescaped(piece.text)
+            var constant = HighIntermediaryRepresentation.Values.TextConstant(written)
             joined = joined_with(joined, constant)
         }
         if piece.hole {
@@ -253,6 +297,46 @@ func text_value(
     }
     crash joined
     return joined
+}
+
+func unescaped(written: String): String {
+    var pieces = List<String>()
+    var index = 0
+    while index < written.length() {
+        var code = written.code_at(index)
+        if code == 92 and index + 1 < written.length() {
+            var piece = escaped_text_of(written, index + 1)
+            pieces.append(piece)
+            index = index + 2
+        } else {
+            var letter = written.character_at(index)
+            pieces.append(letter)
+            index = index + 1
+        }
+    }
+    return pieces.join("")
+}
+
+func escaped_text_of(written: String, at: Integer): String {
+    var escaped = written.code_at(at)
+    switch escaped {
+        110: return "\n"
+        116: return "\t"
+        114: return "\r"
+        _: return written.character_at(at)
+    }
+}
+
+func need_text_constants() {
+    var path = List<String>()
+    path.append("String")
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var string_type = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+    var string_model = context.class_of(string_type)
+    context.need_defaults(string_model.key)
+    var append_code = string_model.function_named("append_code")
+    crash append_code
+    need(append_code)
 }
 
 func hole_text_of(hole: AbstractSyntaxTree.Shapes.Expressions.Expression): HighIntermediaryRepresentation.Values.Value {
@@ -487,6 +571,9 @@ func member_call(
     callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): HighIntermediaryRepresentation.Values.Value {
     var receiver = value_of(callee.target, null)
+    if receiver.value_type.kind == 'shape' {
+        return shape_call(receiver, callee.name, call.arguments)
+    }
     var owner = present_class_of(receiver)
     var function = owner.function_named(callee.name)
     if not function and owner.key == "DynamicLibrary" {
@@ -498,6 +585,26 @@ func member_call(
     }
     crash function
     return called(function, receiver, call.arguments)
+}
+
+func shape_call(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value {
+    var shown = context.shown(receiver.value_type)
+    if receiver.value_type.is_nullable {
+        typing.refuse_maybe_null(context, shown)
+    }
+    var shape = context.program.shape_keyed(receiver.value_type.name)
+    crash shape
+    var member = shape.member_named(name)
+    if not member {
+        typing.refuse_unknown_member(context, shown, name)
+    }
+    crash member
+    var arguments = arguments_for(shown, member.parameters, written)
+    return HighIntermediaryRepresentation.Values.ShapeCall(shape, member, receiver, arguments)
 }
 
 func called(
@@ -515,6 +622,9 @@ func method_call(
     name: String,
     arguments: List<HighIntermediaryRepresentation.Values.Value>,
 ): HighIntermediaryRepresentation.Values.Value {
+    if receiver.value_type.kind == 'shape' {
+        return shape_method_call(receiver, name, arguments)
+    }
     var owner = present_class_of(receiver)
     var function = owner.function_named(name)
     if not function {
@@ -534,6 +644,22 @@ func method_call(
         index = index + 1
     }
     return HighIntermediaryRepresentation.Values.Call(function, receiver, given)
+}
+
+func shape_method_call(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+): HighIntermediaryRepresentation.Values.Value {
+    var shape = context.program.shape_keyed(receiver.value_type.name)
+    crash shape
+    var member = shape.member_named(name)
+    if not member {
+        var shown = context.shown(receiver.value_type)
+        typing.refuse_unknown_member(context, shown, name)
+    }
+    crash member
+    return HighIntermediaryRepresentation.Values.ShapeCall(shape, member, receiver, arguments)
 }
 
 func fitted_arguments(
@@ -637,6 +763,39 @@ func list_value(
     var list_type = list_type_for(literal, expected)
     var no_start = 0
     return gathered_list(list_type, literal.entries, no_start)
+}
+
+func dictionary_value(
+    literal: AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral,
+    expected: Model.Type?,
+): HighIntermediaryRepresentation.Values.Value {
+    if not expected {
+        typing.refuse_list_without_a_type(context)
+    }
+    crash expected
+    var dictionary_type = expected.present()
+    var dictionary_model = context.class_of(dictionary_type)
+    var key_type = dictionary_model.bound_types["$key_type"]
+    var value_type = dictionary_model.bound_types["$value_type"]
+    crash key_type
+    crash value_type
+    var temporary = new_list(dictionary_type)
+    var index = 0
+    while index + 1 < literal.pairs.count() {
+        var key_written = literal.pairs[index]
+        var value_written = literal.pairs[index + 1]
+        var key = fitted_value_of(key_written, key_type)
+        var value = fitted_value_of(value_written, value_type)
+        var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+        arguments.append(key)
+        arguments.append(value)
+        var stored = method_call(temporary, "set_at", arguments)
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(stored)
+        evaluated.line = context.line
+        context.pending.append(evaluated)
+        index = index + 2
+    }
+    return temporary
 }
 
 func list_type_for(literal: AbstractSyntaxTree.Shapes.Expressions.ListLiteral, expected: Model.Type?): Model.Type {
@@ -765,11 +924,9 @@ func operator_call(
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
     arguments.append(right)
     var answered = method_call(left, name, arguments)
-    if operator == 'not_equal' {
+    var negated = operator == 'not_equal' or operator == 'less_or_equal' or operator == 'greater_or_equal'
+    if negated {
         return HighIntermediaryRepresentation.Values.Negation(answered)
-    }
-    if operator == 'less_or_equal' or operator == 'greater_or_equal' {
-        return unbuilt()
     }
     return answered
 }
@@ -785,6 +942,8 @@ func operator_function_name(operator: HighIntermediaryRepresentation.Values.Oper
         'not_equal': return "equals"
         'less': return "less_than"
         'greater': return "greater_than"
+        'less_or_equal': return "greater_than"
+        'greater_or_equal': return "less_than"
         _: return ""
     }
 }

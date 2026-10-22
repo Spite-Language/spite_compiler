@@ -48,6 +48,11 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Concurrency, reflection, `load` of a package, codegen values
 - Program settings: the program's own `build.spite` and `environment.spite`
 
+- Symbols, build settings (`--name=value`), reflection of declared shapes (`Integer.smallest`, `Greeter.functions`) and `Anything`/`Nothing`, compiled in where read (D35)
+- `Parallel`, `Concurrent` and the rest of concurrency as language constructs each generator compiles (D36)
+- `foreign_callbacks` and `ipv6_addresses` still use `Memory.Address` and `Memory.Heap`: rewrite them with `Buffer` when foreign callbacks and sockets come (D36)
+- Allocation tests (frame objects, lent buffers, kept buffer addresses, the memory floor) come back as `--debug-memory` counts with the passes that place memory (D35)
+
 ## The errors
 
 - Every folder of `../SpiteLanguage/diagnostics` is ported to `../SpiteSpec/conformance/<name>` with its exact text, and passes

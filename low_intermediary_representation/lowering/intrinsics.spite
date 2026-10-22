@@ -19,6 +19,15 @@ func lowered(call: HighIntermediaryRepresentation.Values.Call): Lowered {
 }
 
 func typed_access(call: HighIntermediaryRepresentation.Values.Call, key: String): Lowered {
+    switch call.function.name {
+        "_read_value": return read_value(call)
+        "_write_value": return write_value(call)
+        "_item_size": return item_size(call)
+        _: return byte_access(call, key)
+    }
+}
+
+func byte_access(call: HighIntermediaryRepresentation.Values.Call, key: String): Lowered {
     var is_an_access = key.starts_with("Buffer._") and key.ends_with("_at")
     if is_an_access and key.starts_with("Buffer._read_") {
         return read_at(call)
@@ -83,6 +92,94 @@ func open_library(call: HighIntermediaryRepresentation.Values.Call): Lowered {
 }
 
 func close_library(): Lowered {
+    return lowering.single(-1)
+}
+
+func element_type_of(call: HighIntermediaryRepresentation.Values.Call): Model.Type {
+    var owner = lowering.layout.program.class_named(call.function.owner)
+    crash owner
+    var element = owner.bound_types["$element_type"]
+    crash element
+    return element
+}
+
+func item_size_of(element: Model.Type): Integer {
+    if element.kind != 'scalar' {
+        return 8
+    }
+    var scalar = lowering.scalars.of(element.name)
+    crash scalar
+    if element.is_nullable {
+        return scalar.size + 1
+    }
+    return scalar.size
+}
+
+func item_size(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var element = element_type_of(call)
+    var size = item_size_of(element)
+    var made = lowering.constant(size)
+    return lowering.single(made)
+}
+
+func item_address(call: HighIntermediaryRepresentation.Values.Call, element: Model.Type): Integer {
+    var list = lowering.lower_value(call.receiver)
+    var at = argument(call, 0)
+    var owner = lowering.layout.program.class_named(call.function.owner)
+    crash owner
+    var buffer_attribute = owner.attribute_named("_buffer")
+    crash buffer_attribute
+    var offset = lowering.layout.offset_of(buffer_attribute)
+    var buffer = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(buffer, list.value, offset, 'bits_64')
+    lowering.emit(loaded)
+    var storage = lowering.storage_of(buffer)
+    var size = item_size_of(element)
+    var size_register = lowering.constant(size)
+    var scaled = lowering.new_register()
+    var multiplied = LowIntermediaryRepresentation.Instructions.Arithmetic(scaled, 'multiply', at, size_register)
+    multiplied.is_checked = false
+    lowering.emit(multiplied)
+    return lowering.address_plus(storage, scaled)
+}
+
+func read_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var element = element_type_of(call)
+    var address = item_address(call, element)
+    var value = lowering.new_register()
+    var width = lowering.width_of(element)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(value, address, 0, width)
+    loaded.is_signed = lowering.is_signed(element)
+    lowering.emit(loaded)
+    if not lowering.is_a_nullable_scalar(element) {
+        return lowering.single(value)
+    }
+    var presence = lowering.new_register()
+    var presence_offset = item_size_of(element) - 1
+    var loaded_presence = LowIntermediaryRepresentation.Instructions.Load(presence, address, presence_offset, 'bits_8')
+    loaded_presence.is_signed = false
+    lowering.emit(loaded_presence)
+    return Lowered(value, presence)
+}
+
+func write_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var element = element_type_of(call)
+    var written = call.arguments[1]
+    var value = lowering.lower_value(written)
+    var address = item_address(call, element)
+    var width = lowering.width_of(element)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, value.value, width)
+    lowering.emit(stored)
+    if lowering.is_a_nullable_scalar(element) {
+        var presence_offset = item_size_of(element) - 1
+        var stored_presence = LowIntermediaryRepresentation.Instructions.Store(
+            address,
+            presence_offset,
+            value.presence,
+            'bits_8',
+        )
+        lowering.emit(stored_presence)
+    }
     return lowering.single(-1)
 }
 
