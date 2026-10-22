@@ -1942,10 +1942,26 @@ func tested_class_path_of(expression: AbstractSyntaxTree.Shapes.Expressions.Expr
     return class_path_of(expression)
 }
 
+func refuse_an_unknown_generic_class(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    class_path: List<String>,
+) {
+    var written = class_path.join(".")
+    var initial = written.slice(0, 1)
+    var is_a_class_name = initial != initial.lower_case() and not scalars.is_a_scalar(written)
+    var built_in = ["Spite.Function", "Symbol", "Parallel", "Concurrent"]
+    var is_generic = not call.generic_arguments.is_empty() and not built_in.contains(written)
+    assert is_generic and is_a_class_name
+    var found = context.resolver.symbols.find(written, context.current_class.file.namespace)
+    assert not found
+    typing.refuse_an_unknown_generic_class(context, written)
+}
+
 func constructed(
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     class_path: List<String>,
 ): HighIntermediaryRepresentation.Values.Value {
+    refuse_an_unknown_generic_class(call, class_path)
     var inferred = inferred_type_of(call, class_path)
     var made_type = inferred
     if not made_type {
@@ -2425,6 +2441,9 @@ func member_call(
     if callee.name.starts_with("from_") {
         refuse_a_cast_by_name(callee)
     }
+    if callee.name.starts_with("remove_where") {
+        refuse_a_removal_from_a_chain(callee)
+    }
     var class_receiver = reflected_receiver(callee.target)
     if class_receiver {
         return called_on_a_class(class_receiver, callee.name, call.arguments)
@@ -2536,7 +2555,113 @@ func member_call(
     if specialised {
         return specialised
     }
-    return called(function, receiver, call.arguments)
+    refuse_an_accessor_call(callee, call, owner, function)
+    var made = called(function, receiver, call.arguments)
+    refuse_a_wider_bitwise_operand(callee, call, made)
+    return made
+}
+
+func refuse_an_accessor_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    owner: Model.ClassModel,
+    function: Model.FunctionModel,
+) {
+    var library = Validators.LibraryFile()
+    var path = context.path()
+    var is_a_setter = callee.name.starts_with("set_") and call.arguments.count() == 1
+    var is_a_getter = callee.name.starts_with("get_") and call.arguments.is_empty() and function.answer
+    var is_an_accessor = is_a_setter or is_a_getter
+    assert is_an_accessor and function.declaration and not library.holds(path) and not library.holds(owner.file.path)
+    var length = callee.name.length()
+    var attribute_name = callee.name.slice(4, length)
+    assert not owner.attribute_named(attribute_name) and function.parameters.count() == call.arguments.count()
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    var written = "{receiver_text}.{attribute_name}"
+    if is_a_setter {
+        var assigned = call.arguments[0]
+        crash assigned
+        var assigned_printer = Printers.Spite.ExpressionPrinter(assigned)
+        var assigned_text = assigned_printer.text()
+        typing.refuse_an_accessor_call(context, callee.name, "writing", attribute_name, "{written} = {assigned_text}")
+    }
+    typing.refuse_an_accessor_call(context, callee.name, "reading", attribute_name, written)
+}
+
+func refuse_a_removal_from_a_chain(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var chain = callee.target
+    if chain == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        refuse_a_removal_from_a_step(callee, chain)
+    }
+}
+
+func refuse_a_removal_from_a_step(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    chain: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var step = chain.callee
+    if step == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var copies = ["copy", "deep_copy", "keys", "values", "reversed"]
+        var name = step.name
+        var makes_a_new_one = name.starts_with("filter") or name.starts_with("map") or name.starts_with("sort")
+        assert makes_a_new_one or copies.contains(name)
+        var printer = Printers.Spite.ExpressionPrinter(chain)
+        var shown = printer.text()
+        typing.refuse_a_removal_from_a_chain(context, callee.name, shown)
+    }
+}
+
+func refuse_a_wider_bitwise_operand(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    made: HighIntermediaryRepresentation.Values.Value,
+) {
+    var bitwise = ["bits_and", "bits_or", "bits_exclusive_or"]
+    var library = Validators.LibraryFile()
+    var path = context.path()
+    assert bitwise.contains(callee.name) and call.arguments.count() == 1 and not library.holds(path)
+    if made == HighIntermediaryRepresentation.Values.Call {
+        refuse_a_wider_bitwise_call(callee, call, made)
+    }
+}
+
+func refuse_a_wider_bitwise_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    made: HighIntermediaryRepresentation.Values.Call,
+) {
+    var operand = made.arguments[0]
+    assert made.receiver and operand
+    assert made.receiver.value_type.kind == 'scalar'
+    if operand == HighIntermediaryRepresentation.Values.Conversion {
+        refuse_a_cut_bitwise_operand(callee, call, made.receiver, operand)
+    }
+}
+
+func refuse_a_cut_bitwise_operand(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    operand: HighIntermediaryRepresentation.Values.Conversion,
+) {
+    var cuts = operand.kind == 'narrow' or operand.kind == 'narrow_decimal' or operand.kind == 'to_whole'
+    var written = call.arguments[0]
+    assert cuts and operand.converted and callee.target and written
+    var receiver_scalar = scalars.of(receiver.value_type.name)
+    var given_scalar = scalars.of(operand.converted.value_type.name)
+    assert receiver_scalar and given_scalar
+    assert given_scalar.size > receiver_scalar.size or given_scalar.is_decimal
+    var call_printer = Printers.Spite.ExpressionPrinter(call)
+    var shown = call_printer.text()
+    var receiver_printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = receiver_printer.text()
+    var operand_printer = Printers.Spite.ExpressionPrinter(written)
+    var operand_text = operand_printer.text()
+    var receiver_name = receiver.value_type.name
+    var given_name = operand.converted.value_type.name
+    typing.refuse_a_wider_bitwise_operand(context, shown, receiver_text, receiver_name, operand_text, given_name)
 }
 
 func specialised_for_a_constant(
@@ -4789,7 +4914,9 @@ func arguments_for(
         var argument = written[index]
         var parameter = parameters[index]
         crash parameter
-        var value = fitted_value_of(argument, parameter.parameter_type)
+        var given = value_of(argument, parameter.parameter_type)
+        refuse_a_nullable_answer(shown, argument, given.value_type, parameter.parameter_type)
+        var value = fitted(given, parameter.parameter_type)
         arguments.append(value)
         index = index + 1
     }
@@ -4799,6 +4926,29 @@ func arguments_for(
         arguments.append(gathered)
     }
     return arguments
+}
+
+func refuse_a_nullable_answer(
+    shown: String,
+    argument: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    given: Model.Type,
+    wanted: Model.Type,
+) {
+    assert given.kind == 'function' and wanted.kind == 'function' and argument
+    assert given.answer and wanted.answer
+    var given_answer: Model.Type = given.answer
+    var wanted_answer: Model.Type = wanted.answer
+    assert given_answer.is_nullable and not wanted_answer.is_nullable
+    var present = given_answer.present()
+    assert present.is_the_same_as(wanted_answer)
+    var parts = shown.split(".")
+    var called_name = parts.last()
+    crash called_name
+    var printer = Printers.Spite.ExpressionPrinter(argument)
+    var argument_text = printer.text()
+    var given_shown = context.shown(given_answer)
+    var wanted_shown = context.shown(wanted_answer)
+    typing.refuse_a_nullable_answer(context, called_name, argument_text, given_shown, wanted_shown)
 }
 
 func gathered_list(
