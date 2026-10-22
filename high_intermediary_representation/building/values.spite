@@ -556,6 +556,9 @@ func default_of_a_type(wanted: Model.Type): HighIntermediaryRepresentation.Value
     if wanted.kind == 'shape' {
         return default_of_a_shape(wanted)
     }
+    if wanted.kind == 'enumeration' {
+        return first_enum_value(wanted)
+    }
     assert wanted.kind == 'object'
     var made = context.class_of(wanted)
     context.need_defaults(made.key)
@@ -645,6 +648,13 @@ func enum_value(name: String, expected: Model.Type): HighIntermediaryRepresentat
     crash number
     var present = expected.present()
     return HighIntermediaryRepresentation.Values.WholeNumber(present, number)
+}
+
+func first_enum_value(enum_type: Model.Type): HighIntermediaryRepresentation.Values.Value {
+    var made = enum_model_of(enum_type)
+    var first_name = made.values.first()
+    crash first_name
+    return enum_value(first_name, enum_type)
 }
 
 func enum_model_of(enum_type: Model.Type): Model.EnumModel {
@@ -1386,6 +1396,9 @@ func bound_singleton_question(
 func bound_class_object(function: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value {
     crash function.bound_member_type
     var reflection = Reflection(context, this)
+    if function.bound_member_type.is_nullable {
+        return reflection.class_object("{function.bound_member_type.name}?")
+    }
     return reflection.class_object(function.bound_member_type.name)
 }
 
@@ -1477,6 +1490,42 @@ func reflected_member(
     var printer = Printers.Spite.ExpressionPrinter(member)
     var path = printer.text()
     return narrowed(read, path)
+}
+
+func enum_value_at(
+    index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var listed = index.target
+    var written = index.index
+    var lists_the_values = false
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        lists_the_values = listed.name == "values"
+    }
+    assert lists_the_values
+    var place = -1
+    if written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        place = literal_place_of(written)
+    }
+    assert place >= 0
+    var path = enum_path_of(listed)
+    assert not path.is_empty()
+    var declared = context.resolver.declared_type_in(path, context.current_class)
+    assert declared
+    assert declared.kind == 'enumeration'
+    var enumeration = enum_model_of(declared)
+    var named = enumeration.values[place]
+    if not named {
+        var maybe = declared.nullable()
+        return HighIntermediaryRepresentation.Values.NullConstant(maybe)
+    }
+    return enum_value(named, declared)
+}
+
+func enum_path_of(listed: AbstractSyntaxTree.Shapes.Expressions.Expression?): List<String> {
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return class_path_of(listed.target)
+    }
+    return List<String>()
 }
 
 func enum_values_of(path: List<String>): HighIntermediaryRepresentation.Values.Value? {
@@ -1687,7 +1736,8 @@ func made_from_a_bound_type(
     }
     crash bound
     var made_type = bound.present()
-    var is_plain = made_type.kind == 'scalar' or made_type.name == "String" or made_type.kind == 'shape'
+    var is_a_value = made_type.kind == 'shape' or made_type.kind == 'enumeration'
+    var is_plain = made_type.kind == 'scalar' or made_type.name == "String" or is_a_value
     if is_plain and call.arguments.is_empty() {
         var plain = default_of_a_type(made_type)
         crash plain
@@ -2472,11 +2522,192 @@ func member_call(
         }
     }
     if not function {
+        var read_as_an_enum = text_read_as_an_enum(receiver, owner, callee.name, written_count)
+        if read_as_an_enum {
+            return read_as_an_enum
+        }
+    }
+    if not function {
         var shown = context.shown(receiver.value_type)
         typing.refuse_unknown_member(context, shown, callee.name)
     }
     crash function
+    var specialised = specialised_for_a_constant(function, receiver, call.arguments)
+    if specialised {
+        return specialised
+    }
     return called(function, receiver, call.arguments)
+}
+
+func specialised_for_a_constant(
+    function: Model.FunctionModel,
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert function.declaration and function.template_index < 0 and function.bound_member.is_empty()
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    var place = -1
+    var index = 0
+    while index < declaration.parameters.count() and index < written.count() {
+        var parameter = declaration.parameters[index]
+        var argument = written[index]
+        if takes_an_attribute(parameter) and not constant_attribute_name(argument).is_empty() {
+            place = index
+        }
+        index = index + 1
+    }
+    assert place >= 0
+    var picked = written[place]
+    var attribute_name = constant_attribute_name(picked)
+    var described = constant_attribute_owner(picked)
+    var described_model = context.program.class_named(described)
+    crash described_model
+    var attribute = described_model.attribute_named(attribute_name)
+    crash attribute
+    var owner = context.program.class_named(function.owner)
+    crash owner
+    var specialised_name = "{function.name}_for_{attribute_name}"
+    var made = owner.function_named(specialised_name)
+    if not made {
+        made = specialised_for_an_attribute(function, owner, place, specialised_name, described_model, attribute)
+    }
+    crash made
+    var passed = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    var passed_index = 0
+    while passed_index < written.count() {
+        var argument = written[passed_index]
+        if passed_index != place {
+            passed.append(argument)
+        }
+        passed_index = passed_index + 1
+    }
+    return called(made, receiver, passed)
+}
+
+func specialised_for_an_attribute(
+    function: Model.FunctionModel,
+    owner: Model.ClassModel,
+    place: Integer,
+    specialised_name: String,
+    described_model: Model.ClassModel,
+    attribute: Model.AttributeModel,
+): Model.FunctionModel {
+    var template = Model.FunctionModel(function.name, function.owner)
+    template.declaration = function.declaration
+    template.template_index = place
+    var made = context.resolver.specialized(
+        template,
+        specialised_name,
+        attribute.name,
+        attribute.attribute_type,
+        false,
+        owner,
+    )
+    made.bound_member_index = attribute_place_of(described_model, attribute.name)
+    owner.declared_functions.append(made)
+    return made
+}
+
+func attribute_place_of(model: Model.ClassModel, name: String): Integer {
+    var index = 0
+    var found_place = -1
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if attribute.name == name {
+            found_place = index
+        }
+        index = index + 1
+    }
+    crash found_place >= 0
+    return found_place
+}
+
+func takes_an_attribute(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter): Boolean {
+    var written = parameter.declared_type
+    if written == AbstractSyntaxTree.Shapes.Types.NamedType {
+        var path = written.path.join(".")
+        return path == "Spite.AttributeDeclaration" and written.arguments.is_empty()
+    }
+    return false
+}
+
+func constant_attribute_name(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if written == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return constant_index_name(written)
+    }
+    return ""
+}
+
+func constant_index_name(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): String {
+    var listed = index.target
+    var named = index.index
+    var lists_attributes = false
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        lists_attributes = listed.name == "attributes" and not constant_attribute_owner_of(listed.target).is_empty()
+    }
+    if not lists_attributes {
+        return ""
+    }
+    if named == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return attribute_literal_text(named)
+    }
+    return ""
+}
+
+func attribute_literal_text(literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression): String {
+    if literal.kind != 'symbol_literal' {
+        return ""
+    }
+    return literal.text
+}
+
+func constant_attribute_owner(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if written == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return constant_listed_owner(written.target)
+    }
+    return ""
+}
+
+func constant_listed_owner(listed: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return constant_attribute_owner_of(listed.target)
+    }
+    return ""
+}
+
+func constant_attribute_owner_of(target: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    var path = class_path_of(target)
+    if path.is_empty() {
+        return ""
+    }
+    var described = constant_class_of(target)
+    if not described {
+        return ""
+    }
+    var model = context.program.class_named(described)
+    if not model {
+        return ""
+    }
+    return model.key
+}
+
+func text_read_as_an_enum(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    owner: Model.ClassModel,
+    name: String,
+    written_count: Integer,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert owner.key == "String" and name.starts_with("to_") and written_count == 0
+    var name_length = name.length()
+    var snake = name.slice(3, name_length)
+    var enum_name = pascal_case_of(snake)
+    var path = List<String>()
+    path.append(enum_name)
+    var found = context.resolver.declared_type_in(path, context.current_class)
+    assert found
+    assert found.kind == 'enumeration'
+    var wanted = found.nullable()
+    return fitted(receiver, wanted)
 }
 
 func enum_value_found(
@@ -4074,10 +4305,130 @@ func called(
     if schema {
         return schema
     }
-    need(function)
     var arguments = fitted_arguments(function, written)
-    copy_an_inline_item(function, arguments)
-    return HighIntermediaryRepresentation.Values.Call(function, receiver, arguments)
+    var with_known_functions = with_the_functions_passed(function, arguments)
+    need(with_known_functions)
+    copy_an_inline_item(with_known_functions, arguments)
+    return HighIntermediaryRepresentation.Values.Call(with_known_functions, receiver, arguments)
+}
+
+func with_the_functions_passed(
+    function: Model.FunctionModel,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+): Model.FunctionModel {
+    if not function.declaration or function.known_parameter_functions.count() > 0 {
+        return function
+    }
+    var described_names = described_function_parameters(function)
+    if described_names.is_empty() {
+        return function
+    }
+    var known = Dictionary<String, Model.FunctionModel>()
+    var pieces = List<String>()
+    var index = 0
+    while index < function.parameters.count() and index < arguments.count() {
+        var parameter = function.parameters[index]
+        var argument = arguments[index]
+        var described = described_argument_function(argument)
+        if described and described_names.contains(parameter.name) {
+            known[parameter.name] = described
+            var owner_name = described.owner.replace(".", "_")
+            pieces.append("{owner_name}_{described.name}")
+        }
+        index = index + 1
+    }
+    if pieces.is_empty() {
+        return function
+    }
+    var joined = pieces.join("_and_")
+    var copy_name = "{function.name}_for_{joined}"
+    var copy_key = "{function.owner}.{copy_name}"
+    var made = context.known_function_copies[copy_key]
+    if made {
+        return made
+    }
+    var copied = Model.FunctionModel(copy_name, function.owner)
+    copied.declaration = function.declaration
+    copied.parameters = function.parameters
+    copied.answer = function.answer
+    copied.known_parameter_functions = known
+    context.known_function_copies[copy_key] = copied
+    return copied
+}
+
+func described_argument_function(argument: HighIntermediaryRepresentation.Values.Value?): Model.FunctionModel? {
+    assert argument
+    return described_function(argument)
+}
+
+func described_function_parameters(function: Model.FunctionModel): List<String> {
+    var function_key = function.key()
+    var known_names = context.described_parameters[function_key]
+    if known_names {
+        return known_names
+    }
+    var found_names = read_described_parameters(function)
+    context.described_parameters[function_key] = found_names
+    return found_names
+}
+
+func read_described_parameters(function: Model.FunctionModel): List<String> {
+    var described_names = List<String>()
+    crash function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    if not declaration.body {
+        return described_names
+    }
+    var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_function(declaration)
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var described_name = described_parameter_of(found.expression, function)
+        if not described_name.is_empty() and not described_names.contains(described_name) {
+            described_names.append(described_name)
+        }
+        index = index + 1
+    }
+    return described_names
+}
+
+func described_parameter_of(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    function: Model.FunctionModel,
+): String {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return described_target_of(expression.target, expression.name, function)
+    }
+    return ""
+}
+
+func described_target_of(
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    member_name: String,
+    function: Model.FunctionModel,
+): String {
+    var asks = member_name == "name" or member_name == "arguments"
+    if not asks {
+        return ""
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return function_parameter_named(target.name, function)
+    }
+    return ""
+}
+
+func function_parameter_named(name: String, function: Model.FunctionModel): String {
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if parameter.name == name and parameter.parameter_type.kind == 'function' {
+            return name
+        }
+        index = index + 1
+    }
+    return ""
 }
 
 func copy_an_inline_item(function: Model.FunctionModel, arguments: List<HighIntermediaryRepresentation.Values.Value>) {
@@ -4740,6 +5091,10 @@ func index_value(
     if absent {
         return absent
     }
+    var listed_value = enum_value_at(index)
+    if listed_value {
+        return listed_value
+    }
     var target = value_of(index.target, null)
     var owner = present_class_of(target)
     var named = name_index_of(index.index)
@@ -4970,10 +5325,18 @@ func binary_value(
         var fitted_right = fitted(right, left.value_type)
         refuse_a_cut(binary, fitted_right, left.value_type, right.value_type)
         refuse_a_division_by_zero(binary, operator, left, fitted_right)
+        var decided = decided_comparison(binary, operator, left, fitted_right)
+        if decided {
+            return decided
+        }
         var answer = answer_type_of(operator, left.value_type)
         var made = HighIntermediaryRepresentation.Values.MachineOperation(answer, operator, left, fitted_right)
         var printer = Printers.Spite.ExpressionPrinter(binary)
         made.shown = printer.text()
+        var left_printer = Printers.Spite.ExpressionPrinter(binary.left)
+        made.shown_left = left_printer.text()
+        var right_printer = Printers.Spite.ExpressionPrinter(binary.right)
+        made.shown_right = right_printer.text()
         return made
     }
     var answered = operator_call(operator, left, right)
@@ -4981,6 +5344,48 @@ func binary_value(
     var shown = printed.text()
     show_the_operation(answered, shown)
     return answered
+}
+
+func decided_comparison(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value? {
+    var asks_left = binary.left == AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    var asks_right = binary.right == AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    assert asks_left or asks_right
+    if left == HighIntermediaryRepresentation.Values.WholeNumber {
+        return decided_with_a_left(operator, left, right)
+    }
+    return null
+}
+
+func decided_with_a_left(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: HighIntermediaryRepresentation.Values.WholeNumber,
+    right: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value? {
+    if right == HighIntermediaryRepresentation.Values.WholeNumber {
+        return compared_numbers(operator, left.number, right.number)
+    }
+    return null
+}
+
+func compared_numbers(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left_number: Long,
+    right_number: Long,
+): HighIntermediaryRepresentation.Values.Value? {
+    switch operator {
+        'equal': return boolean_constant(left_number == right_number)
+        'not_equal': return boolean_constant(left_number != right_number)
+        'less': return boolean_constant(left_number < right_number)
+        'less_or_equal': return boolean_constant(left_number <= right_number)
+        'greater': return boolean_constant(left_number > right_number)
+        'greater_or_equal': return boolean_constant(left_number >= right_number)
+        _: return null
+    }
 }
 
 func show_the_operation(answered: HighIntermediaryRepresentation.Values.Value, shown: String) {
@@ -5164,7 +5569,8 @@ func bound_is(bound: Model.Type, written: String): Boolean {
         "Number": return bound.kind == 'scalar' and bound.name != "Boolean" and not bound.is_nullable
         "List": return bound.name.starts_with("List_of_") and not bound.is_nullable
         "Dictionary": return bound.name.starts_with("Dictionary_of_") and not bound.is_nullable
-        "Symbol": return bound.is_symbol and not bound.is_nullable
+        "Symbol": return (bound.is_symbol or bound.kind == 'enumeration') and not bound.is_nullable
+        "Enum": return bound.kind == 'enumeration' and not bound.is_nullable
         _: return is_the_class(bound, written)
     }
 }
@@ -6211,7 +6617,23 @@ func parameter_place_of(call: AbstractSyntaxTree.Shapes.Expressions.CallExpressi
     if written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
         return literal_place_of(written)
     }
+    if written == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walked_place_of(written)
+    }
     return -1
+}
+
+func walked_place_of(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Integer {
+    var function = context.current_function
+    var asked = member.target
+    var names_the_walked = false
+    if asked == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_the_walked = asked.name == function.bound_parameter and member.name == "index"
+    }
+    if not names_the_walked or function.bound_member.is_empty() {
+        return -1
+    }
+    return function.bound_member_index
 }
 
 func literal_place_of(literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression): Integer {
