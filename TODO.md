@@ -36,7 +36,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The runtime the library needs, as machine code: allocator, console, files, directories, clock, sockets, processes, dynamic library, weak references
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
 - The memory of a value of any type: `_read_value` and `_write_value`, and a room sized by item count times item size
-- Memory: heap, reference counting, frees, and `--debug-memory` counts equal to the original's
+- `--debug-memory` counts and the leak report; an attribute read from an object made in the same expression (`Maker().part`) leaks that object; the counts a pass proves unneeded are still written
 - Chains of member templates as one loop, `Dictionary` templates through its values, and the passed-function forms (`filter(f)`, `sort_by(f)`, `remove_where(f)`, `map(f)`)
 - A dictionary keyed by hashing instead of a walk of its keys
 - References, enums, unions and `type` shapes

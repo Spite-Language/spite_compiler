@@ -73,7 +73,15 @@ function). Each optimisation and each proof is a pass of its own.
 ## Memory
 
 - An object lives on the heap and is freed by reference counting (D32); a pass that proves an object never leaves
-  its function places it in the frame instead.
+  its function places it in the frame instead. The lowering writes every count:
+  - a value is owned (a new object, a call's answer, a text constant, a box) or borrowed (a read of a local, an
+    attribute, a list slot, `this`, a singleton);
+  - a place that keeps a value (a local, an attribute, a list slot, a function value's receiver, an answer) retains
+    a borrowed one and releases what it held before;
+  - an owned value nobody keeps (an argument, a receiver, a tested or discarded value) is released after its use;
+  - a function retains its parameters, and every block releases its locals when it ends or returns;
+  - `_release` frees an object whose count reaches zero through its class's `_free_<class>`: `drop()` first, then
+    a list's items, the attributes that hold objects, and a buffer's bytes.
 - A `Buffer`'s room is sized by the compiler (D33): a buffer proven never to grow keeps its bytes inside the
   value that holds it, exactly `size` of them; every other buffer keeps a heap block that grows.
 - A class whose only memory is a room of at most 8 bytes, and nothing else, is a number: its value travels in a

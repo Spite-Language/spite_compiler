@@ -10,6 +10,8 @@ var scalars = Model.Scalars()
 var path = ""
 var line = 0
 var singleton_slots = Dictionary<String, Integer>()
+var scopes = List<List<Integer>>()
+var pending_releases = List<Integer>()
 
 func FunctionLowering(
     starting_layout: Layout,
@@ -30,10 +32,15 @@ func lowered(
     start(key)
     var this_register = new_register()
     locals["this"] = this_register
+    scopes = List<List<Integer>>()
+    var held = List<Integer>()
+    scopes.append(held)
     high.function.parameters.each(take_parameter)
     function.parameter_count = function.register_count
+    high.function.parameters.each(hold_a_parameter)
     lower_block(high.body)
     if not terminated {
+        release_every_scope()
         var nothing = LowIntermediaryRepresentation.Instructions.Return(-1)
         emit(nothing)
     }
@@ -54,6 +61,76 @@ func take_parameter(parameter: Model.ParameterModel) {
     if is_a_nullable_scalar(parameter.parameter_type) {
         var presence = new_register()
         local_presences[parameter.name] = presence
+    }
+}
+
+func hold_a_parameter(parameter: Model.ParameterModel) {
+    assert is_a_pointer(parameter.parameter_type)
+    var register = locals[parameter.name]
+    crash register
+    retain(register)
+    hold(register)
+}
+
+func is_a_pointer(of_type: Model.Type): Boolean {
+    var kind = of_type.kind
+    return kind == 'object' or kind == 'union' or kind == 'shape' or kind == 'function'
+}
+
+func owned(register: Integer): Lowered {
+    var made = Lowered(register, -1)
+    made.owned = true
+    return made
+}
+
+func retain(register: Integer) {
+    var retained = LowIntermediaryRepresentation.Instructions.Retain(register)
+    emit(retained)
+}
+
+func release(register: Integer) {
+    var arguments = List<Integer>()
+    arguments.append(register)
+    var released = LowIntermediaryRepresentation.Instructions.Call(-1, "_release", arguments)
+    emit(released)
+}
+
+func kept(value: Lowered, of_type: Model.Type) {
+    if is_a_pointer(of_type) and not value.owned {
+        retain(value.value)
+    }
+}
+
+func release_later(value: Lowered, of_type: Model.Type) {
+    if is_a_pointer(of_type) and value.owned {
+        pending_releases.append(value.value)
+    }
+}
+
+func release_the_pending() {
+    pending_releases.each(release)
+    pending_releases = List<Integer>()
+}
+
+func discard(value: Lowered, of_type: Model.Type) {
+    if is_a_pointer(of_type) and value.owned {
+        release(value.value)
+    }
+}
+
+func hold(register: Integer) {
+    var innermost = scopes.last()
+    crash innermost
+    innermost.append(register)
+}
+
+func release_every_scope() {
+    var index = scopes.count() - 1
+    while index >= 0 {
+        var scope = scopes[index]
+        crash scope
+        scope.each(release)
+        index = index - 1
     }
 }
 
@@ -116,7 +193,14 @@ func text_label(text: String): Integer {
 
 func lower_block(block: HighIntermediaryRepresentation.Statements.Block?) {
     crash block
+    var held = List<Integer>()
+    scopes.append(held)
     block.statements.each(lower_statement)
+    if not terminated {
+        held.each(release)
+    }
+    var last = scopes.count() - 1
+    scopes.remove_at(last)
 }
 
 func lower_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
@@ -138,8 +222,12 @@ func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
     var value = lower_value(declare.value)
     var register = new_register()
     locals[declare.name] = register
+    kept(value, declare.declared_type)
     var copied = LowIntermediaryRepresentation.Instructions.Copy(register, value.value)
     emit(copied)
+    if is_a_pointer(declare.declared_type) {
+        hold(register)
+    }
     if is_a_nullable_scalar(declare.declared_type) {
         var presence = new_register()
         local_presences[declare.name] = presence
@@ -153,8 +241,17 @@ func lower_assign(assign: HighIntermediaryRepresentation.Statements.Assign) {
     var value = lower_value(assign.value)
     var register = locals[assign.name]
     crash register
+    crash assign.value
+    var assigned_type = assign.value.value_type
+    kept(value, assigned_type)
+    var old = new_register()
+    var saved = LowIntermediaryRepresentation.Instructions.Copy(old, register)
+    emit(saved)
     var copied = LowIntermediaryRepresentation.Instructions.Copy(register, value.value)
     emit(copied)
+    if is_a_pointer(assigned_type) {
+        release(old)
+    }
     var presence = local_presences[assign.name]
     assert presence
     var copied_presence = LowIntermediaryRepresentation.Instructions.Copy(presence, value.presence)
@@ -166,9 +263,21 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
     var object = lower_value(assign.object)
     var value = lower_value(assign.value)
     var offset = layout.offset_of(assign.attribute)
-    var width = width_of(assign.attribute.attribute_type)
+    var attribute_type = assign.attribute.attribute_type
+    var width = width_of(attribute_type)
+    kept(value, attribute_type)
+    var old = new_register()
+    if is_a_pointer(attribute_type) {
+        var loaded_old = LowIntermediaryRepresentation.Instructions.Load(old, object.value, offset, 'bits_64')
+        emit(loaded_old)
+    }
     var stored = LowIntermediaryRepresentation.Instructions.Store(object.value, offset, value.value, width)
     emit(stored)
+    if is_a_pointer(attribute_type) {
+        release(old)
+    }
+    crash assign.object
+    discard(object, assign.object.value_type)
     if is_a_nullable_scalar(assign.attribute.attribute_type) {
         var presence_offset = offset + 8
         var stored_presence = LowIntermediaryRepresentation.Instructions.Store(
@@ -183,12 +292,16 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
 
 func lower_evaluate(evaluate: HighIntermediaryRepresentation.Statements.Evaluate) {
     line = evaluate.line
-    lower_value(evaluate.value)
+    var value = lower_value(evaluate.value)
+    crash evaluate.value
+    discard(value, evaluate.value.value_type)
 }
 
 func lower_if(branch: HighIntermediaryRepresentation.Statements.If) {
     line = branch.line
     var condition = lower_value(branch.condition)
+    crash branch.condition
+    discard(condition, branch.condition.value_type)
     var then_block = new_block()
     var after = new_block()
     var else_block = after
@@ -227,11 +340,15 @@ func lower_while(loop: HighIntermediaryRepresentation.Statements.While) {
 func lower_return(returned: HighIntermediaryRepresentation.Statements.Return) {
     line = returned.line
     if not returned.value {
+        release_every_scope()
         var nothing = LowIntermediaryRepresentation.Instructions.Return(-1)
         emit(nothing)
         return
     }
     var value = lower_value(returned.value)
+    var returned_type = returned.value.value_type
+    kept(value, returned_type)
+    release_every_scope()
     var made = LowIntermediaryRepresentation.Instructions.Return(value.value)
     made.presence = value.presence
     emit(made)
@@ -348,6 +465,7 @@ func lower_text(text: HighIntermediaryRepresentation.Values.TextConstant): Lower
     var string_type = text.value_type
     var made = make_object(string_type.name)
     var label = text_label(text.text)
+    var made_text = owned(made)
     var bytes = new_register()
     var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(bytes, label)
     emit(addressed)
@@ -363,7 +481,7 @@ func lower_text(text: HighIntermediaryRepresentation.Values.TextConstant): Lower
         emit(appended)
         index = index + 1
     }
-    return single(made)
+    return made_text
 }
 
 func load_byte(base: Integer, offset_register: Integer): Integer {
@@ -394,7 +512,7 @@ func lower_make_object(made: HighIntermediaryRepresentation.Values.MakeObject): 
     }
     var object = make_object(class_key)
     call_the_constructor(object, made)
-    return single(object)
+    return owned(object)
 }
 
 func make_object(class_key: String): Integer {
@@ -420,11 +538,15 @@ func make_object(class_key: String): Integer {
 func call_the_constructor(object: Integer, made: HighIntermediaryRepresentation.Values.MakeObject) {
     assert made.constructor
     var constructor_key = made.constructor.key()
+    var outer = pending_releases
+    pending_releases = List<Integer>()
     var arguments = List<Integer>()
     arguments.append(object)
     add_arguments(arguments, made.arguments)
     var called = LowIntermediaryRepresentation.Instructions.Call(-1, constructor_key, arguments)
     emit(called)
+    release_the_pending()
+    pending_releases = outer
 }
 
 func singleton_of(class_key: String, made: HighIntermediaryRepresentation.Values.MakeObject): Integer {
@@ -476,6 +598,7 @@ func add_arguments(arguments: List<Integer>, values: List<HighIntermediaryRepres
     while index < values.count() {
         var value = values[index]
         var argument_value = lower_value(value)
+        release_later(argument_value, value.value_type)
         arguments.append(argument_value.value)
         if argument_value.presence >= 0 {
             arguments.append(argument_value.presence)
@@ -489,10 +612,21 @@ func lower_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     if not call.function.has_a_body() {
         return intrinsic.lowered(call)
     }
+    var outer = pending_releases
+    pending_releases = List<Integer>()
     var arguments = List<Integer>()
     var receiver = lower_value(call.receiver)
+    crash call.receiver
+    release_later(receiver, call.receiver.value_type)
     arguments.append(receiver.value)
     add_arguments(arguments, call.arguments)
+    var answer = finished_call(call, arguments)
+    release_the_pending()
+    pending_releases = outer
+    return answer
+}
+
+func finished_call(call: HighIntermediaryRepresentation.Values.Call, arguments: List<Integer>): Lowered {
     var target = -1
     if not call.value_type.is_nothing() {
         target = new_register()
@@ -506,6 +640,9 @@ func lower_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
         return Lowered(target, presence)
     }
     emit(called)
+    if is_a_pointer(call.value_type) {
+        return owned(target)
+    }
     return single(target)
 }
 
@@ -642,6 +779,8 @@ func lower_negation(negation: HighIntermediaryRepresentation.Values.Negation): L
 
 func lower_class_test(test: HighIntermediaryRepresentation.Values.ClassTest): Lowered {
     var tested = lower_value(test.tested)
+    crash test.tested
+    release_later(tested, test.tested.value_type)
     var target = new_register()
     var zero = constant(0)
     var present = new_register()
@@ -668,6 +807,8 @@ func lower_class_test(test: HighIntermediaryRepresentation.Values.ClassTest): Lo
 
 func lower_presence_test(test: HighIntermediaryRepresentation.Values.PresenceTest): Lowered {
     var tested = lower_value(test.tested)
+    crash test.tested
+    release_later(tested, test.tested.value_type)
     if tested.presence >= 0 {
         return single(tested.presence)
     }
@@ -694,7 +835,7 @@ func lower_number_room(room: HighIntermediaryRepresentation.Values.NumberRoom): 
     var counted = constant(room.width)
     var count_stored = LowIntermediaryRepresentation.Instructions.Store(made.value, count_offset, counted, 'bits_32')
     emit(count_stored)
-    return made
+    return owned(made.value)
 }
 
 func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): Lowered {
@@ -720,16 +861,22 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
         return decimal_converted(converted.value, from_type, conversion.value_type)
     }
     if conversion.kind == 'proven' {
-        stop_if_missing(converted)
-        return single(converted.value)
+        stop_if_missing(converted, conversion.shown)
+        return carried(converted)
     }
     if conversion.kind == 'narrow' {
         check_the_range(converted.value, from_type, conversion.value_type)
     }
-    return single(converted.value)
+    return carried(converted)
 }
 
-func stop_if_missing(converted: Lowered) {
+func carried(converted: Lowered): Lowered {
+    var made = Lowered(converted.value, -1)
+    made.owned = converted.owned
+    return made
+}
+
+func stop_if_missing(converted: Lowered, shown: String) {
     var presence = converted.presence
     if presence < 0 {
         var zero = constant(0)
@@ -742,7 +889,9 @@ func stop_if_missing(converted: Lowered) {
     var test = LowIntermediaryRepresentation.Instructions.Branch(presence, after, stopping)
     emit(test)
     switch_to(stopping)
-    var label = text_label("spite: a read the program proved present is missing, at {path}:{line}\n")
+    var label = text_label(
+        "spite: '{shown}' is outside its list: a bound proves only the top of an index, and this one is below 0 or the list changed, at {path}:{line} in {function.key}\n",
+    )
     var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
     emit(stopped)
     switch_to(after)
@@ -783,7 +932,7 @@ func enum_text_of(number: Integer, enumeration: Model.EnumModel, string_type: Mo
     var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
     emit(stopped)
     switch_to(after)
-    return single(target)
+    return owned(target)
 }
 
 func boxed_into_a_shape(converted: Lowered, boxed: Model.Type): Lowered {
@@ -791,15 +940,15 @@ func boxed_into_a_shape(converted: Lowered, boxed: Model.Type): Lowered {
         var enum_box = small_object(boxed.name, 24)
         var stored_enum = LowIntermediaryRepresentation.Instructions.Store(enum_box, 16, converted.value, 'bits_64')
         emit(stored_enum)
-        return single(enum_box)
+        return owned(enum_box)
     }
     if boxed.kind != 'scalar' {
-        return single(converted.value)
+        return converted
     }
     var box = small_object(boxed.name, 24)
     var stored = LowIntermediaryRepresentation.Instructions.Store(box, 16, converted.value, 'bits_64')
     emit(stored)
-    return single(box)
+    return owned(box)
 }
 
 func small_object(class_key: String, size: Integer): Integer {
@@ -818,7 +967,11 @@ func small_object(class_key: String, size: Integer): Integer {
 }
 
 func lower_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall): Lowered {
+    var outer = pending_releases
+    pending_releases = List<Integer>()
     var receiver = lower_value(call.receiver)
+    crash call.receiver
+    release_later(receiver, call.receiver.value_type)
     var arguments = List<Integer>()
     add_arguments(arguments, call.arguments)
     var target = -1
@@ -844,7 +997,11 @@ func lower_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall): Lo
     var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
     emit(stopped)
     switch_to(after)
-    return Lowered(target, presence)
+    release_the_pending()
+    pending_releases = outer
+    var answer = Lowered(target, presence)
+    answer.owned = is_a_pointer(call.value_type)
+    return answer
 }
 
 func call_a_filler(
@@ -949,13 +1106,19 @@ func lower_function_value(made: HighIntermediaryRepresentation.Values.FunctionVa
     emit(found)
     var stored_address = LowIntermediaryRepresentation.Instructions.Store(object, 16, address, 'bits_64')
     emit(stored_address)
+    crash made.receiver
+    kept(receiver, made.receiver.value_type)
     var stored_receiver = LowIntermediaryRepresentation.Instructions.Store(object, 24, receiver.value, 'bits_64')
     emit(stored_receiver)
-    return single(object)
+    return owned(object)
 }
 
 func lower_function_value_call(call: HighIntermediaryRepresentation.Values.FunctionValueCall): Lowered {
+    var outer = pending_releases
+    pending_releases = List<Integer>()
     var called = lower_value(call.called)
+    crash call.called
+    release_later(called, call.called.value_type)
     var address = new_register()
     var loaded_address = LowIntermediaryRepresentation.Instructions.Load(address, called.value, 16, 'bits_64')
     emit(loaded_address)
@@ -970,14 +1133,17 @@ func lower_function_value_call(call: HighIntermediaryRepresentation.Values.Funct
         target = new_register()
     }
     var made = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments)
+    var presence = -1
     if is_a_nullable_scalar(call.value_type) {
-        var presence = new_register()
+        presence = new_register()
         made.presence = presence
-        emit(made)
-        return Lowered(target, presence)
     }
     emit(made)
-    return single(target)
+    release_the_pending()
+    pending_releases = outer
+    var answer = Lowered(target, presence)
+    answer.owned = is_a_pointer(call.value_type)
+    return answer
 }
 
 func decimal_converted(source: Integer, from_type: Model.Type, to_type: Model.Type): Lowered {
@@ -1019,7 +1185,8 @@ func check_the_decimal_range(value: Integer, from_type: Model.Type, to_type: Mod
         lowest_bits = above_bits - 9223372036854775807 - 1
     }
     var article = article_of(to_type.name)
-    var message = "spite: a {from_type.name} does not fit in {article} {to_type.name}, at {path}:{line} in {function.key}\n"
+    var from_article = article_of(from_type.name)
+    var message = "spite: {from_article} {from_type.name} does not fit in {article} {to_type.name}, at {path}:{line} in {function.key}\n"
     decimal_stop_unless(wide, 'greater_or_equal', lowest_bits, message)
     decimal_stop_unless(wide, 'less', above_bits, message)
 }
@@ -1120,7 +1287,11 @@ func stop_unless(
     stopped.labels.append(opening)
     stopped.labels.append(closing)
     stopped.numbers.append(value)
-    stopped.signed_numbers.append(value_is_signed)
+    var sign = 0
+    if value_is_signed {
+        sign = 1
+    }
+    stopped.signed_numbers.append(sign)
     emit(stopped)
     switch_to(after)
 }
@@ -1136,13 +1307,15 @@ func article_of(name: String): String {
 
 func made_nullable(converted: Lowered, nullable_type: Model.Type): Lowered {
     if not is_a_nullable_scalar(nullable_type) {
-        return converted
+        return carried(converted)
     }
     var present = constant(1)
     return Lowered(converted.value, present)
 }
 
 func lower_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall): Lowered {
+    var outer = pending_releases
+    pending_releases = List<Integer>()
     var library = lower_value(call.library)
     var library_model = layout.program.class_named("DynamicLibrary")
     crash library_model
@@ -1167,12 +1340,15 @@ func lower_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall)
     var called = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments)
     called.answers_32_bits = call.value_type.name == "Integer"
     emit(called)
+    release_the_pending()
+    pending_releases = outer
     return single(target)
 }
 
 func foreign_argument(argument: HighIntermediaryRepresentation.Values.Value): Integer {
     var argument_value = lower_value(argument)
     var argument_type = argument.value_type
+    release_later(argument_value, argument_type)
     if argument_type.kind == 'object' and argument_type.name == "String" {
         return bytes_of_text(argument_value.value)
     }
