@@ -118,6 +118,7 @@ func fitted(
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'nullable', value)
     }
     if same_base and given.is_nullable {
+        refuse_an_unproven_fit(value, wanted)
         var shown = context.shown(given)
         typing.refuse_maybe_null(context, shown)
     }
@@ -147,6 +148,9 @@ func fitted(
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
     }
     if wanted.kind == 'shape' and given.kind != 'shape' {
+        if given.is_nullable {
+            refuse_an_unproven_fit(value, wanted)
+        }
         var present = given.present()
         filled_shape(present, wanted)
         if given.is_nullable {
@@ -856,6 +860,7 @@ func narrowed(
 ): HighIntermediaryRepresentation.Values.Value {
     var narrowed_type = context.scope.narrowed_type_of(path)
     if narrowed_type {
+        note_a_loop_read(path)
         var is_boxed = value.value_type.kind == 'shape' and is_held_in_a_box(narrowed_type)
         if is_boxed {
             return HighIntermediaryRepresentation.Values.Conversion(narrowed_type, 'unbox', value)
@@ -863,6 +868,12 @@ func narrowed(
         return HighIntermediaryRepresentation.Values.Conversion(narrowed_type, 'present', value)
     }
     return value
+}
+
+func note_a_loop_read(path: String) {
+    assert not context.loop_bases.is_empty()
+    assert not context.loop_reads.contains(path)
+    context.loop_reads.append(path)
 }
 
 func member_value(
@@ -917,6 +928,7 @@ func member_value(
         return shape_call(shaped, read_name, none_written)
     }
     if target.value_type.is_nullable {
+        refuse_an_unproven_read(target, member.name, "read from")
         var shown_maybe = context.shown(target.value_type)
         typing.refuse_maybe_null_member(context, shown_maybe, member.name)
     }
@@ -2074,6 +2086,9 @@ func member_call(
     var read_enum = enum_read_from(receiver, callee.name, call.arguments)
     if read_enum {
         return read_enum
+    }
+    if receiver.value_type.is_nullable {
+        refuse_an_unproven_read(receiver, callee.name, "called on")
     }
     var owner = present_class_of(receiver)
     var passed = passed_form(receiver, owner, callee.name, call.arguments)
@@ -4105,12 +4120,78 @@ func index_value(
     arguments.append(position)
     var read = HighIntermediaryRepresentation.Values.Call(function, target, arguments)
     var shown_path = path_of_an_index(index)
+    read.index_path = shown_path
+    read.index_hint = index_hint_of(owner, index)
     var unchecked = context.scope.narrowed_type_of(shown_path)
     var checks_a_literal = is_a_reflection_list(owner) and is_a_number_literal(index.index)
     if checks_a_literal and not unchecked {
         return checked_item(read, shown_path)
     }
     return proven_by_its_path(read, index)
+}
+
+func index_hint_of(owner: Model.ClassModel, index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): String {
+    if not is_a_counted_collection(owner) {
+        return ""
+    }
+    crash index.target
+    crash index.index
+    var target_printer = Printers.Spite.ExpressionPrinter(index.target)
+    var target_text = target_printer.text()
+    var index_printer = Printers.Spite.ExpressionPrinter(index.index)
+    var index_text = index_printer.text()
+    if is_a_number_literal(index.index) {
+        return ", or prove the count first, 'crash {target_text}.count() > {index_text}'"
+    }
+    return ", or read it where a bound proves it, inside 'while {index_text} < {target_text}.count()'"
+}
+
+func is_a_counted_collection(owner: Model.ClassModel): Boolean {
+    var library = Validators.LibraryFile()
+    if not library.holds(owner.file.path) {
+        return false
+    }
+    return not owner.shown.starts_with("Dictionary<")
+}
+
+func refuse_an_unproven_read(value: HighIntermediaryRepresentation.Values.Value, name: String, verb: String) {
+    assert value.value_type.is_nullable
+    if value == HighIntermediaryRepresentation.Values.Call {
+        refuse_an_unproven_call_read(value, name, verb)
+    }
+}
+
+func refuse_an_unproven_call_read(read: HighIntermediaryRepresentation.Values.Call, name: String, verb: String) {
+    assert read.index_path != ""
+    var shown = context.shown(read.value_type)
+    typing.refuse_missing_read_member(context, read.index_path, shown, name, verb, read.index_hint)
+}
+
+func refuse_an_unproven_fit(value: HighIntermediaryRepresentation.Values.Value, wanted: Model.Type) {
+    assert value.value_type.is_nullable
+    var present = wanted.present()
+    var shown_wanted = context.shown(present)
+    if wanted.kind == 'shape' {
+        var shape = context.program.shape_keyed(wanted.name)
+        crash shape
+        shown_wanted = shape.name
+    }
+    var shown = context.shown(value.value_type)
+    if value == HighIntermediaryRepresentation.Values.Call {
+        if value.index_path != "" {
+            typing.refuse_missing_read_needed(context, value.index_path, shown, shown_wanted, value.index_hint)
+        }
+    }
+    if wanted.kind == 'shape' and is_an_index_local(value) {
+        typing.refuse_maybe_null_needed(context, shown, shown_wanted)
+    }
+}
+
+func is_an_index_local(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        return context.index_locals.contains(value.name)
+    }
+    return false
 }
 
 func path_of_an_index(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): String {

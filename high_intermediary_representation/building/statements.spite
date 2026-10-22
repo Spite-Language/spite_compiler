@@ -8,6 +8,7 @@ var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
 var built = List<HighIntermediaryRepresentation.Statements.Statement>()
 var facts_paths = List<String>()
 var facts_types = List<Model.Type>()
+var facts_checks = List<String>()
 var endings = Endings()
 var rest_is_folded_away = false
 
@@ -58,6 +59,39 @@ func narrowed_block_of(
     made.line = written.line
     built = outer
     return made
+}
+
+func loop_body_of(
+    written: AbstractSyntaxTree.Shapes.Statements.Block?,
+    paths: List<String>,
+    types: List<Model.Type>,
+    notes: List<String>,
+): HighIntermediaryRepresentation.Statements.Block {
+    crash written
+    var outer = built
+    built = List<HighIntermediaryRepresentation.Statements.Statement>()
+    context.scope.enter()
+    narrow_all(paths, types)
+    note_the_loop_checks(paths, notes)
+    build_all(written.statements)
+    context.scope.leave()
+    var made = HighIntermediaryRepresentation.Statements.Block()
+    made.statements = built
+    made.line = written.line
+    built = outer
+    return made
+}
+
+func note_the_loop_checks(paths: List<String>, notes: List<String>) {
+    var index = 0
+    while index < paths.count() {
+        var path = paths[index]
+        var note = notes[index]
+        if note and note != "" {
+            context.scope.note_the_check(path, note)
+        }
+        index = index + 1
+    }
 }
 
 func narrow_all(paths: List<String>, types: List<Model.Type>) {
@@ -118,6 +152,8 @@ func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
     var made = HighIntermediaryRepresentation.Statements.Declare(name, local_type, value)
     made.line = statement.line
     add(made)
+    forget_what_the_call_writes(statement.value)
+    forget_what_a_receiver_call_shrinks(value)
     note_a_counted_list(name, statement.value)
     note_a_function_local(name, statement.name, value)
     note_a_null_local(name, statement.name, value)
@@ -125,6 +161,28 @@ func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
     if value == HighIntermediaryRepresentation.Values.Conversion {
         if value.kind == 'proven' {
             context.proven_locals.append(name)
+        }
+    }
+    note_an_index_local(name, value)
+}
+
+func forget_an_index_local(name: String) {
+    var kept = List<String>()
+    var index = 0
+    while index < context.index_locals.count() {
+        var local = context.index_locals[index]
+        if local != name {
+            kept.append(local)
+        }
+        index = index + 1
+    }
+    context.index_locals = kept
+}
+
+func note_an_index_local(name: String, value: HighIntermediaryRepresentation.Values.Value) {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        if value.index_path != "" and value.value_type.is_nullable {
+            context.index_locals.append(name)
         }
     }
 }
@@ -228,6 +286,17 @@ func refuse_a_loop_copy(condition: AbstractSyntaxTree.Shapes.Expressions.Express
     if condition == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
         var fact_path = identifier_path(condition.name)
         refuse_a_copy(fact_path)
+    }
+}
+
+func refuse_a_proven_read_check(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, keyword: String) {
+    if condition == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        var printer = Printers.Spite.ExpressionPrinter(condition)
+        var written = printer.text()
+        var check = context.scope.check_of(written)
+        assert check
+        assert check.starts_with("the loop condition ")
+        typing.refuse_proven_read(context, written, check, keyword)
     }
 }
 
@@ -340,6 +409,7 @@ func assign_a_name(
         context.scope.forget(internal_name)
         context.scope.forget_mentions(target.name)
         context.counted_lists.remove(internal_name)
+        forget_an_index_local(internal_name)
         var made = HighIntermediaryRepresentation.Statements.Assign(internal_name, value)
         made.line = statement.line
         add(made)
@@ -460,12 +530,37 @@ func assign_an_attribute(
 ) {
     var value = values.fitted_value_of(statement.value, attribute.attribute_type)
     var was_narrowed = context.scope.narrowed_type_of(path)
+    if was_narrowed and may_be_null(value) {
+        refuse_an_undone_loop_proof(statement, path)
+    }
     context.scope.forget(path)
     var made = HighIntermediaryRepresentation.Statements.AssignAttribute(object, attribute, value)
     made.line = statement.line
     add(made)
     assert was_narrowed
     narrow_a_present_assignment(value, attribute, path)
+}
+
+func may_be_null(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Conversion {
+        if value.kind == 'nullable' {
+            crash value.converted
+            return value.converted.value_type.is_nullable
+        }
+    }
+    return value.value_type.is_nullable
+}
+
+func refuse_an_undone_loop_proof(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement, path: String) {
+    var base = context.loop_bases.last()
+    assert base
+    var frame = context.scope.frame_of(path)
+    assert frame >= 0 and frame < base
+    assert context.loop_reads.contains(path)
+    crash statement.target
+    var printer = Printers.Spite.ExpressionPrinter(statement.target)
+    var written = printer.text()
+    typing.refuse_undone_loop_proof(context, written)
 }
 
 func narrow_a_present_assignment(
@@ -593,6 +688,7 @@ func build_evaluation(statement: AbstractSyntaxTree.Shapes.Statements.Expression
     made.line = statement.line
     add(made)
     forget_what_the_call_writes(statement.value)
+    forget_what_a_receiver_call_shrinks(value)
 }
 
 func forget_what_the_call_writes(written: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
@@ -605,6 +701,55 @@ func forget_after_a_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpress
     var callee = call.callee
     if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
         forget_after_an_own_call(callee.name)
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        forget_after_a_shrinking_call(callee)
+    }
+}
+
+func forget_after_a_shrinking_call(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var shrunk = ShrunkLists()
+    assert shrunk.is_shrinking(callee.name)
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var listed = printer.text()
+    context.scope.forget_reads_of(listed)
+    var counts = context.counted_lists.keys()
+    var index = 0
+    while index < counts.count() {
+        var count_name = counts[index]
+        forget_a_count_of(count_name, listed)
+        index = index + 1
+    }
+}
+
+func forget_a_count_of(count_name: String, listed: String) {
+    var counted = context.counted_lists[count_name]
+    crash counted
+    var printer = Printers.Spite.ExpressionPrinter(counted)
+    if printer.text() == listed {
+        context.counted_lists.remove(count_name)
+    }
+}
+
+func forget_what_a_receiver_call_shrinks(value: HighIntermediaryRepresentation.Values.Value) {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        forget_after_a_receiver_call(value)
+    }
+}
+
+func forget_after_a_receiver_call(call: HighIntermediaryRepresentation.Values.Call) {
+    var receiver = call.receiver
+    var is_reached = receiver == HighIntermediaryRepresentation.Values.Call
+    is_reached = is_reached or receiver == HighIntermediaryRepresentation.Values.Conversion
+    assert is_reached
+    var owner = context.program.class_named(call.function.owner)
+    assert owner
+    var library = Validators.LibraryFile()
+    assert not library.holds(owner.file.path)
+    var shrunk = ShrunkLists()
+    if shrunk.through_reads(owner, call.function) {
+        context.scope.forget_every_read()
     }
 }
 
@@ -730,13 +875,21 @@ func build_a_decided_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatem
 func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
     refuse_a_loop_copy(statement.condition)
     refuse_a_maybe_boolean(statement.condition)
+    var base = context.scope.narrowed.count()
+    context.loop_bases.append(base)
     var condition = values.condition_of(statement.condition)
     facts_paths = List<String>()
     facts_types = List<Model.Type>()
+    facts_checks = List<String>()
     read_a_bound(statement.condition)
     var paths = facts_paths
     var types = facts_types
-    var body = narrowed_block_of(statement.body, paths, types)
+    var notes = facts_checks
+    var body = loop_body_of(statement.body, paths, types, notes)
+    context.loop_bases.remove_last()
+    if context.loop_bases.is_empty() {
+        context.loop_reads = List<String>()
+    }
     var made = HighIntermediaryRepresentation.Statements.While(condition, body)
     made.line = statement.line
     add(made)
@@ -781,6 +934,7 @@ func read_a_counted_local(
     var list_value = values.value_of(listed, null)
     assert context.has_a_class(list_value.value_type) and not list_value.value_type.is_nullable
     var owner = context.class_of(list_value.value_type)
+    assert values.is_a_counted_collection(owner)
     var reader = owner.function_named("get_at")
     assert reader
     assert reader.answer
@@ -791,6 +945,16 @@ func read_a_counted_local(
     var list_text = printer.text()
     facts_paths.append("{list_text}[{index_name}]")
     facts_types.append(present)
+    note_a_loop_check(condition)
+}
+
+func note_a_loop_check(condition: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
+    while facts_checks.count() < facts_paths.count() - 1 {
+        facts_checks.append("")
+    }
+    var printer = Printers.Spite.ExpressionPrinter(condition)
+    var written = printer.text()
+    facts_checks.append("the loop condition '{written}'")
 }
 
 func holds_maybes(listing: Model.ClassModel): Boolean {
@@ -831,6 +995,7 @@ func read_a_counted_list(
     var listed = values.value_of(callee.target, null)
     assert context.has_a_class(listed.value_type) and not listed.value_type.is_nullable
     var owner = context.class_of(listed.value_type)
+    assert values.is_a_counted_collection(owner)
     var reader = owner.function_named("get_at")
     assert reader
     assert reader.answer
@@ -841,6 +1006,7 @@ func read_a_counted_list(
     var present = element.present()
     facts_paths.append("{list_text}[{index_name}]")
     facts_types.append(present)
+    note_a_loop_check(condition)
     var offset = 1
     while offset <= reach {
         facts_paths.append("{list_text}[{index_name} + {offset}]")
@@ -883,6 +1049,7 @@ func build_inner_block(statement: AbstractSyntaxTree.Shapes.Statements.Block) {
 
 func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatement) {
     refuse_a_proven_check(statement.condition)
+    refuse_a_proven_read_check(statement.condition, "assert")
     statement.condition = values.with_its_links(statement.condition)
     var condition = values.condition_of(statement.condition)
     var failed = HighIntermediaryRepresentation.Statements.Block()
@@ -1039,6 +1206,7 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
         return
     }
     refuse_a_proven_check(statement.condition)
+    refuse_a_proven_read_check(statement.condition, "crash")
     show_the_values(stopped, statement.condition)
     statement.condition = values.with_its_links(statement.condition)
     var condition = values.condition_of(statement.condition)
@@ -1451,6 +1619,7 @@ func read_an_empty_member(
     var listed = values.value_of(callee.target, null)
     assert context.has_a_class(listed.value_type) and not listed.value_type.is_nullable
     var owner = context.class_of(listed.value_type)
+    assert values.is_a_counted_collection(owner)
     var reader = owner.function_named("get_at")
     assert reader
     assert reader.answer
@@ -1495,6 +1664,7 @@ func read_a_counted_member(
     var listed = values.value_of(callee.target, null)
     assert context.has_a_class(listed.value_type) and not listed.value_type.is_nullable
     var owner = context.class_of(listed.value_type)
+    assert values.is_a_counted_collection(owner)
     var reader = owner.function_named("get_at")
     assert reader
     assert reader.answer
