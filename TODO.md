@@ -59,6 +59,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found while porting
 
+- Hangs (D244): two `Concurrent`s that each let go of a handle to the other's work, while the entry function keeps sleeping, now wait for each other forever instead of stopping in `Scheduler.every_concurrent_waits_for_another` (`concurrent_wait_cycle`): a frame waiting to let a handle go should record the work it waits for, so the scheduler can see the circle
+
 - At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)
 - The spec puts the inflection table at `library/string/inflection.spite` (`String.Inflection`), but a class file and a folder of one name are refused (`conformance/class_and_namespace`), so the table stays `common/inflection.spite` and the plural templates fall back to the compiler's own rules: a program reopening the table (`inflection_table`) is not read yet. Needs a decision on whether a class may also be a namespace
 
