@@ -217,10 +217,13 @@ replacement. What a user can observe: nothing but the time; the message of a rea
 
 ## Text joined in one piece
 
-`"{first} meets {second} at the gate."` is one join, not a chain of pairs. The compiler makes the text once and
-appends every piece to it in order: a written piece's bytes go straight in, with no text made for them, and a hole's
-text is appended and let go. A chain of pairs would make a whole new text at every piece and copy everything joined
-so far into it.
+`"{first} meets {second} at the gate."` is one join, not a chain of pairs. The compiler works out every piece
+first, left to right as written, adds up their lengths (a written piece's length is known while compiling, a
+hole's is read from its text, a number's is counted), makes the text once with exactly that room, and copies each
+piece's bytes into it with one block copy (`copy r<n> bytes from r<a> to r<b>` in `--low-ir`, a `rep movsb` in the
+machine code). A written piece is copied straight from the executable's data, with no text made for it; a hole's
+text is let go once the join is written. A chain of pairs would make a whole new text at every piece and copy
+everything joined so far into it.
 
 ```
 func greeting(first: String, second: String): String {
@@ -228,17 +231,19 @@ func greeting(first: String, second: String): String {
 }
 ```
 
-The pieces are worked out left to right as written, so anything a hole calls runs in the order the source reads in.
+The same code writes a written text on its own (`"gold"` is one allocation and one copy) and an
+[append in place](#text-appended-to-itself-grows-in-place).
 
 When it does not apply: a join written as calls (`first.sum(second)`) is a call, and a program that replaces
-`String.sum` by reopening `String` keeps calling its own. What a user can observe: fewer texts made, under
-`--debug-memory`.
+`String.sum` by reopening `String` keeps calling its own. What a user can observe: one allocation for the whole
+join, and the time.
 
 ## A number joined into text is written in place
 
 `"line {index} of {round};"` reads as turning each number into a text and joining the pieces. Inside a join, an
 `Integer` or a `Long` piece is written as digits straight into the text being joined: the compiler counts the
-digits, makes room for them and writes them from the last, so no text is made for the number.
+digits (and the `-`) before the text is made, so they are part of its one room, and then writes them from the
+last, so no text is made for the number.
 
 ```
 func label(index: Integer, round: Integer): String {
@@ -246,10 +251,120 @@ func label(index: Integer, round: Integer): String {
 }
 ```
 
-The digits are the ones the library's `to_string()` writes: a `-` for a number below 0, and `0` for zero. When it
-does not apply: a number that is the whole text (`"{index}"`), a number of another type, and a program that
-replaces `Integer.to_string()` or `Long.to_string()` by reopening the class, which keeps calling its own. What a
-user can observe: fewer texts made, under `--debug-memory`.
+The digits are the ones the library's `to_string()` writes: a `-` for a number below 0, and `0` for zero. It
+applies inside an [append in place](#text-appended-to-itself-grows-in-place) too (`log = "{log}{index},"`). When it
+does not apply: a number that is the whole text (`"{index}"`), which calls `to_string()`, a number of another type,
+and a program that replaces `Integer.to_string()` or `Long.to_string()` by reopening the class, which keeps calling
+its own. What a user can observe: fewer texts made, and the time.
+
+## Text appended to itself grows in place
+
+`built = "{built}item {index},"`, `text = text + piece` and `joined = joined.sum(separator)` name the text they
+assign on their left. When the text is held only by that name (its count is 1 when the line runs), the pieces are
+appended to it where it is, with the [one-piece join](#text-joined-in-one-piece)'s code: their lengths are added,
+the room is grown once if they do not fit (at least doubled, so a loop of appends copies each byte a constant
+number of times), and the bytes are copied in. When something else holds the text too, it is copied first, with
+twice its length as room, and the name is given the copy, so what the other holder sees never changes.
+
+```
+func words(count: Integer): String {
+    var text = ""
+    var index = 0
+    while index < count {
+        text = "{text}word {index} "
+        index = index + 1
+    }
+    return text
+}
+```
+
+When it does not apply: a piece that names the text itself (`text = "{text}{text}"`), which is an ordinary join, a
+`String?` or a symbol, and an assignment to an attribute or a list slot. What a user can observe: the time, and
+the text's room, which can be up to twice its length.
+
+## Short text lives inside its `String`
+
+A `String` is a 32-byte object that holds its length and a `Buffer` of its bytes, and a `Buffer` holds a pointer
+to its storage. A text the compiler makes itself (a written text, a join, an append's first text) is one
+allocation: the `String`, then its `Buffer`, then the bytes, with room for 47 bytes or for the whole join if that
+is longer. Every other `Buffer` (one `Buffer(n)` or `String()` makes) has room for 47 bytes inside itself too, so a
+short buffer is one allocation and not two. When the bytes outgrow the room, they move to storage of their own,
+and the room inside is not used again.
+
+```
+func labels(count: Integer): List<String> {
+    var made = List<String>()
+    var index = 0
+    while index < count {
+        made.append("r{index} of {count}")
+        index = index + 1
+    }
+    return made
+}
+```
+
+Each label is one allocation of 32 + 48 + 48 bytes and one free. The `String` and its `Buffer` mark in their own
+padding (the unused upper bytes of the 32-bit length and count slots) that they were made together. Freeing the
+`String` frees the block; when something still holds the `Buffer` (a program that reopens `String` and hands
+`_buffer` out), the block stays until that holder lets the `Buffer` go, and that release frees it.
+
+When it does not apply: a program whose `String` keeps an attribute other than `_buffer` and `_length` in its
+objects, or whose `String` or `Buffer` has a `drop()` or is held back by a cycle, makes the `String` and its
+`Buffer` apart (still with the room inside the `Buffer`). What a user can observe: one allocation per text, 48
+more bytes per `Buffer`, and the time.
+
+## Bytes are copied in one block
+
+The library's text and bytes functions copy runs of bytes with `Buffer._copy_bytes(at, source, source_at,
+wanted)`, a function with no body that the compiler writes as one block copy: `rep movsb`, or, when the two runs
+overlap with the target after the source, the same copy run backwards. `String`'s `_append_text`, `slice`, `sum`,
+`replace`, `split`, `trim`, `to_bytes`, `upper_case` and `lower_case`, and `Buffer`'s `append_bytes`, `copy`,
+`read_bytes` and `text` are each one copy per run instead of a call per byte. `equals`, `starts_with`, `ends_with`,
+`contains`, `index_of`, `split` and `replace` compare eight bytes at a time (one 64-bit load from each side), and
+look for a match only where the first byte matches. A number's `to_string()` counts its digits, makes room once
+and writes them from the last, into the text it answers.
+
+```
+func shout(line: String): String {
+    var words = line.split(" ")
+    var joined = words.join("! ")
+    return joined.upper_case()
+}
+```
+
+When it applies: every call of these functions. What a user can observe: the time.
+
+## A number's own value is its register
+
+Inside a number's class, `_value()` reads the number from the `Buffer` the class declares as `_buffer`. The
+compiler writes a read at 0 of the number's own type from that room as the number itself, with no `Buffer` made,
+so `index.to_string()`, `count.to_long()` and the rest of the numbers' functions cost no allocation. A read of
+another type or offset (a number's bytes) still makes the room, and lets it go once read.
+
+```
+func digits(count: Integer): String {
+    return count.to_string()
+}
+```
+
+What a user can observe: no allocation for `_value()`, and the time.
+
+## Letting go of an object of a known class is direct
+
+Letting go of an object whose class is not known while compiling calls `_release`, which counts down and, at
+zero, finds the object's free function from its class number by a binary search (a few compares, not one per
+class). Where the class is known (an attribute or a list's item whose declared type is a class), the count is
+taken down in place and the class's free function is called directly, with no search.
+
+```
+func Lists() {
+    var names = List<String>()
+    names.append("ada")
+}
+```
+
+Freeing `names` takes each text's count down in place and calls `_free_String` for the ones that reach 0. What a
+user can observe: the time.
 
 ## Maths on constants is worked out while compiling
 

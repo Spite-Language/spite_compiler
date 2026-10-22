@@ -64,11 +64,16 @@ func lower_the_release() {
     var class_id = lowering.new_register()
     var loaded_id = LowIntermediaryRepresentation.Instructions.Load(class_id, object, 0, 'bits_64')
     lowering.emit(loaded_id)
-    var index = 0
-    while index < keys.count() {
-        var key = keys[index]
-        free_when(key, object, class_id, done)
-        index = index + 1
+    if is_in_id_order(keys) {
+        var last = keys.count() - 1
+        free_in_range(keys, 0, last, object, class_id, done)
+    } else {
+        var index = 0
+        while index < keys.count() {
+            var key = keys[index]
+            free_when(key, object, class_id, done)
+            index = index + 1
+        }
     }
     lowering.jump_to(done)
     lowering.switch_to(done)
@@ -181,6 +186,59 @@ func lower_a_destroy(key: String) {
     program.lowered_functions.append(lowering.function)
 }
 
+func is_in_id_order(keys: List<String>): Boolean {
+    var previous = 0
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        var id = layout.class_id_of(key)
+        if id <= previous {
+            return false
+        }
+        previous = id
+        index = index + 1
+    }
+    return true
+}
+
+func free_in_range(
+    keys: List<String>,
+    low: Integer,
+    high_end: Integer,
+    object: Integer,
+    class_id: Integer,
+    done: Integer,
+) {
+    if high_end - low < 4 {
+        var index = low
+        while index <= high_end {
+            var key = keys[index]
+            crash key
+            free_when(key, object, class_id, done)
+            index = index + 1
+        }
+        lowering.jump_to(done)
+        return
+    }
+    var middle = (low + high_end) / 2
+    var middle_key = keys[middle]
+    crash middle_key
+    var middle_id = layout.class_id_of(middle_key)
+    var middle_register = lowering.constant(middle_id)
+    var below = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(below, 'less', class_id, middle_register)
+    lowering.emit(compared)
+    var lower_half = lowering.new_block()
+    var upper_half = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(below, lower_half, upper_half)
+    lowering.emit(test)
+    lowering.switch_to(lower_half)
+    var before_middle = middle - 1
+    free_in_range(keys, low, before_middle, object, class_id, done)
+    lowering.switch_to(upper_half)
+    free_in_range(keys, middle, high_end, object, class_id, done)
+}
+
 func free_when(key: String, object: Integer, class_id: Integer, done: Integer) {
     var wanted = layout.class_id_of(key)
     var wanted_register = lowering.constant(wanted)
@@ -221,20 +279,169 @@ func lower_a_free(key: String) {
         lowering.emit(loaded)
         lowering.release(receiver)
     }
-    if not is_a_box {
+    var is_whole = layout.holds_texts_whole() and (key == "String" or key == "Buffer")
+    if is_whole and key == "String" {
+        free_a_whole_text(object)
+    } else if not is_a_box {
         crash model
         free_the_parts(model, object)
     }
-    if layout.is_back_held(key) {
+    if is_whole and key == "Buffer" {
+        free_a_buffer_of_a_text(object)
+    } else if layout.is_back_held(key) {
         var slot = layout.back_offset_of(key)
         let_go_back(object, slot)
-    } else {
+    } else if not is_whole {
         var freed = LowIntermediaryRepresentation.Instructions.Free(object)
         lowering.emit(freed)
     }
     var nothing = LowIntermediaryRepresentation.Instructions.Return(-1)
     lowering.emit(nothing)
     program.lowered_functions.append(lowering.function)
+}
+
+func free_a_whole_text(object: Integer) {
+    var buffer_offset = text_attribute_offset("_buffer")
+    var buffer = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(buffer, object, buffer_offset, 'bits_64')
+    lowering.emit(loaded)
+    var buffer_type = Model.Type('object', "Buffer")
+    var zero = lowering.constant(0)
+    var flag_offset = layout.text_flag_offset()
+    var flag = lowering.new_register()
+    var loaded_flag = LowIntermediaryRepresentation.Instructions.Load(flag, object, flag_offset, 'bits_8')
+    loaded_flag.is_signed = false
+    lowering.emit(loaded_flag)
+    var is_whole = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_whole, 'not_equal', flag, zero)
+    lowering.emit(compared)
+    var whole = lowering.new_block()
+    var apart = lowering.new_block()
+    var freeing = lowering.new_block()
+    var done = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_whole, whole, apart)
+    lowering.emit(test)
+    lowering.switch_to(apart)
+    release_known(buffer, buffer_type)
+    lowering.jump_to(freeing)
+    lowering.switch_to(whole)
+    var text_size_value = layout.size_of("String")
+    var text_size = lowering.constant(text_size_value)
+    var inside = lowering.address_plus(object, text_size)
+    var is_inside = lowering.new_register()
+    var compared_inside = LowIntermediaryRepresentation.Instructions.Compare(is_inside, 'equal', buffer, inside)
+    lowering.emit(compared_inside)
+    var own = lowering.new_block()
+    var replaced = lowering.new_block()
+    var inside_test = LowIntermediaryRepresentation.Instructions.Branch(is_inside, own, replaced)
+    lowering.emit(inside_test)
+    lowering.switch_to(own)
+    var left = count_down(inside)
+    var gone = lowering.new_register()
+    var compared_left = LowIntermediaryRepresentation.Instructions.Compare(gone, 'equal', left, zero)
+    lowering.emit(compared_left)
+    var letting_go = lowering.new_block()
+    var orphaning = lowering.new_block()
+    var gone_test = LowIntermediaryRepresentation.Instructions.Branch(gone, letting_go, orphaning)
+    lowering.emit(gone_test)
+    lowering.switch_to(letting_go)
+    var arguments = List<Integer>()
+    arguments.append(inside)
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, "_free_Buffer", arguments)
+    lowering.emit(called)
+    lowering.jump_to(freeing)
+    lowering.switch_to(replaced)
+    release_known(buffer, buffer_type)
+    var count = lowering.new_register()
+    var loaded_count = LowIntermediaryRepresentation.Instructions.Load(count, inside, 8, 'bits_64')
+    lowering.emit(loaded_count)
+    var is_dead = lowering.new_register()
+    var compared_count = LowIntermediaryRepresentation.Instructions.Compare(is_dead, 'equal', count, zero)
+    lowering.emit(compared_count)
+    var held_test = LowIntermediaryRepresentation.Instructions.Branch(is_dead, freeing, orphaning)
+    lowering.emit(held_test)
+    lowering.switch_to(orphaning)
+    var one = lowering.constant(1)
+    var orphan_offset = layout.orphan_flag_offset()
+    var orphaned = LowIntermediaryRepresentation.Instructions.Store(inside, orphan_offset, one, 'bits_8')
+    lowering.emit(orphaned)
+    lowering.jump_to(done)
+    lowering.switch_to(freeing)
+    var freed = LowIntermediaryRepresentation.Instructions.Free(object)
+    lowering.emit(freed)
+    lowering.jump_to(done)
+    lowering.switch_to(done)
+}
+
+func free_a_buffer_of_a_text(object: Integer) {
+    var zero = lowering.constant(0)
+    var embedded_offset = layout.embedded_flag_offset()
+    var embedded = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(embedded, object, embedded_offset, 'bits_8')
+    loaded.is_signed = false
+    lowering.emit(loaded)
+    var is_embedded = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_embedded, 'not_equal', embedded, zero)
+    lowering.emit(compared)
+    var alone = lowering.new_block()
+    var inside_a_text = lowering.new_block()
+    var freeing_the_text = lowering.new_block()
+    var done = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_embedded, inside_a_text, alone)
+    lowering.emit(test)
+    lowering.switch_to(alone)
+    var freed = LowIntermediaryRepresentation.Instructions.Free(object)
+    lowering.emit(freed)
+    lowering.jump_to(done)
+    lowering.switch_to(inside_a_text)
+    var orphan_offset = layout.orphan_flag_offset()
+    var orphan = lowering.new_register()
+    var loaded_orphan = LowIntermediaryRepresentation.Instructions.Load(orphan, object, orphan_offset, 'bits_8')
+    loaded_orphan.is_signed = false
+    lowering.emit(loaded_orphan)
+    var is_orphan = lowering.new_register()
+    var compared_orphan = LowIntermediaryRepresentation.Instructions.Compare(is_orphan, 'not_equal', orphan, zero)
+    lowering.emit(compared_orphan)
+    var orphan_test = LowIntermediaryRepresentation.Instructions.Branch(is_orphan, freeing_the_text, done)
+    lowering.emit(orphan_test)
+    lowering.switch_to(freeing_the_text)
+    var text_size_value = layout.size_of("String")
+    var text_size = lowering.constant(text_size_value)
+    var text = lowering.new_register()
+    var found = LowIntermediaryRepresentation.Instructions.Arithmetic(text, 'subtract', object, text_size)
+    found.is_checked = false
+    lowering.emit(found)
+    var freed_text = LowIntermediaryRepresentation.Instructions.Free(text)
+    lowering.emit(freed_text)
+    lowering.jump_to(done)
+    lowering.switch_to(done)
+}
+
+func count_down(object: Integer): Integer {
+    var left = lowering.new_register()
+    if program.uses_threads {
+        var decremented = LowIntermediaryRepresentation.Instructions.AtomicAdd(left, object, 8, -1)
+        lowering.emit(decremented)
+        return left
+    }
+    var count = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(count, object, 8, 'bits_64')
+    lowering.emit(loaded)
+    var one = lowering.constant(1)
+    var subtracted = LowIntermediaryRepresentation.Instructions.Arithmetic(left, 'subtract', count, one)
+    subtracted.is_checked = false
+    lowering.emit(subtracted)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(object, 8, left, 'bits_64')
+    lowering.emit(stored)
+    return left
+}
+
+func text_attribute_offset(name: String): Integer {
+    var owner = layout.program.class_named("String")
+    crash owner
+    var attribute = owner.attribute_named(name)
+    crash attribute
+    return layout.offset_of(attribute)
 }
 
 func free_the_parts(model: Model.ClassModel, object: Integer) {
@@ -286,8 +493,68 @@ func release_an_attribute(attribute: Model.AttributeModel, object: Integer) {
         var slot = layout.back_slot_of(attribute)
         let_go_back(held, slot)
     } else {
-        lowering.release(held)
+        release_known(held, attribute.attribute_type)
     }
+}
+
+func release_known(held: Integer, of_type: Model.Type) {
+    var key = known_class_of(of_type)
+    if key.is_empty() {
+        lowering.release(held)
+    } else {
+        release_directly(held, key)
+    }
+}
+
+func known_class_of(of_type: Model.Type): String {
+    if of_type.kind != 'object' or of_type.is_symbol or not layout.class_ids.has(of_type.name) {
+        return ""
+    }
+    var model = high.model.class_named(of_type.name)
+    if not model or model.is_singleton {
+        return ""
+    }
+    return of_type.name
+}
+
+func release_directly(held: Integer, key: String) {
+    var zero = lowering.constant(0)
+    var missing = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', held, zero)
+    lowering.emit(compared)
+    var counting = lowering.new_block()
+    var freeing = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, after, counting)
+    lowering.emit(test)
+    lowering.switch_to(counting)
+    var left = lowering.new_register()
+    if program.uses_threads {
+        var decremented = LowIntermediaryRepresentation.Instructions.AtomicAdd(left, held, 8, -1)
+        lowering.emit(decremented)
+    } else {
+        var count = lowering.new_register()
+        var loaded = LowIntermediaryRepresentation.Instructions.Load(count, held, 8, 'bits_64')
+        lowering.emit(loaded)
+        var one = lowering.constant(1)
+        var subtracted = LowIntermediaryRepresentation.Instructions.Arithmetic(left, 'subtract', count, one)
+        subtracted.is_checked = false
+        lowering.emit(subtracted)
+        var stored = LowIntermediaryRepresentation.Instructions.Store(held, 8, left, 'bits_64')
+        lowering.emit(stored)
+    }
+    var gone = lowering.new_register()
+    var compared_left = LowIntermediaryRepresentation.Instructions.Compare(gone, 'equal', left, zero)
+    lowering.emit(compared_left)
+    var gone_test = LowIntermediaryRepresentation.Instructions.Branch(gone, freeing, after)
+    lowering.emit(gone_test)
+    lowering.switch_to(freeing)
+    var arguments = List<Integer>()
+    arguments.append(held)
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, "_free_{key}", arguments)
+    lowering.emit(called)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
 }
 
 func let_go_back(object: Integer, slot: Integer) {
@@ -335,7 +602,7 @@ func release_the_items(model: Model.ClassModel, element: Model.Type, object: Int
     var item = lowering.new_register()
     var loaded_item = LowIntermediaryRepresentation.Instructions.Load(item, address, 0, 'bits_64')
     lowering.emit(loaded_item)
-    lowering.release(item)
+    release_known(item, element)
     var one = lowering.constant(1)
     var advanced = LowIntermediaryRepresentation.Instructions.Arithmetic(position, 'add', position, one)
     advanced.is_checked = false
@@ -350,10 +617,20 @@ func free_the_storage(object: Integer) {
     var missing = lowering.new_register()
     var compared = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', storage, zero)
     lowering.emit(compared)
+    var outside = lowering.new_block()
     var freeing = lowering.new_block()
     var after = lowering.new_block()
-    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, after, freeing)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, after, outside)
     lowering.emit(test)
+    lowering.switch_to(outside)
+    var offset = lowering.layout.inline_offset()
+    var inline_offset = lowering.constant(offset)
+    var inside = lowering.address_plus(object, inline_offset)
+    var is_inside = lowering.new_register()
+    var compared_inside = LowIntermediaryRepresentation.Instructions.Compare(is_inside, 'equal', storage, inside)
+    lowering.emit(compared_inside)
+    var inside_test = LowIntermediaryRepresentation.Instructions.Branch(is_inside, after, freeing)
+    lowering.emit(inside_test)
     lowering.switch_to(freeing)
     var freed = LowIntermediaryRepresentation.Instructions.Free(storage)
     lowering.emit(freed)

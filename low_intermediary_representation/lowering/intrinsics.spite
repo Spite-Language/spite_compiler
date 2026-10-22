@@ -192,6 +192,7 @@ func typed_access(call: HighIntermediaryRepresentation.Values.Call, key: String)
         "_read_byte": return read_memory(call, 'bits_8')
         "_is_held_once": return held_once(call)
         "_let_go": return let_go(call)
+        "_copy_bytes": return copy_bytes(call)
         _: return byte_access(call, key)
     }
 }
@@ -208,6 +209,12 @@ func byte_access(call: HighIntermediaryRepresentation.Values.Call, key: String):
 }
 
 func read_at(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var room = call.receiver
+    if room == HighIntermediaryRepresentation.Values.NumberRoom {
+        if reads_its_own_number(call, room) {
+            return own_number(room)
+        }
+    }
     var buffer = lowering.lower_value(call.receiver)
     var at = argument(call, 0)
     var storage = lowering.storage_of(buffer.value)
@@ -220,7 +227,35 @@ func read_at(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     loaded.is_signed = lowering.is_signed(answer)
     loaded.is_swapped = call.function.name.contains("_big_endian_")
     lowering.emit(loaded)
+    if buffer.owned {
+        lowering.release(buffer.value)
+    }
     return lowering.single(read)
+}
+
+func reads_its_own_number(
+    call: HighIntermediaryRepresentation.Values.Call,
+    room: HighIntermediaryRepresentation.Values.NumberRoom,
+): Boolean {
+    if not room.number or not call.function.answer or call.function.name.contains("_big_endian_") {
+        return false
+    }
+    var at = call.arguments[0]
+    if not at {
+        return false
+    }
+    var starts = false
+    if at == HighIntermediaryRepresentation.Values.WholeNumber {
+        starts = at.number == 0
+    }
+    var answer: Model.Type = call.function.answer
+    var held = room.number.value_type
+    return starts and held.kind == 'scalar' and not held.is_nullable and answer.name == held.name
+}
+
+func own_number(room: HighIntermediaryRepresentation.Values.NumberRoom): Lowered {
+    crash room.number
+    return lowering.lower_value(room.number)
 }
 
 func write_at(call: HighIntermediaryRepresentation.Values.Call): Lowered {
@@ -235,22 +270,118 @@ func write_at(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, value, width)
     stored.is_swapped = call.function.name.contains("_big_endian_")
     lowering.emit(stored)
+    if buffer.owned {
+        lowering.release(buffer.value)
+    }
+    return lowering.single(-1)
+}
+
+func copy_bytes(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var buffer = lowering.lower_value(call.receiver)
+    var at = argument(call, 0)
+    var source = argument(call, 1)
+    var source_at = argument(call, 2)
+    var count = argument(call, 3)
+    var storage = lowering.storage_of(buffer.value)
+    var destination = lowering.address_plus(storage, at)
+    var source_storage = lowering.storage_of(source)
+    var from = lowering.address_plus(source_storage, source_at)
+    var copied = LowIntermediaryRepresentation.Instructions.CopyBytes(destination, from, count)
+    lowering.emit(copied)
     return lowering.single(-1)
 }
 
 func resize_room(call: HighIntermediaryRepresentation.Values.Call): Lowered {
-    var buffer = lowering.lower_value(call.receiver)
+    var lowered_buffer = lowering.lower_value(call.receiver)
+    var buffer = lowered_buffer.value
     var size = argument(call, 0)
-    var storage = lowering.storage_of(buffer.value)
+    var storage = lowering.storage_of(buffer)
     var one = lowering.constant(1)
+    var zero = lowering.constant(0)
     var with_an_end = lowering.address_plus(size, one)
+    var offset = lowering.layout.inline_offset()
+    var inline_offset = lowering.constant(offset)
+    var inside = lowering.address_plus(buffer, inline_offset)
+    var staying = lowering.new_block()
+    var outside = lowering.new_block()
+    var placing = lowering.new_block()
+    var place = lowering.new_block()
+    var moving = lowering.new_block()
+    var done = lowering.new_block()
+    var is_inside = compared_registers('equal', storage, inside)
+    var inside_test = LowIntermediaryRepresentation.Instructions.Branch(is_inside, staying, outside)
+    lowering.emit(inside_test)
+    lowering.switch_to(outside)
+    var is_missing = compared_registers('equal', storage, zero)
+    var missing_test = LowIntermediaryRepresentation.Instructions.Branch(is_missing, placing, moving)
+    lowering.emit(missing_test)
+    lowering.switch_to(placing)
+    var room = lowering.constant(lowering.layout.inline_room)
+    var fits = compared_registers('less_or_equal', with_an_end, room)
+    var fit_test = LowIntermediaryRepresentation.Instructions.Branch(fits, place, moving)
+    lowering.emit(fit_test)
+    lowering.switch_to(place)
+    store_the_storage(buffer, inside)
+    lowering.jump_to(done)
+    lowering.switch_to(moving)
     var resized = lowering.new_register()
     var made = LowIntermediaryRepresentation.Instructions.Resize(resized, storage, with_an_end)
     lowering.emit(made)
-    var offset = lowering.layout.storage_offset
-    var stored = LowIntermediaryRepresentation.Instructions.Store(buffer.value, offset, resized, 'bits_64')
-    lowering.emit(stored)
+    store_the_storage(buffer, resized)
+    lowering.jump_to(done)
+    lowering.switch_to(staying)
+    move_out_of_the_buffer(buffer, size, with_an_end, inside, done)
+    lowering.switch_to(done)
     return lowering.single(-1)
+}
+
+func move_out_of_the_buffer(buffer: Integer, size: Integer, with_an_end: Integer, inside: Integer, done: Integer) {
+    var capacity_offset = buffer_attribute_offset("capacity")
+    var capacity = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(capacity, buffer, capacity_offset, 'bits_32')
+    lowering.emit(loaded)
+    var room = lowering.constant(lowering.layout.inline_room)
+    var fits_the_room = compared_registers('less_or_equal', with_an_end, room)
+    var checking = lowering.new_block()
+    var leaving = lowering.new_block()
+    var room_test = LowIntermediaryRepresentation.Instructions.Branch(fits_the_room, done, checking)
+    lowering.emit(room_test)
+    lowering.switch_to(checking)
+    var fits = compared_registers('less_or_equal', size, capacity)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(fits, done, leaving)
+    lowering.emit(test)
+    lowering.switch_to(leaving)
+    var zero = lowering.constant(0)
+    var fresh = lowering.new_register()
+    var made = LowIntermediaryRepresentation.Instructions.Resize(fresh, zero, with_an_end)
+    lowering.emit(made)
+    var one = lowering.constant(1)
+    var kept = lowering.address_plus(capacity, one)
+    var copied = LowIntermediaryRepresentation.Instructions.CopyBytes(fresh, inside, kept)
+    lowering.emit(copied)
+    store_the_storage(buffer, fresh)
+    lowering.jump_to(done)
+}
+
+func compared_registers(comparison: LowIntermediaryRepresentation.Comparison, left: Integer, right: Integer): Integer {
+    var target = lowering.new_register()
+    var made = LowIntermediaryRepresentation.Instructions.Compare(target, comparison, left, right)
+    lowering.emit(made)
+    return target
+}
+
+func store_the_storage(buffer: Integer, storage: Integer) {
+    var offset = lowering.layout.storage_offset
+    var stored = LowIntermediaryRepresentation.Instructions.Store(buffer, offset, storage, 'bits_64')
+    lowering.emit(stored)
+}
+
+func buffer_attribute_offset(name: String): Integer {
+    var owner = lowering.layout.program.class_named("Buffer")
+    crash owner
+    var attribute = owner.attribute_named(name)
+    crash attribute
+    return lowering.layout.offset_of(attribute)
 }
 
 func open_library(call: HighIntermediaryRepresentation.Values.Call): Lowered {
