@@ -88,7 +88,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Class objects are filled from a worklist once compiling ends, but every read of a constant one still reads the run-time object: fold the constant ones while compiling (the 64 MB main stack reserve raised for the nested fills can come back down)
 - The study behind `function_waits` (D50) follows a call through a function value only when the compiler knows its function, so a function that waits only behind a function value it is handed answers `false` (a silent wrong answer under D244: answer `true` where it cannot tell, as `docs/proofs.md` says)
 
-- A program can still name `Spite.Internal` in a written type, in a text, or as a class in its own `spite/internal/` folder: only expressions are refused (`internal_class`)
+- A program can still name a `Spite.Internal` class in a text, in a `type` member's or union's written type, or reach `internal/` through a junction or a `load` of a folder that holds it: only expressions, written types and a `load` of `internal/` itself are refused
 - The library breaks three rules it is exempt from for now (D71): singletons bound as locals (`Arguments`, `Environment._setting`, `Spite.Internal.Fault.report`, `Spite.Internal.Work._settle`), locals that only copy a path to narrow it (`BinaryCursor._buffer`, `BinaryWriterCursor`, `JsonReader`, `JsonWriter`), and a terminal `if` (`Dictionary.remove_at`)
 - The `if` that narrows a path does not record which check narrowed it, so a second check inside its branch is "a condition is a Boolean" instead of "already narrowed by"; `while value` does not narrow its body
 
