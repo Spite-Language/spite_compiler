@@ -26,6 +26,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found
 
+- A `crash` whose condition folds to false only once the function facts are answered (`function_writes_parameter`, `function_waits`) is not refused, and the facts keep no place for the write they found (`conformance/io_system_writes_row`, `conformance/snapshot_argument_writes`)
+- A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D185)
+- Calling a getter or setter by name is refused only where the class has no attribute of that name (D182); `specs/functions_and_operators.md` refuses it beside an attribute too, and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
+- `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
 - `conformance/vector_rows` stops first on `'alias' is never read`, an abstract syntax tree rule that runs before any borrow rule can, where it expects the row's resize error (D142)
 - `conformance/own_template_borrows` reopens `Vector` with the old library's `item_count`, `values` and `items`, which the library no longer has, so it fails on `item_count` before any borrow rule
 - `conformance/lent_arguments` stops on `unknown type 'argument.class'` (the reflection walks over a function's arguments, as `tests/reflection_walks`), before its plural-naming error
@@ -51,7 +55,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A number's room is a `Buffer` made on every read of `_buffer` (D33): fold a read at a known position of a fresh room into the number itself
 
 - `Symbol` is text marked as a symbol: `symbol.class` is not yet `Symbol`, `Symbol(text)` finds only the names written in single quotes that were compiled (not the names reflection answers), and `Symbol<T>` outside a template parameter is a symbol whose class is not checked; `Anything`, and `Null` and `Number` as type names outside a `$T ==` test (D35)
-- `Build` reads are not folded, so both branches of `if build.serve` are compiled; a `load` under an `if` on a `Build` field
+- `Build` reads are not folded (only `crash build.<field>` on a Boolean field that is false is refused, D186), so both branches of `if build.serve` are compiled; a `load` under an `if` on a `Build` field
 - Arithmetic and functions through `Number` (`value + value` on a `Number`)
 - `deep_copy()` of a graph (D152): a class that reaches itself only through a union or a `type` attribute is not seen as one and is copied plainly, so a cycle through one still recurses until the stack runs out; `List.deep_copy()` gives each item a table of its own, so items that hold each other are copied twice; a `Dictionary`, `Items` or `Vector` reached inside a table copy is copied by its own `deep_copy()`, without the table; the table finds a copy by walking its keys (it waits for a hashed `Dictionary`); and a `deep_copy()` through a shape some number, text, enum or singleton fills (refused as not fitting); a copy runs the attribute defaults before it overwrites them; a walked row declared `var row: $row_type = null` when `$row_type` is a `type`
 - Vector and Items keep their items inline: today each write stores a copy of the item by reference (one allocation and one copy per write, and every move inside the library copies again), not its attributes in the block
