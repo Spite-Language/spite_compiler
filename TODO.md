@@ -23,6 +23,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found
 
+- A plural template's member is matched with the program's own `String.Inflection` table, but a word that table leaves out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
+- A pattern template whose hole names no enum (`Symbol<$t.phase_each>` with no `Phase`) crashes the compiler instead of the old error naming the enum to declare
 - A class name that reaches no file is collected in `SymbolTable.unknown_names` and never reported
 - The emitter resolves a call whose class is unknown by the function's name alone, when one class has it
 - A `load` inside an `if` is refused; the language allows it when the condition reads only build settings
@@ -34,7 +36,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The runtime the library needs, as machine code: allocator, console, files, directories, clock, sockets, processes, dynamic library, weak references
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
 - `--debug-memory` counts and the leak report; an attribute read from an object made in the same expression (`Maker().part`) leaks that object; the counts a pass proves unneeded are still written
-- Chains of member templates as one loop, plural templates (`collect_children`), enum value templates (`filter_published`), `filter_<member>_<function>(...)` (`filter_name_ends_with(".txt")`), class filters on a `Dictionary`'s values, and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
+- Chains of member templates as one loop, class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, two members with one plural, `map_is_alive`, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A dictionary keyed by hashing instead of a walk of its keys
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
 - `Float` and `Double`: `%`, exponent notation in literals, a `Double` too large for a `Float` halting, and `UnsignedLong` to and from a decimal past 2^63; a decimal too large for a `Long` prints a wrong number in its range-stop message
