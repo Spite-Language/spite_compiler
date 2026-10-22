@@ -160,19 +160,17 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A deep copy nothing changes is the original
 - Copies that cost nothing
 - Allocation is the C library's, counted only where read
+- Objects in the frame need an instruction that reserves room in the frame, which the x64 generator does not have yet
 
 ### The counts
 
-- Singletons: made on first use, never counted
+- Singletons: made on first use, never counted (a singleton passed to a call is not counted; kept in a local, an attribute or a list it still is)
 - Singletons that hold nothing are static objects
 - Atomic reference counts only with threads
 - Plain reference counts where no thread reaches a class
-- An argument its caller holds is passed without counting
-- An attribute a call cannot assign is passed without counting
-- Storing an object into a list counts it only when it changes the slot
 - An item passed to a call that cannot change its list is not counted
 - A singleton's attribute that never changes is read in place
-- A list's templates read its elements without counting them
+- A list's templates read its elements without counting them: done where nothing after the read in the template can write a list of that class; a template handed a function value still counts when any function the program takes as a value could write one
 - An item written back to its own slot is not written
 - A list item read only to test it is not counted
 - A write-back of what the slot already holds is not written
@@ -200,7 +198,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A walked `crash` line's read is the row's read
 - Boxing only where a value travels as a shape
 - A function value describes its arguments when asked
-- Defaults the constructor replaces are never made
+- Defaults the constructor replaces are never made: done for a quiet default the constructor assigns before reading it; a default some other making (a deep copy, a reader) overwrites is still made
 - Proofs that survive a call
 - A dictionary hashes a key once, cheaply
 - A dictionary keyed by numbers hashes the numbers
