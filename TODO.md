@@ -34,7 +34,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The runtime the library needs, as machine code: allocator, console, files, directories, clock, sockets, processes, dynamic library, weak references
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
 - `--debug-memory` counts and the leak report; an attribute read from an object made in the same expression (`Maker().part`) leaks that object; the counts a pass proves unneeded are still written
-- Chains of member templates as one loop, member templates over a list of a union or a shape (`entries.filter_files()` answering `List<File>`, `map_names()`), plural templates (`collect_children`), enum value templates (`filter_published`), `filter_<member>_<function>(...)`, and the passed-function forms that need an overload by count (`names.count(is_short)`) or a function-level answer type (`sum(f)` over decimals, `sort_by(f)` by text)
+- Chains of member templates as one loop, plural templates (`collect_children`), enum value templates (`filter_published`), `filter_<member>_<function>(...)` (`filter_name_ends_with(".txt")`), class filters on a `Dictionary`'s values, and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A dictionary keyed by hashing instead of a walk of its keys
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
 - `Float` and `Double`: `%`, exponent notation in literals, a `Double` too large for a `Float` halting, and `UnsignedLong` to and from a decimal past 2^63; a decimal too large for a `Long` prints a wrong number in its range-stop message
@@ -53,6 +53,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Allocation tests (frame objects, lent buffers, kept buffer addresses, the memory floor) come back as `--debug-memory` counts with the passes that place memory (D35)
 
 ## Faults found while porting
+
+- `tests/system` expects `Arguments.get(3)` to answer "" for a missing argument, a default nobody can tell from a real answer (D244): the library stops instead, and the test needs a decision
 
 - The fault handler runs before any library's own exception handling, so a C library that catches its own faults inside a foreign call would be stopped
 

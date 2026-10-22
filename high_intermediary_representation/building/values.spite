@@ -879,6 +879,10 @@ func member_value(
             listing_attributes(target.value_type)
             return shape_call(target, "_attribute_list", no_arguments)
         }
+        var shape_function = shape_function_value(target, member.name)
+        if shape_function {
+            return shape_function
+        }
         return shape_call(target, member.name, no_arguments)
     }
     if target.value_type.kind == 'union' {
@@ -1518,6 +1522,16 @@ func work_of(work: AbstractSyntaxTree.Shapes.Expressions.Expression?): HighInter
     }
     if work == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
         var receiver = value_of(work.target, null)
+        if receiver.value_type.kind == 'shape' {
+            var through = shape_function_value(receiver, work.name)
+            crash through
+            var nothing_passed = List<HighIntermediaryRepresentation.Values.Value>()
+            var called_through = HighIntermediaryRepresentation.Values.FunctionValueCall(through, nothing_passed)
+            if through.value_type.answer {
+                called_through.value_type = through.value_type.answer
+            }
+            return called_through
+        }
         var owner = present_class_of(receiver)
         var function = owner.function_named(work.name)
         if not function {
@@ -1661,6 +1675,61 @@ func enum_read_from(
     var enum_type = Model.Type('enumeration', enumeration.key)
     var wanted = enum_type.nullable()
     return fitted(receiver, wanted)
+}
+
+func class_form_call(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    owner: Model.ClassModel,
+    name: String,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value? {
+    var element = owner.bound_types["$element_type"]
+    assert element and written.is_empty()
+    assert element.kind == 'union' and not element.is_nullable
+    var forms = ["filter", "count", "any", "all", "remove_where"]
+    var index = 0
+    while index < forms.count() {
+        var form = forms[index]
+        var prefix = "{form}_"
+        if name.starts_with(prefix) {
+            var prefix_length = prefix.length()
+            var name_length = name.length()
+            var written_class = name.slice(prefix_length, name_length)
+            var member = union_member_class(element, written_class)
+            if member {
+                var making = PassedForms(context, this)
+                var made = making.class_form(owner, form, member)
+                crash made
+                var no_values = List<HighIntermediaryRepresentation.Values.Value>()
+                return HighIntermediaryRepresentation.Values.Call(made, receiver, no_values)
+            }
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func union_member_class(element: Model.Type, written: String): Model.Type? {
+    var candidates = singular_candidates(written, true)
+    var united = union_model_of(element)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var pascal = pascal_case_of(candidate)
+        var member_index = 0
+        while member_index < united.members.count() {
+            var held = united.members[member_index]
+            var parts = held.name.split(".")
+            var last = parts.count() - 1
+            var simple = parts[last]
+            if simple == pascal {
+                return held
+            }
+            member_index = member_index + 1
+        }
+        index = index + 1
+    }
+    return null
 }
 
 func passed_form(
@@ -1807,6 +1876,10 @@ func member_call(
     if passed {
         return passed
     }
+    var filtered_by_class = class_form_call(receiver, owner, callee.name, call.arguments)
+    if filtered_by_class {
+        return filtered_by_class
+    }
     var function = owner.function_named(callee.name)
     if not function {
         function = member_template_of(owner, callee.name)
@@ -1878,6 +1951,7 @@ func specialized_for(owner: Model.ClassModel, template: Model.FunctionModel, nam
         'shape': return specialized_over_a_shape(owner, template, owner_type, name, match)
         'namespace': return specialized_over_a_namespace(owner, template, name, match)
         'parameters': return specialized_over_parameters(owner, template, owner_type, name, match)
+        'union': return specialized_over_a_union(owner, template, owner_type, name, match)
         'enumeration': return specialized_over_values(owner, template, owner_type, name, match)
         _: return specialized_over_a_class(owner, template, owner_type, name, match)
     }
@@ -1932,13 +2006,105 @@ func specialized_over_a_shape(
     var parts = match.split("|")
     var written = parts[0]
     crash written
-    var member = shape.member_named(written)
-    assert member
-    var member_type = answer_or_nothing(member)
-    var made = context.resolver.specialized(template, name, written, member_type, false, owner)
-    made.bound_shape = shape.key
-    owner.declared_functions.append(made)
-    return made
+    var is_plural = parts.count() > 1
+    var candidates = singular_candidates(written, is_plural)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var member = shape.member_named(candidate)
+        if member {
+            var member_type = answer_or_nothing(member)
+            var made = context.resolver.specialized(template, name, candidate, member_type, false, owner)
+            made.bound_shape = shape.key
+            owner.declared_functions.append(made)
+            return made
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func specialized_over_a_union(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var parts = match.split("|")
+    var written = parts[0]
+    crash written
+    var is_plural = parts.count() > 1
+    var candidates = singular_candidates(written, is_plural)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var answered = union_member_name(owner_type, candidate)
+        if not answered.is_empty() {
+            var shape = union_shape_of(owner_type, answered)
+            var member = shape.members[0]
+            crash member
+            var member_type = answer_or_nothing(member)
+            var made = context.resolver.specialized(template, name, answered, member_type, false, owner)
+            made.bound_shape = shape.key
+            owner.declared_functions.append(made)
+            return made
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func union_member_name(union_type: Model.Type, wanted: String): String {
+    var united = union_model_of(union_type)
+    if every_member_has(united, wanted) {
+        return wanted
+    }
+    var getter = "get_{wanted}"
+    if every_member_has(united, getter) {
+        return getter
+    }
+    return ""
+}
+
+func every_member_has(united: Model.UnionModel, wanted: String): Boolean {
+    var index = 0
+    while index < united.members.count() {
+        var held = united.members[index]
+        if not context.has_a_class(held) {
+            return false
+        }
+        var model = context.class_of(held)
+        var has_it = model.attribute_named(wanted) or model.function_named(wanted)
+        if not has_it {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func singular_candidates(written: String, is_plural: Boolean): List<String> {
+    var candidates = List<String>()
+    if not is_plural {
+        candidates.append(written)
+        return candidates
+    }
+    var length = written.length()
+    if written.ends_with("ies") {
+        var stem = written.slice(0, length - 3)
+        candidates.append("{stem}y")
+    }
+    if written.ends_with("s") {
+        var without_s = written.slice(0, length - 1)
+        candidates.append(without_s)
+    }
+    if written.ends_with("es") {
+        var without_es = written.slice(0, length - 2)
+        candidates.append(without_es)
+    }
+    candidates.append(written)
+    return candidates
 }
 
 func specialized_over_a_namespace(
@@ -2281,6 +2447,12 @@ func bound_member_of(
         var no_written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
         return shape_call(item, function.bound_member, no_written)
     }
+    if item.value_type.kind == 'union' and not function.bound_shape.is_empty() {
+        var as_shape = Model.Type('shape', function.bound_shape)
+        var shaped = HighIntermediaryRepresentation.Values.Conversion(as_shape, 'proven', item)
+        var none_written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+        return shape_call(shaped, function.bound_member, none_written)
+    }
     var owner = present_class_of(item)
     if function.bound_member_is_a_function {
         var called_function = owner.function_named(function.bound_member)
@@ -2389,6 +2561,66 @@ func listing_attributes(shape_type: Model.Type) {
         }
         index = index + 1
     }
+}
+
+func shape_function_value(
+    target: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+): HighIntermediaryRepresentation.Values.Value? {
+    var shape = context.program.shape_keyed(target.value_type.name)
+    crash shape
+    var member = shape.member_named(name)
+    assert member
+    assert not member.is_an_attribute
+    var owner = context.current_class
+    var key = target.value_type.name.replace(".", "_")
+    var synthetic_name = "_{name}_through_{key}"
+    var made = owner.function_named(synthetic_name)
+    if not made {
+        made = through_the_shape(owner, synthetic_name, target.value_type, member)
+    }
+    crash made
+    var function_type = Model.Type('function', "Spite.Function")
+    var parameter_types = made.parameters.map_parameter_types()
+    function_type.parameters = parameter_types
+    function_type.answer = made.answer
+    return HighIntermediaryRepresentation.Values.FunctionValue(function_type, made, target)
+}
+
+func through_the_shape(
+    owner: Model.ClassModel,
+    synthetic_name: String,
+    shape_type: Model.Type,
+    member: Model.FunctionModel,
+): Model.FunctionModel {
+    var made = Model.FunctionModel(synthetic_name, owner.key)
+    made.is_synthetic = true
+    made.answer = member.answer
+    made.parameters = member.parameters
+    owner.declared_functions.append(made)
+    var shape = context.program.shape_keyed(shape_type.name)
+    crash shape
+    var own = HighIntermediaryRepresentation.Values.ThisRead(shape_type)
+    var passed = List<HighIntermediaryRepresentation.Values.Value>()
+    var index = 0
+    while index < member.parameters.count() {
+        var parameter = member.parameters[index]
+        var read = HighIntermediaryRepresentation.Values.LocalRead(parameter.parameter_type, parameter.name)
+        passed.append(read)
+        index = index + 1
+    }
+    var through = HighIntermediaryRepresentation.Values.ShapeCall(shape, member, own, passed)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    if member.answer {
+        var answered = HighIntermediaryRepresentation.Statements.Return(through)
+        body.statements.append(answered)
+    } else {
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(through)
+        body.statements.append(evaluated)
+    }
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
 }
 
 func shape_call(
@@ -2765,6 +2997,17 @@ func gathered_list(
         index = index + 1
     }
     return temporary
+}
+
+func made_list(list_type: Model.Type): HighIntermediaryRepresentation.Values.Value {
+    var list_model = context.class_of(list_type)
+    context.need_defaults(list_model.key)
+    var constructor = constructor_of(list_model)
+    if constructor {
+        need(constructor)
+    }
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    return HighIntermediaryRepresentation.Values.MakeObject(list_type, constructor, no_arguments)
 }
 
 func new_list(list_type: Model.Type): HighIntermediaryRepresentation.Values.Value {
