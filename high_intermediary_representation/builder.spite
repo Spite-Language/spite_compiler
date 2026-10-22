@@ -30,11 +30,192 @@ func build(): HighProgram {
         build_the_waiting_functions()
         build_the_waiting_defaults()
         follow_the_shape_links()
-        keeps_going = not context.waiting.is_empty() or defaults_built < context.made_classes.count()
+        var is_quiet = context.waiting.is_empty() and defaults_built >= context.made_classes.count()
+        if is_quiet {
+            fill_the_reflection()
+        }
+        var has_more = not context.waiting.is_empty() or not context.unfilled.is_empty()
+        keeps_going = has_more or defaults_built < context.made_classes.count()
     }
     context.synthetic_functions.each(add_a_synthetic)
+    context.fills.each(add_a_synthetic)
+    answer_the_facts()
     program.makes_work = context.makes_work
     return program
+}
+
+func fill_the_reflection() {
+    var values = HighIntermediaryRepresentation.Building.Values(context)
+    var reflection = HighIntermediaryRepresentation.Building.Reflection(context, values)
+    var features = reflection.features()
+    if features != context.fill_features {
+        context.fill_features = features
+        context.filled.each(refill)
+    }
+    var index = 0
+    while index < context.filled.count() {
+        var known = context.filled[index]
+        var counted = context.filled_counts[index]
+        crash counted
+        var now = functions_counted(known)
+        if now != counted {
+            refill(known)
+        }
+        index = index + 1
+    }
+    while not context.unfilled.is_empty() {
+        var waiting_fill = context.unfilled.remove_first()
+        crash waiting_fill
+        fill_one(waiting_fill)
+    }
+}
+
+func refill(known: String) {
+    if not context.unfilled.contains(known) {
+        context.unfilled.append(known)
+    }
+}
+
+func functions_counted(known: String): Integer {
+    var parts = known.split(":")
+    var described = parts.last()
+    crash described
+    var base = described
+    if base.ends_with("?") {
+        var base_length = base.length()
+        base = base.slice(0, base_length - 1)
+    }
+    var model = context.program.class_named(base)
+    if not model {
+        return -1
+    }
+    if known.starts_with("Spite.Namespace:") {
+        return -1
+    }
+    return model.declared_functions.count()
+}
+
+func fill_one(known: String) {
+    var reflecting = context.resolver.class_model_named("Spite.Class")
+    crash reflecting
+    var filling = Model.FunctionModel("_fill", reflecting.key)
+    start(reflecting, filling)
+    var values = HighIntermediaryRepresentation.Building.Values(context)
+    var reflection = HighIntermediaryRepresentation.Building.Reflection(context, values)
+    var made = reflection.fill(known)
+    var counted = functions_counted(known)
+    var index = 0
+    while index < context.filled.count() {
+        var filled = context.filled[index]
+        if filled == known {
+            context.fills[index] = made
+            context.filled_counts[index] = counted
+            return
+        }
+        index = index + 1
+    }
+    context.filled.append(known)
+    context.filled_counts.append(counted)
+    context.fills.append(made)
+}
+
+func answer_the_facts() {
+    assert not context.facts_asked.is_empty()
+    var no_exclusions = List<String>()
+    var everything = HighIntermediaryRepresentation.Building.Facts(
+        context.program,
+        program.built_functions,
+        no_exclusions,
+    )
+    var askers = List<String>()
+    var index = 0
+    while index < context.facts_asked.count() {
+        var asked = context.facts_asked[index]
+        var asks_in_code = asked.is_asked_in_code and asked.question == "waits"
+        if asks_in_code and not askers.contains(asked.asking_key) {
+            askers.append(asked.asking_key)
+        }
+        index = index + 1
+    }
+    var before = HighIntermediaryRepresentation.Building.Facts(context.program, program.built_functions, askers)
+    var fact_index = 0
+    while fact_index < context.facts_asked.count() {
+        var fact = context.facts_asked[fact_index]
+        answer_a_fact(fact, everything, before)
+        fact_index = fact_index + 1
+    }
+}
+
+func answer_a_fact(
+    fact: HighIntermediaryRepresentation.Values.FunctionFact,
+    everything: HighIntermediaryRepresentation.Building.Facts,
+    before: HighIntermediaryRepresentation.Building.Facts,
+) {
+    var holds = false
+    var index = 0
+    while index < fact.asked_functions.count() {
+        var function = fact.asked_functions[index]
+        var found = answer_of(fact, function, everything)
+        if fact.is_asked_in_code and fact.question == "waits" {
+            var key = function.key()
+            var earlier = before.waits(key)
+            if earlier != found {
+                refuse_a_paradox(fact, function, earlier, found)
+            }
+        }
+        if found {
+            holds = true
+        }
+        index = index + 1
+    }
+    fact.answered(holds)
+}
+
+func answer_of(
+    fact: HighIntermediaryRepresentation.Values.FunctionFact,
+    function: Model.FunctionModel,
+    facts: HighIntermediaryRepresentation.Building.Facts,
+): Boolean {
+    var key = function.key()
+    if fact.question == "waits" {
+        return facts.waits(key)
+    }
+    var slot = fact.slot
+    if fact.parameter_index >= 0 {
+        var parameter = function.parameters[fact.parameter_index]
+        crash parameter
+        slot = "p:{parameter.name}"
+    }
+    if fact.question == "writes" {
+        return facts.writes(function, slot)
+    }
+    var is_a_write = fact.question == "written"
+    return facts.accesses(key, slot, is_a_write)
+}
+
+func refuse_a_paradox(
+    fact: HighIntermediaryRepresentation.Values.FunctionFact,
+    function: Model.FunctionModel,
+    earlier: Boolean,
+    found: Boolean,
+) {
+    var segments = function.owner.split(".")
+    var last = segments.last()
+    crash last
+    var simple = last
+    var opening = last.index_of("<")
+    if opening > 0 {
+        simple = last.slice(0, opening)
+    }
+    var asked = "{simple}.{function.name}"
+    var failure = Validators.Failure()
+    failure.stop_inside(
+        fact.path,
+        fact.line,
+        fact.owner_shown,
+        fact.function_name,
+        "whether '{asked}' can wait was answered {earlier} here, before the functions that ask 'function_waits' were compiled, and it is {found} once they are: it reaches one of them, or a function value made in one, so its answer would decide itself, so ask from a function that '{asked}' does not reach",
+    )
 }
 
 func need_the_fault_report() {
@@ -157,6 +338,8 @@ func start(owner: Model.ClassModel, function: Model.FunctionModel) {
     context.counted_lists = Dictionary<String, AbstractSyntaxTree.Shapes.Expressions.Expression>()
     context.proven_locals = List<String>()
     context.pending = List<HighIntermediaryRepresentation.Statements.Statement>()
+    context.function_locals = Dictionary<String, Model.FunctionModel>()
+    context.null_locals = List<String>()
 }
 
 func finish(function: Model.FunctionModel, body: HighIntermediaryRepresentation.Statements.Block) {
