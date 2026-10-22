@@ -58,6 +58,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found while porting
 
+- At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)
 - The spec puts the inflection table at `library/string/inflection.spite` (`String.Inflection`), but a class file and a folder of one name are refused (`conformance/class_and_namespace`), so the table stays `common/inflection.spite` and the plural templates fall back to the compiler's own rules: a program reopening the table (`inflection_table`) is not read yet. Needs a decision on whether a class may also be a namespace
 
 - `shape_members` corrupts the heap (reported in `List<Spite.Internal.Running>.reserve`) once a `type`'s function is held as a value and run through `Parallel`: a count is released once too often
@@ -102,7 +103,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `spite program` builds and runs; `--check`, `--build`, `--executable-path`, with the original's error texts for every other flag
 - Crash reports and the `<program>.crashes` map
 - `--optimization-report`, `--final-classes`
-- `--repl`, `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
+- `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
+- `--repl` (D80 to D83): a singleton made with arguments (`Channel(1)`), `bytes <path>` and `memory`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes, `eval`, `run`, breakpoints and `reload`
 - The runner has no time limit, so a test that hangs stops the whole run; the suite runs tests one at a time: run them in parallel, and make one compile fast enough that a model can iterate on the language test by test
 - Caches per step and per unit
 
