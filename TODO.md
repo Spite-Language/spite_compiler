@@ -73,6 +73,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found while porting
 
+- `--optimization-report` written without `=path` writes the report to a file named `true` in the working folder (D244): it should name its default path or refuse the bare flag
+
 - At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)
 
 - `shape_members` corrupts the heap (reported in `List<Spite.Internal.Running>.reserve`) once a `type`'s function is held as a value and run through `Parallel`: a count is released once too often
