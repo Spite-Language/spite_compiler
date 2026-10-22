@@ -1256,15 +1256,49 @@ func walked_by(
             context.current_class,
             context.line,
         )
+        if described.name == "Spite.Attribute" {
+            refuse_a_walked_kind(walker, described_class, true)
+        }
         return walked_over_the_attributes(walker, described_class, null)
     }
-    assert described.name == "Spite.Attribute"
+    if described.name != "Spite.Attribute" {
+        refuse_an_instance_walk(walker, listed.target)
+        return null
+    }
     var object = value_of(listed.target, null)
     assert object.value_type.kind == 'object' and not object.value_type.is_nullable
     var model = context.class_of(object.value_type)
     assert not model.attribute_named("attributes")
     var held = held_once(object)
     return walked_over_the_attributes(walker, object.value_type, held)
+}
+
+func refuse_an_instance_walk(walker: Model.FunctionModel, target: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        refuse_a_named_walk(walker, target)
+    }
+}
+
+func refuse_a_named_walk(
+    walker: Model.FunctionModel,
+    target: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+) {
+    var is_a_value = not target.is_a_class_name and not target.name.starts_with("$")
+    assert is_a_value
+    var object = value_of(target, null)
+    var is_an_instance = object.value_type.kind == 'object' and not object.value_type.is_nullable
+    assert is_an_instance and object.value_type.name != "Spite.Class"
+    var model = context.class_of(object.value_type)
+    assert not model.attribute_named("attributes")
+    refuse_a_walked_kind(walker, object.value_type, false)
+}
+
+func refuse_a_walked_kind(walker: Model.FunctionModel, described_class: Model.Type, walks_declarations: Boolean) {
+    var model = context.class_of(described_class)
+    var first = model.declared_attributes[0]
+    assert first
+    var shown = context.shown(described_class)
+    typing.refuse_walked_kind(context, walker.name, first.name, shown, walks_declarations)
 }
 
 func walked_over_the_attributes(
@@ -2300,6 +2334,9 @@ func member_call(
     if made_default {
         return made_default
     }
+    if callee.name.starts_with("from_") {
+        refuse_a_cast_by_name(callee)
+    }
     var class_receiver = reflected_receiver(callee.target)
     if class_receiver {
         return called_on_a_class(class_receiver, callee.name, call.arguments)
@@ -2677,6 +2714,9 @@ func specialized_over_a_class(
     var written = match_parts[0]
     crash written
     var is_plural = match_parts.count() > 1
+    if is_plural {
+        refuse_a_singular(element_class, name, written)
+    }
     var member = member_of(element_class, written, is_plural)
     if member.is_empty() {
         member = member_of(element_class, "is_{written}", is_plural)
@@ -2703,6 +2743,11 @@ func specialized_over_a_class(
         var function = element_class.function_named(member)
         crash function
         member_type = answer_or_nothing(function)
+    }
+    var library = Validators.LibraryFile()
+    if library.holds(owner.file.path) {
+        var member_shown = context.shown(member_type)
+        typing.check_member_fit(context, name, member, element_class.shown, member_shown, is_a_function)
     }
     var made = context.resolver.specialized(template, name, member, member_type, is_a_function, owner)
     made.bound_member_index = member_index
@@ -3266,6 +3311,7 @@ func walked_over(
         var member = names[index]
         var word = walked_word(template)
         var called_name = replaced_word(template.name, word, member)
+        refuse_a_made_clash(owner, template, called_name, member, member_owner)
         var function = member_template_of(owner, called_name)
         crash function
         var made = called(function, receiver, written)
@@ -3276,6 +3322,36 @@ func walked_over(
     }
     var nothing = Model.Type('nothing', "")
     return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func refuse_a_made_clash(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    called_name: String,
+    member: String,
+    member_owner: Model.Type,
+) {
+    var existing = owner.function_named(called_name)
+    assert existing
+    var is_written = existing.bound_member.is_empty() and not existing.is_a_member_template
+    assert is_written and existing.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = existing.declaration
+    var kind = "member"
+    if member_owner.kind == 'object' {
+        kind = "attribute"
+    }
+    var member_shown = context.shown(member_owner)
+    var refusal = Validators.HighIntermediaryRepresentation.TemplateClash.Validator()
+    refusal.refuse(
+        owner.file.path,
+        declaration.line,
+        owner.shown,
+        template.name,
+        called_name,
+        kind,
+        member,
+        member_shown,
+    )
 }
 
 func walked_word(template: Model.FunctionModel): String {
@@ -3420,6 +3496,17 @@ func member_of(element_class: Model.ClassModel, written: String, is_plural: Bool
         }
     }
     return member_named(element_class, written)
+}
+
+func refuse_a_singular(element_class: Model.ClassModel, name: String, written: String) {
+    var inflected = member_by_plural(element_class, written)
+    assert inflected.is_empty()
+    var singular = member_named(element_class, written)
+    assert not singular.is_empty()
+    var plural = plural_of(written)
+    assert plural != written and not written.ends_with("s")
+    var called_plural = name.replace(written, plural)
+    typing.refuse_singular_template(context, name, written, called_plural)
 }
 
 func member_by_plural(element_class: Model.ClassModel, written: String): String {
