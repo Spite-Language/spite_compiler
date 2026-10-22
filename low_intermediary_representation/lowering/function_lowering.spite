@@ -208,6 +208,7 @@ func lower_statement(statement: HighIntermediaryRepresentation.Statements.Statem
         HighIntermediaryRepresentation.Statements.Declare: lower_declare(statement)
         HighIntermediaryRepresentation.Statements.Assign: lower_assign(statement)
         HighIntermediaryRepresentation.Statements.AssignAttribute: lower_assign_attribute(statement)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: lower_assign_through_shape(statement)
         HighIntermediaryRepresentation.Statements.Evaluate: lower_evaluate(statement)
         HighIntermediaryRepresentation.Statements.If: lower_if(statement)
         HighIntermediaryRepresentation.Statements.While: lower_while(statement)
@@ -288,6 +289,69 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
         )
         emit(stored_presence)
     }
+}
+
+func lower_assign_through_shape(assign: HighIntermediaryRepresentation.Statements.AssignThroughShape) {
+    line = assign.line
+    var object = lower_value(assign.object)
+    var value = lower_value(assign.value)
+    crash assign.value
+    var value_type = assign.value.value_type
+    kept(value, value_type)
+    var class_id = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, object.value, 0, 'bits_64')
+    emit(loaded)
+    var after = new_block()
+    var fillers = layout.program.fillers_of(assign.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        store_in_a_filler(filler, assign.member, object.value, class_id, value, value_type, after)
+        index = index + 1
+    }
+    var label = text_label("spite: no class fills '{assign.shape.name}' here, at {path}:{line}\n")
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+    switch_to(after)
+}
+
+func store_in_a_filler(
+    filler: Model.Type,
+    member: String,
+    object: Integer,
+    class_id: Integer,
+    value: Lowered,
+    value_type: Model.Type,
+    after: Integer,
+) {
+    var model = layout.program.class_named(filler.name)
+    crash model
+    var attribute = model.attribute_named(member)
+    crash attribute
+    var wanted = layout.class_id_of(filler.name)
+    var wanted_register = constant(wanted)
+    var matches = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', class_id, wanted_register)
+    emit(compared)
+    var storing = new_block()
+    var next = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(matches, storing, next)
+    emit(test)
+    switch_to(storing)
+    var offset = layout.offset_of(attribute)
+    var width = width_of(attribute.attribute_type)
+    var old = new_register()
+    if is_a_pointer(value_type) {
+        var loaded_old = LowIntermediaryRepresentation.Instructions.Load(old, object, offset, 'bits_64')
+        emit(loaded_old)
+    }
+    var stored = LowIntermediaryRepresentation.Instructions.Store(object, offset, value.value, width)
+    emit(stored)
+    if is_a_pointer(value_type) {
+        release(old)
+    }
+    jump_to(after)
+    switch_to(next)
 }
 
 func lower_evaluate(evaluate: HighIntermediaryRepresentation.Statements.Evaluate) {
@@ -428,7 +492,7 @@ func lower_local(read: HighIntermediaryRepresentation.Values.LocalRead): Lowered
     var register = locals[read.name]
     crash register
     var presence = local_presences[read.name]
-    if presence {
+    if presence and read.value_type.is_nullable {
         return Lowered(register, presence)
     }
     return single(register)
@@ -1370,7 +1434,8 @@ func check_the_range(value: Integer, given: Model.Type, wanted: Model.Type) {
     }
     var wanted_bits = value_bits_of(wanted_scalar)
     if value_bits_of(given_scalar) > wanted_bits {
-        var highest = power_of_two(wanted_bits) - 1
+        var half = power_of_two(wanted_bits - 1) - 1
+        var highest = half * 2 + 1
         stop_unless(value, 'less_or_equal', highest, given_scalar.is_signed, message, given_scalar.is_signed)
     }
 }
@@ -1467,20 +1532,34 @@ func lower_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall)
     var found = LowIntermediaryRepresentation.Instructions.ForeignAddress(address, handle, call.function_name)
     emit(found)
     var arguments = List<Integer>()
+    var decimal_sizes = List<Integer>()
     var index = 0
     while index < call.arguments.count() {
         var argument = call.arguments[index]
         var passed = foreign_argument(argument)
         arguments.append(passed)
+        var size = decimal_size_of(argument.value_type)
+        decimal_sizes.append(size)
         index = index + 1
     }
     var target = new_register()
     var called = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments)
     called.answers_32_bits = call.value_type.name == "Integer"
+    called.decimal_sizes = decimal_sizes
+    called.answer_decimal_size = decimal_size_of(call.value_type)
     emit(called)
     release_the_pending()
     pending_releases = outer
     return single(target)
+}
+
+func decimal_size_of(of_type: Model.Type): Integer {
+    if not is_a_decimal(of_type) {
+        return 0
+    }
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    return scalar.size
 }
 
 func foreign_argument(argument: HighIntermediaryRepresentation.Values.Value): Integer {

@@ -100,6 +100,30 @@ func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
     var made = HighIntermediaryRepresentation.Statements.Declare(name, local_type, value)
     made.line = statement.line
     add(made)
+    note_a_counted_list(name, statement.value)
+}
+
+func note_a_counted_list(name: String, written: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    if written == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        note_a_count_call(name, written)
+    }
+}
+
+func note_a_count_call(name: String, counted: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    var callee = counted.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        note_a_count_member(name, counted, callee)
+    }
+}
+
+func note_a_count_member(
+    name: String,
+    counted: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+) {
+    assert counted.arguments.is_empty() and callee.name == "count"
+    crash callee.target
+    context.counted_lists[name] = callee.target
 }
 
 func build_assignment(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
@@ -129,6 +153,8 @@ func assign_a_name(
         crash declared_type
         var value = values.fitted_value_of(statement.value, declared_type)
         context.scope.forget(internal_name)
+        context.scope.forget_mentions(target.name)
+        context.counted_lists.remove(internal_name)
         var made = HighIntermediaryRepresentation.Statements.Assign(internal_name, value)
         made.line = statement.line
         add(made)
@@ -150,6 +176,16 @@ func assign_a_member(
     var object = values.value_of(target.target, null)
     var owner = values.present_class_of(object)
     var attribute = owner.attribute_named(target.name)
+    var is_outside = owner.key != context.current_class.key
+    var setter = owner.function_named("set_{target.name}")
+    if not setter and is_outside {
+        setter = values.member_template_of(owner, "set_{target.name}")
+    }
+    var writes_through_a_setter = is_outside or not attribute
+    if writes_through_a_setter and setter {
+        set_through(statement, object, setter)
+        return
+    }
     if not attribute {
         var shown = context.shown(object.value_type)
         typing.refuse_unknown_member(context, shown, target.name)
@@ -173,10 +209,86 @@ func assign_an_attribute(
     add(made)
 }
 
+func set_through(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    object: HighIntermediaryRepresentation.Values.Value,
+    setter: Model.FunctionModel,
+) {
+    context.need(setter)
+    var parameter = setter.parameters[0]
+    crash parameter
+    var value = values.fitted_value_of(statement.value, parameter.parameter_type)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(value)
+    var call = HighIntermediaryRepresentation.Values.Call(setter, object, arguments)
+    var made = HighIntermediaryRepresentation.Statements.Evaluate(call)
+    made.line = statement.line
+    add(made)
+}
+
+func assign_a_bound_member(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+): Boolean {
+    var function = context.current_function
+    if not function.bound_member_type {
+        return false
+    }
+    if not function.bound_shape.is_empty() {
+        return assign_through_the_shape(statement, target, function)
+    }
+    var read = values.bound_member_read(target)
+    if read == HighIntermediaryRepresentation.Values.AttributeRead {
+        assign_the_bound_attribute(statement, read)
+        return true
+    }
+    return false
+}
+
+func assign_through_the_shape(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    function: Model.FunctionModel,
+): Boolean {
+    var attributes = target.target
+    if attributes == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        assign_a_shape_member(statement, attributes, function)
+        return true
+    }
+    return false
+}
+
+func assign_a_shape_member(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    attributes: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    function: Model.FunctionModel,
+) {
+    var object = values.value_of(attributes.target, null)
+    var shape = context.program.shape_keyed(function.bound_shape)
+    crash shape
+    crash function.bound_member_type
+    var value = values.fitted_value_of(statement.value, function.bound_member_type)
+    var made = HighIntermediaryRepresentation.Statements.AssignThroughShape(object, shape, function.bound_member, value)
+    made.line = statement.line
+    add(made)
+}
+
+func assign_the_bound_attribute(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+) {
+    crash read.object
+    var value = values.fitted_value_of(statement.value, read.attribute.attribute_type)
+    var made = HighIntermediaryRepresentation.Statements.AssignAttribute(read.object, read.attribute, value)
+    made.line = statement.line
+    add(made)
+}
+
 func assign_an_index(
     statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
     target: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
 ) {
+    assert not assign_a_bound_member(statement, target)
     var object = values.value_of(target.target, null)
     var owner = values.present_class_of(object)
     var function = owner.function_named("set_at")
@@ -231,6 +343,10 @@ func build_return(statement: AbstractSyntaxTree.Shapes.Statements.ReturnStatemen
 
 func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
     var condition = values.condition_of(statement.condition)
+    if condition == HighIntermediaryRepresentation.Values.WholeNumber {
+        build_a_decided_if(statement, condition.number != 0)
+        return
+    }
     read_facts(statement.condition)
     var paths = facts_paths
     var types = facts_types
@@ -242,6 +358,59 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
     var made = HighIntermediaryRepresentation.Statements.If(condition, then_branch, else_branch)
     made.line = statement.line
     add(made)
+    if not statement.else_branch and always_leaves(then_branch) {
+        facts_paths = List<String>()
+        facts_types = List<Model.Type>()
+        read_a_negated_fact(statement.condition)
+        narrow_all(facts_paths, facts_types)
+    }
+}
+
+func always_leaves(block: HighIntermediaryRepresentation.Statements.Block): Boolean {
+    var last = block.statements.last()
+    if not last {
+        return false
+    }
+    var returns = last == HighIntermediaryRepresentation.Statements.Return
+    return returns or last == HighIntermediaryRepresentation.Statements.Stop
+}
+
+func read_a_negated_fact(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    if condition == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression {
+        read_a_negated_unary(condition)
+    }
+    if condition == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        read_a_negated_binary(condition)
+    }
+}
+
+func read_a_negated_unary(unary: AbstractSyntaxTree.Shapes.Expressions.UnaryExpression) {
+    assert unary.operator == 'not'
+    read_a_fact(unary.operand)
+}
+
+func read_a_negated_binary(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
+    if binary.operator == 'or' {
+        read_a_negated_fact(binary.left)
+        read_a_negated_fact(binary.right)
+        return
+    }
+    assert binary.operator == 'greater_or_equal'
+    var counted = binary.right
+    if counted == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        read_a_count(binary, counted)
+    }
+}
+
+func build_a_decided_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement, holds: Boolean) {
+    if holds {
+        var taken = block_of(statement.then_branch)
+        add(taken)
+        return
+    }
+    assert statement.else_branch
+    var other = block_of(statement.else_branch)
+    add(other)
 }
 
 func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
@@ -274,6 +443,37 @@ func read_a_binary_bound(condition: AbstractSyntaxTree.Shapes.Expressions.Binary
     if counted == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
         read_a_count(condition, counted)
     }
+    if counted == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        read_a_counted_local(condition, counted)
+    }
+}
+
+func read_a_counted_local(
+    condition: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    counted: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+) {
+    var internal_name = context.scope.internal_name_of(counted.name)
+    assert internal_name
+    var listed = context.counted_lists[internal_name]
+    assert listed
+    var index_name = ""
+    var left = condition.left
+    if left == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        index_name = left.name
+    }
+    assert not index_name.is_empty()
+    var list_value = values.value_of(listed, null)
+    assert context.has_a_class(list_value.value_type) and not list_value.value_type.is_nullable
+    var owner = context.class_of(list_value.value_type)
+    var reader = owner.function_named("get_at")
+    assert reader
+    assert reader.answer
+    var element: Model.Type = reader.answer
+    var present = element.present()
+    var printer = Printers.Spite.ExpressionPrinter(listed)
+    var list_text = printer.text()
+    facts_paths.append("{list_text}[{index_name}]")
+    facts_types.append(present)
 }
 
 func read_a_count(
@@ -479,6 +679,10 @@ func read_a_fact(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
         read_a_binary_fact(condition)
         return
     }
+    if condition == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression {
+        read_a_not_empty(condition)
+        return
+    }
     var is_a_path = condition == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
     is_a_path = is_a_path or condition == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
     is_a_path = is_a_path or condition == AbstractSyntaxTree.Shapes.Expressions.IndexExpression
@@ -500,6 +704,15 @@ func read_a_binary_fact(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpr
         read_a_fact(binary.right)
         return
     }
+    var counted = binary.left
+    var counts = binary.operator == 'equal_equal' or binary.operator == 'greater_or_equal' or binary.operator == 'greater'
+    counts = counts or binary.operator == 'not_equal'
+    if counts {
+        if counted == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            read_a_count_fact(binary, counted)
+            return
+        }
+    }
     assert binary.operator == 'equal_equal'
     var class_path = values.class_path_of(binary.right)
     assert not class_path.is_empty()
@@ -511,6 +724,87 @@ func read_a_binary_fact(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpr
     var fact_path = path_of(binary.left, path)
     facts_paths.append(fact_path)
     facts_types.append(member)
+}
+
+func read_a_not_empty(unary: AbstractSyntaxTree.Shapes.Expressions.UnaryExpression) {
+    assert unary.operator == 'not'
+    var asked = unary.operand
+    if asked == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        read_an_empty_question(asked)
+    }
+}
+
+func read_an_empty_question(asked: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    var callee = asked.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        read_an_empty_member(asked, callee)
+    }
+}
+
+func read_an_empty_member(
+    asked: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+) {
+    assert asked.arguments.is_empty() and callee.name == "is_empty"
+    var listed = values.value_of(callee.target, null)
+    assert context.has_a_class(listed.value_type) and not listed.value_type.is_nullable
+    var owner = context.class_of(listed.value_type)
+    var reader = owner.function_named("get_at")
+    assert reader
+    assert reader.answer
+    var element: Model.Type = reader.answer
+    var present = element.present()
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var list_text = printer.text()
+    facts_paths.append("{list_text}[0]")
+    facts_types.append(present)
+}
+
+func read_a_count_fact(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    counted: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var callee = counted.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        read_a_counted_member(binary, counted, callee)
+    }
+}
+
+func read_a_counted_member(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    counted: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+) {
+    assert counted.arguments.is_empty() and callee.name == "count"
+    var limit = binary.right
+    var known = 0
+    if limit == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        known = literal_reach_of(limit)
+    }
+    if binary.operator == 'greater' {
+        known = known + 1
+    }
+    if binary.operator == 'not_equal' {
+        assert known == 0
+        known = 1
+    }
+    assert known > 0
+    var listed = values.value_of(callee.target, null)
+    assert context.has_a_class(listed.value_type) and not listed.value_type.is_nullable
+    var owner = context.class_of(listed.value_type)
+    var reader = owner.function_named("get_at")
+    assert reader
+    assert reader.answer
+    var element: Model.Type = reader.answer
+    var present = element.present()
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var list_text = printer.text()
+    var index = 0
+    while index < known {
+        facts_paths.append("{list_text}[{index}]")
+        facts_types.append(present)
+        index = index + 1
+    }
 }
 
 func path_of(written: AbstractSyntaxTree.Shapes.Expressions.Expression?, printed: String): String {

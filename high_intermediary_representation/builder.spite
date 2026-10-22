@@ -40,7 +40,7 @@ func build_the_waiting_functions() {
     while not context.waiting.is_empty() {
         var function = context.waiting.remove_first()
         crash function
-        if function.has_a_body() {
+        if not function.is_synthetic and function.has_a_body() {
             build_function(function)
         }
     }
@@ -62,18 +62,66 @@ func build_function(function: Model.FunctionModel) {
     crash function.declaration
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
     if function.bound_member_type {
-        context.resolver.bind_member(declaration, function.bound_member_type)
+        context.resolver.bind_member(declaration, function.template_index, function.bound_member_type)
     }
     var body = statements.block_of(declaration.body)
     context.resolver.unbind_member()
+    if function.is_constructor and owner.key == "Environment" {
+        read_the_settings(owner, body)
+    }
     endings.check(context, body)
     finish(function, body)
+}
+
+func read_the_settings(owner: Model.ClassModel, body: HighIntermediaryRepresentation.Statements.Block) {
+    var values = HighIntermediaryRepresentation.Building.Values(context)
+    var reads = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var index = 0
+    while index < owner.declared_attributes.count() {
+        var attribute = owner.declared_attributes[index]
+        if not attribute.name.starts_with("_") {
+            var read = setting_read(attribute, values)
+            reads.append(read)
+        }
+        index = index + 1
+    }
+    var statement_index = 0
+    while statement_index < body.statements.count() {
+        var statement = body.statements[statement_index]
+        reads.append(statement)
+        statement_index = statement_index + 1
+    }
+    body.statements = reads
+}
+
+func setting_read(
+    attribute: Model.AttributeModel,
+    values: HighIntermediaryRepresentation.Building.Values,
+): HighIntermediaryRepresentation.Statements.Statement {
+    var reader = "text_setting"
+    if attribute.attribute_type.name == "Boolean" {
+        reader = "boolean_setting"
+    }
+    if attribute.attribute_type.name == "Integer" {
+        reader = "integer_setting"
+    }
+    var own = values.this_value()
+    values.need_text_constants()
+    var name = HighIntermediaryRepresentation.Values.TextConstant(attribute.name)
+    name.value_type = context.text()
+    var declared = HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(name)
+    arguments.append(declared)
+    var read = values.method_call(own, reader, arguments)
+    return HighIntermediaryRepresentation.Statements.AssignAttribute(own, attribute, read)
 }
 
 func start(owner: Model.ClassModel, function: Model.FunctionModel) {
     context.current_class = owner
     context.current_function = function
     context.scope.clear()
+    context.counted_lists = Dictionary<String, AbstractSyntaxTree.Shapes.Expressions.Expression>()
     context.pending = List<HighIntermediaryRepresentation.Statements.Statement>()
 }
 
@@ -109,6 +157,40 @@ func build_defaults(class_key: String) {
     finish(function, body)
 }
 
+func owner_is_the_build(attribute: Model.AttributeModel): Boolean {
+    return attribute.owner == "Build" and context.build_flags.has(attribute.name)
+}
+
+func flag_value_of(
+    attribute: Model.AttributeModel,
+    declared: HighIntermediaryRepresentation.Values.Value,
+    values: HighIntermediaryRepresentation.Building.Values,
+): HighIntermediaryRepresentation.Values.Value {
+    var given = context.build_flags[attribute.name]
+    crash given
+    var attribute_type = attribute.attribute_type
+    if attribute_type.name == "Boolean" {
+        var flag = 0
+        if given == "true" {
+            flag = 1
+        }
+        var boolean = context.boolean()
+        return HighIntermediaryRepresentation.Values.WholeNumber(boolean, flag)
+    }
+    if attribute_type.name == "Integer" {
+        var number = given.to_long()
+        crash number
+        return HighIntermediaryRepresentation.Values.WholeNumber(attribute_type, number)
+    }
+    if attribute_type.name == "String" {
+        values.need_text_constants()
+        var text = HighIntermediaryRepresentation.Values.TextConstant(given)
+        text.value_type = attribute_type
+        return text
+    }
+    return declared
+}
+
 func default_of(attribute: Model.AttributeModel): HighIntermediaryRepresentation.Statements.Statement {
     crash attribute.declaration
     var line = attribute.declaration.line
@@ -116,6 +198,9 @@ func default_of(attribute: Model.AttributeModel): HighIntermediaryRepresentation
     context.line = line
     var values = HighIntermediaryRepresentation.Building.Values(context)
     var value = values.fitted_value_of(written, attribute.attribute_type)
+    if owner_is_the_build(attribute) {
+        value = flag_value_of(attribute, value, values)
+    }
     var own = values.this_value()
     var made = HighIntermediaryRepresentation.Statements.AssignAttribute(own, attribute, value)
     made.line = line

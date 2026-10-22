@@ -219,8 +219,10 @@ func read_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionD
     made.declaration = declaration
     var simple_name = simple_name_of(context.file)
     made.is_constructor = declaration.name == simple_name
-    if is_a_member_template(declaration) {
+    var template_index = template_index_of(declaration)
+    if template_index >= 0 {
         made.is_a_member_template = true
+        made.template_index = template_index
         context.declared_functions.append(made)
         return
     }
@@ -233,17 +235,72 @@ func read_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionD
     context.declared_functions.append(made)
 }
 
-func is_a_member_template(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): Boolean {
-    var first = declaration.parameters.first()
-    if not first {
-        return false
+func template_index_of(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): Integer {
+    var words = declaration.name.split("_")
+    var index = 0
+    while index < declaration.parameters.count() {
+        var parameter = declaration.parameters[index]
+        var is_a_word = words.contains(parameter.name) or words.contains("{parameter.name}s")
+        if is_a_word and is_a_declaration_type(parameter.declared_type) {
+            return index
+        }
+        index = index + 1
     }
-    var written = first.declared_type
+    return -1
+}
+
+func is_a_declaration_type(written: AbstractSyntaxTree.Shapes.Types.Type?): Boolean {
     if written == AbstractSyntaxTree.Shapes.Types.NamedType {
         var path = written.path.join(".")
-        return path == "Spite.AttributeDeclaration"
+        if path == "Symbol" {
+            return true
+        }
+        return path == "Spite.AttributeDeclaration" and not written.arguments.is_empty()
     }
     return false
+}
+
+func template_owner_of(template: Model.FunctionModel, model: Model.ClassModel): Model.Type? {
+    crash template.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = template.declaration
+    var parameter = declaration.parameters[template.template_index]
+    crash parameter
+    var written = parameter.declared_type
+    if written == AbstractSyntaxTree.Shapes.Types.NamedType {
+        return owner_of_a_declaration(written, declaration, model)
+    }
+    return null
+}
+
+func owner_of_a_declaration(
+    written: AbstractSyntaxTree.Shapes.Types.NamedType,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    model: Model.ClassModel,
+): Model.Type? {
+    if written.arguments.is_empty() {
+        return Model.Type('object', model.key)
+    }
+    var argument = written.arguments[0]
+    var owner_written = argument.type_reference
+    if owner_written == AbstractSyntaxTree.Shapes.Types.NamedType {
+        return owner_named(owner_written, declaration, model)
+    }
+    return null
+}
+
+func owner_named(
+    owner_written: AbstractSyntaxTree.Shapes.Types.NamedType,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    model: Model.ClassModel,
+): Model.Type? {
+    assert owner_written.path.count() == 1
+    var outer = context
+    context = model
+    line = declaration.line
+    var found = type_of(owner_written)
+    context = outer
+    fill_the_waiting()
+    return found
 }
 
 func specialized(
@@ -261,15 +318,19 @@ func specialized(
     made.bound_member = member
     made.bound_member_type = member_type
     made.bound_member_is_a_function = is_a_function
+    made.template_index = template.template_index
     var outer = context
     context = model
     line = declaration.line
-    bind_member(declaration, member_type)
+    bind_member(declaration, template.template_index, member_type)
+    made.bound_parameter = bound_member_name
     read_parameters = List<Model.ParameterModel>()
-    var index = 1
+    var index = 0
     while index < declaration.parameters.count() {
         var parameter = declaration.parameters[index]
-        read_parameter(parameter)
+        if index != template.template_index {
+            read_parameter(parameter)
+        }
         index = index + 1
     }
     made.parameters = read_parameters
@@ -282,10 +343,14 @@ func specialized(
     return made
 }
 
-func bind_member(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration, member_type: Model.Type) {
-    var first = declaration.parameters.first()
-    crash first
-    bound_member_name = first.name
+func bind_member(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    parameter_index: Integer,
+    member_type: Model.Type,
+) {
+    var parameter = declaration.parameters[parameter_index]
+    crash parameter
+    bound_member_name = parameter.name
     bound_member_type = member_type
 }
 
@@ -344,6 +409,15 @@ func type_of_a_path(path: List<String>, arguments: List<AbstractSyntaxTree.Shape
     if written == "Spite.Function" and not arguments.is_empty() {
         return function_type_of(arguments)
     }
+    if written == "Symbol" and arguments.is_empty() {
+        return symbol_type()
+    }
+    var bound = context.bound_types.keys()
+    var own_name = simple_name_of(context.file)
+    var names_itself = written == own_name and arguments.is_empty() and not bound.is_empty()
+    if names_itself {
+        return Model.Type('object', context.key)
+    }
     var declared = declared_type_of(path)
     if declared {
         return declared
@@ -383,6 +457,25 @@ func list_type_of(element: Model.Type): Model.Type {
     }
     fill_the_waiting()
     return Model.Type('object', key)
+}
+
+func symbol_type(): Model.Type {
+    var path = List<String>()
+    path.append("String")
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var text = type_of_a_path(path, no_arguments)
+    var made = Model.Type(text.kind, text.name)
+    made.is_symbol = true
+    return made
+}
+
+func class_model_named(written: String): Model.ClassModel? {
+    var found = symbols.find(written, "")
+    assert found
+    if not symbols.file_for(found.path) {
+        read_later_class(found)
+    }
+    return program.class_named(found.namespace)
 }
 
 func read_later_class(found: Mapping.ClassFile) {
@@ -434,7 +527,20 @@ func declared_type_of(path: List<String>): Model.Type? {
     if path.count() == 2 {
         var owner_file = symbols.find(name, context.file.namespace)
         assert owner_file
+        if not symbols.file_for(owner_file.path) {
+            read_later_class(owner_file)
+        }
+        var outer_context = context
+        var outer_line = line
+        var outer_parameters = read_parameters
+        fill_the_waiting()
+        context = outer_context
+        line = outer_line
+        read_parameters = outer_parameters
         var owner_model = program.class_named(owner_file.namespace)
+        if not owner_model and owner_file.path == context.file.path {
+            owner_model = context
+        }
         assert owner_model
         owner = owner_model
         var second = path[1]
@@ -497,6 +603,89 @@ func class_type_of(
         mint(key, found, file, names, given)
     }
     return Model.Type('object', key)
+}
+
+func inferred_instance(
+    path: List<String>,
+    model: Model.ClassModel,
+    at_line: Integer,
+    argument_types: List<Model.Type>,
+): Model.Type? {
+    var outer = context
+    context = model
+    line = at_line
+    var written = path.join(".")
+    var found = symbols.find(written, context.file.namespace)
+    context = outer
+    assert found
+    if not symbols.file_for(found.path) {
+        read_later_class(found)
+    }
+    var file = symbols.file_for(found.path)
+    assert file
+    var names = generic_names_of(file)
+    assert not names.is_empty()
+    var simple_name = simple_name_of(file)
+    var constructor = constructor_declaration_of(file, simple_name)
+    assert constructor
+    var given = List<Model.Type>()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var bound = bound_by_the_arguments(constructor, name, argument_types)
+        assert bound
+        given.append(bound)
+        index = index + 1
+    }
+    var key = instance_key(found.namespace, given)
+    if not program.has(key) {
+        mint(key, found, file, names, given)
+    }
+    fill_the_waiting()
+    return Model.Type('object', key)
+}
+
+func constructor_declaration_of(
+    file: AbstractSyntaxTree.Shapes.SourceFile,
+    simple_name: String,
+): AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration? {
+    var index = 0
+    while index < file.declarations.count() {
+        var declaration = file.declarations[index]
+        if declaration == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration {
+            if declaration.name == simple_name {
+                return declaration
+            }
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func bound_by_the_arguments(
+    constructor: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    argument_types: List<Model.Type>,
+): Model.Type? {
+    var index = 0
+    while index < constructor.parameters.count() {
+        var parameter = constructor.parameters[index]
+        var written = parameter.declared_type
+        var given = argument_types[index]
+        if names_the_generic(written, name) and given {
+            return given.present()
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func names_the_generic(written: AbstractSyntaxTree.Shapes.Types.Type?, name: String): Boolean {
+    if written == AbstractSyntaxTree.Shapes.Types.NamedType {
+        var joined = written.path.join(".")
+        return joined == name
+    }
+    return false
 }
 
 func plain_type_of(key: String): Model.Type {
