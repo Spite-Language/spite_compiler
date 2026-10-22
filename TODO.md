@@ -54,7 +54,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found while porting
 
-- The fault handler runs before any library's own exception handling, so a C library that catches its own faults inside a foreign call would be stopped; a fault in Spite code is reported without its function and line (`native_fault_stack`)
+- The fault handler runs before any library's own exception handling, so a C library that catches its own faults inside a foreign call would be stopped
 
 - `Json` and the old type spellings (`Int`, `Bool`, `LocalDate`...) are refused by name even when the program declares a class of that name
 - A crash inside a library function names the library line, where the old compiler named the program's call (`smallest_absolute`, `negative_shift`, `items_remove_out_of_range`, `json_infinity`)
@@ -77,7 +77,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A temporary the builder declares for a comparison (`call() == true`) can be read before its declaration in some branch; plain reads avoid it today
 - Building a text by appending to it copies it each time (`text_building` takes minutes)
 - Two `Concurrent`s that wait for each other loop forever instead of halting (`concurrent_wait_cycle`), since the work runs in order
-- The fault handler is not built: a stack overflow or a bad address ends the program with the system's code and no report
 
 ## The errors
 
