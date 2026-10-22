@@ -18,7 +18,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `printers/machine_code`
 - Low representation in SSA form; until then each value has one register interval with no holes and a spilled value is spilled for its whole life (D210), and copy propagation only crosses a block for a parameter
 - Unit passes and program passes split by input type; every function has a stable identity for cache keys
-- Objects live on the heap until a pass proves the frame (replaces copying a returned object into the caller); until then `--optimization-report` lists every local list, object and copy as made on the heap (D160)
+- `--optimization-report` lists every local list, object and copy as made on the heap (D160), though the low pass now keeps the objects that never leave their function in registers or the frame (D280): the report does not see what that pass placed
 - No range is proved yet, so every whole-number `+`, `-` and `*` keeps its overflow check, and `--optimization-report` lists each one (D160); a `-` in front is not listed
 - An argument is passed by its parameter's type only, never by where the caller's value came from
 - Mortaro confirms or drops D8 to D11 and D17 to D27; D10 (type argument given at run time) contradicts monomorphisation
@@ -152,19 +152,18 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The small-block allocator (D300 to D302) never gives a chunk back to the system and never moves a free block to another size class, so a program's peak of small blocks of one size stays its memory; an allocation of a constant size above 120 bytes, and every free of a block above 1016 bytes, is a call
 - The compiler places memory
 - Reading an address is one machine operation
-- Objects that never leave their function live in the frame
+- Objects that never leave their function live in the frame (built after inlining, D280: in registers or the frame, made at the `return` when answered; not built: an object whose class has a `drop`, back references or frees its attributes another way, an object of a class that releases attributes passed to a call that is not inlined, and anything in a function that waits)
 - A local list of known size lives in the frame
 - A variadic list the callee only reads lives in the caller's frame
 - A list held only by another list lives in its slot
 - A list of lists filled again keeps each list's room
 - Objects of one class sit together
-- A row of borrowed items lives in the frame
+- A row of borrowed items lives in the frame (built when the function it is passed to is inlined, D280: the row is registers; a row passed to a call too large to inline is still made on the heap)
 - An `Items`' storage is chosen while compiling
 - A deep copy is written per class, with a table only where a graph needs one
 - A deep copy nothing changes is the original
-- Copies that cost nothing
+- Copies that cost nothing (built for a copy of a plain object that never leaves the function, once `copy()` is inlined, D280; not built: a copy kept or passed on, and a copy nothing changes being the original)
 - Allocation is the C library's, counted only where read
-- Objects in the frame need an instruction that reserves room in the frame, which the x64 generator does not have yet
 
 ### The counts
 
@@ -191,11 +190,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Short symbols are inline text
 - A foreign name is never copied
 - Crash text out of the binary
-- A number's bits are read in place
+- A number's bits are read in place (built for a read at offset 0 of the number's own width, D262, D273 and D284; not built: a read of part of a number's bytes, or at another offset)
 - A decimal literal beside a `Float` is a `Float`
-- A proven divisor is not checked
 - Arithmetic is checked in every build
-- Arithmetic a range proves is not checked (built in `building/ranges.spite`; not built: a total that adds at most one term a pass, a counter stepped down under `>` or `>=`, a loop local other than a counter keeping the range of what it is assigned, a `-` in front reported as a negation, and a proven divisor, whose zero test the generator writes whatever the range)
+- Arithmetic a range proves is not checked (built in `building/ranges.spite`; not built: a total that adds at most one term a pass, a counter stepped down under `>` or `>=`, a loop local other than a counter keeping the range of what it is assigned, a `-` in front reported as a negation)
 - A loop over plain values reads its count once and its items unchecked (built: `count()` is one load and a proven read is a bound test and a load; not built: the count and the item address read once before the loop, and the bound test dropped where nothing in the loop can change the list)
 - A proven read tests only its bounds (built for a library `List` of numbers or objects; not built: `Vector`, `Items`, a list of `T?` items, unions or function values)
 - A walked `crash` line's read is the row's read
@@ -233,10 +231,11 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The machine code (D210 to D214 are built)
 
-- Loop-invariant code motion: a load, an address or a computation that does not change in a loop is still made on every pass
-- Common subexpressions within a block (the same pure computation or the same load twice with no store between) are still made twice
-- A division by a negative constant, and an unsigned one by a constant that is not a power of two, keep the `div`; a remainder by a power of two tested against zero is not yet a mask test
-- Inlining stops at leaf functions: a small function that calls another is called, and a function inlined into a loop keeps its bounds checks (ranges are proved before inlining)
+- Loop-invariant code motion (built, D282): a load moves before its loop only from the loop's first block and only when nothing in the loop writes memory or calls; a load in a later block, and anything in a loop that writes memory, is still made on every pass
+- Common subexpressions across blocks only for registers written once (D282): a computation over a register written twice (a loop counter) is still made again in a later block, and a repeated comparison is made again
+- An unsigned 64-bit division by a constant that is not a power of two keeps the `div` (D283)
+- A function inlined into a loop keeps its bounds checks (ranges are proved before inlining), and a callee of more than 40 instructions, or that waits, is called (D281); inlining is chosen by size alone, with no estimate of the registers a loop then needs (`template_chains_run_as_one_loop` is about a quarter slower than before this inlining, likely from spills)
+- A division and a remainder of the same two numbers are two divisions, not one `idiv`
 - A value read across a call in a loop and spilled is reloaded on each use: no interval splitting and no rematerialisation of loads
 - Loops are not rotated (each pass jumps back to the test at the top)
 
@@ -263,7 +262,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A proven count or bound proves a read of a width
 - An index built from loop counters is proven by one guard
 - A counted loop reads its items unchecked
-- A proven divisor is not checked
 - A divisor written as zero is an error
 - Arithmetic that does not fit halts
 - A range proves arithmetic fits (built, D230; not built: the totals, the counters stepped down, and the loop locals other than counters, see the optimisation's line)

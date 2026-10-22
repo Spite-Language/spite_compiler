@@ -1,0 +1,1251 @@
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var program = LowIntermediaryRepresentation.LowProgram()
+var keeping = LowOptimizationPasses.ObjectPlacement.KeptParameters()
+var operands = LowOptimizationPasses.Operands()
+var flow = LowOptimizationPasses.ObjectPlacement.Flow()
+var register_total = 0
+var next_register = 0
+var parents = List<Integer>()
+var definition_counts = List<Integer>()
+var constant_known = List<Boolean>()
+var constant_values = List<Long>()
+var shapes = List<Integer>()
+var allocated = List<Boolean>()
+var escaped = List<Boolean>()
+var passed = List<Boolean>()
+var returned = List<Boolean>()
+var allocation_sizes = List<Integer>()
+var class_ids = List<Long>()
+var modes = List<Integer>()
+var free_children = List<List<Integer>>()
+var plain = List<Boolean>()
+var field_roots = List<Integer>()
+var field_offsets = List<Integer>()
+var field_widths = List<Integer>()
+var field_signs = List<Integer>()
+var field_registers = List<Integer>()
+var register_fields = List<Integer>()
+var field_counts = List<Integer>()
+var original_block_count = 0
+var field_known = List<Boolean>()
+var field_values = List<Long>()
+var largest_room = 4096
+var largest_field_count = 32
+var placing_known = List<Boolean>()
+var placing_values = List<Long>()
+var placed = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+var placing_block = 0
+
+func Pass(
+    starting_function: LowIntermediaryRepresentation.LowFunction,
+    starting_program: LowIntermediaryRepresentation.LowProgram,
+    starting_keeping: LowOptimizationPasses.ObjectPlacement.KeptParameters,
+) {
+    function = starting_function
+    program = starting_program
+    keeping = starting_keeping
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if function.is_resumable or not allocates_anything() {
+        return function
+    }
+    register_total = operands.most_register_of(function)
+    next_register = register_total
+    fill_the_registers()
+    read_the_definitions()
+    join_the_copies()
+    fill_the_roots()
+    study_the_uses()
+    var index = 0
+    while index < function.parameter_count {
+        mark_escaped(index)
+        index = index + 1
+    }
+    choose_the_modes()
+    if not any_mode() {
+        return function
+    }
+    place_the_objects()
+    function.register_count = next_register
+    return function
+}
+
+func allocates_anything(): Boolean {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Allocate {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func fill_the_registers() {
+    var index = 0
+    while index < register_total {
+        parents.append(index)
+        definition_counts.append(0)
+        constant_known.append(false)
+        constant_values.append(0)
+        shapes.append(0)
+        register_fields.append(-1)
+        index = index + 1
+    }
+}
+
+func read_the_definitions() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            operands.read(instruction)
+            operands.defines.each(count_a_definition)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_the_shape)
+        block_index = block_index + 1
+    }
+}
+
+func count_a_definition(register: Integer) {
+    var count = definition_counts[register]
+    crash count
+    definition_counts[register] = count + 1
+}
+
+func defined_once(register: Integer): Boolean {
+    if register < function.parameter_count {
+        return false
+    }
+    return definition_counts[register] == 1
+}
+
+func note_the_shape(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: note_a_constant(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: note_a_load_shape(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: note_an_arithmetic_shape(instruction)
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: note_a_decimal_shape(instruction)
+        _: return
+    }
+}
+
+func note_a_constant(constant: LowIntermediaryRepresentation.Instructions.Constant) {
+    assert defined_once(constant.target)
+    constant_known[constant.target] = true
+    constant_values[constant.target] = constant.number
+}
+
+func note_a_load_shape(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    assert defined_once(loaded.target) and not loaded.is_swapped
+    var bytes = bytes_of(loaded.width)
+    shapes[loaded.target] = shape_code(bytes, loaded.is_signed)
+}
+
+func note_an_arithmetic_shape(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    assert defined_once(arithmetic.target)
+    assert arithmetic.operator != 'divide' and arithmetic.operator != 'remainder'
+    var bytes = bytes_of(arithmetic.width)
+    shapes[arithmetic.target] = shape_code(bytes, arithmetic.is_signed)
+}
+
+func note_a_decimal_shape(arithmetic: LowIntermediaryRepresentation.Instructions.DecimalArithmetic) {
+    assert defined_once(arithmetic.target) and not arithmetic.is_double
+    shapes[arithmetic.target] = shape_code(4, false)
+}
+
+func shape_code(bytes: Integer, is_signed: Boolean): Integer {
+    if is_signed {
+        return bytes * 4 + 1
+    }
+    return bytes * 4 + 2
+}
+
+func bytes_of(width: LowIntermediaryRepresentation.Width): Integer {
+    switch width {
+        'bits_8': return 1
+        'bits_16': return 2
+        'bits_32': return 4
+        'bits_64': return 8
+    }
+}
+
+func root_of(register: Integer): Integer {
+    var current = register
+    var parent = parents[current]
+    crash parent
+    while parent != current {
+        current = parent
+        var further = parents[current]
+        crash further
+        parent = further
+    }
+    return current
+}
+
+func join(first: Integer, second: Integer) {
+    var first_root = root_of(first)
+    var second_root = root_of(second)
+    if first_root != second_root {
+        parents[second_root] = first_root
+    }
+}
+
+func join_the_copies() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(join_a_copy)
+        block_index = block_index + 1
+    }
+}
+
+func join_a_copy(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        if instruction.source >= 0 and instruction.target >= 0 {
+            join(instruction.target, instruction.source)
+        }
+    }
+}
+
+func fill_the_roots() {
+    var index = 0
+    while index < register_total {
+        allocated.append(false)
+        escaped.append(false)
+        passed.append(false)
+        returned.append(false)
+        allocation_sizes.append(-1)
+        class_ids.append(-1)
+        modes.append(0)
+        plain.append(false)
+        field_counts.append(0)
+        var children = List<Integer>()
+        free_children.append(children)
+        index = index + 1
+    }
+}
+
+func mark_escaped(register: Integer) {
+    if register >= 0 and register < register_total {
+        var root = root_of(register)
+        escaped[root] = true
+    }
+}
+
+func study_the_uses() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(study_an_instruction)
+        block_index = block_index + 1
+    }
+}
+
+func study_an_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var is_made = instruction == LowIntermediaryRepresentation.Instructions.Allocate
+    var is_copied = instruction == LowIntermediaryRepresentation.Instructions.Copy
+    if not is_made and not is_copied {
+        operands.defines.each(mark_escaped)
+    }
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Allocate: study_an_allocation(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: return
+        LowIntermediaryRepresentation.Instructions.Load: study_a_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: study_a_store(instruction)
+        LowIntermediaryRepresentation.Instructions.Retain: return
+        LowIntermediaryRepresentation.Instructions.Call: study_a_call(instruction)
+        LowIntermediaryRepresentation.Instructions.Return: study_a_return(instruction)
+        _: operands.uses.each(mark_escaped)
+    }
+}
+
+func study_a_return(returning: LowIntermediaryRepresentation.Instructions.Return) {
+    mark_escaped(returning.presence)
+    if returning.is_a_suspension {
+        mark_escaped(returning.source)
+        return
+    }
+    if returning.source >= 0 {
+        var root = root_of(returning.source)
+        returned[root] = true
+    }
+}
+
+func study_an_allocation(allocate: LowIntermediaryRepresentation.Instructions.Allocate) {
+    var root = root_of(allocate.target)
+    allocated[root] = true
+    if constant_known[allocate.size] != true {
+        escaped[root] = true
+        return
+    }
+    var value = constant_values[allocate.size]
+    crash value
+    var size = value.to_integer()
+    var earlier = allocation_sizes[root]
+    crash earlier
+    if earlier >= 0 and earlier != size {
+        escaped[root] = true
+    }
+    allocation_sizes[root] = size
+}
+
+func study_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    if loaded.is_swapped {
+        mark_escaped(loaded.address)
+        return
+    }
+    var root = root_of(loaded.address)
+    var bytes = bytes_of(loaded.width)
+    var sign = 2
+    if loaded.is_signed {
+        sign = 1
+    }
+    note_a_field(root, loaded.offset, bytes, sign)
+}
+
+func study_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    mark_escaped(stored.source)
+    if stored.is_swapped {
+        mark_escaped(stored.address)
+        return
+    }
+    var root = root_of(stored.address)
+    var bytes = bytes_of(stored.width)
+    note_a_field(root, stored.offset, bytes, 0)
+    if stored.offset == 0 {
+        note_the_class(root, stored)
+    }
+}
+
+func note_the_class(root: Integer, stored: LowIntermediaryRepresentation.Instructions.Store) {
+    var known = class_ids[root]
+    crash known
+    if stored.width != 'bits_64' or constant_known[stored.source] != true {
+        class_ids[root] = -2
+        return
+    }
+    var value = constant_values[stored.source]
+    crash value
+    if known == -1 or known == value {
+        class_ids[root] = value
+        return
+    }
+    class_ids[root] = -2
+}
+
+func study_a_call(call: LowIntermediaryRepresentation.Instructions.Call) {
+    assert call.function != "_release" or call.arguments.count() != 1
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if argument >= 0 {
+            var root = root_of(argument)
+            if keeping.keeps_nothing_of(call.function, index) {
+                passed[root] = true
+            } else {
+                escaped[root] = true
+            }
+        }
+        index = index + 1
+    }
+}
+
+func note_a_field(root: Integer, offset: Integer, bytes: Integer, sign: Integer) {
+    var index = 0
+    while index < field_roots.count() {
+        var owner = field_roots[index]
+        var start = field_offsets[index]
+        var width = field_widths[index]
+        crash start
+        crash width
+        if owner == root {
+            if start == offset and width == bytes {
+                widen_the_sign(index, sign)
+                return
+            }
+            if offset < start + width and start < offset + bytes {
+                escaped[root] = true
+            }
+        }
+        index = index + 1
+    }
+    field_roots.append(root)
+    field_offsets.append(offset)
+    field_widths.append(bytes)
+    field_signs.append(sign)
+    field_registers.append(-1)
+    var count = field_counts[root]
+    crash count
+    field_counts[root] = count + 1
+}
+
+func widen_the_sign(index: Integer, sign: Integer) {
+    var known = field_signs[index]
+    crash known
+    assert sign != 0 and known != sign
+    if known == 0 {
+        field_signs[index] = sign
+        return
+    }
+    field_signs[index] = 3
+}
+
+func field_of(root: Integer, offset: Integer): Integer {
+    var index = 0
+    while index < field_roots.count() {
+        var owner = field_roots[index]
+        var start = field_offsets[index]
+        if owner == root and start == offset {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func choose_the_modes() {
+    flow.find_the_edges(function)
+    var root = 0
+    while root < register_total {
+        if allocated[root] == true and escaped[root] == false and root_of(root) == root {
+            choose_a_mode(root)
+        }
+        root = root + 1
+    }
+}
+
+func choose_a_mode(root: Integer) {
+    assert fields_fit(root)
+    var class_id = class_ids[root]
+    crash class_id
+    assert class_id >= 0
+    var class_number = class_id.to_integer()
+    var free_key = program.free_keys[class_number]
+    assert free_key
+    var freeing = keeping.function_named(free_key)
+    assert freeing
+    assert read_the_free(root, freeing)
+    var is_plain = plain[root] == true
+    var is_returned = returned[root] == true
+    assert is_plain or not is_returned
+    var members = members_of(root)
+    var shared = passed[root] != true and fits_in_registers(root)
+    var one_at_a_time = flow.holds_one_at_a_time(function, members)
+    if shared and one_at_a_time {
+        if is_plain or count_field_of(root) >= 0 {
+            modes[root] = 1
+            return
+        }
+    }
+    if shared and is_plain and flow.copies_are_moves(function, members) {
+        modes[root] = 2
+        return
+    }
+    var size = allocation_sizes[root]
+    crash size
+    assert is_plain and size <= largest_room and not is_returned
+    if one_at_a_time or not flow.allocates_in_a_loop(function, members) {
+        modes[root] = 3
+    }
+}
+
+func members_of(root: Integer): List<Boolean> {
+    var members = List<Boolean>()
+    var index = 0
+    while index < register_total {
+        var joined = root_of(index)
+        members.append(joined == root)
+        index = index + 1
+    }
+    return members
+}
+
+func count_field_of(root: Integer): Integer {
+    var index = field_of(root, 8)
+    if index < 0 {
+        return -1
+    }
+    var width = field_widths[index]
+    if width != 8 {
+        return -1
+    }
+    return index
+}
+
+func fields_fit(root: Integer): Boolean {
+    var size = allocation_sizes[root]
+    crash size
+    var index = 0
+    while index < field_roots.count() {
+        var owner = field_roots[index]
+        var start = field_offsets[index]
+        var width = field_widths[index]
+        crash start
+        crash width
+        if owner == root and (start < 0 or start + width > size) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func fits_in_registers(root: Integer): Boolean {
+    var count = field_counts[root]
+    crash count
+    if count > largest_field_count {
+        return false
+    }
+    var index = 0
+    while index < field_roots.count() {
+        var owner = field_roots[index]
+        var sign = field_signs[index]
+        if owner == root and sign == 3 {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func read_the_free(root: Integer, freeing: LowIntermediaryRepresentation.LowFunction): Boolean {
+    if freeing.blocks.count() != 1 or freeing.parameter_count != 1 {
+        return false
+    }
+    var block = freeing.blocks[0]
+    var children = List<Integer>()
+    var count = block.instructions.count()
+    if count < 2 {
+        return false
+    }
+    var index = 0
+    while index + 2 < count {
+        var loaded = block.instructions[index]
+        var called = block.instructions[index + 1]
+        var offset = released_offset(loaded, called)
+        if offset < 0 {
+            return false
+        }
+        children.append(offset)
+        index = index + 2
+    }
+    if index + 2 != count {
+        return false
+    }
+    var freed = block.instructions[index]
+    var returned = block.instructions[index + 1]
+    if not frees_the_object(freed) or not returns_nothing(returned) {
+        return false
+    }
+    free_children[root] = children
+    plain[root] = children.is_empty()
+    if escaped[root] == true {
+        return false
+    }
+    var child_index = 0
+    while child_index < children.count() {
+        var child = children[child_index]
+        var field = field_of(root, child)
+        if field < 0 {
+            note_a_field(root, child, 8, 0)
+        }
+        child_index = child_index + 1
+    }
+    return escaped[root] != true
+}
+
+func released_offset(
+    loaded: LowIntermediaryRepresentation.Instructions.Instruction,
+    called: LowIntermediaryRepresentation.Instructions.Instruction,
+): Integer {
+    if loaded == LowIntermediaryRepresentation.Instructions.Load {
+        if loaded.address != 0 or loaded.width != 'bits_64' or loaded.is_swapped {
+            return -1
+        }
+        if called == LowIntermediaryRepresentation.Instructions.Call {
+            var releases = called.function == "_release" and called.arguments.count() == 1
+            if releases and called.arguments.contains(loaded.target) and loaded.offset >= 16 {
+                return loaded.offset
+            }
+        }
+    }
+    return -1
+}
+
+func frees_the_object(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Free {
+        return instruction.pointer == 0
+    }
+    return false
+}
+
+func returns_nothing(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Return {
+        return instruction.source < 0 and instruction.presence < 0
+    }
+    return false
+}
+
+func any_mode(): Boolean {
+    var root = 0
+    while root < register_total {
+        if modes[root] != 0 {
+            return true
+        }
+        root = root + 1
+    }
+    return false
+}
+
+func mode_of(register: Integer): Integer {
+    if register < 0 or register >= register_total {
+        return 0
+    }
+    var root = root_of(register)
+    var mode = modes[root]
+    crash mode
+    return mode
+}
+
+func new_register(): Integer {
+    var made = next_register
+    next_register = next_register + 1
+    return made
+}
+
+func shared_register(field: Integer): Integer {
+    var known = field_registers[field]
+    crash known
+    if known >= 0 {
+        return known
+    }
+    var made = new_register()
+    field_registers[field] = made
+    return made
+}
+
+func own_register(register: Integer, root: Integer, field: Integer): Integer {
+    var base = register_fields[register]
+    crash base
+    if base < 0 {
+        var count = field_counts[root]
+        crash count
+        base = next_register
+        next_register = next_register + count
+        register_fields[register] = base
+    }
+    return base + rank_of(root, field)
+}
+
+func rank_of(root: Integer, field: Integer): Integer {
+    var rank = 0
+    var index = 0
+    while index < field {
+        var owner = field_roots[index]
+        if owner == root {
+            rank = rank + 1
+        }
+        index = index + 1
+    }
+    return rank
+}
+
+func field_register(register: Integer, field: Integer): Integer {
+    var root = root_of(register)
+    if modes[root] == 1 {
+        return shared_register(field)
+    }
+    return own_register(register, root, field)
+}
+
+func place_the_objects() {
+    original_block_count = function.blocks.count()
+    flow.find_the_edges(function)
+    find_the_known_fields()
+    var block_index = 0
+    while block_index < original_block_count {
+        place_in_block(block_index)
+        block_index = block_index + 1
+    }
+}
+
+func find_the_known_fields() {
+    field_known.clear()
+    field_values.clear()
+    var total = original_block_count * field_roots.count()
+    var index = 0
+    while index < total {
+        field_known.append(false)
+        field_values.append(0)
+        index = index + 1
+    }
+    var visited = List<Boolean>()
+    index = 0
+    while index < original_block_count {
+        visited.append(false)
+        index = index + 1
+    }
+    var round = 0
+    var changed = true
+    while changed and round < 24 {
+        changed = false
+        var block_index = 0
+        while block_index < original_block_count {
+            if meet_into(block_index, visited) {
+                changed = true
+            }
+            block_index = block_index + 1
+        }
+        round = round + 1
+    }
+}
+
+func meet_into(block_index: Integer, visited: List<Boolean>): Boolean {
+    var fields = field_roots.count()
+    var known = List<Boolean>()
+    var values = List<Long>()
+    var index = 0
+    while index < fields {
+        known.append(block_index != 0)
+        values.append(0)
+        index = index + 1
+    }
+    var seen_any = false
+    var predecessors = flow.predecessors_of(block_index)
+    if block_index == 0 {
+        predecessors = List<Integer>()
+    }
+    var predecessor_index = 0
+    while predecessor_index < predecessors.count() {
+        var predecessor = predecessors[predecessor_index]
+        if visited[predecessor] == true {
+            var state_known = List<Boolean>()
+            var state_values = List<Long>()
+            leaving_state(predecessor, state_known, state_values)
+            meet_states(known, values, state_known, state_values, seen_any)
+            seen_any = true
+        }
+        predecessor_index = predecessor_index + 1
+    }
+    if not seen_any {
+        index = 0
+        while index < fields {
+            known[index] = false
+            index = index + 1
+        }
+    }
+    var changed = visited[block_index] != true
+    visited[block_index] = true
+    index = 0
+    while index < fields {
+        var slot = block_index * fields + index
+        var now_known = known[index] == true
+        var now_value = values[index]
+        crash now_value
+        if field_known[slot] != now_known or field_values[slot] != now_value {
+            changed = true
+        }
+        field_known[slot] = now_known
+        field_values[slot] = now_value
+        index = index + 1
+    }
+    return changed
+}
+
+func meet_states(
+    known: List<Boolean>,
+    values: List<Long>,
+    state_known: List<Boolean>,
+    state_values: List<Long>,
+    seen_any: Boolean,
+) {
+    var index = 0
+    while index < known.count() {
+        var incoming = state_known[index] == true
+        var incoming_value = state_values[index]
+        crash incoming_value
+        if not seen_any {
+            known[index] = incoming
+            values[index] = incoming_value
+        } else if not incoming or values[index] != incoming_value {
+            known[index] = false
+        }
+        index = index + 1
+    }
+}
+
+func leaving_state(block_index: Integer, known: List<Boolean>, values: List<Long>) {
+    var fields = field_roots.count()
+    var index = 0
+    while index < fields {
+        var slot = block_index * fields + index
+        var entering = field_known[slot] == true
+        var value = field_values[slot]
+        crash value
+        known.append(entering)
+        values.append(value)
+        index = index + 1
+    }
+    var block = function.blocks[block_index]
+    crash block
+    var instruction_index = 0
+    while instruction_index < block.instructions.count() {
+        var instruction = block.instructions[instruction_index]
+        follow_the_fields(instruction, known, values)
+        instruction_index = instruction_index + 1
+    }
+}
+
+func follow_the_fields(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    known: List<Boolean>,
+    values: List<Long>,
+) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Allocate {
+        if mode_of(instruction.target) == 1 {
+            var root = root_of(instruction.target)
+            set_every_field(root, known, values)
+        }
+        return
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Store {
+        follow_a_store(instruction, known, values)
+        return
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Retain {
+        forget_the_count(instruction.object, known)
+        return
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        forget_the_released(instruction, known)
+    }
+}
+
+func forget_the_released(call: LowIntermediaryRepresentation.Instructions.Call, known: List<Boolean>) {
+    assert call.function == "_release"
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        forget_the_count(argument, known)
+        index = index + 1
+    }
+}
+
+func forget_the_count(register: Integer, known: List<Boolean>) {
+    assert mode_of(register) == 1
+    var root = root_of(register)
+    var field = field_of(root, 8)
+    if field >= 0 {
+        known[field] = false
+    }
+}
+
+func set_every_field(root: Integer, known: List<Boolean>, values: List<Long>) {
+    var index = 0
+    while index < field_roots.count() {
+        var owner = field_roots[index]
+        if owner == root {
+            known[index] = true
+            values[index] = 0
+        }
+        index = index + 1
+    }
+}
+
+func follow_a_store(
+    stored: LowIntermediaryRepresentation.Instructions.Store,
+    known: List<Boolean>,
+    values: List<Long>,
+) {
+    assert mode_of(stored.address) == 1
+    var root = root_of(stored.address)
+    var field = field_of(root, stored.offset)
+    crash field >= 0
+    if constant_known[stored.source] == true {
+        var value = constant_values[stored.source]
+        crash value
+        known[field] = fits_the_field(value, field)
+        values[field] = value
+        return
+    }
+    known[field] = false
+}
+
+func fits_the_field(value: Long, field: Integer): Boolean {
+    var width = field_widths[field]
+    crash width
+    if width == 8 {
+        return true
+    }
+    var sign = field_signs[field]
+    crash sign
+    var power: Long = 1
+    var count = 0
+    while count < width * 8 {
+        power = power * 2
+        count = count + 1
+    }
+    if sign == 1 {
+        var half = power / 2
+        var zero: Long = 0
+        return value >= zero - half and value < half
+    }
+    return value >= 0 and value < power
+}
+
+func place_in_block(block_index: Integer) {
+    var block = function.blocks[block_index]
+    crash block
+    placing_known = List<Boolean>()
+    placing_values = List<Long>()
+    var fields = field_roots.count()
+    var index = 0
+    while index < fields {
+        var slot = block_index * fields + index
+        var entering = field_known[slot] == true
+        var value = field_values[slot]
+        crash value
+        placing_known.append(entering)
+        placing_values.append(value)
+        index = index + 1
+    }
+    var original = block.instructions
+    var last = original.last()
+    var falls = true
+    if last {
+        falls = not flow.ends_the_block(last)
+    }
+    placed = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    placing_block = block_index
+    var split = false
+    index = 0
+    while index < original.count() {
+        var instruction = original[index]
+        if place_one(instruction) {
+            split = true
+        }
+        index = index + 1
+    }
+    if split and falls and block_index + 1 < original_block_count {
+        var onward = LowIntermediaryRepresentation.Instructions.Jump(block_index + 1)
+        placed.append(onward)
+    }
+    finish_the_segment()
+}
+
+func finish_the_segment() {
+    var block = function.blocks[placing_block]
+    crash block
+    block.instructions = placed
+}
+
+func place_one(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Allocate: place_an_allocation(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: place_a_copy(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: place_a_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: place_a_store(instruction)
+        LowIntermediaryRepresentation.Instructions.Retain: place_a_retain(instruction)
+        LowIntermediaryRepresentation.Instructions.Call: return place_a_call(instruction)
+        LowIntermediaryRepresentation.Instructions.Return: place_a_return(instruction)
+        _: placed.append(instruction)
+    }
+    return false
+}
+
+func place_a_return(returning: LowIntermediaryRepresentation.Instructions.Return) {
+    var mode = mode_of(returning.source)
+    if mode != 1 and mode != 2 {
+        placed.append(returning)
+        return
+    }
+    var root = root_of(returning.source)
+    var size = allocation_sizes[root]
+    crash size
+    var size_register = new_register()
+    var sized = LowIntermediaryRepresentation.Instructions.Constant(size_register, size)
+    placed.append(sized)
+    var made = new_register()
+    var allocate = LowIntermediaryRepresentation.Instructions.Allocate(made, size_register)
+    placed.append(allocate)
+    var index = 0
+    while index < field_roots.count() {
+        var owner = field_roots[index]
+        if owner == root {
+            store_the_field(made, returning.source, index)
+        }
+        index = index + 1
+    }
+    var answered = LowIntermediaryRepresentation.Instructions.Return(made)
+    answered.presence = returning.presence
+    placed.append(answered)
+}
+
+func store_the_field(made: Integer, source: Integer, field: Integer) {
+    var offset = field_offsets[field]
+    var width = field_widths[field]
+    crash offset
+    crash width
+    var value = field_register(source, field)
+    if offset == 8 {
+        value = new_register()
+        var one = LowIntermediaryRepresentation.Instructions.Constant(value, 1)
+        placed.append(one)
+    }
+    var stored = LowIntermediaryRepresentation.Instructions.Store(made, offset, value, 'bits_64')
+    stored.width = width_of(width)
+    placed.append(stored)
+}
+
+func width_of(bytes: Integer): LowIntermediaryRepresentation.Width {
+    switch bytes {
+        1: return 'bits_8'
+        2: return 'bits_16'
+        4: return 'bits_32'
+        _: return 'bits_64'
+    }
+}
+
+func place_an_allocation(allocate: LowIntermediaryRepresentation.Instructions.Allocate) {
+    var mode = mode_of(allocate.target)
+    if mode == 0 {
+        placed.append(allocate)
+        return
+    }
+    var root = root_of(allocate.target)
+    if mode == 3 {
+        var size = allocation_sizes[root]
+        crash size
+        var room = LowIntermediaryRepresentation.Instructions.FrameRoom(allocate.target, size)
+        placed.append(room)
+        return
+    }
+    var index = 0
+    while index < field_roots.count() {
+        var owner = field_roots[index]
+        if owner == root {
+            var register = field_register(allocate.target, index)
+            var zero = LowIntermediaryRepresentation.Instructions.Constant(register, 0)
+            placed.append(zero)
+            placing_known[index] = true
+            placing_values[index] = 0
+        }
+        index = index + 1
+    }
+}
+
+func place_a_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
+    var mode = mode_of(copy.target)
+    assert mode != 1
+    if mode != 2 {
+        placed.append(copy)
+        return
+    }
+    var root = root_of(copy.target)
+    var index = 0
+    while index < field_roots.count() {
+        var owner = field_roots[index]
+        if owner == root {
+            var target = field_register(copy.target, index)
+            var source = field_register(copy.source, index)
+            var copied = LowIntermediaryRepresentation.Instructions.Copy(target, source)
+            placed.append(copied)
+        }
+        index = index + 1
+    }
+}
+
+func place_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    var mode = mode_of(loaded.address)
+    if mode != 1 and mode != 2 {
+        placed.append(loaded)
+        return
+    }
+    var root = root_of(loaded.address)
+    var field = field_of(root, loaded.offset)
+    crash field >= 0
+    if mode == 1 and placing_known[field] == true {
+        var value = placing_values[field]
+        crash value
+        var folded = LowIntermediaryRepresentation.Instructions.Constant(loaded.target, value)
+        placed.append(folded)
+        return
+    }
+    var source = field_register(loaded.address, field)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(loaded.target, source)
+    placed.append(copied)
+}
+
+func place_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    var mode = mode_of(stored.address)
+    if mode != 1 and mode != 2 {
+        placed.append(stored)
+        return
+    }
+    var root = root_of(stored.address)
+    var field = field_of(root, stored.offset)
+    crash field >= 0
+    var target = field_register(stored.address, field)
+    normalize_into(target, stored.source, field)
+    placing_known[field] = false
+    if constant_known[stored.source] == true {
+        var value = constant_values[stored.source]
+        crash value
+        placing_known[field] = fits_the_field(value, field)
+        placing_values[field] = value
+    }
+}
+
+func normalize_into(target: Integer, source: Integer, field: Integer) {
+    var width = field_widths[field]
+    var sign = field_signs[field]
+    crash width
+    crash sign
+    var wanted = shape_code(width, sign == 1)
+    if width == 8 or sign == 0 or shapes[source] == wanted {
+        var copied = LowIntermediaryRepresentation.Instructions.Copy(target, source)
+        placed.append(copied)
+        return
+    }
+    if constant_known[source] == true {
+        var value = constant_values[source]
+        crash value
+        if fits_the_field(value, field) {
+            var copied_constant = LowIntermediaryRepresentation.Instructions.Copy(target, source)
+            placed.append(copied_constant)
+            return
+        }
+    }
+    if sign == 2 {
+        var mask = new_register()
+        var power: Long = 1
+        var count = 0
+        while count < width * 8 {
+            power = power * 2
+            count = count + 1
+        }
+        var masking = LowIntermediaryRepresentation.Instructions.Constant(mask, power - 1)
+        placed.append(masking)
+        var masked = LowIntermediaryRepresentation.Instructions.Arithmetic(target, 'bits_and', source, mask)
+        masked.is_checked = false
+        placed.append(masked)
+        return
+    }
+    var distance = new_register()
+    var bits: Long = 64 - width * 8
+    var moving = LowIntermediaryRepresentation.Instructions.Constant(distance, bits)
+    placed.append(moving)
+    var raised = new_register()
+    var raising = LowIntermediaryRepresentation.Instructions.Arithmetic(raised, 'shift_left', source, distance)
+    raising.is_checked = false
+    placed.append(raising)
+    var lowering = LowIntermediaryRepresentation.Instructions.Arithmetic(target, 'shift_right', raised, distance)
+    lowering.is_checked = false
+    placed.append(lowering)
+}
+
+func place_a_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
+    var mode = mode_of(retain.object)
+    if mode == 0 {
+        placed.append(retain)
+        return
+    }
+    var root = root_of(retain.object)
+    assert mode == 1 and plain[root] != true
+    var field = count_field_of(root)
+    var count = shared_register(field)
+    var one = new_register()
+    var made_one = LowIntermediaryRepresentation.Instructions.Constant(one, 1)
+    placed.append(made_one)
+    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(count, 'add', count, one)
+    added.is_checked = false
+    placed.append(added)
+    placing_known[field] = false
+}
+
+func place_a_call(call: LowIntermediaryRepresentation.Instructions.Call): Boolean {
+    var releases = call.function == "_release" and call.arguments.count() == 1
+    if not releases {
+        placed.append(call)
+        return false
+    }
+    var object = call.arguments[0]
+    crash object
+    var mode = mode_of(object)
+    if mode == 0 {
+        placed.append(call)
+        return false
+    }
+    var root = root_of(object)
+    if mode != 1 or plain[root] == true {
+        return false
+    }
+    count_down(root)
+    return true
+}
+
+func count_down(root: Integer) {
+    var field = count_field_of(root)
+    var count = shared_register(field)
+    var one = new_register()
+    var made_one = LowIntermediaryRepresentation.Instructions.Constant(one, 1)
+    placed.append(made_one)
+    var subtracted = LowIntermediaryRepresentation.Instructions.Arithmetic(count, 'subtract', count, one)
+    subtracted.is_checked = false
+    placed.append(subtracted)
+    var zero = new_register()
+    var made_zero = LowIntermediaryRepresentation.Instructions.Constant(zero, 0)
+    placed.append(made_zero)
+    var gone = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(gone, 'equal', count, zero)
+    placed.append(compared)
+    var block = function.blocks[placing_block]
+    crash block
+    var freeing = LowIntermediaryRepresentation.LowBlock()
+    freeing.place = block.place
+    var continuing = LowIntermediaryRepresentation.LowBlock()
+    continuing.place = block.place
+    var freeing_index = function.blocks.count()
+    var continuing_index = freeing_index + 1
+    function.blocks.append(freeing)
+    function.blocks.append(continuing)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(gone, freeing_index, continuing_index)
+    placed.append(test)
+    finish_the_segment()
+    var children = free_children[root]
+    crash children
+    var index = 0
+    while index < children.count() {
+        var child = children[index]
+        var child_field = field_of(root, child)
+        crash child_field >= 0
+        var held = shared_register(child_field)
+        var arguments = List<Integer>()
+        arguments.append(held)
+        var released = LowIntermediaryRepresentation.Instructions.Call(-1, "_release", arguments)
+        freeing.instructions.append(released)
+        index = index + 1
+    }
+    var onward = LowIntermediaryRepresentation.Instructions.Jump(continuing_index)
+    freeing.instructions.append(onward)
+    placed = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    placing_block = continuing_index
+    placing_known[field] = false
+}
