@@ -1,0 +1,165 @@
+var program = Model.ProgramModel()
+var no_built = List<HighIntermediaryRepresentation.HighFunction>()
+var no_exclusions = List<String>()
+var facts = Facts(program, no_built, no_exclusions)
+var calls = List<HighIntermediaryRepresentation.Values.Call>()
+var read_attributes = List<String>()
+var locals = List<String>()
+var callees = List<String>()
+var written = List<String>()
+var waits = false
+
+func FrameMentions(starting_program: Model.ProgramModel, starting_facts: Facts) {
+    program = starting_program
+    facts = starting_facts
+}
+
+func gather_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(gather_statement)
+}
+
+func gather_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: gather(statement.value)
+        HighIntermediaryRepresentation.Statements.Assign: gather(statement.value)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: gather_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: gather_both(statement.object, statement.value)
+        HighIntermediaryRepresentation.Statements.Evaluate: gather(statement.value)
+        HighIntermediaryRepresentation.Statements.Return: gather(statement.value)
+        HighIntermediaryRepresentation.Statements.If: gather_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: gather_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Block: gather_block(statement)
+        _: return
+    }
+}
+
+func gather_an_attribute_write(write: HighIntermediaryRepresentation.Statements.AssignAttribute) {
+    written.append(write.attribute.name)
+    gather_both(write.object, write.value)
+}
+
+func gather_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    gather(branch.condition)
+    gather_block(branch.then_branch)
+    gather_block(branch.else_branch)
+}
+
+func gather_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    gather(loop.condition)
+    gather_block(loop.body)
+}
+
+func gather_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    gather(first)
+    gather(second)
+}
+
+func gather_present(value: HighIntermediaryRepresentation.Values.Value) {
+    gather(value)
+}
+
+func gather(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: gather_a_call(value)
+        HighIntermediaryRepresentation.Values.ShapeCall: gather_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.AttributeRead: gather_an_attribute(value)
+        HighIntermediaryRepresentation.Values.LocalRead: locals.append(value.name)
+        HighIntermediaryRepresentation.Values.Conversion: gather_a_conversion(value)
+        HighIntermediaryRepresentation.Values.ClassOfValue: gather(value.described)
+        HighIntermediaryRepresentation.Values.ClassTest: gather(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: gather(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: gather(value.number)
+        HighIntermediaryRepresentation.Values.ForeignCall: value.arguments.each(gather_present)
+        HighIntermediaryRepresentation.Values.FunctionValue: gather(value.receiver)
+        HighIntermediaryRepresentation.Values.FunctionValueCall: gather_a_value_call(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: gather_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MakeObject: gather_a_making(value)
+        HighIntermediaryRepresentation.Values.Negation: gather(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: gather_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: gather(value.tested)
+        _: return
+    }
+}
+
+func gather_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    calls.append(call)
+    var key = call.function.key()
+    if call.function.has_a_body() {
+        callees.append(key)
+        note_a_wait(key)
+    }
+    gather(call.receiver)
+    call.arguments.each(gather_present)
+}
+
+func note_a_wait(key: String) {
+    if waits_by_key(key) {
+        waits = true
+    }
+}
+
+func waits_by_key(key: String): Boolean {
+    var blocks = facts.blocking.contains(key) or facts.file_reads.contains(key)
+    return key == "Program.sleep" or blocks or facts.waits(key)
+}
+
+func gather_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    var fillers = program.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        var key = "{filler.name}.{call.member.name}"
+        callees.append(key)
+        note_a_wait(key)
+        index = index + 1
+    }
+    gather(call.receiver)
+    call.arguments.each(gather_present)
+}
+
+func gather_an_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    read_attributes.append(read.attribute.name)
+    gather(read.object)
+}
+
+func gather_a_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion) {
+    if conversion.kind == 'join' {
+        waits = true
+    }
+    if conversion.kind == 'into_handle' {
+        gather_a_start(conversion.converted)
+    } else {
+        gather(conversion.converted)
+    }
+}
+
+func gather_a_start(work: HighIntermediaryRepresentation.Values.Value?) {
+    if work == HighIntermediaryRepresentation.Values.Call {
+        gather(work.receiver)
+        work.arguments.each(gather_present)
+    } else if work == HighIntermediaryRepresentation.Values.ShapeCall {
+        gather(work.receiver)
+        work.arguments.each(gather_present)
+    } else {
+        gather(work)
+    }
+}
+
+func gather_a_value_call(call: HighIntermediaryRepresentation.Values.FunctionValueCall) {
+    waits = true
+    gather(call.called)
+    call.arguments.each(gather_present)
+}
+
+func gather_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
+    made.arguments.each(gather_present)
+    assert made.constructor
+    var key = made.constructor.key()
+    callees.append(key)
+    note_a_wait(key)
+}

@@ -1,0 +1,907 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var built = List<HighIntermediaryRepresentation.HighFunction>()
+var no_exclusions = List<String>()
+var facts = Facts(no_program, built, no_exclusions)
+var library = Validators.LibraryFile()
+var bodies = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var owners = List<String>()
+var loop_bodies = List<HighIntermediaryRepresentation.Statements.Block>()
+var loop_holders = List<String>()
+var loop_owners = List<String>()
+var current_key = ""
+var current_owner = ""
+var sleep_seen = List<String>()
+var frame_functions = List<String>()
+var candidates = List<HighIntermediaryRepresentation.Statements.Evaluate>()
+var callee_lists = Dictionary<String, List<String>>()
+var returns_carried = Dictionary<String, String>()
+var derived = Dictionary<String, String>()
+var carried = Dictionary<String, String>()
+var made_locals = List<String>()
+var found = false
+var found_list = false
+var found_attribute = ""
+var site_count = 0
+var held = List<String>()
+var changes = ["insert", "set_at", "remove_at", "swap", "truncate", "remove_swapping"]
+
+func FrameStarts(starting_context: Context, starting_built: List<HighIntermediaryRepresentation.HighFunction>) {
+    context = starting_context
+    built = starting_built
+}
+
+func start_the_calls() {
+    built.each(find_frame_loops)
+    if not owners.is_empty() {
+        study_every_function()
+        summarise_the_returns()
+        summarise_the_returns()
+        owners.each(start_in_a_class)
+    }
+}
+
+func study_every_function() {
+    facts = Facts(context.program, built, no_exclusions)
+    var keys = List<String>()
+    var index = 0
+    while index < built.count() {
+        var high = built[index]
+        var key = high.function.key()
+        bodies[key] = high
+        keys.append(key)
+        index = index + 1
+    }
+    facts.study(keys)
+}
+
+func mentions(): FrameMentions {
+    return FrameMentions(context.program, facts)
+}
+
+func find_frame_loops(high: HighIntermediaryRepresentation.HighFunction) {
+    var owner = context.program.class_named(high.function.owner)
+    assert owner
+    var is_generic = owner.bound_types.count() > 0
+    assert not is_generic and not library.holds(owner.file.path)
+    current_key = high.function.key()
+    bodies[current_key] = high
+    current_owner = owner.key
+    find_loops_in(high.body)
+}
+
+func find_loops_in(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(find_loops_in_a_statement)
+}
+
+func find_loops_in_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.If: find_loops_in_branches(statement)
+        HighIntermediaryRepresentation.Statements.While: find_loops_in_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Block: find_loops_in(statement)
+        _: return
+    }
+}
+
+func find_loops_in_branches(branch: HighIntermediaryRepresentation.Statements.If) {
+    find_loops_in(branch.then_branch)
+    find_loops_in(branch.else_branch)
+}
+
+func find_loops_in_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    sleep_seen = List<String>()
+    if block_sleeps(loop.body) {
+        note_a_loop(loop.body)
+    } else {
+        find_loops_in(loop.body)
+    }
+}
+
+func note_a_loop(body: HighIntermediaryRepresentation.Statements.Block) {
+    loop_bodies.append(body)
+    loop_holders.append(current_key)
+    loop_owners.append(current_owner)
+    if not owners.contains(current_owner) {
+        owners.append(current_owner)
+    }
+}
+
+func block_sleeps(block: HighIntermediaryRepresentation.Statements.Block): Boolean {
+    var found_calls = mentions()
+    found_calls.gather_block(block)
+    var index = 0
+    while index < found_calls.calls.count() {
+        var call = found_calls.calls[index]
+        if call.function.key() == "Program.sleep" or sleeps_through(call) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func sleeps_through(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    var key = call.function.key()
+    if not is_an_own_call(call) or sleep_seen.contains(key) {
+        return false
+    }
+    sleep_seen.append(key)
+    var high = bodies[key]
+    if not high {
+        return false
+    }
+    return block_sleeps(high.body)
+}
+
+func is_an_own_call(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    var on_itself = call.receiver == HighIntermediaryRepresentation.Values.ThisRead
+    return on_itself and call.function.owner == current_owner and not call.function.is_constructor
+}
+
+func start_in_a_class(owner_key: String) {
+    current_owner = owner_key
+    frame_functions = List<String>()
+    candidates = List<HighIntermediaryRepresentation.Statements.Evaluate>()
+    var index = 0
+    while index < loop_bodies.count() {
+        var body = loop_bodies[index]
+        if is_owned_by(index, owner_key) {
+            note_frame_functions(body)
+        }
+        index = index + 1
+    }
+    var function_index = 0
+    while function_index < frame_functions.count() {
+        var key = frame_functions[function_index]
+        var high = bodies[key]
+        crash high
+        note_frame_functions(high.body)
+        function_index = function_index + 1
+    }
+    collect_the_candidates(owner_key)
+    var frame_attribute = frame_side_write(owner_key)
+    var owner = context.program.class_named(owner_key)
+    crash owner
+    var candidate_index = 0
+    while candidate_index < candidates.count() {
+        var candidate = candidates[candidate_index]
+        decide(candidate, owner.file.path, frame_attribute)
+        candidate_index = candidate_index + 1
+    }
+}
+
+func is_owned_by(loop_index: Integer, owner_key: String): Boolean {
+    var owner = loop_owners[loop_index]
+    crash owner
+    return owner == owner_key
+}
+
+func note_frame_functions(block: HighIntermediaryRepresentation.Statements.Block) {
+    var found_calls = mentions()
+    found_calls.gather_block(block)
+    var index = 0
+    while index < found_calls.calls.count() {
+        var call = found_calls.calls[index]
+        var key = call.function.key()
+        var is_new = not frame_functions.contains(key) and bodies.has(key)
+        if is_an_own_call(call) and is_new {
+            frame_functions.append(key)
+        }
+        index = index + 1
+    }
+}
+
+func collect_the_candidates(owner_key: String) {
+    var index = 0
+    while index < loop_bodies.count() {
+        var body = loop_bodies[index]
+        var holder = loop_holders[index]
+        crash holder
+        var is_its_own = is_owned_by(index, owner_key) and not frame_functions.contains(holder)
+        if is_its_own {
+            collect_in(body)
+        }
+        index = index + 1
+    }
+    var function_index = 0
+    while function_index < frame_functions.count() {
+        var key = frame_functions[function_index]
+        var high = bodies[key]
+        crash high
+        collect_in(high.body)
+        function_index = function_index + 1
+    }
+}
+
+func collect_in(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(collect_in_a_statement)
+}
+
+func collect_in_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Evaluate: collect_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.If: collect_in_branches(statement)
+        HighIntermediaryRepresentation.Statements.While: collect_in(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: collect_in(statement)
+        _: return
+    }
+}
+
+func collect_in_branches(branch: HighIntermediaryRepresentation.Statements.If) {
+    collect_in(branch.then_branch)
+    collect_in(branch.else_branch)
+}
+
+func collect_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
+    if is_a_candidate(evaluated) {
+        candidates.append(evaluated)
+    }
+}
+
+func is_a_candidate(evaluated: HighIntermediaryRepresentation.Statements.Evaluate): Boolean {
+    if evaluated.waited {
+        return false
+    }
+    return is_a_started_value(evaluated.value)
+}
+
+func is_a_started_value(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        return is_a_started_call(value)
+    }
+    if value == HighIntermediaryRepresentation.Values.ShapeCall {
+        return is_a_started_shape_call(value)
+    }
+    return false
+}
+
+func is_a_started_call(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    var shaped = call.arguments.is_empty() and call.value_type.is_nothing() and not call.function.is_constructor
+    if not shaped or not is_a_frame_path(call.receiver) {
+        return false
+    }
+    crash call.receiver
+    var waiting = mentions()
+    var key = call.function.key()
+    return is_a_started_class(call.receiver.value_type) and waiting.waits_by_key(key)
+}
+
+func is_a_started_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall): Boolean {
+    var shaped = call.arguments.is_empty() and call.value_type.is_nothing()
+    if not shaped or not is_a_frame_path(call.receiver) {
+        return false
+    }
+    var waiting = mentions()
+    var any_waits = false
+    var fillers = context.program.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        if not is_a_started_class(filler) {
+            return false
+        }
+        if waiting.waits_by_key("{filler.name}.{call.member.name}") {
+            any_waits = true
+        }
+        index = index + 1
+    }
+    return any_waits
+}
+
+func is_a_started_class(of_type: Model.Type): Boolean {
+    if of_type.kind != 'object' {
+        return false
+    }
+    var model = context.program.class_named(of_type.name)
+    if not model {
+        return false
+    }
+    return not model.is_singleton and not library.holds(model.file.path)
+}
+
+func is_a_frame_path(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if value == HighIntermediaryRepresentation.Values.AttributeRead {
+        return is_rooted(value.object)
+    }
+    if value == HighIntermediaryRepresentation.Values.Conversion {
+        return value.kind == 'proven' and is_a_frame_path(value.converted)
+    }
+    if value == HighIntermediaryRepresentation.Values.Call {
+        return is_an_item_read(value)
+    }
+    return false
+}
+
+func is_rooted(object: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if object == HighIntermediaryRepresentation.Values.ThisRead {
+        return true
+    }
+    return is_a_frame_path(object)
+}
+
+func is_an_item_read(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if call.function.name != "get_at" or call.arguments.count() != 1 {
+        return false
+    }
+    var position = call.arguments[0]
+    var is_a_name = position == HighIntermediaryRepresentation.Values.LocalRead
+    var is_a_literal = position == HighIntermediaryRepresentation.Values.WholeNumber
+    var is_an_attribute = call.receiver == HighIntermediaryRepresentation.Values.AttributeRead
+    return (is_a_name or is_a_literal) and is_an_attribute and is_a_frame_path(call.receiver)
+}
+
+func decide(candidate: HighIntermediaryRepresentation.Statements.Evaluate, path: String, frame_attribute: String) {
+    var reason = started_side_reason(candidate.value)
+    if reason.is_empty() and not frame_attribute.is_empty() {
+        reason = "the frame loop writes `{frame_attribute}` from a value it read before a wait, and the call could write it while the frame waits"
+    }
+    if reason.is_empty() {
+        start(candidate)
+    } else {
+        hold(candidate, path, reason)
+    }
+}
+
+func hold(candidate: HighIntermediaryRepresentation.Statements.Evaluate, path: String, reason: String) {
+    var shown = shown_call(candidate.value)
+    var line = candidate.line
+    held.append("- [{path}:{line}](../../{path}#L{line}): `{shown}` waits in place: {reason}")
+}
+
+func shown_call(value: HighIntermediaryRepresentation.Values.Value?): String {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        var receiver_text = shown_path(value.receiver)
+        return "{receiver_text}.{value.function.name}()"
+    }
+    if value == HighIntermediaryRepresentation.Values.ShapeCall {
+        var shape_receiver_text = shown_path(value.receiver)
+        return "{shape_receiver_text}.{value.member.name}()"
+    }
+    return ""
+}
+
+func shown_path(value: HighIntermediaryRepresentation.Values.Value?): String {
+    if value == HighIntermediaryRepresentation.Values.AttributeRead {
+        return shown_attribute(value)
+    }
+    if value == HighIntermediaryRepresentation.Values.Conversion {
+        return shown_path(value.converted)
+    }
+    if value == HighIntermediaryRepresentation.Values.Call {
+        return value.index_path
+    }
+    return ""
+}
+
+func shown_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead): String {
+    if read.object == HighIntermediaryRepresentation.Values.ThisRead {
+        return read.attribute.name
+    }
+    var object_text = shown_path(read.object)
+    return "{object_text}.{read.attribute.name}"
+}
+
+func start(candidate: HighIntermediaryRepresentation.Statements.Evaluate) {
+    crash candidate.value
+    candidate.waited = candidate.value
+    var no_answer = Model.Type('nothing', "")
+    var handle_type = context.resolver.handle_of("Concurrent", no_answer)
+    var values = Values(context)
+    values.need_the_scheduler(handle_type)
+    var flight = context.resolver.class_model_named("Spite.Internal.WaitsInFlight")
+    crash flight
+    context.need_defaults(flight.key)
+    var hand = flight.function_named("hand")
+    crash hand
+    context.need(hand)
+    var flight_constructor = values.constructor_of(flight)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var flight_type = Model.Type('object', flight.key)
+    var flight_object = HighIntermediaryRepresentation.Values.MakeObject(flight_type, flight_constructor, no_arguments)
+    site_count = site_count + 1
+    var site_type = Model.Type('scalar', "Integer")
+    var site = HighIntermediaryRepresentation.Values.WholeNumber(site_type, site_count)
+    var started = HighIntermediaryRepresentation.Values.Conversion(handle_type, 'into_handle', candidate.value)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(site)
+    arguments.append(started)
+    var handed = HighIntermediaryRepresentation.Values.Call(hand, flight_object, arguments)
+    candidate.value = handed
+}
+
+func started_side_reason(value: HighIntermediaryRepresentation.Values.Value?): String {
+    var keys = List<String>()
+    if value == HighIntermediaryRepresentation.Values.Call {
+        var key = value.function.key()
+        keys.append(key)
+    }
+    if value == HighIntermediaryRepresentation.Values.ShapeCall {
+        add_filler_keys(value, keys)
+    }
+    var reached = reach_from(keys)
+    var found_in = first_carried_write(reached)
+    if found_in.is_empty() {
+        return ""
+    }
+    if found_list {
+        return "{found_in} passes a value read before a wait to a change of a list or dictionary, and the frame could write it while the call waits"
+    }
+    return "{found_in} writes `{found_attribute}` from a value it read before a wait, and the frame could write it while the call waits"
+}
+
+func add_filler_keys(call: HighIntermediaryRepresentation.Values.ShapeCall, keys: List<String>) {
+    var fillers = context.program.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        keys.append("{filler.name}.{call.member.name}")
+        index = index + 1
+    }
+}
+
+func frame_side_write(owner_key: String): String {
+    var keys = List<String>()
+    var reachable = List<String>()
+    var body_index = 0
+    while body_index < loop_bodies.count() {
+        var body = loop_bodies[body_index]
+        var holder = loop_holders[body_index]
+        crash holder
+        var is_its_own = is_owned_by(body_index, owner_key)
+        if is_its_own and not keys.contains(holder) {
+            keys.append(holder)
+        }
+        if is_its_own {
+            add_frame_callees(body, reachable)
+        }
+        body_index = body_index + 1
+    }
+    append_all(frame_functions, keys)
+    var function_index = 0
+    while function_index < frame_functions.count() {
+        var key = frame_functions[function_index]
+        var high = bodies[key]
+        crash high
+        add_frame_callees(high.body, reachable)
+        function_index = function_index + 1
+    }
+    var reached = reach_from(reachable)
+    append_all(reached, keys)
+    var found_in = first_carried_write(keys)
+    if found_in.is_empty() {
+        return ""
+    }
+    return found_attribute
+}
+
+func add_frame_callees(block: HighIntermediaryRepresentation.Statements.Block?, into: List<String>) {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        add_statement_callees(statement, into)
+        index = index + 1
+    }
+}
+
+func add_statement_callees(statement: HighIntermediaryRepresentation.Statements.Statement, into: List<String>) {
+    if statement == HighIntermediaryRepresentation.Statements.Evaluate {
+        add_evaluation_callees(statement, into)
+    } else if statement == HighIntermediaryRepresentation.Statements.If {
+        add_branch_callees(statement, into)
+    } else if statement == HighIntermediaryRepresentation.Statements.While {
+        add_loop_callees(statement, into)
+    } else if statement == HighIntermediaryRepresentation.Statements.Block {
+        add_frame_callees(statement, into)
+    } else {
+        var found_calls = mentions()
+        found_calls.gather_statement(statement)
+        append_all(found_calls.callees, into)
+    }
+}
+
+func add_evaluation_callees(evaluated: HighIntermediaryRepresentation.Statements.Evaluate, into: List<String>) {
+    assert not is_a_candidate(evaluated)
+    var found_calls = mentions()
+    found_calls.gather(evaluated.value)
+    append_all(found_calls.callees, into)
+}
+
+func append_all(added: List<String>, into: List<String>) {
+    var index = 0
+    while index < added.count() {
+        var key = added[index]
+        into.append(key)
+        index = index + 1
+    }
+}
+
+func add_branch_callees(branch: HighIntermediaryRepresentation.Statements.If, into: List<String>) {
+    var found_calls = mentions()
+    found_calls.gather(branch.condition)
+    append_all(found_calls.callees, into)
+    add_frame_callees(branch.then_branch, into)
+    add_frame_callees(branch.else_branch, into)
+}
+
+func add_loop_callees(loop: HighIntermediaryRepresentation.Statements.While, into: List<String>) {
+    var found_calls = mentions()
+    found_calls.gather(loop.condition)
+    append_all(found_calls.callees, into)
+    add_frame_callees(loop.body, into)
+}
+
+func reach_from(keys: List<String>): List<String> {
+    var reached = List<String>()
+    var pending = List<String>()
+    append_all(keys, pending)
+    while not pending.is_empty() {
+        var key = pending.remove_last()
+        crash key
+        if not reached.contains(key) and is_a_program_function(key) {
+            reached.append(key)
+            var called = callees_of(key)
+            append_all(called, pending)
+        }
+    }
+    return reached
+}
+
+func is_a_program_function(key: String): Boolean {
+    var high = bodies[key]
+    if not high {
+        return false
+    }
+    var owner = context.program.class_named(high.function.owner)
+    if not owner {
+        return false
+    }
+    return not library.holds(owner.file.path)
+}
+
+func callees_of(key: String): List<String> {
+    var known = callee_lists[key]
+    if known {
+        return known
+    }
+    var high = bodies[key]
+    crash high
+    var found_calls = mentions()
+    found_calls.gather_block(high.body)
+    callee_lists[key] = found_calls.callees
+    return found_calls.callees
+}
+
+func first_carried_write(keys: List<String>): String {
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        var waiting = mentions()
+        var is_studied = is_a_program_function(key) and waiting.waits_by_key(key)
+        if is_studied and carries_a_write(key) {
+            return key
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func summarise_the_returns() {
+    var index = 0
+    while index < built.count() {
+        var high = built[index]
+        var key = high.function.key()
+        var waiting = mentions()
+        if is_a_program_function(key) and waiting.waits_by_key(key) {
+            carries_a_write(key)
+        }
+        index = index + 1
+    }
+}
+
+func carries_a_write(key: String): Boolean {
+    found = false
+    found_list = false
+    found_attribute = ""
+    derived = Dictionary<String, String>()
+    carried = Dictionary<String, String>()
+    made_locals = List<String>()
+    current_key = key
+    var high = bodies[key]
+    crash high
+    high.function.parameters.each(derive_a_parameter)
+    walk_block(high.body)
+    return found
+}
+
+func derive_a_parameter(parameter: Model.ParameterModel) {
+    if is_a_carried_kind(parameter.parameter_type) {
+        derived[parameter.name] = "*"
+    }
+}
+
+func is_a_carried_kind(of_type: Model.Type): Boolean {
+    var is_text = of_type.kind == 'object' and of_type.name == "String"
+    return of_type.kind == 'scalar' or of_type.kind == 'enumeration' or is_text
+}
+
+func walk_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(walk_statement)
+}
+
+func walk_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: walk_naming(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign: walk_naming(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.AssignAttribute: walk_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.AssignThroughShape: walk_both(statement.object, statement.value)
+        HighIntermediaryRepresentation.Statements.Evaluate: walk_value(statement.value)
+        HighIntermediaryRepresentation.Statements.Return: walk_a_return(statement.value)
+        HighIntermediaryRepresentation.Statements.If: walk_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: walk_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Block: walk_block(statement)
+        _: return
+    }
+}
+
+func walk_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    walk_value(branch.condition)
+    walk_block(branch.then_branch)
+    walk_block(branch.else_branch)
+}
+
+func walk_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    walk_value(loop.condition)
+    walk_block(loop.body)
+    walk_value(loop.condition)
+    walk_block(loop.body)
+}
+
+func walk_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    walk_value(first)
+    walk_value(second)
+}
+
+func walk_value(value: HighIntermediaryRepresentation.Values.Value?): FrameMentions {
+    var seen = mentions()
+    seen.gather(value)
+    seen.calls.each(check_a_passing)
+    if seen.waits {
+        carry_everything()
+    }
+    return seen
+}
+
+func walk_naming(name: String, value: HighIntermediaryRepresentation.Values.Value?) {
+    var seen = walk_value(value)
+    derived.remove(name)
+    carried.remove(name)
+    var made_at = made_locals.index_of(name)
+    if made_at {
+        made_locals.remove_at(made_at)
+    }
+    crash value
+    if value == HighIntermediaryRepresentation.Values.MakeObject {
+        made_locals.append(name)
+    }
+    if is_a_carried_kind(value.value_type) {
+        derive(name, seen)
+    }
+}
+
+func derive(name: String, seen: FrameMentions) {
+    var sources = List<String>()
+    append_all(seen.read_attributes, sources)
+    var index = 0
+    while index < seen.locals.count() {
+        var local = seen.locals[index]
+        var source = source_of(local)
+        if not source.is_empty() {
+            sources.append(source)
+        }
+        index = index + 1
+    }
+    var answered = answered_source(seen)
+    if not answered.is_empty() {
+        carried[name] = answered
+    } else if seen.waits and not sources.is_empty() {
+        carried[name] = sources.join(",")
+    } else if not sources.is_empty() {
+        derived[name] = sources.join(",")
+    }
+}
+
+func source_of(local: String): String {
+    var from_carried = carried[local]
+    if from_carried {
+        return from_carried
+    }
+    var from_derived = derived[local]
+    if from_derived {
+        return from_derived
+    }
+    return ""
+}
+
+func answered_source(seen: FrameMentions): String {
+    var index = 0
+    while index < seen.calls.count() {
+        var call = seen.calls[index]
+        var called_key = call.function.key()
+        var source = returns_carried[called_key]
+        if source {
+            return source
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func walk_an_attribute_write(write: HighIntermediaryRepresentation.Statements.AssignAttribute) {
+    walk_value(write.object)
+    var seen = walk_value(write.value)
+    var name = write.attribute.name
+    var reads_and_waits = seen.waits and seen.read_attributes.contains(name)
+    var writes_back = reads_and_waits or carries_into(seen.locals, name)
+    if writes_back and not is_a_made_local(write.object) {
+        note_found(name)
+    }
+}
+
+func walk_a_return(value: HighIntermediaryRepresentation.Values.Value?) {
+    var seen = walk_value(value)
+    var index = 0
+    while index < seen.locals.count() {
+        var local = seen.locals[index]
+        var source = carried[local]
+        if source {
+            returns_carried[current_key] = source
+        }
+        index = index + 1
+    }
+}
+
+func carries_into(locals: List<String>, attribute: String): Boolean {
+    var index = 0
+    while index < locals.count() {
+        var local = locals[index]
+        var source = carried[local]
+        if source and matches(source, attribute) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func matches(sources: String, attribute: String): Boolean {
+    var names = sources.split(",")
+    return sources == "*" or names.contains(attribute)
+}
+
+func is_a_made_local(object: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if object == HighIntermediaryRepresentation.Values.LocalRead {
+        return made_locals.contains(object.name)
+    }
+    return false
+}
+
+func carry_everything() {
+    var names = derived.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var source = derived[name]
+        crash source
+        carried[name] = source
+        index = index + 1
+    }
+    derived = Dictionary<String, String>()
+}
+
+func check_a_passing(call: HighIntermediaryRepresentation.Values.Call) {
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var seen = mentions()
+        seen.gather(argument)
+        var source = carried_source_in(seen.locals)
+        if not source.is_empty() {
+            check_a_carried_argument(call, source)
+        }
+        index = index + 1
+    }
+}
+
+func carried_source_in(locals: List<String>): String {
+    var index = 0
+    while index < locals.count() {
+        var local = locals[index]
+        var source = carried[local]
+        if source {
+            return source
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func check_a_carried_argument(call: HighIntermediaryRepresentation.Values.Call, source: String) {
+    if is_a_collection_change(call) {
+        note_a_list_change(call)
+    } else {
+        var key = call.function.key()
+        var seen = List<String>()
+        var attribute = attribute_written_by(key, source, seen)
+        if not attribute.is_empty() {
+            note_found(attribute)
+        }
+    }
+}
+
+func is_a_collection_change(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if not call.receiver or not changes.contains(call.function.name) {
+        return false
+    }
+    var receiver_type = call.receiver.value_type
+    var is_a_collection = receiver_type.name.starts_with("List<") or receiver_type.name.starts_with("Dictionary<")
+    return receiver_type.kind == 'object' and is_a_collection and not is_a_made_local(call.receiver)
+}
+
+func note_a_list_change(call: HighIntermediaryRepresentation.Values.Call) {
+    assert not found
+    found = true
+    found_list = true
+    found_attribute = attribute_name_of(call.receiver)
+}
+
+func attribute_name_of(value: HighIntermediaryRepresentation.Values.Value?): String {
+    if value == HighIntermediaryRepresentation.Values.AttributeRead {
+        return value.attribute.name
+    }
+    return ""
+}
+
+func note_found(attribute: String) {
+    assert not found
+    found = true
+    found_attribute = attribute
+}
+
+func attribute_written_by(key: String, source: String, seen: List<String>): String {
+    if seen.contains(key) or not is_a_program_function(key) {
+        return ""
+    }
+    seen.append(key)
+    var high = bodies[key]
+    crash high
+    var found_writes = mentions()
+    found_writes.gather_block(high.body)
+    var index = 0
+    while index < found_writes.written.count() {
+        var attribute = found_writes.written[index]
+        if matches(source, attribute) {
+            return attribute
+        }
+        index = index + 1
+    }
+    var callee_index = 0
+    while callee_index < found_writes.callees.count() {
+        var callee = found_writes.callees[callee_index]
+        var written = attribute_written_by(callee, source, seen)
+        if not written.is_empty() {
+            return written
+        }
+        callee_index = callee_index + 1
+    }
+    return ""
+}

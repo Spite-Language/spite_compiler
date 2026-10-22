@@ -53,14 +53,12 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`, `Spite.Access`), filled in by the compiler and folded where constant (D37, D50 to D55): still missing are `function.arguments.each(f)` with an answer typed by the argument (`argument.class`, `reflection_walks`), folding of constant reads (a constant list's `[]`, `filter`, `each` and member templates, so `hurt.arguments[1]` needs no run-time check, D53), the `if` on a late answer (`function_waits`, `function_writes_parameter`) dropping its other branch, `Spite.Call`, enums as classes, `Symbol<Spite.Class>` and the `Spite` namespace by name (`class_walk`), stand-ins for singletons, a function value known only at run time answering its `Spite.Function` (`.name` of a parameter, `function_value_in_frame`; one the compiler knows is looked up by name), `is_stateful` following the singletons a class binds, and `attribute.class()` and `Spite.Debug<attribute.class>` at run time (`specialised_elsewhere`)
 - A `Parallel`'s reach (`ThreadReach`) follows calls only to the work's own class, attributes and locals made by a constructor; work that never finishes counts as never waiting only when it calls nothing but the console; a singleton's lock is assumed for every function that names one of its attributes (not the four forms); `Weak` is an unknown type, so `weak_across_threads` stops before its check
 - `Parallel` starts a thread of its own for each handle (and `parallel_each_<function>()` one per piece): the thread pool behind it, the race rule of `parallel_each_` as a compile check, and the console's buffer shared by threads that print at once (D36)
-- `Concurrent` does not return to the scheduler where a handle it holds is let go while its work runs: a handle, an object or a list holding handles dropped at its scope's end, a handle or an attribute holding one assigned again, and a list of handles cleared all wait in place for the work instead (`waits_never_hang`, `dropped_handle_waits`); file reads and writes block instead of running on a helper thread; one scheduler serves every thread, so a `Concurrent` made inside a `Parallel` races (`concurrent_in_parallel`); `run_ready()` and `resume_only_when_asked()`; a join halting when two `Concurrent`s wait for each other names neither (it stops in `Scheduler.every_concurrent_waits_for_another`); a poll that never steps anything does not halt
-- A wait in a frame does not hold the frame: a frame loop's started calls, `WaitsInFlight` and the check that no carried value is written back (`frame_waits`, `frame_waits_kept`)
+- `Concurrent` does not return to the scheduler where a handle it holds is let go while its work runs: a handle, an object or a list holding handles dropped at its scope's end, a handle or an attribute holding one assigned again, and a list of handles cleared all wait in place for the work instead (`waits_never_hang`, `dropped_handle_waits`); file writes block instead of running on a helper thread; a blocking call outside a `Concurrent` (a file read, a socket or console read) always runs on a helper thread and polls the scheduler, even where no `Concurrent` is alive and the spec blocks in place (D134); a thread finds its scheduler loop by its id under a lock instead of through a `ThreadLocal` (D132); `run_ready()` and `resume_only_when_asked()`; a join halting when two `Concurrent`s wait for each other names neither (it stops in `Scheduler.every_concurrent_waits_for_another`); a poll that never steps anything does not halt
+- A wait in a frame does not hold the frame: the check that no carried value is written back skips the library's own functions (D130)
 - `foreign_callbacks` and `ipv6_addresses` still use `Memory.Address` and `Memory.Heap`: rewrite them with `Buffer` when foreign callbacks and sockets come (D36)
 - Allocation tests (frame objects, lent buffers, kept buffer addresses, the memory floor) come back as `--debug-memory` counts with the passes that place memory (D35)
 
 ## Faults found while porting
-
-- Hangs (D244): two `Concurrent`s that each let go of a handle to the other's work, while the entry function keeps sleeping, now wait for each other forever instead of stopping in `Scheduler.every_concurrent_waits_for_another` (`concurrent_wait_cycle`): a frame waiting to let a handle go should record the work it waits for, so the scheduler can see the circle
 
 - At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)
 - The spec puts the inflection table at `library/string/inflection.spite` (`String.Inflection`), but a class file and a folder of one name are refused (`conformance/class_and_namespace`), so the table stays `common/inflection.spite` and the plural templates fall back to the compiler's own rules: a program reopening the table (`inflection_table`) is not read yet. Needs a decision on whether a class may also be a namespace
@@ -95,7 +93,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - `lent_to_calls` stops with heap corruption (0xC0000374): bisect it
 - A temporary the builder declares for a comparison (`call() == true`) can be read before its declaration in some branch; plain reads avoid it today
-- Two `Concurrent`s that wait for each other loop forever instead of halting (`concurrent_wait_cycle`), since the work runs in order
 
 ## The errors
 
@@ -105,7 +102,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - `spite program` builds and runs; `--check`, `--build`, `--executable-path`, with the original's error texts for every other flag
 - Crash reports and the `<program>.crashes` map
-- `--optimization-report`, `--final-classes`
+- `--optimization-report` (it writes only `Waits that hold the frame`), `--final-classes`
 - `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
 - `--repl` (D80 to D83): a singleton made with arguments (`Channel(1)`), `bytes <path>` and `memory`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes, `eval`, `run`, breakpoints and `reload`
 - The runner has no time limit, so a test that hangs stops the whole run; the suite runs tests one at a time: run them in parallel, and make one compile fast enough that a model can iterate on the language test by test
@@ -200,7 +197,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Concurrency machinery only where it is used
 - Hidden async/await as compile-time state machines
 - Reads in a row overlap
-- A wait in a frame does not hold the frame
 - The thread pool only where a `Parallel` is made
 - Singletons a `Parallel` reaches take a lock
 - Thread safety for singletons, the cheapest safe form
@@ -323,7 +319,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A name read from a list, assigned and never read, is an error
 - What a `Parallel` may reach
 - Which calls suspend a `Concurrent`
-- A wait in a frame is started
 
 ### Other refusals built on an analysis
 
