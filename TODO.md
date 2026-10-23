@@ -24,6 +24,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Mortaro confirms or drops D634 to D637 and D643 to D653; D636 (type argument given at run time) contradicts monomorphisation
 
 ## Faults found
+- `while current { ... current = current.next }` with `current: Node?` no longer narrows `current` inside the body: SpiteBenchmarks `allocation_is_the_c_librarys_counted_only_where_read` is refused with "this value may be null"
 
 - A `crash` whose condition folds to false only once the function facts are answered (`function_writes_parameter`, `function_waits`) is not refused, and the facts keep no place for the write they found (`conformance/io_system_writes_row`, `conformance/snapshot_argument_writes`)
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D748)
