@@ -315,6 +315,7 @@ func note_a_copy(
     while index < targets.count() {
         var target = targets[index]
         assert not (target == source or target.starts_with("{source}.") or target.starts_with("{source}["))
+        assert not (source.starts_with("{target}.") or source.starts_with("{target}["))
         index = index + 1
     }
     context.scope.note_a_copy(internal_name, statement.name, source, statement.line)
@@ -492,6 +493,19 @@ func note_a_counted_list(name: String, written: AbstractSyntaxTree.Shapes.Expres
     }
     if written == AbstractSyntaxTree.Shapes.Expressions.ListLiteral {
         note_a_literal_list(name, written)
+    }
+    if written == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        note_a_lowered_count(name, written)
+    }
+}
+
+func note_a_lowered_count(name: String, lowered: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
+    var right = lowered.right
+    var takes_a_literal = right == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression
+    assert lowered.operator == 'minus' and takes_a_literal
+    var counted = lowered.left
+    if counted == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        note_a_count_call(name, counted)
     }
 }
 
@@ -1067,6 +1081,9 @@ func read_a_negated_fact(condition: AbstractSyntaxTree.Shapes.Expressions.Expres
     if condition == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
         read_a_negated_binary(condition)
     }
+    if condition == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        read_an_empty_question(condition)
+    }
 }
 
 func read_a_negated_unary(unary: AbstractSyntaxTree.Shapes.Expressions.UnaryExpression) {
@@ -1080,11 +1097,33 @@ func read_a_negated_binary(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryE
         read_a_negated_fact(binary.right)
         return
     }
+    var left = binary.left
+    if left == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        read_a_negated_count(binary, left)
+        return
+    }
     assert binary.operator == 'greater_or_equal'
     var counted = binary.right
     if counted == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
         read_a_count(binary, counted)
     }
+}
+
+func read_a_negated_count(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    counted: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var opposite: AbstractSyntaxTree.Tokens.TokenKind = 'equal_equal'
+    switch binary.operator {
+        'not_equal': opposite = 'equal_equal'
+        'less': opposite = 'greater_or_equal'
+        'less_or_equal': opposite = 'greater'
+        'equal_equal': opposite = 'not_equal'
+        _: return
+    }
+    crash binary.right
+    var negated = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(counted, opposite, binary.right)
+    read_a_count_fact(negated, counted)
 }
 
 func build_a_decided_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement, holds: Boolean) {
@@ -1108,6 +1147,8 @@ func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement)
     var base = context.scope.narrowed.count()
     context.loop_bases.append(base)
     var condition = values.condition_of(statement.condition)
+    var condition_work = context.pending
+    flush_the_pending()
     facts_paths = List<String>()
     facts_types = List<Model.Type>()
     facts_checks = List<String>()
@@ -1117,6 +1158,7 @@ func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement)
     var types = facts_types
     var notes = facts_checks
     var body = loop_body_of(statement.body, paths, types, notes)
+    redo_the_condition_work(condition_work, body)
     context.loop_bases.remove_last()
     if context.loop_bases.is_empty() {
         context.loop_reads = List<String>()
@@ -1124,6 +1166,32 @@ func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement)
     var made = HighIntermediaryRepresentation.Statements.While(condition, body)
     made.line = statement.line
     add(made)
+}
+
+func redo_the_condition_work(
+    work: List<HighIntermediaryRepresentation.Statements.Statement>,
+    body: HighIntermediaryRepresentation.Statements.Block,
+) {
+    var index = 0
+    while index < work.count() {
+        var done = work[index]
+        if done == HighIntermediaryRepresentation.Statements.Declare {
+            redo_a_declaration(done, body)
+        } else {
+            crash
+        }
+        index = index + 1
+    }
+}
+
+func redo_a_declaration(
+    done: HighIntermediaryRepresentation.Statements.Declare,
+    body: HighIntermediaryRepresentation.Statements.Block,
+) {
+    crash done.value
+    var again = HighIntermediaryRepresentation.Statements.Assign(done.name, done.value)
+    again.line = done.line
+    body.statements.append(again)
 }
 
 func refuse_an_unstepped_poll(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
@@ -1202,6 +1270,20 @@ func read_a_binary_bound(condition: AbstractSyntaxTree.Shapes.Expressions.Binary
     if counted == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
         read_a_counted_local(condition, counted)
     }
+    if counted == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        read_a_lowered_count(condition, counted)
+    }
+}
+
+func read_a_lowered_count(
+    condition: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    lowered: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+) {
+    assert lowered.operator == 'minus'
+    var counted = lowered.left
+    if counted == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        read_a_count(condition, counted)
+    }
 }
 
 func read_a_counted_local(
@@ -1213,9 +1295,18 @@ func read_a_counted_local(
     var listed = context.counted_lists[internal_name]
     assert listed
     var index_name = ""
+    var reach = 0
     var left = condition.left
     if left == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
         index_name = left.name
+    }
+    if left == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        index_name = added_name_of(left)
+        reach = added_reach_of(left)
+    }
+    if left == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var index_printer = Printers.Spite.ExpressionPrinter(left)
+        index_name = index_printer.text()
     }
     assert not index_name.is_empty()
     var list_value = values.value_of(listed, null)
@@ -1233,6 +1324,12 @@ func read_a_counted_local(
     facts_paths.append("{list_text}[{index_name}]")
     facts_types.append(present)
     note_a_loop_check(condition)
+    var offset = 1
+    while offset <= reach {
+        facts_paths.append("{list_text}[{index_name} + {offset}]")
+        facts_types.append(present)
+        offset = offset + 1
+    }
 }
 
 func note_a_loop_check(condition: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
@@ -1277,6 +1374,10 @@ func read_a_counted_list(
     if left == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
         index_name = added_name_of(left)
         reach = added_reach_of(left)
+    }
+    if left == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var index_printer = Printers.Spite.ExpressionPrinter(left)
+        index_name = index_printer.text()
     }
     assert not index_name.is_empty()
     var listed = values.value_of(callee.target, null)
