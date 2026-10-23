@@ -1476,18 +1476,59 @@ is live in any of the same stretches, so two values share a register in each oth
 release or a report laid out after the loop does not hold its register through the loop's body.
 
 - The registers given are the seven the Windows x64 calling convention keeps across calls (`rbx`, `rsi`, `rdi`,
-  `r12` to `r15`), saved in the frame by a function that uses them and restored at each return, and `r10` for a
-  value none of whose stretches holds a call or any instruction that may call (an allocation, a checked or dividing
-  arithmetic, whose crash report calls the console). `rax`, `rcx`, `rdx`, `r8`, `r9` and `r11` stay the scratch
-  registers instructions work in.
+  `r12` to `r15`), saved in the frame by a function that uses them and restored at each return, and the three
+  scratch registers `r10`, `r9` and `r8` (`r9` and `r8` not for a parameter, which may arrive in them) for a value
+  none of whose stretches holds a call or an instruction that may call (an allocation, a free, a copy of bytes).
+  A checked or dividing arithmetic does not count: its crash report calls the console only on the way to stopping
+  the program, and it first copies any number it shows from a scratch register to the number's frame slot. `rax`,
+  `rcx`, `rdx` and `r11` stay the scratch registers instructions work in.
+- When no register is free for the whole value, a scratch register may hold it everywhere but the blocks where one
+  of its stretches holds a call ([below](#a-value-leaves-a-scratch-register-only-around-a-call)).
 - When no register is free, the value whose uses weigh least for how long it lives is spilled (of the new value
   and each value that is alone in the way on a register): each use or write weighs 32 to the power of how many loops
   hold it (at most 4), and the weight is divided by the number of instructions its stretches cover (plus eight). A
   value made and read at once keeps its register; one that lives across a whole loop and is read once in it goes to
-  its slot, where each read is one load.
-- A spilled value lives in its frame slot for its whole life.
+  its slot, where each read is one load. A value spilled this way may still take a scratch register around its
+  calls.
+- A value spilled and given no scratch register lives in its frame slot for its whole life.
 
 What a user can observe: nothing but time; a crash report reads its numbers from wherever the values live.
+
+## A value leaves a scratch register only around a call
+
+A value the scratch registers `r10`, `r9` and `r8` cannot hold for its whole life, because a call in one of its
+stretches would overwrite them, is split at the edges of the blocks where that happens: it lives in a scratch register
+in every block where none of its stretches holds a call, and in its frame slot in the blocks where one does. Where a
+path goes from a block that holds it in the register to one that holds it in the slot, the register is stored to the
+slot; the other way, the slot is loaded into the register. The moves sit at the start of the block the path enters
+when nothing else enters it, at the end of the block it leaves when that block goes nowhere else, and otherwise on a
+small piece of code out of the way that the branch jumps to and that jumps on. All the stores of an edge come before
+its loads, and a value split this way has only the one register, so the moves never overwrite each other.
+
+It applies when the seven kept registers are taken over the value's life, the value is not a decimal, and the uses
+and writes the register saves weigh more than the moves (each weighed as 32 to the power of the loops that hold it,
+at most 4, a move by the shallower of its two blocks). A loop whose rare path grows a buffer or a list then keeps its
+counter and its bounds in registers on the path it takes every time, and stores them only on the way into the call:
+
+```spite
+func count_digits(text: String): Integer {
+    var digits = Buffer(0)
+    var index = 0
+    var counted = 0
+    while index < text.length() {
+        var code = text.code_at(index)
+        if code >= 48 and code <= 57 {
+            digits.append(code)
+            counted = counted + 1
+        }
+        index = index + 1
+    }
+    return counted
+}
+```
+
+What a user can observe: nothing but time. A crash report reads each number from where its value lives in the block
+the check was in, and the stack a crash report walks is the same.
 
 ## A decimal lives in a decimal register
 

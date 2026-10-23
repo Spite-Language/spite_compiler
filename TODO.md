@@ -16,7 +16,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Unions and enums instead of strings in both representations (instruction kind, operator, types, call owner)
 - The formatter's rules that need the tree (D901): a line wider than 120 columns broken one argument per line, the minimum parentheses, `else if` on one line, `{ }` for an empty body, `: Nothing` dropped, `crash false` as `crash`, a single named codegen value written positionally, an enum, union or type body one member per line, a multi-line list without commas; `--final-classes`
 - `printers/machine_code`
-- Low representation in SSA form; until then a value's register stretches are found per block (D986) but a spilled value is spilled for its whole life (D771), and copy propagation only crosses a block for a parameter
+- Low representation in SSA form; until then a value's register stretches are found per block (D986) but a value no register holds for its whole life is spilled for all of it (D771), unless a scratch register can hold it outside the blocks where it crosses a call (D1011), and copy propagation only crosses a block for a parameter
 - Unit passes and program passes split by input type; every function has a stable identity for cache keys
 - `--optimization-report` lists every local list and copy as made on the heap (D733), though the low pass now keeps the objects that never leave their function in registers or the frame (D801), and it leaves out an object only because nothing it reads lets that object go (D884): the report does not read what that pass placed
 - No range is proved yet, so every whole-number `+`, `-` and `*` keeps its overflow check, and `--optimization-report` lists each one (D733); a `-` in front is not listed
@@ -259,7 +259,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - An unsigned 64-bit division by a constant that is not a power of two keeps the `div` (D804)
 - A function inlined into a loop keeps its bounds checks (ranges are proved before inlining), and a callee of more than 40 instructions, or that waits, is called (D802) unless the call is in a loop and passed an object the caller made (up to 128, D983); inlining is chosen by size alone, with no estimate of the registers a loop then needs
 - A division and a remainder of the same two numbers are two divisions, not one `idiv`
-- A value read across a call in a loop and spilled is reloaded on each use: no interval splitting and no rematerialisation of loads
+- A value is split only around the blocks where it crosses a call, and only into a scratch register (D1011): a value live across a hot loop it barely uses still holds a kept register there, a value the loop needs is not moved into it from the slot at the loop's edge, and loads are never rematerialised
 - An object let go unread is never made (D984) only when nothing but its class and count is written into it and its class frees nothing but its memory: a default object with attributes, or one holding objects, is still made and freed
 - An object read from a steady load is not counted (D985) only when every register holding it is written by that load or copies of it: a local that may hold either a steady object or another one is counted
 - Loops are not rotated (each pass jumps back to the test at the top)

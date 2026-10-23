@@ -31,6 +31,11 @@ var cold_kinds = List<Integer>()
 var cold_targets = List<Integer>()
 var cold_sources = List<Integer>()
 var cold_immediates = List<Boolean>()
+var cold_blocks = List<Integer>()
+var current_block_index = 0
+var stub_jumps = List<Integer>()
+var stub_froms = List<Integer>()
+var stub_tos = List<Integer>()
 var flags_condition = 0
 var flags_register = -1
 var frame_slots = 0
@@ -361,7 +366,12 @@ func write_a_label(label: Integer) {
 }
 
 func write_a_number(register: Integer, is_signed: Boolean) {
-    read_into(encoder.rcx, register)
+    var home = allocation.home_of(register)
+    if allocation.is_a_volatile_home(home) {
+        encoder.load_virtual(encoder.rcx, register)
+    } else {
+        read_into(encoder.rcx, register)
+    }
     var signed_flag = 0
     if is_signed {
         signed_flag = 1
@@ -371,6 +381,7 @@ func write_a_number(register: Integer, is_signed: Boolean) {
 }
 
 func stop_with_pieces(texts: List<String>, numbers: List<Integer>, signed_numbers: List<Integer>) {
+    keep_the_numbers(numbers)
     var index = 0
     while index < texts.count() {
         var piece = texts[index]
@@ -386,6 +397,20 @@ func stop_with_pieces(texts: List<String>, numbers: List<Integer>, signed_number
     }
     encoder.move_small_immediate(encoder.rcx, 1)
     call_import("ExitProcess")
+}
+
+# ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
+func keep_the_numbers(numbers: List<Integer>) {
+    var index = 0
+    while index < numbers.count() {
+        var number = numbers[index]
+        crash number
+        var home = allocation.home_of(number)
+        if allocation.is_a_volatile_home(home) {
+            encoder.store_virtual(number, home)
+        }
+        index = index + 1
+    }
 }
 
 func label_of_text(text: String): Integer {
@@ -447,6 +472,7 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
         var rounded = (frame + 15) / 16 * 16
         encoder.prologue(rounded)
         save_the_kept_registers()
+        allocation.current_block = 0
         take_the_parameters(function)
     }
     block_offsets = List<Integer>()
@@ -468,8 +494,80 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     }
     var cold = encoder.position()
     note_the_place(cold, current_place)
+    current_block = allocation.layout.count() + 1
     emit_the_cold_stops()
+    emit_the_edge_stubs()
     block_fixups.each(fix_a_block)
+}
+
+# ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
+func emit_the_moves(from_block: Integer, to_block: Integer) {
+    var entering = allocation.entering_registers[to_block]
+    crash entering
+    var index = 0
+    while index < entering.count() {
+        var register = entering[index]
+        crash register
+        var from_home = allocation.home_in(register, from_block)
+        if allocation.differs_on_the_edge(register, from_block, to_block) and from_home >= 0 {
+            encoder.store_virtual(register, from_home)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < entering.count() {
+        var register = entering[index]
+        crash register
+        var to_home = allocation.home_in(register, to_block)
+        if allocation.differs_on_the_edge(register, from_block, to_block) and to_home >= 0 {
+            encoder.load_virtual(to_home, register)
+        }
+        index = index + 1
+    }
+}
+
+func moves_at_the_tail(to_block: Integer): Boolean {
+    if allocation.moves_at_the_head(to_block) {
+        return false
+    }
+    return allocation.moves_on_the_edge(current_block_index, to_block)
+}
+
+func go_to_block(block: Integer) {
+    if moves_at_the_tail(block) {
+        emit_the_moves(current_block_index, block)
+    }
+    jump_to_block(block)
+}
+
+func jump_to_block_if_through_moves(condition: Integer, block: Integer) {
+    if not moves_at_the_tail(block) {
+        jump_to_block_if(condition, block)
+        return
+    }
+    var at = encoder.jump_if(condition)
+    stub_jumps.append(at)
+    stub_froms.append(current_block_index)
+    stub_tos.append(block)
+}
+
+func emit_the_edge_stubs() {
+    var index = 0
+    while index < stub_jumps.count() {
+        var at = stub_jumps[index]
+        var from_block = stub_froms[index]
+        var to_block = stub_tos[index]
+        crash at
+        crash from_block
+        crash to_block
+        patch_here(at)
+        emit_the_moves(from_block, to_block)
+        jump_to_block(to_block)
+        index = index + 1
+    }
+    stub_jumps.clear()
+    stub_froms.clear()
+    stub_tos.clear()
 }
 
 func find_the_loop_heads(function: LowIntermediaryRepresentation.LowFunction) {
@@ -717,6 +815,15 @@ func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index
     note_the_place(here, wanted)
     current_block_place = wanted
     flags_register = -1
+    current_block_index = block_index
+    allocation.current_block = block_index
+    if allocation.moves_at_the_head(block_index) {
+        var coming = allocation.predecessors[block_index]
+        crash coming
+        var only = coming[0]
+        crash only
+        emit_the_moves(only, block_index)
+    }
     block.instructions.each(emit_instruction)
     var last = block.instructions.last()
     var ends = false
@@ -725,7 +832,7 @@ func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index
     }
     var following = block_index + 1
     if not ends and following < function.blocks.count() {
-        jump_to_block(following)
+        go_to_block(following)
     }
 }
 
@@ -1155,6 +1262,7 @@ func defer_a_stop(
     cold_targets.append(target)
     cold_sources.append(source)
     cold_immediates.append(immediate)
+    cold_blocks.append(current_block_index)
 }
 
 func emit_the_cold_stops() {
@@ -1166,6 +1274,9 @@ func emit_the_cold_stops() {
         var target = cold_targets[index]
         var source = cold_sources[index]
         var immediate = cold_immediates[index] == true
+        var cold_block = cold_blocks[index]
+        crash cold_block
+        allocation.current_block = cold_block
         crash arithmetic
         crash kind
         crash target
@@ -1180,6 +1291,7 @@ func emit_the_cold_stops() {
     cold_targets.clear()
     cold_sources.clear()
     cold_immediates.clear()
+    cold_blocks.clear()
 }
 
 func emit_a_cold_stop(
@@ -2035,16 +2147,16 @@ func stop_naming_the_library(name: Integer) {
 }
 
 func emit_jump(jump: LowIntermediaryRepresentation.Instructions.Jump) {
-    jump_to_block(jump.block)
+    go_to_block(jump.block)
 }
 
 func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
     if allocation.constant_of(branch.condition) {
         var value = allocation.value_of(branch.condition)
         if value != 0 {
-            jump_to_block(branch.when_true)
+            go_to_block(branch.when_true)
         } else {
-            jump_to_block(branch.when_false)
+            go_to_block(branch.when_false)
         }
         return
     }
@@ -2057,20 +2169,25 @@ func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
         encoder.test_register(tested)
     }
     if branch.when_true == branch.when_false {
-        jump_to_block(branch.when_true)
+        go_to_block(branch.when_true)
         return
     }
-    if falls_into(branch.when_false) {
-        jump_to_block_if(condition, branch.when_true)
-        return
+    var true_moves = moves_at_the_tail(branch.when_true)
+    var false_moves = moves_at_the_tail(branch.when_false)
+    var stays_on_true = falls_into(branch.when_true)
+    if true_moves and not false_moves {
+        stays_on_true = true
+    } else if false_moves and not true_moves {
+        stays_on_true = false
     }
-    if falls_into(branch.when_true) {
+    if stays_on_true {
         var opposite = inverted(condition)
-        jump_to_block_if(opposite, branch.when_false)
+        jump_to_block_if_through_moves(opposite, branch.when_false)
+        go_to_block(branch.when_true)
         return
     }
-    jump_to_block_if(condition, branch.when_true)
-    jump_to_block(branch.when_false)
+    jump_to_block_if_through_moves(condition, branch.when_true)
+    go_to_block(branch.when_false)
 }
 
 func emit_return(returned: LowIntermediaryRepresentation.Instructions.Return) {
@@ -2242,6 +2359,7 @@ func emit_stop(stop: LowIntermediaryRepresentation.Instructions.Stop) {
         load_message(stop.label)
         return
     }
+    keep_the_numbers(stop.numbers)
     var index = 0
     while index < stop.labels.count() {
         var label = stop.labels[index]

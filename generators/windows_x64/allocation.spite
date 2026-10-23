@@ -46,6 +46,16 @@ var leaving_registers = List<List<Integer>>()
 var segment_starts = List<List<Integer>>()
 var segment_ends = List<List<Integer>>()
 var assigned = List<List<Integer>>()
+var every_holder = List<List<Integer>>()
+var current_block = -1
+var volatile_homes = List<Integer>()
+var is_split = List<Boolean>()
+var split_values = List<Integer>()
+var slot_keys = Dictionary<Long, Boolean>()
+var block_weights = Dictionary<Long, Integer>()
+var value_blocks = List<List<Integer>>()
+var value_block_starts = List<List<Integer>>()
+var value_block_ends = List<List<Integer>>()
 
 func Allocation(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
@@ -56,6 +66,9 @@ func Allocation(starting_function: LowIntermediaryRepresentation.LowFunction) {
     keeping.append(13)
     keeping.append(14)
     keeping.append(15)
+    volatile_homes.append(10)
+    volatile_homes.append(9)
+    volatile_homes.append(8)
 }
 
 func allocate() {
@@ -72,6 +85,7 @@ func allocate() {
         constants.append(0)
         fused.append(false)
         elided_targets.append(false)
+        is_split.append(false)
         address_bases.append(-1)
         address_indexes.append(-1)
         address_scales.append(1)
@@ -169,6 +183,11 @@ func is_fused(register: Integer): Boolean {
 }
 
 func home_of(register: Integer): Integer {
+    return home_in(register, current_block)
+}
+
+# ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
+func home_in(register: Integer, block_index: Integer): Integer {
     if register < 0 or register >= homes.count() {
         return -1
     }
@@ -177,7 +196,49 @@ func home_of(register: Integer): Integer {
     if home >= 16 {
         return -1
     }
+    var split = home >= 0 and block_index >= 0 and is_split[register] == true
+    if split and slot_keys[key_of(register, block_index)] == true {
+        return -1
+    }
     return home
+}
+
+func is_a_volatile_home(home: Integer): Boolean {
+    return home == 8 or home == 9 or home == 10
+}
+
+func moves_at_the_head(block_index: Integer): Boolean {
+    if split_values.is_empty() {
+        return false
+    }
+    var coming = predecessors[block_index]
+    crash coming
+    return coming.count() == 1
+}
+
+func moves_on_the_edge(from_block: Integer, to_block: Integer): Boolean {
+    if split_values.is_empty() {
+        return false
+    }
+    var entering = entering_registers[to_block]
+    crash entering
+    var index = 0
+    while index < entering.count() {
+        var register = entering[index]
+        crash register
+        if differs_on_the_edge(register, from_block, to_block) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func differs_on_the_edge(register: Integer, from_block: Integer, to_block: Integer): Boolean {
+    if is_split[register] != true {
+        return false
+    }
+    return home_in(register, from_block) != home_in(register, to_block)
 }
 
 # ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
@@ -1027,6 +1088,7 @@ func clobbers_the_volatiles(instruction: LowIntermediaryRepresentation.Instructi
         LowIntermediaryRepresentation.Instructions.Constant: return false
         LowIntermediaryRepresentation.Instructions.Copy: return false
         LowIntermediaryRepresentation.Instructions.Compare: return false
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Compare: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return false
@@ -1080,6 +1142,8 @@ func scan_the_intervals() {
     while physical < 32 {
         var holding = List<Integer>()
         assigned.append(holding)
+        var ever_holding = List<Integer>()
+        every_holder.append(ever_holding)
         physical = physical + 1
     }
     var position = 0
@@ -1104,10 +1168,7 @@ func place(register: Integer) {
     var decimal_size = decimal_sizes[register]
     crash decimal_size
     assert decimal_size <= 0 or not placed_in_a_decimal(register)
-    if is_free_for(volatile_home, register) and not clobbered_in_a_segment(register) {
-        give(volatile_home, register)
-        return
-    }
+    assert not takes_a_whole_volatile(register, true)
     var index = 0
     while index < keeping.count() {
         var candidate = keeping[index]
@@ -1118,7 +1179,270 @@ func place(register: Integer) {
         }
         index = index + 1
     }
+    assert not takes_a_split_volatile(register)
     spill_the_cheapest(register)
+}
+
+func may_hold(physical: Integer, register: Integer): Boolean {
+    return physical == volatile_home or register >= function.parameter_count
+}
+
+func takes_a_whole_volatile(register: Integer, starts_here: Boolean): Boolean {
+    if clobbered_in_a_segment(register) {
+        return false
+    }
+    var own_starts = segment_starts[register]
+    var own_ends = segment_ends[register]
+    crash own_starts
+    crash own_ends
+    var index = 0
+    while index < volatile_homes.count() {
+        var candidate = volatile_homes[index]
+        crash candidate
+        var free = false
+        if starts_here {
+            free = is_free_for(candidate, register)
+        } else {
+            free = is_free_over(candidate, own_starts, own_ends)
+        }
+        if may_hold(candidate, register) and free {
+            give(candidate, register)
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+# ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
+func takes_a_split_volatile(register: Integer): Boolean {
+    var decimal_size = decimal_sizes[register]
+    crash decimal_size
+    if decimal_size > 0 {
+        return false
+    }
+    var slot_blocks = clobbered_blocks(register)
+    if slot_blocks.is_empty() or not split_pays(register, slot_blocks) {
+        return false
+    }
+    var kept_starts = List<Integer>()
+    var kept_ends = List<Integer>()
+    keep_the_stretches(register, slot_blocks, kept_starts, kept_ends)
+    if kept_starts.is_empty() {
+        return false
+    }
+    var index = 0
+    while index < volatile_homes.count() {
+        var candidate = volatile_homes[index]
+        crash candidate
+        if may_hold(candidate, register) and is_free_over(candidate, kept_starts, kept_ends) {
+            split_around(register, slot_blocks, kept_starts, kept_ends)
+            give(candidate, register)
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func clobbered_blocks(register: Integer): List<Integer> {
+    var found = List<Integer>()
+    var blocks = value_blocks[register]
+    var block_starts = value_block_starts[register]
+    var block_ends = value_block_ends[register]
+    crash blocks
+    crash block_starts
+    crash block_ends
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        var start = block_starts[index]
+        var end = block_ends[index]
+        crash block_index
+        crash start
+        crash end
+        if clobbered_between(start, end) and not found.contains(block_index) {
+            found.append(block_index)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func keep_the_stretches(
+    register: Integer,
+    slot_blocks: List<Integer>,
+    kept_starts: List<Integer>,
+    kept_ends: List<Integer>,
+) {
+    var blocks = value_blocks[register]
+    var block_starts = value_block_starts[register]
+    var block_ends = value_block_ends[register]
+    crash blocks
+    crash block_starts
+    crash block_ends
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        var start = block_starts[index]
+        var end = block_ends[index]
+        crash block_index
+        crash start
+        crash end
+        if not slot_blocks.contains(block_index) {
+            add_to_stretches(kept_starts, kept_ends, start, end)
+        }
+        index = index + 1
+    }
+}
+
+func add_to_stretches(made_starts: List<Integer>, made_ends: List<Integer>, start: Integer, end: Integer) {
+    var count = made_ends.count()
+    if count > 0 {
+        var last_end = made_ends[count - 1]
+        crash last_end
+        if start <= last_end + 1 {
+            if end > last_end {
+                made_ends[count - 1] = end
+            }
+            return
+        }
+    }
+    made_starts.append(start)
+    made_ends.append(end)
+}
+
+func split_pays(register: Integer, slot_blocks: List<Integer>): Boolean {
+    var benefit: Long = 0
+    var cost: Long = 0
+    var counted = List<Integer>()
+    var blocks = value_blocks[register]
+    crash blocks
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        crash block_index
+        if not slot_blocks.contains(block_index) and not counted.contains(block_index) {
+            counted.append(block_index)
+            benefit = benefit + weight_in(register, block_index)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < slot_blocks.count() {
+        var slot_block = slot_blocks[index]
+        crash slot_block
+        cost = cost + moves_around(register, slot_block, slot_blocks)
+        index = index + 1
+    }
+    return benefit > cost
+}
+
+func weight_in(register: Integer, block_index: Integer): Integer {
+    var weight = block_weights[key_of(register, block_index)]
+    if not weight {
+        return 0
+    }
+    return weight
+}
+
+func moves_around(register: Integer, slot_block: Integer, slot_blocks: List<Integer>): Long {
+    var cost: Long = 0
+    var coming = predecessors[slot_block]
+    var leaving = successors[slot_block]
+    crash coming
+    crash leaving
+    var index = 0
+    while is_live_into(register, slot_block) and index < coming.count() {
+        var predecessor = coming[index]
+        crash predecessor
+        if not slot_blocks.contains(predecessor) {
+            cost = cost + edge_weight(predecessor, slot_block)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < leaving.count() {
+        var successor = leaving[index]
+        crash successor
+        if is_live_into(register, successor) and not slot_blocks.contains(successor) {
+            cost = cost + edge_weight(slot_block, successor)
+        }
+        index = index + 1
+    }
+    return cost
+}
+
+func is_live_into(register: Integer, block_index: Integer): Boolean {
+    return live_in_keys[key_of(register, block_index)] == true
+}
+
+func edge_weight(from_block: Integer, to_block: Integer): Integer {
+    var from_depth = depths[from_block]
+    var to_depth = depths[to_block]
+    crash from_depth
+    crash to_depth
+    var depth = from_depth
+    if to_depth < depth {
+        depth = to_depth
+    }
+    return weight_at_depth(depth)
+}
+
+func weight_at_depth(depth: Integer): Integer {
+    var cost = 1
+    var level = 0
+    while level < depth and level < 4 {
+        cost = cost * 32
+        level = level + 1
+    }
+    return cost
+}
+
+func is_free_over(physical: Integer, kept_starts: List<Integer>, kept_ends: List<Integer>): Boolean {
+    if kept_starts.is_empty() {
+        return true
+    }
+    var holding = every_holder[physical]
+    crash holding
+    var index = 0
+    while index < holding.count() {
+        var other = holding[index]
+        crash other
+        var other_starts = segment_starts[other]
+        var other_ends = segment_ends[other]
+        crash other_starts
+        crash other_ends
+        var other_end = ends[other]
+        var first_kept = kept_starts[0]
+        crash other_end
+        crash first_kept
+        var reaches = other_end >= first_kept
+        if reaches and stretches_overlap(other_starts, other_ends, kept_starts, kept_ends) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func split_around(
+    register: Integer,
+    slot_blocks: List<Integer>,
+    kept_starts: List<Integer>,
+    kept_ends: List<Integer>,
+) {
+    segment_starts[register] = kept_starts
+    segment_ends[register] = kept_ends
+    is_split[register] = true
+    split_values.append(register)
+    var index = 0
+    while index < slot_blocks.count() {
+        var slot_block = slot_blocks[index]
+        crash slot_block
+        slot_keys[key_of(register, slot_block)] = true
+        index = index + 1
+    }
 }
 
 func placed_in_a_decimal(register: Integer): Boolean {
@@ -1170,7 +1494,14 @@ func spill_the_cheapest(register: Integer) {
     var at = holding.index_of(cheapest_other)
     crash at
     holding.remove_at(at)
+    var ever_holding = every_holder[cheapest_physical]
+    crash ever_holding
+    var ever_at = ever_holding.index_of(cheapest_other)
+    crash ever_at
+    ever_holding.remove_at(ever_at)
     give(cheapest_physical, register)
+    assert not takes_a_whole_volatile(cheapest_other, false)
+    assert not takes_a_split_volatile(cheapest_other)
 }
 
 func length_of(register: Integer): Integer {
@@ -1200,11 +1531,11 @@ func weight_of(register: Integer): Integer {
 func add_weight(register: Integer, block_index: Integer) {
     var depth = depths[block_index]
     crash depth
-    var cost = 1
-    var level = 0
-    while level < depth and level < 4 {
-        cost = cost * 32
-        level = level + 1
+    var cost = weight_at_depth(depth)
+    var key = key_of(register, block_index)
+    var in_block = weight_in(register, block_index)
+    if in_block < 1000000000 {
+        block_weights[key] = in_block + cost
     }
     var weight = weights[register]
     crash weight
@@ -1318,6 +1649,12 @@ func build_the_segments() {
         var made_ends = List<Integer>()
         segment_starts.append(made_starts)
         segment_ends.append(made_ends)
+        var blocks = List<Integer>()
+        var block_starts = List<Integer>()
+        var block_ends = List<Integer>()
+        value_blocks.append(blocks)
+        value_block_starts.append(block_starts)
+        value_block_ends.append(block_ends)
         register = register + 1
     }
     var seen = List<Integer>()
@@ -1325,6 +1662,7 @@ func build_the_segments() {
     var parameter = 0
     while parameter < function.parameter_count and parameter < register_total {
         add_a_segment(parameter, 0, 0)
+        note_a_block_stretch(parameter, 0, 0, 0)
         parameter = parameter + 1
     }
     var layout_index = 0
@@ -1385,6 +1723,19 @@ func add_the_block_segment(register: Integer, block_index: Integer) {
         end = start
     }
     add_a_segment(register, start, end)
+    note_a_block_stretch(register, block_index, start, end)
+}
+
+func note_a_block_stretch(register: Integer, block_index: Integer, start: Integer, end: Integer) {
+    var blocks = value_blocks[register]
+    var block_starts = value_block_starts[register]
+    var block_ends = value_block_ends[register]
+    crash blocks
+    crash block_starts
+    crash block_ends
+    blocks.append(block_index)
+    block_starts.append(start)
+    block_ends.append(end)
 }
 
 func add_a_segment(register: Integer, start: Integer, end: Integer) {
@@ -1392,19 +1743,7 @@ func add_a_segment(register: Integer, start: Integer, end: Integer) {
     var made_ends = segment_ends[register]
     crash made_starts
     crash made_ends
-    var count = made_ends.count()
-    if count > 0 {
-        var last_end = made_ends[count - 1]
-        crash last_end
-        if start <= last_end + 1 {
-            if end > last_end {
-                made_ends[count - 1] = end
-            }
-            return
-        }
-    }
-    made_starts.append(start)
-    made_ends.append(end)
+    add_to_stretches(made_starts, made_ends, start, end)
 }
 
 func overlaps(first: Integer, second: Integer): Boolean {
@@ -1416,6 +1755,15 @@ func overlaps(first: Integer, second: Integer): Boolean {
     crash first_ends
     crash second_starts
     crash second_ends
+    return stretches_overlap(first_starts, first_ends, second_starts, second_ends)
+}
+
+func stretches_overlap(
+    first_starts: List<Integer>,
+    first_ends: List<Integer>,
+    second_starts: List<Integer>,
+    second_ends: List<Integer>,
+): Boolean {
     var first_index = 0
     var second_index = 0
     while first_index < first_starts.count() and second_index < second_starts.count() {
@@ -1494,6 +1842,9 @@ func give(physical: Integer, register: Integer) {
     var holding = assigned[physical]
     crash holding
     holding.append(register)
+    var ever_holding = every_holder[physical]
+    crash ever_holding
+    ever_holding.append(register)
 }
 
 func expire_the_assigned(position: Integer) {
