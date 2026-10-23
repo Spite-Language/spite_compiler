@@ -48,6 +48,12 @@ time a program names one, the symbol table adds it as a generated class under th
 `.spite/build/spite/`, with the library's rights; a program that never needs one reads none of it. No folder holds
 them, so nothing can load them, and a program that names one of them, or any `Spite.Internal` name, is refused.
 
+Beside every executable the compiler writes `<name>.functions`: one line per function of the code, its start and
+end as offsets from the start of the code section and its key (`# spite functions 1`, then `start	end	key` in
+hexadecimal). Nothing of it is in the executable. When a native fault halts the program, the fault report reads that
+file and adds `spite.function	<key>` for the function that faulted and one `spite.caller	<key>` for each frame it
+walks up through the frame pointers; without the file it prints only the fault line.
+
 ## The first error stops the run
 
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
