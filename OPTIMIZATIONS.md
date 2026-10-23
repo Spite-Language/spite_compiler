@@ -769,7 +769,11 @@ so `spite.frame` lines name the guard's function and its callers as before.
 
 A call to a function that waits for nothing and holds at most 24 instructions (an accessor, a list's `get_at` and
 `set_at`, a tiny helper, a read of a singleton), at most 24 when it calls other functions too, or at most 40 when it
-makes an object or is passed one the caller made, is replaced by a copy of the function's body. The blocks that can
+makes an object or is passed one the caller made, is replaced by a copy of the function's body. A call inside a
+loop that is passed an object the caller made is inlined up to 128 instructions, when the function is written in
+the program (not by the compiler) and makes no object itself: the row a walk fills (`fill_attributes(row, found,
+entity)`, unrolled into one function per attribute) then lives in the loop's registers instead of on the heap
+(`a_walked_crash_lines_read_is_the_rows_read`). The blocks that can
 only stop the program (a failed `crash` calling its [cold report](#a-crashs-report-is-a-cold-call)) are not counted,
 and their call to the report does not count as a call, so a guard costs a function nothing toward its size. The
 address of a singleton's slot or of a function is copied like any other instruction, so a function that reads a
@@ -1164,6 +1168,9 @@ Across blocks, the same holds for a computation whose registers, read and writte
 function: when it is made on every path to a block (found by following the blocks forward, keeping only what every
 path leading in made, and forgetting loads at every write of memory), a repeat in that block copies the answer.
 `list.count()` read before a loop and again in the loop's bound test is one load when the loop writes nothing.
+The sharing runs again after [what a loop does not change is computed before
+it](#what-a-loop-does-not-change-is-computed-before-it), so two loads of one singleton's slot moved out of a loop
+from two inlined calls are one register, not two.
 
 It does not apply to checked arithmetic, a division or a comparison (which is better made again just before the
 branch that reads its flags), nor across blocks to a register written more than once or in a function of more than
@@ -1304,16 +1311,22 @@ inverted.
 
 Every value of a function that does not wait lives in a machine register when one is free, and in its frame slot
 otherwise. Liveness is found over the blocks (a value live into a block is live at the end of every block that
-leads there, up to the blocks that write it), and each value lives in one interval, from its first point to its
-last in the layout order; a linear scan gives each interval a register.
+leads there, up to the blocks that write it), and each value lives in the stretches of the layout where it is
+live: in each block, from the block's start (or its first write there) to the block's end (or its last read
+there). A linear scan takes the values in the order they start and gives each a register that no value holding it
+is live in any of the same stretches, so two values share a register in each other's gaps: a value read only in a
+release or a report laid out after the loop does not hold its register through the loop's body.
 
 - The registers given are the seven the Windows x64 calling convention keeps across calls (`rbx`, `rsi`, `rdi`,
   `r12` to `r15`), saved in the frame by a function that uses them and restored at each return, and `r10` for a
-  value whose interval holds no call nor any instruction that may call (an allocation, a checked or dividing
+  value none of whose stretches holds a call or any instruction that may call (an allocation, a checked or dividing
   arithmetic, whose crash report calls the console). `rax`, `rcx`, `rdx`, `r8`, `r9` and `r11` stay the scratch
   registers instructions work in.
-- When no register is free, the value whose uses weigh least is spilled: each use or write weighs 8 to the power of
-  how many loops hold it (at most 4).
+- When no register is free, the value whose uses weigh least for how long it lives is spilled (of the new value
+  and each value that is alone in the way on a register): each use or write weighs 32 to the power of how many loops
+  hold it (at most 4), and the weight is divided by the number of instructions its stretches cover (plus eight). A
+  value made and read at once keeps its register; one that lives across a whole loop and is read once in it goes to
+  its slot, where each read is one load.
 - A spilled value lives in its frame slot for its whole life.
 
 What a user can observe: nothing but time; a crash report reads its numbers from wherever the values live.
@@ -1749,8 +1762,13 @@ stores (`while_no_task_runs_a_singletons_lock_is_skipped`).
 A `while` outside a singleton whose condition is `counter < bound` or `counter <= bound`, whose last statement is
 `counter = counter + n` with `n` a positive whole number written out and that assigns the counter nowhere else,
 holds the lock of one locked singleton for the whole loop when every call in it is a call to that singleton's
-functions answering a number, a `Boolean`, an enum or nothing, and nothing in it but local `var`s and assignments
-of plain values, `if`s, plain `crash`es and arithmetic. None of the singleton's functions it calls, nor anything
+functions answering a number, a `Boolean`, an enum, nothing, or an object of a class that holds only such values
+and has no `drop()`, and nothing in it but local `var`s and assignments of those values, reads of their number
+attributes, `if`s, plain `crash`es and arithmetic. Letting go of such an object while the lock is held frees its
+memory and runs nothing of the program, so `var transform = transforms.at(row)` followed by
+`total = total + transform.across` holds `Transforms`' lock once for the loop, and the inlined `at$unguarded`
+reads the item with no count (`a_singletons_reading_functions_do_not_exclude_each_other`, eight `Parallel`s reading
+one `Transforms`: 136 ms before, 6.7 ms after). None of the singleton's functions it calls, nor anything
 they call, may wait, start work, call through a function value or take another singleton's lock. The lock is taken
 before the loop's first test and let go after its last, and each call inside goes to the function's body compiled
 without the lock (`<function>$unguarded`), which is small enough to be inlined where the locked one was not.
@@ -1933,3 +1951,83 @@ Measured on `template_chains_run_as_one_loop`: 102 ms before the `map_` joined t
 **Not built:** a `filter_` or `find_by_` after a `map_`, a passed function (`filter(f)`), chains on a
 `Dictionary`'s values, on a `Vector` or on `Items`, and leaving out the unfused step's own function, which is still
 compiled.
+
+## A list of lists cleared and filled with new lists keeps their room
+
+```spite
+func group() {
+    buckets.clear()
+    var made = 0
+    while made < 32768 {
+        var bucket = List<Order>()
+        buckets.append(bucket)
+        made = made + 1
+    }
+}
+```
+
+A `clear()` of a list of lists followed by a counted loop (the counter a whole number, or declared just before the
+loop from a literal, counted by one up to a literal) whose body only makes a new empty list of the item class and
+appends it is one call, `List._renew_lists(wanted)` (`high_intermediary_representation/building/statements.spite`,
+the library's `common/list.spite`): every item only this list holds is emptied in place and kept, its storage with
+it, in the slot the loop would have filled with a new list; an item held anywhere else is replaced by a new list,
+and the items past `wanted` are let go. The loop then appends nothing more than it would have, and its counter
+ends at the bound. The next fill appends into lists that already have the room they grew to, so no list is made,
+grown or freed again. It is built as `if made < 32768 { ... } else { buckets.clear() }`, so a loop that would not
+run leaves the list cleared, as written.
+
+**When it does not apply:** anything else between the `clear()` and the loop (but a `var` of a literal), a loop
+that does more than make and append, a list made with arguments or of another class than the items, a list of a
+union or a shape. **What a program can observe:** the time, and fewer allocations under `--debug-memory`. An item
+is let go at the same moment as before (the items of each emptied list in order, then the items past `wanted`), so
+every `drop()` runs in the same order; nothing else holds an item that is kept, so nothing can tell it from a new
+one. Measured on `a_list_of_lists_filled_again_keeps_each_lists_room`.
+
+## An object let go before anything reads it is never made
+
+```spite
+func run(entity_count: Integer) {
+    var entity = 0
+    while entity < entity_count {
+        var row: $row_type = null
+        fill_attributes(row, entity)
+        system.update_each(row)
+        entity = entity + 1
+    }
+}
+```
+
+A row made with `null` holds a new object for each attribute of a class (`Entity()`, `Position()`, ...) until
+something assigns it; once `fill_attributes` is inlined and the row lives in registers, each of those objects is
+made, put in the row's register, and let go when the fill replaces it, with nothing reading it in between. Such an
+object is never made: its register holds null instead, and the release that would have freed it finds null and
+does nothing (`low_optimization_passes/unread_objects/pass.spite`).
+
+**When it applies:** to an object whose class frees nothing but its own memory (no `drop()`, no attribute it lets
+go), when every register that may hold it, along every path from where it is made, is only copied, retained,
+tested for null by a release, counted down and freed by that release, or passed to `_release`, and nothing but its
+class and count is written into it. A read of any attribute, a store of it anywhere, a comparison with anything
+but null, a call that is passed it, or an answer of it keeps it made. **What a program can observe:** fewer
+allocations under `--debug-memory`, and time.
+
+## An object that outlives the function is not counted in it
+
+```spite
+func fill_position(row: $row_type, rows: List<Integer>) {
+    row.position = Column<Position>().values[rows[1]]
+}
+```
+
+A singleton the entry class makes is read from its slot with a load the compiler knows never changes (see [a
+singleton the entry class makes is never tested
+again](#a-singleton-the-entry-class-makes-is-never-tested-again)); so is an attribute of one that never changes.
+What such a load answers is held by the slot or the singleton for the whole run, so a function that keeps it in a
+local need not count it: every retain of the register (and of its copies) and every release of it are left out
+together, and the release's test for null jumps straight past it (`low_optimization_passes/unread_objects/pass.spite`).
+`Column<Position>()` read once per entity in a loop costs a load, not a count up and a count down.
+
+**When it applies:** when every register holding the value is written only by that load or by copies of it, and
+nothing but a retain, a release, a copy, a comparison, a read through it, a store through it (not of its count) or
+a call that is passed it uses it. Storing it, answering it, freeing it or touching its count any other way keeps
+every count. **What a program can observe:** only the time. The count of a singleton never reaches zero while the
+program runs, with or without these, so its `drop()` runs at the same moment.

@@ -16,7 +16,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Unions and enums instead of strings in both representations (instruction kind, operator, types, call owner)
 - The formatter's rules that need the tree (D901): a line wider than 120 columns broken one argument per line, the minimum parentheses, `else if` on one line, `{ }` for an empty body, `: Nothing` dropped, `crash false` as `crash`, a single named codegen value written positionally, an enum, union or type body one member per line, a multi-line list without commas; `--final-classes`
 - `printers/machine_code`
-- Low representation in SSA form; until then each value has one register interval with no holes and a spilled value is spilled for its whole life (D771), and copy propagation only crosses a block for a parameter
+- Low representation in SSA form; until then a value's register stretches are found per block (D986) but a spilled value is spilled for its whole life (D771), and copy propagation only crosses a block for a parameter
 - Unit passes and program passes split by input type; every function has a stable identity for cache keys
 - `--optimization-report` lists every local list and copy as made on the heap (D733), though the low pass now keeps the objects that never leave their function in registers or the frame (D801), and it leaves out an object only because nothing it reads lets that object go (D884): the report does not read what that pass placed
 - No range is proved yet, so every whole-number `+`, `-` and `*` keeps its overflow check, and `--optimization-report` lists each one (D733); a `-` in front is not listed
@@ -227,7 +227,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The thread pool only where a `Parallel` is made
 - Thread safety for singletons, the cheapest safe form (built: unreached, never changing, atomic and locked, D780 to D783): a read or write of a locked singleton's attribute from another class takes no lock yet
 - A singleton no other thread reaches takes no lock: the walk is made only from what a `Parallel` starts, not again over the tree-shaken program
-- A singleton's reading functions do not exclude each other
+- A singleton's reading functions do not exclude each other: a counted loop of reads holds the lock once (D982), but two threads' loops still take it one after the other, and a single read still takes it alone
 - An attribute read only under its singleton's lock is a plain number
 - A loop of calls to one singleton tests for tasks once
 - Thread safety for singletons, the rest of the plan
@@ -249,14 +249,16 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - Loop-invariant code motion (built, D803, D962, D973): a load without a region moves before its loop only from the loop's first block and only when nothing in the loop writes memory or calls (a load known never to change moves from anywhere); a load with a region moves from any block every pass runs when every write in the loop has another region; anything in a loop that calls is still made on every pass
 - In a program with threads a load moves out of a loop only when the compiler knows it never changes or no other thread touches its class (D968, D973): a load without a region (a worker's local list) is still made on every pass
-- Assigning a fresh empty `List()` to a slot whose old list nothing else holds (count 1, proven or tested once) clears the old list in place and keeps its room (D969); not built, and `a_list_of_lists_filled_again_keeps_each_lists_room` empties its outer list with `clear()` and appends fresh lists, which this does not cover
+- Assigning a fresh empty `List()` to a slot whose old list nothing else holds (count 1, proven or tested once) clears the old list in place and keeps its room (D969); not built (the `clear()` of a list of lists followed by a loop appending new empty lists is, D981, but nothing else between them, and not a list of `Vector`s or `Dictionary`s)
 - An attribute a loop updates is kept in a register (D966, D974) only when every access in the loop carries its region and the loop calls and allocates nothing: an access through a union, a shape or a type parameter, or any call (a buffer's growth on a cold path) keeps every attribute in memory; in a program with threads only a locked singleton's attributes and those of a class no other thread touches are kept
 - Decimals live in decimal registers (built, D971): a decimal load or store still passes through `rax`, a decimal constant is moved in from an immediate rather than read from the program's data, and `==` or `!=` of decimals still makes its answer before the branch
 - Common subexpressions across blocks only for registers written once (D803): a computation over a register written twice (a loop counter) is still made again in a later block, and a repeated comparison is made again
 - An unsigned 64-bit division by a constant that is not a power of two keeps the `div` (D804)
-- A function inlined into a loop keeps its bounds checks (ranges are proved before inlining), and a callee of more than 40 instructions, or that waits, is called (D802); inlining is chosen by size alone, with no estimate of the registers a loop then needs (`template_chains_run_as_one_loop` is about a quarter slower than before this inlining, likely from spills)
+- A function inlined into a loop keeps its bounds checks (ranges are proved before inlining), and a callee of more than 40 instructions, or that waits, is called (D802) unless the call is in a loop and passed an object the caller made (up to 128, D983); inlining is chosen by size alone, with no estimate of the registers a loop then needs
 - A division and a remainder of the same two numbers are two divisions, not one `idiv`
 - A value read across a call in a loop and spilled is reloaded on each use: no interval splitting and no rematerialisation of loads
+- An object let go unread is never made (D984) only when nothing but its class and count is written into it and its class frees nothing but its memory: a default object with attributes, or one holding objects, is still made and freed
+- An object read from a steady load is not counted (D985) only when every register holding it is written by that load or copies of it: a local that may hold either a steady object or another one is counted
 - Loops are not rotated (each pass jumps back to the test at the top)
 
 ## Every proof the original makes

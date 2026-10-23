@@ -1,0 +1,813 @@
+# ../../OPTIMIZATIONS.md#an-object-let-go-before-anything-reads-it-is-never-made
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var frees = LowOptimizationPasses.UnreadObjects.PlainFrees()
+var operands = LowOptimizationPasses.Operands()
+var flow = LowOptimizationPasses.ObjectPlacement.Flow()
+var register_total = 0
+var definition_counts = List<Integer>()
+var reading_counts = List<Integer>()
+var constant_known = List<Boolean>()
+var constant_values = List<Long>()
+var releasing = List<Integer>()
+var release_heads = List<Integer>()
+var dense = List<Integer>()
+var members = List<Integer>()
+var holding_in = List<List<Boolean>>()
+var holding = List<Boolean>()
+var made_block = 0
+var made_index = 0
+var made_register = 0
+var header_count = 0
+var refused = false
+var largest_block_count = 1000
+var most_tried = 32
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction, starting_frees: LowOptimizationPasses.UnreadObjects.PlainFrees) {
+    function = starting_function
+    frees = starting_frees
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if function.is_resumable or function.blocks.count() > largest_block_count {
+        return function
+    }
+    register_total = operands.most_register_of(function)
+    count_the_registers()
+    flow.find_the_edges(function)
+    find_the_releases()
+    drop_the_steady_counts()
+    var tried = 0
+    var block_index = 0
+    while block_index < function.blocks.count() and tried < most_tried {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() and tried < most_tried {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Allocate and is_a_plain_object(block_index, index, instruction) {
+                tried = tried + 1
+                leave_out_when_unread(block_index, index, instruction)
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return function
+}
+
+func count_the_registers() {
+    definition_counts = List<Integer>()
+    reading_counts = List<Integer>()
+    constant_known = List<Boolean>()
+    constant_values = List<Long>()
+    var index = 0
+    while index < register_total {
+        definition_counts.append(0)
+        reading_counts.append(0)
+        constant_known.append(false)
+        constant_values.append(0)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var instruction_index = 0
+        while instruction_index < block.instructions.count() {
+            var instruction = block.instructions[instruction_index]
+            operands.read(instruction)
+            operands.uses.each(count_a_reading)
+            operands.defines.each(count_a_definition)
+            if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+                constant_known[instruction.target] = true
+                constant_values[instruction.target] = instruction.number
+            }
+            instruction_index = instruction_index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func count_a_reading(register: Integer) {
+    var count = reading_counts[register]
+    crash count
+    reading_counts[register] = count + 1
+}
+
+func count_a_definition(register: Integer) {
+    var count = definition_counts[register]
+    crash count
+    definition_counts[register] = count + 1
+}
+
+func is_constant(register: Integer, value: Long): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    var count = definition_counts[register]
+    var known = constant_known[register]
+    var held = constant_values[register]
+    crash count
+    crash held
+    return count == 1 and known == true and held == value
+}
+
+func find_the_releases() {
+    releasing = List<Integer>()
+    release_heads = List<Integer>()
+    var index = 0
+    while index < function.blocks.count() {
+        releasing.append(-1)
+        release_heads.append(-1)
+        index = index + 1
+    }
+    index = 0
+    while index < function.blocks.count() {
+        var released = released_by_the_test(index)
+        if released >= 0 {
+            note_the_release(index, released)
+        }
+        index = index + 1
+    }
+}
+
+func released_by_the_test(block_index: Integer): Integer {
+    var tested = function.blocks[block_index]
+    crash tested
+    var count = tested.instructions.count()
+    if count < 2 {
+        return -1
+    }
+    var last = tested.instructions[count - 1]
+    var before = tested.instructions[count - 2]
+    crash last
+    crash before
+    if last == LowIntermediaryRepresentation.Instructions.Branch and before == LowIntermediaryRepresentation.Instructions.Compare {
+        return null_test_of(last, before)
+    }
+    return -1
+}
+
+func null_test_of(
+    branch: LowIntermediaryRepresentation.Instructions.Branch,
+    compare: LowIntermediaryRepresentation.Instructions.Compare,
+): Integer {
+    if branch.condition != compare.target or compare.comparison != 'equal' {
+        return -1
+    }
+    if not is_constant(compare.right, 0) {
+        return -1
+    }
+    var readers = reading_counts[compare.target]
+    crash readers
+    if readers != 1 or branch.when_true == branch.when_false {
+        return -1
+    }
+    return compare.left
+}
+
+func note_the_release(tested_index: Integer, released: Integer) {
+    var tested = function.blocks[tested_index]
+    crash tested
+    var last = tested.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        var counting = last.when_false
+        if only_follows(counting, tested_index) and counts_down(counting, released) {
+            releasing[counting] = released
+            release_heads[tested_index] = released
+            note_the_freeing(counting, released)
+        }
+    }
+}
+
+func only_follows(block_index: Integer, predecessor: Integer): Boolean {
+    var coming = flow.predecessors_of(block_index)
+    if coming.count() != 1 {
+        return false
+    }
+    var only = coming[0]
+    return only == predecessor
+}
+
+func counts_down(block_index: Integer, released: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if not is_a_count_step(instruction, released) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_count_step(instruction: LowIntermediaryRepresentation.Instructions.Instruction, released: Integer): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return instruction.left != released and instruction.right != released
+        LowIntermediaryRepresentation.Instructions.Branch: return true
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return counts_plainly(instruction, released)
+        LowIntermediaryRepresentation.Instructions.Load: return instruction.address == released and instruction.offset == 8
+        LowIntermediaryRepresentation.Instructions.Store: return stores_the_count(instruction, released)
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return instruction.address == released and instruction.offset == 8
+        _: return false
+    }
+}
+
+func counts_plainly(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, released: Integer): Boolean {
+    return not arithmetic.is_checked and arithmetic.left != released and arithmetic.right != released
+}
+
+func stores_the_count(stored: LowIntermediaryRepresentation.Instructions.Store, released: Integer): Boolean {
+    return stored.address == released and stored.offset == 8 and stored.source != released
+}
+
+func note_the_freeing(counting_index: Integer, released: Integer) {
+    var counting = function.blocks[counting_index]
+    crash counting
+    var last = counting.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        var freeing = last.when_true
+        if only_follows(freeing, counting_index) and only_frees(freeing, released) {
+            releasing[freeing] = released
+        }
+    }
+}
+
+func only_frees(block_index: Integer, released: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if not is_a_free_step(instruction, released) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_free_step(instruction: LowIntermediaryRepresentation.Instructions.Instruction, released: Integer): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Free: return instruction.pointer == released
+        LowIntermediaryRepresentation.Instructions.Call: return frees_alone(instruction, released)
+        _: return false
+    }
+}
+
+func frees_alone(call: LowIntermediaryRepresentation.Instructions.Call, released: Integer): Boolean {
+    if call.target >= 0 or call.presence >= 0 or call.arguments.count() != 1 {
+        return false
+    }
+    var argument = call.arguments[0]
+    return argument == released and call.function.starts_with("_free_")
+}
+
+func is_a_plain_object(
+    block_index: Integer,
+    index: Integer,
+    allocate: LowIntermediaryRepresentation.Instructions.Allocate,
+): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var class_register = -1
+    var next = index + 1
+    while next < block.instructions.count() {
+        var instruction = block.instructions[next]
+        if instruction == LowIntermediaryRepresentation.Instructions.Store and instruction.address == allocate.target {
+            if instruction.offset == 0 {
+                class_register = instruction.source
+            }
+        } else if instruction != LowIntermediaryRepresentation.Instructions.Constant {
+            next = block.instructions.count()
+        }
+        next = next + 1
+    }
+    if class_register < 0 {
+        return false
+    }
+    var known = constant_known[class_register]
+    var class_id = constant_values[class_register]
+    crash class_id
+    if known != true {
+        return false
+    }
+    return frees.frees_plainly(class_id)
+}
+
+func leave_out_when_unread(
+    block_index: Integer,
+    index: Integer,
+    allocate: LowIntermediaryRepresentation.Instructions.Allocate,
+) {
+    made_block = block_index
+    made_index = index
+    made_register = allocate.target
+    count_the_headers()
+    find_the_members()
+    assert members.count() <= 64
+    follow_the_holders()
+    refused = false
+    check_every_use()
+    if not refused {
+        leave_it_out()
+    }
+}
+
+func count_the_headers() {
+    var block = function.blocks[made_block]
+    crash block
+    header_count = 0
+    var next = made_index + 1
+    while next < block.instructions.count() {
+        var instruction = block.instructions[next]
+        if is_a_header_store(instruction) {
+            header_count = next - made_index
+        } else if instruction != LowIntermediaryRepresentation.Instructions.Constant {
+            next = block.instructions.count()
+        }
+        next = next + 1
+    }
+}
+
+func is_a_header_store(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Store {
+        var at_the_header = instruction.offset == 0 or instruction.offset == 8
+        return instruction.address == made_register and at_the_header and instruction.source != made_register
+    }
+    return false
+}
+
+func find_the_members() {
+    dense = List<Integer>()
+    members = List<Integer>()
+    var index = 0
+    while index < register_total {
+        dense.append(-1)
+        index = index + 1
+    }
+    add_a_member(made_register)
+    var grew = true
+    while grew and members.count() <= 64 {
+        grew = false
+        var block_index = 0
+        while block_index < function.blocks.count() {
+            var block = function.blocks[block_index]
+            var instruction_index = 0
+            while instruction_index < block.instructions.count() {
+                var instruction = block.instructions[instruction_index]
+                if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+                    var from = dense[instruction.source]
+                    var to = dense[instruction.target]
+                    crash from
+                    crash to
+                    if from >= 0 and to < 0 {
+                        add_a_member(instruction.target)
+                        grew = true
+                    }
+                }
+                instruction_index = instruction_index + 1
+            }
+            block_index = block_index + 1
+        }
+    }
+}
+
+func add_a_member(register: Integer) {
+    dense[register] = members.count()
+    members.append(register)
+}
+
+func no_holders(): List<Boolean> {
+    var held = List<Boolean>()
+    var index = 0
+    while index < members.count() {
+        held.append(false)
+        index = index + 1
+    }
+    return held
+}
+
+func follow_the_holders() {
+    holding_in = List<List<Boolean>>()
+    var index = 0
+    while index < function.blocks.count() {
+        var held = no_holders()
+        holding_in.append(held)
+        index = index + 1
+    }
+    var waiting = List<Integer>()
+    waiting.append(made_block)
+    var steps = 0
+    while not waiting.is_empty() and steps < 20000 {
+        var taken = waiting.remove_last()
+        crash taken
+        var entering = holding_in[taken]
+        crash entering
+        holding = copy_of(entering)
+        walk_the_block(taken, false)
+        var leaving = flow.successors[taken]
+        crash leaving
+        var successor_index = 0
+        while successor_index < leaving.count() {
+            var next = leaving[successor_index]
+            if merged_into(next) {
+                waiting.append(next)
+            }
+            successor_index = successor_index + 1
+        }
+        steps = steps + 1
+    }
+    if not waiting.is_empty() {
+        refused = true
+    }
+}
+
+func copy_of(held: List<Boolean>): List<Boolean> {
+    var copied = List<Boolean>()
+    held.each(copied.append)
+    return copied
+}
+
+func merged_into(block_index: Integer): Boolean {
+    var entering = holding_in[block_index]
+    crash entering
+    var changed = false
+    var index = 0
+    while index < members.count() {
+        var now = holding[index]
+        var before = entering[index]
+        if now == true and before != true {
+            entering[index] = true
+            changed = true
+        }
+        index = index + 1
+    }
+    return changed
+}
+
+func check_every_use() {
+    var index = 0
+    while index < function.blocks.count() and not refused {
+        var entering = holding_in[index]
+        crash entering
+        holding = copy_of(entering)
+        walk_the_block(index, true)
+        index = index + 1
+    }
+}
+
+func walk_the_block(block_index: Integer, checking: Boolean) {
+    var block = function.blocks[block_index]
+    crash block
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if checking {
+            check_the_uses(block_index, index, instruction)
+        }
+        step_through(block_index, index, instruction)
+        index = index + 1
+    }
+}
+
+func holds(register: Integer): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    var at = dense[register]
+    crash at
+    if at < 0 {
+        return false
+    }
+    var held = holding[at]
+    return held == true
+}
+
+func set_holding(register: Integer, value: Boolean) {
+    var at = dense[register]
+    crash at
+    if at >= 0 {
+        holding[at] = value
+    }
+}
+
+func step_through(block_index: Integer, index: Integer, instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        var copied = holds(instruction.source)
+        set_holding(instruction.target, copied)
+        return
+    }
+    operands.read(instruction)
+    var defined = operands.defines.copy()
+    var defined_index = 0
+    while defined_index < defined.count() {
+        var register = defined[defined_index]
+        crash register
+        set_holding(register, false)
+        defined_index = defined_index + 1
+    }
+    var is_the_made = block_index == made_block and index == made_index
+    if is_the_made {
+        set_holding(made_register, true)
+    }
+}
+
+func check_the_uses(block_index: Integer, index: Integer, instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var used = operands.uses.copy()
+    var use_index = 0
+    while use_index < used.count() {
+        var register = used[use_index]
+        crash register
+        if holds(register) and not may_read(block_index, index, instruction, register) {
+            refused = true
+        }
+        use_index = use_index + 1
+    }
+}
+
+func may_read(
+    block_index: Integer,
+    index: Integer,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    register: Integer,
+): Boolean {
+    var released = releasing[block_index]
+    crash released
+    if released == register {
+        return true
+    }
+    var is_a_header = block_index == made_block and index > made_index and index <= made_index + header_count
+    if is_a_header and is_a_header_store(instruction) {
+        return true
+    }
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Retain: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return tests_for_a_release(block_index, index, instruction, register)
+        LowIntermediaryRepresentation.Instructions.Call: return releases_alone(instruction, register)
+        _: return false
+    }
+}
+
+func tests_for_a_release(
+    block_index: Integer,
+    index: Integer,
+    _compare: LowIntermediaryRepresentation.Instructions.Compare,
+    register: Integer,
+): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    if index != block.instructions.count() - 2 {
+        return false
+    }
+    var tested = released_by_the_test(block_index)
+    if tested != register {
+        return false
+    }
+    var last = block.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        var counting = releasing[last.when_false]
+        crash counting
+        return counting == register
+    }
+    return false
+}
+
+func releases_alone(call: LowIntermediaryRepresentation.Instructions.Call, register: Integer): Boolean {
+    if call.function != "_release" or call.arguments.count() != 1 {
+        return false
+    }
+    var argument = call.arguments[0]
+    return argument == register
+}
+
+func leave_it_out() {
+    var block = function.blocks[made_block]
+    crash block
+    var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        var is_a_header = index > made_index and index <= made_index + header_count and is_a_header_store(instruction)
+        if index == made_index {
+            var nothing = LowIntermediaryRepresentation.Instructions.Constant(made_register, 0)
+            kept.append(nothing)
+        } else if not is_a_header {
+            kept.append(instruction)
+        }
+        index = index + 1
+    }
+    block.instructions = kept
+    count_the_registers()
+}
+
+# ../../OPTIMIZATIONS.md#an-object-that-outlives-the-function-is-not-counted-in-it
+func drop_the_steady_counts() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Load and is_a_steady_load(instruction) {
+                drop_the_counts_of(instruction.target)
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func is_a_steady_load(loaded: LowIntermediaryRepresentation.Instructions.Load): Boolean {
+    if not loaded.is_invariant or loaded.width != 'bits_64' or loaded.target < 0 {
+        return false
+    }
+    var count = definition_counts[loaded.target]
+    crash count
+    return count == 1
+}
+
+func drop_the_counts_of(loaded: Integer) {
+    made_register = loaded
+    find_the_members()
+    assert members.count() <= 64 and only_copied_into()
+    refused = false
+    var block_index = 0
+    while block_index < function.blocks.count() and not refused {
+        check_the_steady_block(block_index)
+        block_index = block_index + 1
+    }
+    if not refused {
+        drop_the_steady_block_counts()
+    }
+}
+
+func only_copied_into(): Boolean {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if not writes_only_members(instruction) {
+                return false
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return true
+}
+
+func writes_only_members(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        return is_a_member(instruction.source) or not is_a_member(instruction.target)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Load and instruction.target == made_register {
+        return true
+    }
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        crash register
+        if is_a_member(register) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_member(register: Integer): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    var at = dense[register]
+    crash at
+    return at >= 0
+}
+
+func check_the_steady_block(block_index: Integer) {
+    var block = function.blocks[block_index]
+    crash block
+    var released = releasing[block_index]
+    crash released
+    assert not is_a_member(released)
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if not reads_steadily(instruction) {
+            refused = true
+        }
+        index = index + 1
+    }
+}
+
+func reads_steadily(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Retain: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return true
+        LowIntermediaryRepresentation.Instructions.Branch: return true
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Load: return instruction.offset != 8 or not is_a_member(instruction.address)
+        LowIntermediaryRepresentation.Instructions.Store: return stores_steadily(instruction)
+        LowIntermediaryRepresentation.Instructions.Call: return passes_steadily(instruction)
+        _: return not reads_a_member(instruction)
+    }
+}
+
+func stores_steadily(stored: LowIntermediaryRepresentation.Instructions.Store): Boolean {
+    if is_a_member(stored.source) {
+        return false
+    }
+    return stored.offset != 8 or not is_a_member(stored.address)
+}
+
+func passes_steadily(call: LowIntermediaryRepresentation.Instructions.Call): Boolean {
+    var frees_something = call.function.starts_with("_free_")
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        crash argument
+        if frees_something and is_a_member(argument) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func reads_a_member(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.uses.count() {
+        var register = operands.uses[index]
+        crash register
+        if is_a_member(register) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func drop_the_steady_block_counts() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if not counts_a_member(instruction) {
+                kept.append(instruction)
+            }
+            index = index + 1
+        }
+        block.instructions = kept
+        skip_a_steady_release(block_index)
+        block_index = block_index + 1
+    }
+}
+
+func counts_a_member(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Retain {
+        return is_a_member(instruction.object)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        return releases_a_member(instruction)
+    }
+    return false
+}
+
+func releases_a_member(call: LowIntermediaryRepresentation.Instructions.Call): Boolean {
+    if call.function != "_release" or call.arguments.count() != 1 {
+        return false
+    }
+    var released = call.arguments[0]
+    crash released
+    return is_a_member(released)
+}
+
+func skip_a_steady_release(block_index: Integer) {
+    var released = release_heads[block_index]
+    crash released
+    assert is_a_member(released)
+    var block = function.blocks[block_index]
+    crash block
+    var last = block.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        var skipping = LowIntermediaryRepresentation.Instructions.Jump(last.when_true)
+        block.instructions.remove_last()
+        block.instructions.append(skipping)
+        release_heads[block_index] = -1
+    }
+}

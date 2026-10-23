@@ -35,6 +35,17 @@ var decimal_sizes = List<Integer>()
 var decimal_refused = List<Boolean>()
 var decimal_touched = List<Boolean>()
 var saved_decimals = List<Integer>()
+var block_total = 0
+var block_firsts = Dictionary<Integer, Integer>()
+var block_lasts = Dictionary<Integer, Integer>()
+var live_in_keys = Dictionary<Integer, Boolean>()
+var live_out_keys = Dictionary<Integer, Boolean>()
+var occurring_registers = List<List<Integer>>()
+var entering_registers = List<List<Integer>>()
+var leaving_registers = List<List<Integer>>()
+var segment_starts = List<List<Integer>>()
+var segment_ends = List<List<Integer>>()
+var assigned = List<List<Integer>>()
 
 func Allocation(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
@@ -77,6 +88,7 @@ func allocate() {
     find_the_depths()
     fill_with_numbers(weights, register_total, 0)
     walk_the_lives()
+    build_the_segments()
     scan_the_intervals()
     find_the_saved()
 }
@@ -836,6 +848,17 @@ func touch(register: Integer, position: Integer) {
 }
 
 func walk_the_lives() {
+    block_total = function.blocks.count()
+    var block_index_made = 0
+    while block_index_made < block_total {
+        var occurring = List<Integer>()
+        occurring_registers.append(occurring)
+        var entering = List<Integer>()
+        entering_registers.append(entering)
+        var leaving = List<Integer>()
+        leaving_registers.append(leaving)
+        block_index_made = block_index_made + 1
+    }
     var last_defined = List<Integer>()
     var last_rooted = List<Integer>()
     fill_with_numbers(last_defined, register_total, -1)
@@ -910,6 +933,7 @@ func note_the_uses(
         var register = uses[index]
         if not constant_of(register) and not is_fused(register) {
             touch(register, position)
+            note_an_occurrence(register, block_index, position)
             add_weight(register, block_index)
             var defined_in = last_defined[register]
             var rooted_in = last_rooted[register]
@@ -932,6 +956,7 @@ func note_the_defines(defines: List<Integer>, block_index: Integer, position: In
         var register = defines[index]
         if not is_fused(register) {
             touch(register, position)
+            note_an_occurrence(register, block_index, position)
             add_weight(register, block_index)
             var defined_in = last_defined[register]
             crash defined_in
@@ -973,6 +998,7 @@ func walk_one_life(register: Integer, roots: List<Integer>, defined_marks: List<
         var head = block_heads[block]
         crash head
         touch(register, head)
+        note_a_live_in(register, block)
         if block == 0 {
             touch(register, 0)
         }
@@ -984,6 +1010,7 @@ func walk_one_life(register: Integer, roots: List<Integer>, defined_marks: List<
             var tail = block_tails[predecessor]
             crash tail
             touch(register, tail)
+            note_a_live_out(register, predecessor)
             var defined_there = defined_marks[predecessor] == register
             var live_there = live_marks[predecessor] == register
             if not defined_there and not live_there {
@@ -1049,21 +1076,22 @@ func scan_the_intervals() {
         }
         register = register - 1
     }
-    var taken = List<Boolean>()
     var physical = 0
     while physical < 32 {
-        taken.append(false)
+        var holding = List<Integer>()
+        assigned.append(holding)
         physical = physical + 1
     }
-    var active = List<Integer>()
     var position = 0
     while position <= position_total {
         var next = heads[position]
         crash next
         var current = next
+        if current >= 0 {
+            expire_the_assigned(position)
+        }
         while current >= 0 {
-            expire_before(position, active, taken)
-            place(current, active, taken)
+            place(current)
             var following = chained[current]
             crash following
             current = following
@@ -1072,72 +1100,35 @@ func scan_the_intervals() {
     }
 }
 
-func expire_before(position: Integer, active: List<Integer>, taken: List<Boolean>) {
-    var index = 0
-    while index < active.count() {
-        var register = active[index]
-        var end = ends[register]
-        crash end
-        if end < position {
-            var home = homes[register]
-            crash home
-            if home >= 0 {
-                taken[home] = false
-            }
-            active.remove_at(index)
-        } else {
-            index = index + 1
-        }
-    }
-}
-
-func place(register: Integer, active: List<Integer>, taken: List<Boolean>) {
-    var start = starts[register]
-    var end = ends[register]
-    crash start
-    crash end
+func place(register: Integer) {
     var decimal_size = decimal_sizes[register]
     crash decimal_size
-    assert decimal_size <= 0 or not placed_in_a_decimal(register, start, end, active, taken)
-    var volatile_taken = taken[volatile_home] == true
-    if not volatile_taken and not clobbered_between(start, end) {
-        homes[register] = volatile_home
-        taken[volatile_home] = true
-        active.append(register)
+    assert decimal_size <= 0 or not placed_in_a_decimal(register)
+    if is_free_for(volatile_home, register) and not clobbered_in_a_segment(register) {
+        give(volatile_home, register)
         return
     }
     var index = 0
     while index < keeping.count() {
         var candidate = keeping[index]
-        var candidate_taken = taken[candidate] == true
-        if not candidate_taken {
-            homes[register] = candidate
-            taken[candidate] = true
-            active.append(register)
+        crash candidate
+        if is_free_for(candidate, register) {
+            give(candidate, register)
             return
         }
         index = index + 1
     }
-    spill_the_cheapest(register, active)
+    spill_the_cheapest(register)
 }
 
-func placed_in_a_decimal(
-    register: Integer,
-    start: Integer,
-    end: Integer,
-    active: List<Integer>,
-    taken: List<Boolean>,
-): Boolean {
-    var clobbered = clobbered_between(start, end)
+func placed_in_a_decimal(register: Integer): Boolean {
+    var clobbered = clobbered_in_a_segment(register)
     var candidate = 3
     while candidate < 16 {
         var slot = 16 + candidate
-        var is_taken = taken[slot] == true
         var usable = candidate >= 6 or not clobbered
-        if usable and not is_taken {
-            homes[register] = slot
-            taken[slot] = true
-            active.append(register)
+        if usable and is_free_for(slot, register) {
+            give(slot, register)
             return true
         }
         candidate = candidate + 1
@@ -1145,32 +1136,59 @@ func placed_in_a_decimal(
     return false
 }
 
-func spill_the_cheapest(register: Integer, active: List<Integer>) {
-    var cheapest = -1
-    var cheapest_weight = weight_of(register)
+func spill_the_cheapest(register: Integer) {
+    var cheapest_physical = -1
+    var cheapest_other = -1
+    var cheapest_weight: Long = weight_of(register)
+    var cheapest_length: Long = length_of(register)
     var index = 0
-    while index < active.count() {
-        var other = active[index]
-        var other_home = homes[other]
-        crash other_home
-        var other_weight = weight_of(other)
-        if other_home != volatile_home and other_home < 16 and other_weight < cheapest_weight {
-            cheapest = index
-            cheapest_weight = other_weight
+    while index < keeping.count() {
+        var candidate = keeping[index]
+        crash candidate
+        var conflicts = conflicts_on(candidate, register)
+        if conflicts.count() == 1 {
+            var other = conflicts[0]
+            crash other
+            var other_weight: Long = weight_of(other)
+            var other_length: Long = length_of(other)
+            if other_weight * cheapest_length < cheapest_weight * other_length {
+                cheapest_physical = candidate
+                cheapest_other = other
+                cheapest_weight = other_weight
+                cheapest_length = other_length
+            }
         }
         index = index + 1
     }
-    if cheapest < 0 {
+    if cheapest_physical < 0 {
         homes[register] = -1
         return
     }
-    var spilled = active[cheapest]
-    crash spilled
-    var freed = homes[spilled]
-    crash freed
-    homes[spilled] = -1
-    homes[register] = freed
-    active[cheapest] = register
+    homes[cheapest_other] = -1
+    var holding = assigned[cheapest_physical]
+    crash holding
+    var at = holding.index_of(cheapest_other)
+    crash at
+    holding.remove_at(at)
+    give(cheapest_physical, register)
+}
+
+func length_of(register: Integer): Integer {
+    var made_starts = segment_starts[register]
+    var made_ends = segment_ends[register]
+    crash made_starts
+    crash made_ends
+    var length = 8
+    var index = 0
+    while index < made_starts.count() {
+        var start = made_starts[index]
+        var end = made_ends[index]
+        crash start
+        crash end
+        length = length + end - start + 1
+        index = index + 1
+    }
+    return length
 }
 
 func weight_of(register: Integer): Integer {
@@ -1185,7 +1203,7 @@ func add_weight(register: Integer, block_index: Integer) {
     var cost = 1
     var level = 0
     while level < depth and level < 4 {
-        cost = cost * 8
+        cost = cost * 32
         level = level + 1
     }
     var weight = weights[register]
@@ -1245,5 +1263,251 @@ func find_the_saved() {
             saved_decimals.append(decimal)
         }
         decimal = decimal + 1
+    }
+}
+
+func note_an_occurrence(register: Integer, block_index: Integer, position: Integer) {
+    var key = register * block_total + block_index
+    var first = block_firsts[key]
+    if not first {
+        block_firsts[key] = position
+        block_lasts[key] = position
+        var occurring = occurring_registers[block_index]
+        crash occurring
+        occurring.append(register)
+        return
+    }
+    if position < first {
+        block_firsts[key] = position
+    }
+    var last = block_lasts[key]
+    crash last
+    if position > last {
+        block_lasts[key] = position
+    }
+}
+
+func note_a_live_in(register: Integer, block_index: Integer) {
+    var key = register * block_total + block_index
+    live_in_keys[key] = true
+    var entering = entering_registers[block_index]
+    crash entering
+    entering.append(register)
+}
+
+func note_a_live_out(register: Integer, block_index: Integer) {
+    var key = register * block_total + block_index
+    var known = live_out_keys[key]
+    assert not known
+    live_out_keys[key] = true
+    var leaving = leaving_registers[block_index]
+    crash leaving
+    leaving.append(register)
+}
+
+# ../../OPTIMIZATIONS.md#values-live-in-registers
+func build_the_segments() {
+    var register = 0
+    while register < register_total {
+        var made_starts = List<Integer>()
+        var made_ends = List<Integer>()
+        segment_starts.append(made_starts)
+        segment_ends.append(made_ends)
+        register = register + 1
+    }
+    var seen = List<Integer>()
+    fill_with_numbers(seen, register_total, -1)
+    var parameter = 0
+    while parameter < function.parameter_count and parameter < register_total {
+        add_a_segment(parameter, 0, 0)
+        parameter = parameter + 1
+    }
+    var layout_index = 0
+    while layout_index < layout.count() {
+        var block_index = layout[layout_index]
+        crash block_index
+        var entering = entering_registers[block_index]
+        var leaving = leaving_registers[block_index]
+        var occurring = occurring_registers[block_index]
+        crash entering
+        crash leaving
+        crash occurring
+        add_the_block_segments(entering, block_index, seen)
+        add_the_block_segments(leaving, block_index, seen)
+        add_the_block_segments(occurring, block_index, seen)
+        layout_index = layout_index + 1
+    }
+}
+
+func add_the_block_segments(registers: List<Integer>, block_index: Integer, seen: List<Integer>) {
+    var index = 0
+    while index < registers.count() {
+        var register = registers[index]
+        crash register
+        var mark = seen[register]
+        if mark != block_index {
+            seen[register] = block_index
+            add_the_block_segment(register, block_index)
+        }
+        index = index + 1
+    }
+}
+
+func add_the_block_segment(register: Integer, block_index: Integer) {
+    var head = block_heads[block_index]
+    var tail = block_tails[block_index]
+    crash head
+    crash tail
+    var key = register * block_total + block_index
+    var start = head
+    var end = tail
+    var entered = live_in_keys[key]
+    var left = live_out_keys[key]
+    if not entered {
+        var first = block_firsts[key]
+        crash first
+        start = first
+    }
+    if not left {
+        var last = block_lasts[key]
+        crash last
+        end = last
+    }
+    if block_index == 0 and entered {
+        start = 0
+    }
+    if end < start {
+        end = start
+    }
+    add_a_segment(register, start, end)
+}
+
+func add_a_segment(register: Integer, start: Integer, end: Integer) {
+    var made_starts = segment_starts[register]
+    var made_ends = segment_ends[register]
+    crash made_starts
+    crash made_ends
+    var count = made_ends.count()
+    if count > 0 {
+        var last_end = made_ends[count - 1]
+        crash last_end
+        if start <= last_end + 1 {
+            if end > last_end {
+                made_ends[count - 1] = end
+            }
+            return
+        }
+    }
+    made_starts.append(start)
+    made_ends.append(end)
+}
+
+func overlaps(first: Integer, second: Integer): Boolean {
+    var first_starts = segment_starts[first]
+    var first_ends = segment_ends[first]
+    var second_starts = segment_starts[second]
+    var second_ends = segment_ends[second]
+    crash first_starts
+    crash first_ends
+    crash second_starts
+    crash second_ends
+    var first_index = 0
+    var second_index = 0
+    while first_index < first_starts.count() and second_index < second_starts.count() {
+        var first_start = first_starts[first_index]
+        var first_end = first_ends[first_index]
+        var second_start = second_starts[second_index]
+        var second_end = second_ends[second_index]
+        crash first_start
+        crash first_end
+        crash second_start
+        crash second_end
+        if first_start <= second_end and second_start <= first_end {
+            return true
+        }
+        if first_end < second_end {
+            first_index = first_index + 1
+        } else {
+            second_index = second_index + 1
+        }
+    }
+    return false
+}
+
+func clobbered_in_a_segment(register: Integer): Boolean {
+    var made_starts = segment_starts[register]
+    var made_ends = segment_ends[register]
+    crash made_starts
+    crash made_ends
+    var index = 0
+    while index < made_starts.count() {
+        var start = made_starts[index]
+        var end = made_ends[index]
+        crash start
+        crash end
+        if clobbered_between(start, end) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func conflicts_on(physical: Integer, register: Integer): List<Integer> {
+    var found = List<Integer>()
+    var holding = assigned[physical]
+    crash holding
+    var index = 0
+    while index < holding.count() {
+        var other = holding[index]
+        crash other
+        if overlaps(other, register) {
+            found.append(other)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func is_free_for(physical: Integer, register: Integer): Boolean {
+    var holding = assigned[physical]
+    crash holding
+    var index = 0
+    while index < holding.count() {
+        var other = holding[index]
+        crash other
+        if overlaps(other, register) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func give(physical: Integer, register: Integer) {
+    homes[register] = physical
+    var holding = assigned[physical]
+    crash holding
+    holding.append(register)
+}
+
+func expire_the_assigned(position: Integer) {
+    var physical = 0
+    while physical < assigned.count() {
+        var holding = assigned[physical]
+        crash holding
+        var index = 0
+        while index < holding.count() {
+            var other = holding[index]
+            crash other
+            var end = ends[other]
+            crash end
+            if end < position {
+                holding.remove_at(index)
+            } else {
+                index = index + 1
+            }
+        }
+        physical = physical + 1
     }
 }
