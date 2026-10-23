@@ -190,7 +190,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Singletons that hold nothing are static objects
 - Atomic reference counts only with threads
 - Plain reference counts where no thread reaches a class
-- An item passed to a call that cannot change its list is not counted
+- An item passed to a call that cannot change its list is not counted (built for the receiver of a call after a `crash` that proves the read, D957; not built: an argument, and a read whose index or call arguments are not plain reads)
 - A singleton's attribute that never changes is read in place
 - A list's templates read its elements without counting them: done where nothing after the read in the template can write a list of that class; a template handed a function value still counts when any function the program takes as a value could write one
 - An item written back to its own slot is not written
