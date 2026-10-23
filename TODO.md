@@ -177,6 +177,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A row of borrowed items lives in the frame (built when the function it is passed to is inlined, D801, D942: the row is registers; a row passed to a call too large to inline is still made on the heap, and the items it holds are still counted when it is made and let go when it ends)
 - An `Items`' storage is chosen while compiling
 - A deep copy is written per class, with a table only where a graph needs one
+- An object attribute only its holder ever holds lives inside the holder (`Item.owner`, `Order.customer`), and a list's objects in its storage may hold such attributes
+- A loop that sums a list filtered by its counter on every pass is one pass over the list (`report_over_records`' 64 profits)
+- An if-converted body may hold a checked product or difference when ranges prove it fits, and decimals (D996)
 - A deep copy nothing changes is the original
 - Copies that cost nothing (built for a copy of a plain object that never leaves the function, once `copy()` is inlined, D801; not built: a copy kept or passed on, and a copy nothing changes being the original)
 - Allocation is the C library's, counted only where read
@@ -227,7 +230,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The thread pool only where a `Parallel` is made
 - Thread safety for singletons, the cheapest safe form (built: unreached, never changing, atomic and locked, D780 to D783): a read or write of a locked singleton's attribute from another class takes no lock yet
 - A singleton no other thread reaches takes no lock: the walk is made only from what a `Parallel` starts, not again over the tree-shaken program
-- A singleton's reading functions do not exclude each other: a counted loop of reads shares the lock (D988), but a single read outside such a loop still takes it alone, and the test for what a reader writes treats a write to any `Buffer` other than the singleton's own as none of its state
+- A singleton's reading functions do not exclude each other: a counted loop of reads shares the lock (D988), but a single read outside such a loop still takes it alone
 - An attribute read only under its singleton's lock is a plain number
 - A loop of calls to one singleton tests for tasks once
 - Thread safety for singletons, the rest of the plan

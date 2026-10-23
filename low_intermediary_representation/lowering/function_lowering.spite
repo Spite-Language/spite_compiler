@@ -33,6 +33,8 @@ var skips_the_lock = false
 var coarse_class = ""
 var frame_list_counts = Dictionary<String, Integer>()
 var frame_list_filled = Dictionary<String, Integer>()
+var slot_appends = List<String>()
+var slot_lists = Dictionary<String, HighIntermediaryRepresentation.Values.Value>()
 
 func FunctionLowering(
     starting_layout: Layout,
@@ -64,6 +66,7 @@ func lowered(
     start(key)
     function.is_resumable = resumable_mode
     note_the_frame_lists(high)
+    note_the_slot_appends(high)
     if high.function.declaration {
         note_the_place(high.function, high.function.declaration.line)
     }
@@ -185,6 +188,191 @@ func frame_list_count_of(value: HighIntermediaryRepresentation.Values.Value?): I
         }
     }
     return 0
+}
+
+# ../../OPTIMIZATIONS.md#a-lists-objects-sit-inside-its-storage
+func note_the_slot_appends(high: HighIntermediaryRepresentation.HighFunction) {
+    slot_appends = List<String>()
+    slot_lists = Dictionary<String, HighIntermediaryRepresentation.Values.Value>()
+    assert not resumable_mode and assignments
+    find_slot_appends_in(high.body)
+}
+
+func find_slot_appends_in(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        find_slot_appends_inside(statement)
+        var next = block.statements[index + 1]
+        if next {
+            note_a_slot_append(statement, next)
+        }
+        index = index + 1
+    }
+}
+
+func find_slot_appends_inside(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.If: find_slot_appends_in_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: find_slot_appends_in(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: find_slot_appends_in(statement)
+        _: return
+    }
+}
+
+func find_slot_appends_in_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    find_slot_appends_in(branch.then_branch)
+    find_slot_appends_in(branch.else_branch)
+}
+
+func note_a_slot_append(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+    next: HighIntermediaryRepresentation.Statements.Statement,
+) {
+    assert statement == HighIntermediaryRepresentation.Statements.Declare and statement.hides == ""
+    assert not reassigned_names.contains(statement.name)
+    var made = statement.value
+    assert made == HighIntermediaryRepresentation.Values.MakeObject and made.constructor
+    assert next == HighIntermediaryRepresentation.Statements.Evaluate
+    var appended = next.value
+    assert appended == HighIntermediaryRepresentation.Values.Call and appended.function.name == "append"
+    assert appended.receiver
+    var list_key = appended.receiver.value_type.name
+    assert layout.inline_stride_of(list_key) > 0 and appended.function.owner == list_key
+    var given = appended.arguments[0]
+    assert given == HighIntermediaryRepresentation.Values.LocalRead and given.name == statement.name
+    var making = List<String>()
+    var constructor_key = made.constructor.key()
+    making.append(constructor_key)
+    making.append("{made.value_type.name}._attribute_defaults")
+    crash assignments
+    assert not assignments.may_write_items(making, list_key)
+    assert is_a_steady_list(appended.receiver, making)
+    slot_appends.append(statement.name)
+    slot_lists[statement.name] = appended.receiver
+}
+
+func is_a_steady_list(receiver: HighIntermediaryRepresentation.Values.Value, making: List<String>): Boolean {
+    crash assignments
+    if receiver == HighIntermediaryRepresentation.Values.LocalRead {
+        return not reassigned_names.contains(receiver.name)
+    }
+    if receiver == HighIntermediaryRepresentation.Values.AttributeRead {
+        var on_this = receiver.object == HighIntermediaryRepresentation.Values.ThisRead
+        return on_this and not assignments.may_assign(making, receiver.attribute)
+    }
+    return false
+}
+
+func make_in_the_slot(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    line = declare.line
+    var receiver = slot_lists[declare.name]
+    crash receiver
+    var list = lower_value(receiver)
+    var owner = layout.program.class_named(receiver.value_type.name)
+    crash owner
+    var room_arguments = List<Integer>()
+    room_arguments.append(list.value)
+    var room = LowIntermediaryRepresentation.Instructions.Call(-1, "{owner.key}.make_room", room_arguments)
+    emit(room)
+    var length = load_a_list_attribute(owner, list.value, "_length", 'bits_32')
+    var buffer = load_a_list_attribute(owner, list.value, "_buffer", 'bits_64')
+    var storage = storage_of(buffer)
+    var stride = layout.inline_stride_of(owner.key)
+    var stride_register = constant(stride)
+    var scaled = new_register()
+    var multiplied = LowIntermediaryRepresentation.Instructions.Arithmetic(scaled, 'multiply', length, stride_register)
+    multiplied.is_checked = false
+    emit(multiplied)
+    var slot = address_plus(storage, scaled)
+    fill_if_made(slot, declare.value)
+    discard(list, receiver.value_type)
+    var register = new_register()
+    locals[declare.name] = register
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(register, slot)
+    emit(copied)
+}
+
+func load_a_list_attribute(
+    owner: Model.ClassModel,
+    list: Integer,
+    name: String,
+    width: LowIntermediaryRepresentation.Width,
+): Integer {
+    var attribute = owner.attribute_named(name)
+    crash attribute
+    var offset = layout.offset_of(attribute)
+    var loaded_value = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(loaded_value, list, offset, width)
+    loaded.region = "{owner.key}.{name}"
+    emit(loaded)
+    return loaded_value
+}
+
+func fill_if_made(slot: Integer, made: HighIntermediaryRepresentation.Values.Value?) {
+    if made == HighIntermediaryRepresentation.Values.MakeObject {
+        fill_the_slot(slot, made)
+    }
+}
+
+func fill_the_slot(slot: Integer, made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var class_key = made.value_type.name
+    var class_id = layout.class_id_of(class_key)
+    var id_register = constant(class_id)
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(slot, 0, id_register, 'bits_64')
+    emit(stored_id)
+    var count = constant(layout.immortal_count)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(slot, 8, count, 'bits_64')
+    emit(stored_count)
+    var defaults_key = "{class_key}._attribute_defaults"
+    if made.constructor {
+        var constructor_key = made.constructor.key()
+        if trimmed_keys.contains(constructor_key) {
+            defaults_key = "{constructor_key}$defaults"
+        }
+    }
+    var arguments = List<Integer>()
+    arguments.append(slot)
+    var defaults = LowIntermediaryRepresentation.Instructions.Call(-1, defaults_key, arguments)
+    emit(defaults)
+    call_the_constructor(slot, made)
+}
+
+func ends_a_slot_append(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call and value.function.name == "append" {
+        return counts_a_slot(value)
+    }
+    return false
+}
+
+func counts_a_slot(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    var given = call.arguments[0]
+    if given == HighIntermediaryRepresentation.Values.LocalRead and slot_appends.contains(given.name) {
+        count_the_slot_in(call)
+        return true
+    }
+    return false
+}
+
+func count_the_slot_in(call: HighIntermediaryRepresentation.Values.Call) {
+    crash call.receiver
+    var list = lower_value(call.receiver)
+    var owner = layout.program.class_named(call.receiver.value_type.name)
+    crash owner
+    var length = load_a_list_attribute(owner, list.value, "_length", 'bits_32')
+    var one = constant(1)
+    var grown = new_register()
+    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(grown, 'add', length, one)
+    added.is_checked = false
+    emit(added)
+    var attribute = owner.attribute_named("_length")
+    crash attribute
+    var offset = layout.offset_of(attribute)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(list.value, offset, grown, 'bits_32')
+    stored.region = "{owner.key}._length"
+    emit(stored)
+    discard(list, call.receiver.value_type)
 }
 
 func note_the_borrowed_parameters(high: HighIntermediaryRepresentation.HighFunction) {
@@ -635,6 +823,10 @@ func lower_a_statement(statement: HighIntermediaryRepresentation.Statements.Stat
 }
 
 func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    if slot_appends.contains(declare.name) {
+        make_in_the_slot(declare)
+        return
+    }
     var listed = frame_list_counts[declare.name]
     if listed {
         lower_a_frame_list(declare, listed)
@@ -1010,6 +1202,7 @@ func lower_evaluate(evaluate: HighIntermediaryRepresentation.Statements.Evaluate
         return
     }
     assert not fills_a_frame_list(evaluate.value)
+    assert not ends_a_slot_append(evaluate.value)
     var value = lower_value(evaluate.value)
     crash evaluate.value
     discard(value, evaluate.value.value_type)

@@ -927,8 +927,11 @@ hold:
 - the list is never turned into a shape, a union or a function value, and no function of the list or the class is
   taken as a value.
 
-**What a program can observe:** only time and memory. Each object appended is still made and let go of after it is
-copied (so `--debug-memory` counts it), and the list's storage is larger by the objects it now holds.
+**What a program can observe:** only time and memory. A local made by a constructor and appended by the very next
+statement is made in the list's next slot (the list grows first, then the defaults and the constructor run on the
+slot, then the count grows by one), when neither the constructor nor the defaults can write the list's items or
+change which list the receiver is; any other object appended is made, copied into its slot and let go of, so
+`--debug-memory` counts it. The list's storage is larger by the objects it now holds.
 
 ```spite
 func sum_points(): Long {
@@ -1390,6 +1393,36 @@ block of the loop, whatever the loop writes or calls.
 
 `x % 2^k` read only by `== 0` or `!= 0` is `x` with its low `k` bits kept (`and`), signed or not: a whole number is
 divisible by `2^k` exactly when those bits are zero. `if index % 2 == 0` is a `test`.
+
+## An if that only adds or picks a value has no branch
+
+An `if` with no `else` whose body only adds to (or takes from) a running number, or sets a variable to a value,
+is run without a jump: the test becomes a mask of all ones or all zeros, the amount added is cut by the mask, and a
+value picked is mixed in through it (`kept xor ((picked xor kept) and mask)`). A test the processor cannot guess
+(`if point.down >= round` over points in no order) then costs nothing when it is wrong.
+
+**When it applies:** to a body of at most twelve instructions reached only from its test, that only computes
+(numbers, copies, loads through an object or address the code before the test already read), whose every checked
+addition or subtraction adds to the variable it updates, and whose test is a comparison. A body that calls, stores,
+divides, makes or lets go of anything, or that the test guards from a fault (a load through what the test checks),
+keeps its jump, and so does a function that computes with decimals.
+
+**What a program can observe:** only time. The body's sums still halt on overflow exactly when they would have:
+an addition the test skips adds 0.
+
+```spite
+var biggest = 0
+var index = 0
+while index < 4 {
+    var weighted = remainders[index] * weights[index]
+    if weighted > biggest {
+        biggest = weighted
+    }
+    index = index + 1
+}
+```
+
+`biggest` is picked through the mask, with no jump.
 
 ## Blocks are laid out along the likely path
 
@@ -1909,8 +1942,10 @@ once and adds with plain loads and stores (8.4 ms).
 ## A counted loop of reads shares its singleton's lock
 
 A counted loop that [holds a singleton's lock](#a-counted-loop-of-calls-to-one-singleton-takes-its-lock-once) and
-calls only functions of it that write nothing (no attribute of any class, followed through every call they make)
-and reach no other locked function holds the lock shared: it adds one to the singleton's count of readers, and
+calls only functions of it that write none of its state (no attribute of the singleton, of a class it reaches
+through its attributes or their type parameters, nor their items, followed through every call they make and every
+`drop()`; a write on a path that ends the program, such as the report a failed `crash` builds, does not count) and
+reach no other locked function holds the lock shared: it adds one to the singleton's count of readers, and
 when no thread owns the lock it runs, or it takes the one back and retries after giving the processor up. The
 readers of one singleton then run at once, each loop on its own thread. A function that takes the lock to change
 the singleton claims it as before and then waits until no reader is left, so a reader never sees it half-way
