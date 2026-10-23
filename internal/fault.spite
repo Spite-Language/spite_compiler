@@ -145,6 +145,140 @@ func hexadecimal(value: Long): String {
     return written.slice(start, 16)
 }
 
+func crashed(head: String, shown: String) {
+    var line = head
+    if not shown.is_empty() {
+        var length = shown.length()
+        var values = shown.slice(2, length)
+        line = "{head} ({values})"
+    }
+    written_to_the_errors("{line}\n")
+}
+
+func written_to_the_errors(text: String) {
+    var kernel = DynamicLibrary("kernel32.dll", 'identity', "")
+    var errors = kernel.GetStdHandle_as_long(-12)
+    var room = Buffer(8)
+    room.append_long_little_endian(0)
+    var length = text.length()
+    kernel.WriteFile(errors, text, length, room, 0)
+}
+
+func cut(text: String): String {
+    var length = text.length()
+    if length <= 80 {
+        return text
+    }
+    var end = 80
+    while end > 0 and is_a_continuation(text, end) {
+        end = end - 1
+    }
+    var kept = text.slice(0, end)
+    return "{kept}...({length} bytes)"
+}
+
+func is_a_continuation(text: String, at: Integer): Boolean {
+    var code = text.code_at(at)
+    return code >= 128 and code < 192
+}
+
+func frames() {
+    var kernel = DynamicLibrary("kernel32.dll", 'identity', "")
+    var own = kernel.GetModuleHandleA_as_long(0)
+    var code_start = own + 4096
+    var table = _call_table()
+    var at = _frame_pointer()
+    var walking = true
+    var steps = 0
+    var lines = 0
+    var previous = ""
+    var repeated = 0
+    while walking and steps < 256 {
+        var returned = _read_long(at + 8)
+        var offset = returned - code_start
+        var found = call_text_index(table, offset)
+        walking = found >= -1
+        if found >= 0 {
+            var text = call_text(table, found)
+            var frame_lines = text.split("\n")
+            var index = 0
+            while index < frame_lines.count() {
+                var frame_line = frame_lines[index]
+                if frame_line == previous {
+                    repeated = repeated + 1
+                } else {
+                    lines = written_frame(previous, repeated, lines)
+                    previous = frame_line
+                    repeated = 1
+                }
+                index = index + 1
+            }
+        }
+        var next = _read_long(at)
+        var is_the_caller = next > at and next - at < 16777216
+        walking = walking and is_the_caller
+        at = next
+        steps = steps + 1
+    }
+    lines = written_frame(previous, repeated, lines)
+    if walking or lines > 16 {
+        written_to_the_errors("spite.frame\tmore\n")
+    }
+}
+
+func written_frame(frame_line: String, repeated: Integer, lines: Integer): Integer {
+    if frame_line.is_empty() {
+        return lines
+    }
+    if lines >= 16 {
+        return lines + 1
+    }
+    if repeated > 1 {
+        written_to_the_errors("spite.frame\t{frame_line}\trepeated={repeated}\n")
+    } else {
+        written_to_the_errors("spite.frame\t{frame_line}\n")
+    }
+    return lines + 1
+}
+
+func call_text_index(table: Long, offset: Long): Long {
+    var count = _read_long(table)
+    var low: Long = 0
+    var high = count
+    while low < high {
+        var middle = (low + high) / 2
+        var entry = table + 8 + middle * 16
+        var start = _read_long(entry)
+        if start < offset {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+    if low >= count {
+        return -2
+    }
+    var found = table + 8 + low * 16
+    var start = _read_long(found)
+    if start != offset {
+        return -2
+    }
+    return _read_long(found + 8)
+}
+
+func call_text(table: Long, index: Long): String {
+    var count = _read_long(table)
+    var texts = table + 8 + count * 16
+    var placed = _read_long(texts + 8 + index * 8)
+    var at = texts + placed
+    var length = _read_long(at)
+    return text_at(at + 8, length)
+}
+
+func _call_table(): Long
+
+func _frame_pointer(): Long
+
 func _foreign_site(): Long
 
 func _foreign_site_text(site: Long): String

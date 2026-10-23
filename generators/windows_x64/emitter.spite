@@ -36,6 +36,12 @@ var flags_register = -1
 var frame_slots = 0
 var room_slots = 0
 var current_place = ""
+var current_block_place = ""
+var call_offsets = List<Integer>()
+var call_text_numbers = List<Integer>()
+var call_texts = List<String>()
+var call_numbers = Dictionary<String, Integer>()
+var call_frames = LowIntermediaryRepresentation.CallFrames()
 var place_starts = List<Integer>()
 var place_texts = List<String>()
 var small_blocks = SmallBlocks(encoder, program, data_fixups, import_fixups)
@@ -57,6 +63,9 @@ func emitted(): Buffer {
     if program.place_table >= 0 {
         write_the_places()
     }
+    if program.call_table >= 0 {
+        write_the_calls()
+    }
     call_fixups.each(fix_a_call)
     stop_fixups.each(fix_a_stop)
     return encoder.code
@@ -72,6 +81,93 @@ func note_the_place(start: Integer, place: String) {
     }
     place_starts.append(start)
     place_texts.append(place)
+}
+
+func note_a_call_site(line: Integer, frames: List<String>) {
+    assert program.call_table >= 0
+    var lines = List<String>()
+    var own = call_frames.frame_line(current_block_place, line)
+    if not own.is_empty() {
+        lines.append(own)
+    }
+    call_frames.add_every(lines, frames)
+    var number = -1
+    if not lines.is_empty() {
+        var text = lines.join("\n")
+        number = number_of_a_call_text(text)
+    }
+    var at = encoder.position()
+    call_offsets.append(at)
+    call_text_numbers.append(number)
+}
+
+func number_of_a_call_text(text: String): Integer {
+    if call_numbers.has(text) {
+        var known = call_numbers[text]
+        crash known
+        return known
+    }
+    var number = call_texts.count()
+    call_texts.append(text)
+    call_numbers[text] = number
+    return number
+}
+
+func write_the_calls() {
+    var table = Buffer()
+    var count: Long = call_offsets.count()
+    table.append_long(count)
+    var index = 0
+    while index < call_offsets.count() {
+        var offset = call_offsets[index]
+        var number = call_text_numbers[index]
+        crash number
+        var start: Long = offset
+        var numbered: Long = number
+        table.append_long(start)
+        table.append_long(numbered)
+        index = index + 1
+    }
+    var texts = Buffer()
+    var text_count: Long = call_texts.count()
+    texts.append_long(text_count)
+    var placed: Long = text_count * 8 + 8
+    var text_index = 0
+    while text_index < call_texts.count() {
+        texts.append_long(placed)
+        var measured = call_texts[text_index]
+        var measured_bytes = measured.to_bytes()
+        var measured_length = measured_bytes.count()
+        var padded = (measured_length + 7) / 8 * 8
+        placed = placed + 8 + padded
+        text_index = text_index + 1
+    }
+    text_index = 0
+    while text_index < call_texts.count() {
+        var text = call_texts[text_index]
+        var bytes = text.to_bytes()
+        var length: Long = bytes.count()
+        texts.append_long(length)
+        var byte_index = 0
+        while byte_index < bytes.count() {
+            var written = bytes[byte_index]
+            crash written
+            texts.append(written)
+            byte_index = byte_index + 1
+        }
+        while texts.count() % 8 != 0 {
+            texts.append(0)
+        }
+        text_index = text_index + 1
+    }
+    var byte_index = 0
+    while byte_index < texts.count() {
+        var copied = texts[byte_index]
+        crash copied
+        table.append(copied)
+        byte_index = byte_index + 1
+    }
+    program.data[program.call_table] = table
 }
 
 func write_the_places() {
@@ -530,6 +626,7 @@ func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index
         wanted = current_place
     }
     note_the_place(here, wanted)
+    current_block_place = wanted
     flags_register = -1
     block.instructions.each(emit_instruction)
     var last = block.instructions.last()
@@ -1538,6 +1635,9 @@ func emit_call(call: LowIntermediaryRepresentation.Instructions.Call) {
     var at = encoder.call_relative()
     var fixup = Fixup(at, call.function, 0)
     call_fixups.append(fixup)
+    if program.call_table >= 0 {
+        note_a_call_site(call.line, call.frames)
+    }
     if call.target >= 0 {
         write_from(call.target, encoder.rax)
     }
@@ -1560,6 +1660,9 @@ func emit_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
     }
     read_into(encoder.r11, call.address)
     encoder.call_r11()
+    if program.call_table >= 0 {
+        note_a_call_site(call.line, call.frames)
+    }
     if call.answers_32_bits {
         encoder.sign_extend_eax_into_rax()
     }
@@ -1907,7 +2010,11 @@ func emit_thread_identity(asked: LowIntermediaryRepresentation.Instructions.Thre
 }
 
 func emit_frame_address(found: LowIntermediaryRepresentation.Instructions.FrameAddress) {
-    encoder.slot_address(encoder.rax, current_header)
+    var header = 0
+    if current_is_resumable {
+        header = current_header
+    }
+    encoder.slot_address(encoder.rax, header)
     write_from(found.target, encoder.rax)
 }
 
