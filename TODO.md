@@ -24,7 +24,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Mortaro confirms or drops D634 to D637 and D643 to D653; D636 (type argument given at run time) contradicts monomorphisation
 
 - The rest of `internal/` is still Spite classes (D931): the assert ring (`asserts.spite`), the fault and crash reports (`fault.spite`), the copy table (`copy_table.spite`) and the REPL prompt (`prompt.spite`, `prompt_path.spite`) become functions the compiler writes, as the scheduler did, and then `internal/`, its folder map and `spite_compiler.spite`'s `load "internal"` go
-- A function that holds a `crash` is not inlined, because its report is written in line: the report becomes an out-of-line cold call taking the captured values, so the passing path and inlining are unaffected (D908)
 - The scheduler's crash lines name the program's frames only where the walk reaches them: a halt inside a `Concurrent`'s state machine prints no `spite.frame` line, since its frame lives on the heap (`concurrent_wait_cycle_in_place`)
 
 ## Faults found

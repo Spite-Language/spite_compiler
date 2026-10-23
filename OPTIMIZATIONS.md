@@ -687,6 +687,23 @@ A function that waits (a resumable function, whose values live in a heap frame a
 the lowering wrote it by every pass, and its values stay in its frame: the frame is sized from its registers
 before these passes run, and a value must be in the frame when the function resumes.
 
+## A crash's report is a cold call
+
+The code that reports a failed `crash` (every value it shows, the `spite: the program stopped` line and the
+frames) runs only once, as the program halts, so the compiler moves it out of the function before inlining: every
+run of blocks that can only end the program, eight instructions or more, becomes a function of its own
+(`<function>$cold<n>`) that takes the values it reads, and the guard calls it. The passing path is unchanged, and
+the function holding the guard is as small as it was without it, so it is inlined again.
+
+    func checked_half(value: Integer): Integer {
+        crash value >= 0
+        return value / 2
+    }
+
+is inlined into its caller as a compare, a branch to `checked_half$cold0(value)` and the division. The report reads
+the same: the cold function's calls carry no frame line of their own, and the call to it carries the guard's line,
+so `spite.frame` lines name the guard's function and its callers as before.
+
 ## Small functions are inlined
 
 A call to a function that waits for nothing and holds at most 24 instructions (an accessor, a list's `get_at` and
