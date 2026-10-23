@@ -183,7 +183,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The counts
 
-- Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, a function answering a singleton (a rebuilt attribute among them) neither counts it nor has its caller let it go, D949, and an attribute holding a quiet singleton is the singleton itself, D954; not built: kept in a local or a list it still is, and so is an attribute in a program with a `drop()`; the first-use test of a singleton read in a loop is made on every pass, even where it was made before the loop)
+- Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, a function answering a singleton (a rebuilt attribute among them) neither counts it nor has its caller let it go, D949, and an attribute holding a quiet singleton is the singleton itself, D954; not built: kept in a local or a list it still is, and so is an attribute in a program with a `drop()`; a singleton the entry class makes is never tested again outside what its defaults reach (D961), and a quiet one read in a loop is tested once before it (D967), but the first-use test of any other singleton read in a loop is made on every pass)
 - Singletons that hold nothing are static objects
 - Atomic reference counts only with threads
 - Plain reference counts where no thread reaches a class
@@ -247,8 +247,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The machine code (D771 to D775 are built)
 
-- Loop-invariant code motion (built, D803, D973): a load moves before its loop from the loop's first block when nothing in the loop writes memory or calls, and an attribute load from any block every pass runs when the loop writes only number items and does not test the object; a load in a loop that calls or writes an attribute is still made on every pass
-- A loop over one object's attributes keeps them in registers (built, D974): one object only, and not in a loop that calls (a call on a cold path, such as a buffer's growth, keeps the whole loop in memory)
+- Loop-invariant code motion (built, D803, D962, D973): a load without a region moves before its loop only from the loop's first block and only when nothing in the loop writes memory or calls (a load known never to change moves from anywhere); a load with a region moves from any block every pass runs when every write in the loop has another region; anything in a loop that calls is still made on every pass
+- In a program with threads a load moves out of a loop only when the compiler knows it never changes or no other thread touches its class (D968, D973): a load without a region (a worker's local list) is still made on every pass
+- Assigning a fresh empty `List()` to a slot whose old list nothing else holds (count 1, proven or tested once) clears the old list in place and keeps its room (D969); not built, and `a_list_of_lists_filled_again_keeps_each_lists_room` empties its outer list with `clear()` and appends fresh lists, which this does not cover
+- An attribute a loop updates is kept in a register (D966, D974) only when every access in the loop carries its region and the loop calls and allocates nothing: an access through a union, a shape or a type parameter, or any call (a buffer's growth on a cold path) keeps every attribute in memory; in a program with threads only a locked singleton's attributes and those of a class no other thread touches are kept
 - Decimals live in decimal registers (built, D971): a decimal load or store still passes through `rax`, a decimal constant is moved in from an immediate rather than read from the program's data, and `==` or `!=` of decimals still makes its answer before the branch
 - Common subexpressions across blocks only for registers written once (D803): a computation over a register written twice (a loop counter) is still made again in a later block, and a repeated comparison is made again
 - An unsigned 64-bit division by a constant that is not a power of two keeps the `div` (D804)

@@ -731,9 +731,10 @@ These run in this order on the low representation, then in the x64 generator:
    [common subexpressions](#the-same-computation-in-a-block-is-made-once) (`common_subexpressions`), copy propagation
    again, [proven bounds](#a-bound-a-signed-test-already-proved-is-not-tested-again) (`proven_bounds`), constant
    folding and jump threading again,
-   [attributes in registers](#a-loop-over-one-objects-attributes-keeps-them-in-registers) (`loop_attributes`),
    [remainder tests](#a-remainder-by-a-power-of-two-tested-against-zero-is-a-mask) (`remainder_tests`),
-   [loop invariants](#what-a-loop-does-not-change-is-computed-before-it) (`loop_invariants`), dead code again,
+   [loop invariants](#what-a-loop-does-not-change-is-computed-before-it) with
+   [attributes in registers](#an-attribute-a-loop-updates-lives-in-a-register-until-the-loop-ends)
+   (`loop_invariants`), copy propagation again, dead code again,
    [copy coalescing](#a-value-computed-only-to-be-copied-is-computed-in-place) (`copy_coalescing`), and dead code
    again;
 5. in `generators/windows_x64`: [block layout](#blocks-are-laid-out-along-the-likely-path),
@@ -1136,8 +1137,8 @@ A copy `t = s`, where `t` is written only by that copy and `s` is a parameter ne
 once earlier in the same block (with no read of `t` in between), is removed by reading `s` wherever `t` is read. So
 is a copy whose every read is later in its own block, with nothing writing `s` before the last of them, whatever
 writes `s` elsewhere: `r5 = angle; r9 = r5 + step` reads `angle` itself. Copy propagation runs once more after
-[attributes are put in registers](#a-loop-over-one-objects-attributes-keeps-them-in-registers), whose reads are such
-copies, and [copy coalescing](#a-value-computed-only-to-be-copied-is-computed-in-place) also moves decimal maths and
+[attributes are put in registers](#an-attribute-a-loop-updates-lives-in-a-register-until-the-loop-ends), whose reads
+are such copies, and [copy coalescing](#a-value-computed-only-to-be-copied-is-computed-in-place) also moves decimal maths and
 conversions into the register they are copied to.
 
 ## A value nobody reads is not computed
@@ -1166,28 +1167,57 @@ path leading in made, and forgetting loads at every write of memory), a repeat i
 
 It does not apply to checked arithmetic, a division or a comparison (which is better made again just before the
 branch that reads its flags), nor across blocks to a register written more than once or in a function of more than
-400 blocks.
+400 blocks. A load the compiler knows never changes (see [a singleton the entry class makes is never tested
+again](#a-singleton-the-entry-class-makes-is-never-tested-again)) is not forgotten at a write of memory or a call.
 
-## What a loop does not change is computed before it
+## A value stored is read back from its register
 
-A loop is found from each jump back to a block that dominates it. When the loop is entered from exactly one block
-that only goes on to it, an instruction in the loop is moved to the end of that block when every register it reads
-is written only outside the loop (or by an instruction already moved), it writes a register nothing else writes,
-and it is a constant, an unchecked arithmetic, a copy, a decimal arithmetic or conversion, or an address. A load
-moves too when it is in the loop's first block (which every pass runs) and nothing in the loop writes memory or calls
-(a retain only blocks a load of the count), and an attribute's load under the wider rule of
-[an attribute a loop only reads](#an-attribute-a-loop-only-reads-is-read-before-it). Each instruction moved runs once
-instead of once per pass. A block no path from the function's start reaches is no part of any loop.
+A store `[a + k] = v` stands, for what follows, for a load of the same width and offset from the same `a`: a load
+that repeats it, with no write of memory, call or allocation in between and neither `a` nor `v` written again, copies
+`v` instead, in a block and across blocks under the same rules as a repeated load. A 64-bit store stands for both a
+signed and an unsigned load; a 32-bit store only when `v` is known to fit what the load would give back: a checked
+32-bit addition or subtraction of that signedness, a 32-bit load of that signedness, or a constant in range.
 
-It does not apply to a function of more than 400 blocks or that waits, to checked arithmetic, divisions and
-comparisons, nor to a load past the loop's first block that is not an attribute's, since a pass that leaves early
-would not have made it.
+```spite
+var running = 0
 
-## A loop over one object's attributes keeps them in registers
+func add_attribute(attribute: Spite.Attribute) {
+    if attribute.class == Integer {
+        running = running + attribute.value
+    }
+}
+```
 
-A loop whose only reads and writes of memory are attributes of one object, at fixed offsets, reads each attribute
-once before it starts, works on registers, and writes back the attributes it changed where it ends
-(`low_optimization_passes/loop_attributes`):
+Unrolled over the four attributes of a `Stats`, the sum is four additions in registers, each stored, instead of a
+chain where every addition waited for the store before it to come back from memory
+(`reflection_on_constants_folds_and_unrolls` went from 110 ms to 34 ms, with the next section).
+
+**What a program can observe:** only the time. Every store is still made, so another thread or a later read sees
+the same memory.
+
+## An attribute a loop updates lives in a register until the loop ends
+
+Every load and store of an attribute through an object whose class is known exactly where it is read (not a union,
+a shape or a type parameter) carries the attribute it reads, its region (`Tally.total`; `--low-ir` prints it as
+`in Tally.total`). Two regions never share memory: an object has one class, and two attributes of one class have
+their own slots, so a store to `Tally.calls` cannot change what a load of `Tally.total` or `Counter.rounds` reads,
+whichever objects the registers hold. A load or store the compiler wrote itself (a count, a list's buffer, a
+singleton's lock) carries no region and may touch anything, except a list's count and buffer and a buffer's
+storage, which carry the regions `List_of_Float._length`, `List_of_Float._buffer` and `Buffer.$storage`, and an
+item of a list or vector of numbers, which carries the region of its class's items (`List_of_Float.[]`): items live
+in a buffer's storage, never in an object's slots.
+
+A loop in which every memory access carries a region, and which makes no call, allocation or other write of memory,
+keeps each region it stores to in a register when all its accesses go through one register written before the loop
+at one offset: the attribute is loaded once before the loop, each read inside is the register, each store writes
+the register (narrowed to the attribute's width when the value might not fit it), and it is stored once at each
+way out of the loop. It applies when the object is known to be there before the loop runs (the register is the
+slot of a singleton made at start, the loop's first block reads through it, or nothing in the loop tests it) and
+every way out leads only from the loop or only stops the program. In a program with threads it applies only to the
+attributes of a singleton that takes its lock, since those are only touched while the lock is held, and to the
+attributes of a class [no other thread touches](#an-attribute-a-loop-only-reads-is-read-before-it); any other
+object's attribute is still loaded and stored on every pass. The regions a loop only reads are read once before it,
+by the same rule.
 
 ```spite
 func advance() {
@@ -1203,18 +1233,59 @@ func advance() {
 }
 ```
 
-`angle`, `speed` and `turns` are read once, live in registers for the thousand passes (`angle` and `speed` in
-decimal registers), and `angle` and `turns` are written once, after the loop.
+`angle` and `turns` live in registers for the thousand passes (`angle` in a decimal register), `speed` is read once
+before the loop, and `angle` and `turns` are written once, after it, also when `advance` runs in a
+[band](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands).
 
-It applies when the object is the same register for the whole loop (a parameter, or a value written once before
-it), nothing in the loop tests it, copies it or computes with it, the loop calls nothing and makes, counts or frees
-nothing, two attributes it touches never overlap, and every block the loop leaves to is reached only from the loop
-(the writes go at its start) or only stops the program, and the object's class is not one that
-[work on another thread may write](#an-attribute-a-loop-only-reads-is-read-before-it). A failed check inside the loop (a checked `+` that
-overflows) still stops the program with its report; the attributes it changed are not written back first, and
-nothing reads them after.
+```spite
+func add(amount: Integer) {
+    total = total + amount
+    calls = calls + 1
+    if amount > largest {
+        largest = amount
+    }
+}
+```
 
-**What a program can observe:** nothing but time.
+Called from a counted loop that [holds `Tally`'s lock](#a-counted-loop-of-calls-to-one-singleton-takes-its-lock-once),
+`total`, `calls` and `largest` live in registers for the whole loop and are stored once when it ends
+(`a_counted_loop_of_calls_to_one_singleton_takes_its_lock_once` went from 42 ms to 22 ms,
+`thread_safety_for_singletons_the_cheapest_safe_form` from 8.4 ms to 2.1 ms).
+
+**What a program can observe:** only the time. A loop that stops the program halfway (a crash, an addition that does
+not fit) leaves the attribute as it was before the loop, which nothing can read afterwards.
+
+## A block nothing reaches leads nowhere
+
+A block no path from the function's start reaches (an empty block left after a branch was decided, the making of a
+singleton proven made) has no successors for the passes that follow blocks and for the register allocator: it is
+no loop's back edge, it makes no value live, and it is not counted as a way into the block after it. Before, such a
+block falling into a loop's body hid the loop from [what a loop does not change is computed
+before it](#what-a-loop-does-not-change-is-computed-before-it), cut the values [shared across
+blocks](#the-same-computation-in-a-block-is-made-once), and, laid out after the function's end and falling back
+into the middle, made every value live into its successor live to the end of the function and counted every block
+between as one loop deeper, so values that fit in registers were spilled. **What a program can observe:** only the
+time.
+
+## What a loop does not change is computed before it
+
+A loop is found from each jump back to a block that dominates it. When the loop is entered from exactly one block
+that only goes on to it, an instruction in the loop is moved to the end of that block when every register it reads
+is written only outside the loop (or by an instruction already moved), it writes a register nothing else writes,
+and it is a constant, an unchecked arithmetic, a copy, a decimal arithmetic or conversion, or an address. A load
+moves too when it is in the loop's first block (which every pass runs) and nothing in the loop writes memory or calls
+(a retain only blocks a load of the count), and an attribute's load under the wider rule of
+[an attribute a loop only reads](#an-attribute-a-loop-only-reads-is-read-before-it). Each instruction moved runs once
+instead of once per pass. A block no path from the function's start reaches is no part of any loop.
+
+It does not apply to a function of more than 400 blocks or that waits, to checked arithmetic, divisions and
+comparisons, nor to a load past the loop's first block that is not an attribute's, since a pass that leaves early
+would not have made it. In a program with threads a load without a region never moves: another thread may write
+what it reads, and a loop waiting for that write (`while not gate.is_open() { }`) would never see it and spin
+forever; a load with a region moves only under the rule of
+[an attribute a loop only reads](#an-attribute-a-loop-only-reads-is-read-before-it). A load the compiler knows never
+changes and can always be made (the slot of a singleton made at start, an attribute of a steady one) moves from any
+block of the loop, whatever the loop writes or calls.
 
 ## A remainder by a power of two tested against zero is a mask
 
@@ -1316,22 +1387,23 @@ with the same report.
 
 ## An attribute a loop only reads is read before it
 
-[What a loop does not change](#what-a-loop-does-not-change-is-computed-before-it) moves a load out of a loop only
-when nothing in the loop writes memory. The lowering marks two kinds of memory apart: an object's attributes (its
-own, a list's count and buffer, a buffer's storage) and the items of a list or vector of numbers. An item is never an
-attribute, so a loop whose only writes are items of numbers (`into[index] = from[index] * 1.5 + offset`) still reads
-its lists' counts and storages once, before it starts.
+[What a loop does not change](#what-a-loop-does-not-change-is-computed-before-it) moves a load without a region out
+of a loop only when nothing in the loop writes memory. A load with a
+[region](#an-attribute-a-loop-updates-lives-in-a-register-until-the-loop-ends) moves when every write in the loop is
+a store with a region and none of them is to the load's own region: two regions never share memory, so a loop whose
+only writes are items of numbers (`into[index] = from[index] * 1.5 + offset`) still reads its lists' counts and
+storages once, before it starts.
 
-A load of an attribute moves out of the loop from any block that every pass runs through (one that dominates the
-jump back), not only the loop's first block, when nothing in the loop tests the object it reads from: the object
-then holds the same value, and is valid, on every path into the loop, so reading it a pass early cannot fail where
-the loop would not have. A loop that tests the object (`if holder != null`, a `crash` on it) keeps the load where
-it is.
+Such a load moves from any block that every pass runs through (one that dominates the jump back), not only the
+loop's first block, when nothing in the loop tests the object it reads from: the object then holds the same value,
+and is valid, on every path into the loop, so reading it a pass early cannot fail where the loop would not have. A
+loop that tests the object (`if holder != null`, a `crash` on it) keeps the load where it is.
 
-An attribute of a class that work on another thread may write keeps its load in the loop, whatever the loop
-writes: a loop waiting for another thread (`while station.pumped() < 1000`) must see each new value. Such a class
-is one with a function that a `Parallel` reaches, by any chain of calls; the passes of a loop that
-[runs in bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) do not count, since each band writes
+In a program with threads, a region of a class that work on another thread may touch keeps its load in the loop,
+whatever the loop writes: a loop waiting for another thread (`while station.pumped() < 1000`) must see each new
+value. Such a class is one with a function that a `Parallel` reaches by any chain of calls, or whose attribute such a
+function reads or writes; the passes of a loop that
+[runs in bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) do not count, since each band touches
 only its own elements.
 
 **What a program can observe:** nothing but time.
@@ -1602,7 +1674,9 @@ functions do. A singleton no such work reaches gets none of them, and a program 
    with `this`; no other class writes its attributes. A read is one load and a write one store, which are atomic
    for an aligned slot. An update is a loop around one compare-exchange: it loads the attribute, computes the new
    value with its overflow check, and stores it only if the slot still holds what it loaded, so an addition that
-   does not fit halts before anything is written and no two threads lose an update.
+   does not fit halts before anything is written and no two threads lose an update. A singleton a counted loop in
+   the work would [hold for the whole loop](#a-counted-loop-of-calls-to-one-singleton-takes-its-lock-once) takes
+   the third form instead.
 3. **Its own lock, otherwise.** Each function of the singleton that reads `this` takes the singleton's lock for its
    whole call. The lock is a word in the singleton's slot holding the thread that owns it, with a count of how
    deep that thread holds it: a call by the owning thread only adds one to the count, a free lock is claimed with
@@ -1704,6 +1778,15 @@ func count_up(): Integer {
 Four `Parallel`s running `count_up` each take `Tally`'s lock once
 (`a_counted_loop_of_calls_to_one_singleton_takes_its_lock_once`).
 
+A call in the loop to a singleton that takes no lock (one that never changes after it is made, or that no thread
+reaches) does not count as a second singleton, so a loop may read settings from one singleton while it updates
+another. And a singleton that would be made safe with [atomics](#thread-safety-for-singletons-the-cheapest-safe-form)
+is given its lock instead when a counted loop in the work a `Parallel` runs would hold it: one lock taken per loop
+costs less than one compare-exchange per call. In `thread_safety_for_singletons_the_cheapest_safe_form` each of the
+four workers adds `settings.step_size()` into `counter.record()` a million times; `HitCounter` was updated with a
+compare-exchange on every call, four threads fighting over one cache line (144 ms); now each worker takes its lock
+once and adds with plain loads and stores (8.4 ms).
+
 **Not built:** a loop that is not counted testing the task count once before it starts.
 
 ## A loop whose passes write only their own item runs in bands
@@ -1784,6 +1867,45 @@ held elsewhere too, the rounds run over the whole list one after another, as wri
 
 **What a program can observe:** the time; a checked operation that overflows reports its band's frames, as in any
 band.
+
+## A singleton the entry class makes is never tested again
+
+The entry class's attribute defaults run before any other code of the program: a singleton they make on every path
+(`var counter = HitCounter()` in the entry file) is made before the entry function starts. Every function that
+cannot run before those defaults end reads such a singleton's slot without testing that it is made, and the load of
+the slot is known never to change, so it moves out of loops and is shared across calls and writes. When the
+singleton never changes after it is made (no function but its constructor assigns its attributes), the loads of its
+attributes are known never to change too.
+
+The functions that may run before the defaults end are found by following calls and function addresses from what
+the program's start calls up to and including the defaults, the fault handler and every singleton's destroy at
+exit; any function one of them reaches keeps every test. A function value is called only through an address taken
+by code that ran before, so following the addresses taken is enough.
+
+```spite
+var counter = HitCounter()
+var settings = Settings()
+
+func ThreadSafetyForSingletonsTheCheapestSafeForm() {
+    var rounds = count_on_four(1000000)
+    var name = settings.name()
+    var total = counter.total()
+    console.print(name, total, "after", rounds, "rounds")
+}
+```
+
+`Worker.run`, which reads `settings` and `counter` a million times on each of four threads, tests neither: the
+loop reads the step once before it starts and finds the counter's slot once.
+
+**When it does not apply:** a singleton made only by some paths of the defaults, or not by the entry class at all
+(then [made on first use](#a-singleton-is-made-on-first-use-by-a-function-of-its-own) as before), and every function
+the defaults, the fault handler or a destroy can reach. **What a program can observe:** only the time.
+
+A quiet singleton (its defaults and constructor only assign its own attributes from pure values, in a program with
+no `drop()`) read in a loop is tested once before the loop instead: making it earlier cannot be seen, and once made
+its slot never changes, so the loop reads the slot once. This is not done in a `--debug-memory` build, where making
+a singleton a loop that never runs would have made counts one more allocation (`singletons_made_on_first_use_never_counted`
+went from 15.5 ms to 13.9 ms).
 
 ## A chain of `filter_` steps runs as one loop
 

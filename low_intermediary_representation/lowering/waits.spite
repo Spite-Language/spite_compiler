@@ -21,6 +21,8 @@ var found_singletons = List<String>()
 var steady_singletons = List<String>()
 var atomic_singletons = List<String>()
 var shared_classes = List<String>()
+var touched_owners = Dictionary<String, List<String>>()
+var current_touched = List<String>()
 var has_callbacks = false
 var starts_itself = List<String>()
 var is_starting = false
@@ -64,6 +66,7 @@ func Waits(high: HighIntermediaryRepresentation.HighProgram) {
     locked = still_locked
     started.each(make_resumable)
     find_the_shared_classes()
+    lock_the_atomics_a_loop_holds(high)
 }
 
 # ../../OPTIMIZATIONS.md#an-attribute-a-loop-only-reads-is-read-before-it
@@ -84,12 +87,23 @@ func find_the_shared_classes() {
         if not seen.contains(key) {
             seen.append(key)
             var owner_key = owner_of(key)
-            if not shared_classes.contains(owner_key) {
-                shared_classes.append(owner_key)
-            }
+            share(owner_key)
+            share_the_touched(key)
             add_the_callees(key, waiting)
         }
     }
+}
+
+func share(class_key: String) {
+    if not shared_classes.contains(class_key) {
+        shared_classes.append(class_key)
+    }
+}
+
+func share_the_touched(key: String) {
+    var touched = touched_owners[key]
+    assert touched
+    touched.each(share)
 }
 
 func add_the_callees(key: String, waiting: List<String>) {
@@ -110,8 +124,56 @@ func is_a_band(key: String): Boolean {
     return last.starts_with("_each_range_")
 }
 
-func is_shared(class_key: String): Boolean {
-    return shared_classes.contains(class_key)
+func shared_owners(): List<String> {
+    return shared_classes
+}
+
+func lock_the_atomics_a_loop_holds(high: HighIntermediaryRepresentation.HighProgram) {
+    assert not atomic_singletons.is_empty()
+    var coarse = CoarseLoops(model, this)
+    coarse.takes_atomics = true
+    var index = 0
+    while index < high.built_functions.count() {
+        var function = high.built_functions[index]
+        var key = function.function.key()
+        if reached_in_parallel.contains(key) and not is_resumable(key) {
+            coarse.owner = function.function.owner
+            find_the_held_atomics(coarse, function.body)
+        }
+        index = index + 1
+    }
+}
+
+func find_the_held_atomics(coarse: CoarseLoops, block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        find_the_held_atomics_in(coarse, statement)
+        index = index + 1
+    }
+}
+
+func find_the_held_atomics_in(coarse: CoarseLoops, statement: HighIntermediaryRepresentation.Statements.Statement) {
+    if statement == HighIntermediaryRepresentation.Statements.While {
+        var held = coarse.singleton_held_by(statement)
+        var at = atomic_singletons.index_of(held)
+        if at {
+            atomic_singletons.remove_at(at)
+            locked.append(held)
+            return
+        }
+        find_the_held_atomics(coarse, statement.body)
+        return
+    }
+    if statement == HighIntermediaryRepresentation.Statements.If {
+        find_the_held_atomics(coarse, statement.then_branch)
+        find_the_held_atomics(coarse, statement.else_branch)
+        return
+    }
+    if statement == HighIntermediaryRepresentation.Statements.Block {
+        find_the_held_atomics(coarse, statement)
+    }
 }
 
 func is_atomic(class_key: String): Boolean {
@@ -193,6 +255,7 @@ func is_locked(key: String): Boolean {
 func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
     current = List<String>()
     current_makes = List<String>()
+    current_touched = List<String>()
     is_waiting = false
     touches_itself = false
     is_starting = false
@@ -206,6 +269,7 @@ func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
     }
     callees[key] = current
     makes[key] = current_makes
+    touched_owners[key] = current_touched
     if is_waiting {
         waits_itself.append(key)
     }
@@ -296,6 +360,7 @@ func read_a_held_value(value: HighIntermediaryRepresentation.Values.Value?) {
 }
 
 func read_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    current_touched.append(written.attribute.owner)
     if holds_work(written.attribute.attribute_type) {
         is_waiting = true
     }
@@ -361,7 +426,7 @@ func read_a_value(value: HighIntermediaryRepresentation.Values.Value?) {
     switch value {
         HighIntermediaryRepresentation.Values.Call: read_a_call(value)
         HighIntermediaryRepresentation.Values.Conversion: read_a_conversion(value)
-        HighIntermediaryRepresentation.Values.AttributeRead: read_a_value(value.object)
+        HighIntermediaryRepresentation.Values.AttributeRead: read_an_attribute(value)
         HighIntermediaryRepresentation.Values.Class.OfValue: read_a_value(value.described)
         HighIntermediaryRepresentation.Values.Class.Test: read_a_value(value.tested)
         HighIntermediaryRepresentation.Values.EnumFromText: read_a_value(value.text)
@@ -378,6 +443,11 @@ func read_a_value(value: HighIntermediaryRepresentation.Values.Value?) {
         HighIntermediaryRepresentation.Values.ThisRead: note_itself()
         _: return
     }
+}
+
+func read_an_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    current_touched.append(read.attribute.owner)
+    read_a_value(read.object)
 }
 
 func note_itself() {

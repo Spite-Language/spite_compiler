@@ -3,7 +3,6 @@ var operands = LowOptimizationPasses.Operands()
 var flow = LowOptimizationPasses.ObjectPlacement.Flow()
 var block_count = 0
 var dominators = List<Boolean>()
-var reached = List<Boolean>()
 var definitions = List<Integer>()
 var inside = List<Boolean>()
 var defined_inside = List<Boolean>()
@@ -11,11 +10,26 @@ var largest_function = 400
 var header = 0
 var preheader = 0
 var touches_memory = false
-var writes_beyond_items = false
 var counts_objects = false
+var uses_threads = false
+var locked_owners = List<String>()
+var shared_owners = List<String>()
 var latch_block = 0
-var copied_from = List<Integer>()
+var writes_outside_regions = false
+var stored_regions = List<String>()
 var tested_inside = List<Boolean>()
+var register_total = 0
+var defining = List<LowIntermediaryRepresentation.Instructions.Instruction?>()
+var regions = List<String>()
+var region_bases = List<Integer>()
+var region_offsets = List<Integer>()
+var region_widths = List<LowIntermediaryRepresentation.Width>()
+var region_signs = List<Boolean>()
+var region_stored = List<Boolean>()
+var region_loaded = List<Boolean>()
+var region_refused = List<Boolean>()
+var promotes = true
+var quiet_labels = List<Integer>()
 
 func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
@@ -25,6 +39,10 @@ func transformed(): LowIntermediaryRepresentation.LowFunction {
     block_count = function.blocks.count()
     if function.is_resumable or block_count > largest_function or block_count < 2 {
         return function
+    }
+    if not quiet_labels.is_empty() {
+        test_the_quiet_singletons_before_their_loops()
+        block_count = function.blocks.count()
     }
     flow.find_the_edges(function)
     find_the_dominators()
@@ -41,42 +59,219 @@ func transformed(): LowIntermediaryRepresentation.LowFunction {
     return function
 }
 
+func test_the_quiet_singletons_before_their_loops() {
+    var done = 0
+    var changed = true
+    while changed and done < 8 {
+        block_count = function.blocks.count()
+        flow.find_the_edges(function)
+        find_the_dominators()
+        changed = tested_one_before_its_loop()
+        done = done + 1
+    }
+}
+
+func tested_one_before_its_loop(): Boolean {
+    var latch = 0
+    while latch < block_count {
+        var leaving = flow.successors[latch]
+        crash leaving
+        var index = 0
+        while index < leaving.count() {
+            var target = leaving[index]
+            if dominates(target, latch) and tested_before_the_loop(target, latch) {
+                return true
+            }
+            index = index + 1
+        }
+        latch = latch + 1
+    }
+    return false
+}
+
+func tested_before_the_loop(loop_header: Integer, latch: Integer): Boolean {
+    header = loop_header
+    find_the_body(latch)
+    if not find_the_preheader() {
+        return false
+    }
+    var block_index = 0
+    while block_index < block_count {
+        var block = function.blocks[block_index]
+        crash block
+        if inside[block_index] == true and moved_a_quiet_test(block) {
+            return true
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func moved_a_quiet_test(block: LowIntermediaryRepresentation.LowBlock): Boolean {
+    var last = block.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        return moved_the_test_of(block, last)
+    }
+    return false
+}
+
+func moved_the_test_of(block: LowIntermediaryRepresentation.LowBlock, last: LowIntermediaryRepresentation.Instructions.Branch): Boolean {
+    var making = function.blocks[last.when_true]
+    crash making
+    if making.instructions.count() != 2 {
+        return false
+    }
+    var called = making.instructions[0]
+    var leaving = making.instructions[1]
+    crash called
+    crash leaving
+    var label = slot_tested_in(block)
+    if label < 0 or not quiet_labels.contains(label) {
+        return false
+    }
+    var maker = maker_of(called, leaving, last.when_false, label)
+    if maker.is_empty() {
+        return false
+    }
+    var after = last.when_false
+    var count = block.instructions.count()
+    var straight = LowIntermediaryRepresentation.Instructions.Jump(after)
+    block.instructions[count - 1] = straight
+    var skipped = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var gone_on = LowIntermediaryRepresentation.Instructions.Jump(after)
+    skipped.append(gone_on)
+    making.instructions = skipped
+    mark_the_slot_load(block, label)
+    test_in_the_preheader(label, maker)
+    return true
+}
+
+func slot_tested_in(block: LowIntermediaryRepresentation.LowBlock): Integer {
+    var index = block.instructions.count() - 1
+    while index >= 0 {
+        var instruction = block.instructions[index]
+        if instruction == LowIntermediaryRepresentation.Instructions.DataAddress {
+            return instruction.label
+        }
+        index = index - 1
+    }
+    return -1
+}
+
+func maker_of(
+    called: LowIntermediaryRepresentation.Instructions.Instruction,
+    leaving: LowIntermediaryRepresentation.Instructions.Instruction,
+    after: Integer,
+    label: Integer,
+): String {
+    if leaving == LowIntermediaryRepresentation.Instructions.Jump {
+        if leaving.block != after {
+            return ""
+        }
+        return maker_named(called, label)
+    }
+    return ""
+}
+
+func maker_named(called: LowIntermediaryRepresentation.Instructions.Instruction, label: Integer): String {
+    if called == LowIntermediaryRepresentation.Instructions.Call {
+        return maker_called(called, label)
+    }
+    return ""
+}
+
+func maker_called(called: LowIntermediaryRepresentation.Instructions.Call, label: Integer): String {
+    var named = called.function.starts_with("_make_") and called.function.ends_with("${label}")
+    if named and called.arguments.is_empty() {
+        return called.function
+    }
+    return ""
+}
+
+func mark_the_slot_load(block: LowIntermediaryRepresentation.LowBlock, label: Integer) {
+    var slot = -1
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if instruction == LowIntermediaryRepresentation.Instructions.DataAddress {
+            slot = slot_of(instruction, label, slot)
+        }
+        if instruction == LowIntermediaryRepresentation.Instructions.Load {
+            mark_if_the_slot(instruction, slot)
+        }
+        index = index + 1
+    }
+}
+
+func slot_of(addressed: LowIntermediaryRepresentation.Instructions.DataAddress, label: Integer, known: Integer): Integer {
+    if addressed.label == label {
+        return addressed.target
+    }
+    return known
+}
+
+func mark_if_the_slot(loaded: LowIntermediaryRepresentation.Instructions.Load, slot: Integer) {
+    if slot >= 0 and loaded.address == slot and loaded.offset == 0 and loaded.width == 'bits_64' {
+        loaded.is_invariant = true
+    }
+}
+
+func test_in_the_preheader(label: Integer, maker: String) {
+    var first = operands.most_register_of(function)
+    var slot = first
+    var object = first + 1
+    var zero = first + 2
+    var missing = first + 3
+    if function.register_count < first + 4 {
+        function.register_count = first + 4
+    }
+    var testing_index = function.blocks.count()
+    var making_index = testing_index + 1
+    var entering_index = testing_index + 2
+    var testing = LowIntermediaryRepresentation.LowBlock()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    testing.instructions.append(addressed)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(object, slot, 0, 'bits_64')
+    testing.instructions.append(loaded)
+    var nothing = LowIntermediaryRepresentation.Instructions.Constant(zero, 0)
+    testing.instructions.append(nothing)
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', object, zero)
+    testing.instructions.append(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, making_index, entering_index)
+    testing.instructions.append(test)
+    var making = LowIntermediaryRepresentation.LowBlock()
+    var no_arguments = List<Integer>()
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, maker, no_arguments)
+    making.instructions.append(called)
+    var made = LowIntermediaryRepresentation.Instructions.Jump(entering_index)
+    making.instructions.append(made)
+    var entered = LowIntermediaryRepresentation.LowBlock()
+    var back = LowIntermediaryRepresentation.Instructions.Jump(header)
+    entered.instructions.append(back)
+    var entering = function.blocks[preheader]
+    crash entering
+    var into_the_test = LowIntermediaryRepresentation.Instructions.Jump(testing_index)
+    var last = entering.instructions.last()
+    var ends = false
+    if last {
+        ends = flow.ends_the_block(last)
+    }
+    if ends {
+        var count = entering.instructions.count()
+        entering.instructions[count - 1] = into_the_test
+    } else {
+        entering.instructions.append(into_the_test)
+    }
+    function.blocks.append(testing)
+    function.blocks.append(making)
+    function.blocks.append(entered)
+}
+
 func dominates(dominator: Integer, block_index: Integer): Boolean {
     return dominators[block_index * block_count + dominator] == true
 }
 
-func find_the_reached() {
-    reached.clear()
-    var index = 0
-    while index < block_count {
-        reached.append(false)
-        index = index + 1
-    }
-    var waiting = List<Integer>()
-    waiting.append(0)
-    while not waiting.is_empty() {
-        var taken = waiting.remove_last()
-        crash taken
-        if reached[taken] != true {
-            reached[taken] = true
-            var leaving = flow.successors[taken]
-            crash leaving
-            var leaving_index = 0
-            while leaving_index < leaving.count() {
-                var next = leaving[leaving_index]
-                waiting.append(next)
-                leaving_index = leaving_index + 1
-            }
-        }
-    }
-}
-
-func is_reached(block_index: Integer): Boolean {
-    return reached[block_index] == true
-}
-
 func find_the_dominators() {
-    find_the_reached()
     dominators.clear()
     var total = block_count * block_count
     var index = 0
@@ -112,7 +307,7 @@ func narrow_the_dominators(block_index: Integer): Boolean {
             var index = 0
             while index < coming.count() {
                 var predecessor = coming[index]
-                if is_reached(predecessor) and not dominates(candidate, predecessor) {
+                if not dominates(candidate, predecessor) {
                     kept = false
                 }
                 index = index + 1
@@ -128,21 +323,24 @@ func narrow_the_dominators(block_index: Integer): Boolean {
 }
 
 func count_the_definitions() {
-    var register_total = operands.most_register_of(function)
+    var register_total_found = operands.most_register_of(function)
     definitions.clear()
     defined_inside.clear()
+    tested_inside.clear()
+    defining.clear()
     var index = 0
-    while index < register_total {
+    while index < register_total_found {
         var implicit = 0
         if index < function.parameter_count {
             implicit = 1
         }
         definitions.append(implicit)
         defined_inside.append(false)
-        copied_from.append(-1)
         tested_inside.append(false)
+        defining.append(null)
         index = index + 1
     }
+    register_total = register_total_found
     var block_index = 0
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
@@ -151,8 +349,10 @@ func count_the_definitions() {
             var instruction = block.instructions[instruction_index]
             operands.read(instruction)
             operands.defines.each(count_a_definition)
-            if instruction == LowIntermediaryRepresentation.Instructions.Copy {
-                copied_from[instruction.target] = instruction.source
+            if operands.defines.count() == 1 {
+                var defined = operands.defines[0]
+                crash defined
+                defining[defined] = instruction
             }
             instruction_index = instruction_index + 1
         }
@@ -167,7 +367,6 @@ func count_a_definition(register: Integer) {
 }
 
 func hoist_the_loops_ending_at(latch: Integer) {
-    assert is_reached(latch)
     var leaving = flow.successors[latch]
     crash leaving
     var index = 0
@@ -199,6 +398,393 @@ func hoist_the_loop(loop_header: Integer, latch: Integer) {
         }
         round = round + 1
     }
+    promote_the_regions()
+}
+
+func promote_the_regions() {
+    regions.clear()
+    region_bases.clear()
+    region_offsets.clear()
+    region_widths.clear()
+    region_signs.clear()
+    region_stored.clear()
+    region_loaded.clear()
+    region_refused.clear()
+    promotes = true
+    var block_index = 0
+    while block_index < block_count {
+        if inside[block_index] == true {
+            var block = function.blocks[block_index]
+            crash block
+            block.instructions.each(note_a_region)
+        }
+        block_index = block_index + 1
+    }
+    assert promotes and leaves_only_into_its_own_exits()
+    var index = 0
+    while index < regions.count() {
+        var promotable = region_stored[index] == true and region_refused[index] != true
+        if promotable and has_a_safe_base(index) {
+            promote_a_region(index)
+        }
+        index = index + 1
+    }
+}
+
+func note_a_region(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Load: note_a_load_place(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: note_a_store_place(instruction)
+        _: note_a_plain(instruction)
+    }
+}
+
+func note_a_plain(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if not reads_only(instruction) {
+        promotes = false
+    }
+}
+
+func note_a_load_place(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    if loaded.is_swapped {
+        promotes = false
+        return
+    }
+    note_a_place(loaded.region, loaded.address, loaded.offset, loaded.width, loaded.is_signed, false)
+}
+
+func note_a_store_place(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    if stored.is_swapped {
+        promotes = false
+        return
+    }
+    note_a_place(stored.region, stored.address, stored.offset, stored.width, true, true)
+}
+
+func note_a_place(
+    region: String,
+    address: Integer,
+    offset: Integer,
+    width: LowIntermediaryRepresentation.Width,
+    signed: Boolean,
+    stores: Boolean,
+) {
+    if region.is_empty() {
+        promotes = false
+        return
+    }
+    var found = regions.index_of(region)
+    if not found {
+        regions.append(region)
+        region_bases.append(address)
+        region_offsets.append(offset)
+        region_widths.append(width)
+        region_signs.append(signed)
+        region_stored.append(stores)
+        region_loaded.append(not stores)
+        var outside = address >= 0 and address < defined_inside.count() and defined_inside[address] != true
+        var held = outside and may_hold_in_a_register(region)
+        region_refused.append(not held)
+        return
+    }
+    var same_place = region_bases[found] == address and region_offsets[found] == offset
+    if not same_place or region_widths[found] != width {
+        region_refused[found] = true
+    }
+    if stores {
+        region_stored[found] = true
+    } else {
+        note_a_loaded_sign(found, signed)
+    }
+}
+
+func note_a_loaded_sign(found: Integer, signed: Boolean) {
+    if region_loaded[found] != true {
+        region_loaded[found] = true
+        region_signs[found] = signed
+        return
+    }
+    if region_signs[found] != signed {
+        region_refused[found] = true
+    }
+}
+
+func may_hold_in_a_register(region: String): Boolean {
+    if not uses_threads {
+        return true
+    }
+    var named = region
+    if named.ends_with("?") {
+        var length = named.length()
+        named = named.slice(0, length - 1)
+    }
+    var parts = named.split(".")
+    var last = parts.count() - 1
+    parts.remove_at(last)
+    var owner = parts.join(".")
+    return locked_owners.contains(owner) or not shared_owners.contains(owner)
+}
+
+func leaves_only_into_its_own_exits(): Boolean {
+    var block_index = 0
+    while block_index < block_count {
+        if inside[block_index] == true and not exits_cleanly(block_index) {
+            return false
+        }
+        block_index = block_index + 1
+    }
+    return true
+}
+
+func exits_cleanly(block_index: Integer): Boolean {
+    var leaving = flow.successors[block_index]
+    crash leaving
+    var index = 0
+    while index < leaving.count() {
+        var next = leaving[index]
+        if inside[next] != true and not is_an_own_exit(next) and not only_stops(next) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_an_own_exit(block_index: Integer): Boolean {
+    var coming = flow.predecessors_of(block_index)
+    var index = 0
+    while index < coming.count() {
+        var predecessor = coming[index]
+        if inside[predecessor] != true {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func only_stops(block_index: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if instruction == LowIntermediaryRepresentation.Instructions.Stop {
+            return not instruction.continues
+        }
+        if instruction != LowIntermediaryRepresentation.Instructions.Constant {
+            return false
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func has_a_safe_base(index: Integer): Boolean {
+    var address = region_bases[index]
+    crash address
+    if not is_tested_inside(address) {
+        return true
+    }
+    var source = address
+    var steps = 0
+    while steps < 8 and is_a_copy(defining[source]) {
+        source = copied_from(defining[source], source)
+        steps = steps + 1
+    }
+    if is_an_invariant_load(defining[source]) {
+        return true
+    }
+    var head = function.blocks[header]
+    crash head
+    var position = 0
+    while position < head.instructions.count() {
+        var instruction = head.instructions[position]
+        if reads_through(instruction, address) {
+            return true
+        }
+        position = position + 1
+    }
+    return false
+}
+
+func is_a_copy(made: LowIntermediaryRepresentation.Instructions.Instruction?): Boolean {
+    return made == LowIntermediaryRepresentation.Instructions.Copy
+}
+
+func copied_from(made: LowIntermediaryRepresentation.Instructions.Instruction?, known: Integer): Integer {
+    if made == LowIntermediaryRepresentation.Instructions.Copy and (made.source >= 0 and made.source < definitions.count() and definitions[made.source] == 1) {
+        return made.source
+    }
+    return known
+}
+
+func is_an_invariant_load(made: LowIntermediaryRepresentation.Instructions.Instruction?): Boolean {
+    if made == LowIntermediaryRepresentation.Instructions.Load {
+        return made.is_invariant
+    }
+    return false
+}
+
+func reads_through(instruction: LowIntermediaryRepresentation.Instructions.Instruction, address: Integer): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Load: return instruction.address == address
+        LowIntermediaryRepresentation.Instructions.Store: return instruction.address == address
+        _: return false
+    }
+}
+
+func promote_a_region(index: Integer) {
+    var region = regions[index]
+    var address = region_bases[index]
+    var offset = region_offsets[index]
+    var width = region_widths[index]
+    var signed = region_signs[index] == true
+    crash region
+    crash address
+    crash offset
+    crash width
+    var held = fresh_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(held, address, offset, width)
+    loaded.is_signed = signed
+    loaded.region = region
+    hoist(loaded)
+    var block_index = 0
+    while block_index < block_count {
+        var block = function.blocks[block_index]
+        crash block
+        if inside[block_index] == true {
+            block.instructions = held_in(block, region, held, width, signed)
+        } else if is_an_exit(block_index) {
+            var stored = LowIntermediaryRepresentation.Instructions.Store(address, offset, held, width)
+            stored.region = region
+            block.instructions.insert(0, stored)
+        }
+        block_index = block_index + 1
+    }
+}
+
+func is_an_exit(block_index: Integer): Boolean {
+    var coming = flow.predecessors_of(block_index)
+    return not coming.is_empty() and is_an_own_exit(block_index)
+}
+
+func fresh_register(): Integer {
+    var made = register_total
+    register_total = register_total + 1
+    definitions.append(2)
+    defined_inside.append(false)
+    tested_inside.append(false)
+    defining.append(null)
+    if function.register_count < register_total {
+        function.register_count = register_total
+    }
+    return made
+}
+
+func held_in(
+    block: LowIntermediaryRepresentation.LowBlock,
+    region: String,
+    held: Integer,
+    width: LowIntermediaryRepresentation.Width,
+    signed: Boolean,
+): List<LowIntermediaryRepresentation.Instructions.Instruction> {
+    var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if not is_in_the_region(instruction, region) {
+            kept.append(instruction)
+        } else if instruction == LowIntermediaryRepresentation.Instructions.Load {
+            var read = LowIntermediaryRepresentation.Instructions.Copy(instruction.target, held)
+            kept.append(read)
+        } else if instruction == LowIntermediaryRepresentation.Instructions.Store {
+            write_into_the_held(kept, instruction, held, width, signed)
+        }
+        index = index + 1
+    }
+    return kept
+}
+
+func is_in_the_region(instruction: LowIntermediaryRepresentation.Instructions.Instruction, region: String): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Load: return instruction.region == region
+        LowIntermediaryRepresentation.Instructions.Store: return instruction.region == region
+        _: return false
+    }
+}
+
+func write_into_the_held(
+    kept: List<LowIntermediaryRepresentation.Instructions.Instruction>,
+    stored: LowIntermediaryRepresentation.Instructions.Store,
+    held: Integer,
+    width: LowIntermediaryRepresentation.Width,
+    signed: Boolean,
+) {
+    var shift = 64 - bits_in(width)
+    if shift == 0 or fits_already(stored.source, width, signed) {
+        var written = LowIntermediaryRepresentation.Instructions.Copy(held, stored.source)
+        kept.append(written)
+        return
+    }
+    var amount = fresh_register()
+    var by = LowIntermediaryRepresentation.Instructions.Constant(amount, shift)
+    kept.append(by)
+    var raised = fresh_register()
+    var up = LowIntermediaryRepresentation.Instructions.Arithmetic(raised, 'shift_left', stored.source, amount)
+    up.is_checked = false
+    kept.append(up)
+    var down = LowIntermediaryRepresentation.Instructions.Arithmetic(held, 'shift_right', raised, amount)
+    down.is_checked = false
+    down.is_signed = signed
+    kept.append(down)
+}
+
+func bits_in(width: LowIntermediaryRepresentation.Width): Integer {
+    switch width {
+        'bits_8': return 8
+        'bits_16': return 16
+        'bits_32': return 32
+        _: return 64
+    }
+}
+
+func fits_already(source: Integer, width: LowIntermediaryRepresentation.Width, signed: Boolean): Boolean {
+    if source < 0 or source >= definitions.count() or definitions[source] != 1 {
+        return false
+    }
+    var made = defining[source]
+    if made == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        return fits_from_arithmetic(made, width, signed)
+    }
+    if made == LowIntermediaryRepresentation.Instructions.Load {
+        return made.width == width and made.is_signed == signed
+    }
+    if made == LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic {
+        return fits_as_a_decimal(made.is_double, width, signed)
+    }
+    if made == LowIntermediaryRepresentation.Instructions.Decimal.Conversion {
+        var is_double = made.to_decimal_size == 8
+        return made.to_decimal_size > 0 and fits_as_a_decimal(is_double, width, signed)
+    }
+    return false
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
+func fits_as_a_decimal(is_double: Boolean, width: LowIntermediaryRepresentation.Width, signed: Boolean): Boolean {
+    if is_double {
+        return width == 'bits_64'
+    }
+    return width == 'bits_32' and not signed
+}
+
+func fits_from_arithmetic(
+    made: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    width: LowIntermediaryRepresentation.Width,
+    signed: Boolean,
+): Boolean {
+    var adds = made.operator == 'add' or made.operator == 'subtract'
+    return adds and made.is_checked and made.width == 'bits_32' and width == 'bits_32' and made.is_signed == signed
 }
 
 func find_the_body(latch: Integer) {
@@ -214,7 +800,7 @@ func find_the_body(latch: Integer) {
     while not waiting.is_empty() {
         var taken = waiting.remove_last()
         crash taken
-        if inside[taken] != true and is_reached(taken) {
+        if inside[taken] != true {
             inside[taken] = true
             var coming = flow.predecessors_of(taken)
             var coming_index = 0
@@ -233,7 +819,7 @@ func find_the_preheader(): Boolean {
     var index = 0
     while index < coming.count() {
         var predecessor = coming[index]
-        if inside[predecessor] != true and is_reached(predecessor) {
+        if inside[predecessor] != true {
             if found >= 0 {
                 return false
             }
@@ -255,7 +841,8 @@ func find_the_preheader(): Boolean {
 
 func study_the_body() {
     touches_memory = false
-    writes_beyond_items = false
+    writes_outside_regions = false
+    stored_regions.clear()
     counts_objects = false
     var index = 0
     while index < defined_inside.count() {
@@ -286,22 +873,26 @@ func study_an_instruction(instruction: LowIntermediaryRepresentation.Instruction
     }
     if instruction == LowIntermediaryRepresentation.Instructions.Retain {
         counts_objects = true
+        writes_outside_regions = true
         return
     }
     if not reads_only(instruction) {
         touches_memory = true
-        if not writes_an_item(instruction) {
-            writes_beyond_items = true
-        }
+        note_a_write(instruction)
     }
 }
 
 # ../../OPTIMIZATIONS.md#an-attribute-a-loop-only-reads-is-read-before-it
-func writes_an_item(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+func note_a_write(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
     if instruction == LowIntermediaryRepresentation.Instructions.Store {
-        return instruction.is_element
+        if instruction.region.is_empty() {
+            writes_outside_regions = true
+        } else if not stored_regions.contains(instruction.region) {
+            stored_regions.append(instruction.region)
+        }
+        return
     }
-    return false
+    writes_outside_regions = true
 }
 
 func mark_tested(register: Integer) {
@@ -309,9 +900,7 @@ func mark_tested(register: Integer) {
     var steps = 0
     while current >= 0 and current < tested_inside.count() and steps < 8 {
         tested_inside[current] = true
-        var source = copied_from[current]
-        crash source
-        current = source
+        current = copy_source_of(current)
         steps = steps + 1
     }
 }
@@ -323,12 +912,34 @@ func is_tested_inside(register: Integer): Boolean {
         if tested_inside[current] == true {
             return true
         }
-        var source = copied_from[current]
-        crash source
-        current = source
+        current = copy_source_of(current)
         steps = steps + 1
     }
     return false
+}
+
+func no_other_thread_writes(region: String): Boolean {
+    if not uses_threads {
+        return true
+    }
+    var named = region
+    if named.ends_with("?") {
+        var length = named.length()
+        named = named.slice(0, length - 1)
+    }
+    var parts = named.split(".")
+    var last = parts.count() - 1
+    parts.remove_at(last)
+    var owner = parts.join(".")
+    return not shared_owners.contains(owner)
+}
+
+func copy_source_of(register: Integer): Integer {
+    var made = defining[register]
+    if made == LowIntermediaryRepresentation.Instructions.Copy {
+        return made.source
+    }
+    return -1
 }
 
 func mark_defined_inside(register: Integer) {
@@ -414,16 +1025,30 @@ func may_move(instruction: LowIntermediaryRepresentation.Instructions.Instructio
 }
 
 func may_move_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load, block_index: Integer): Boolean {
-    if counts_objects and loaded.offset == 8 or loaded.is_shared {
+    if loaded.is_invariant {
+        return true
+    }
+    if counts_objects and loaded.offset == 8 {
         return false
     }
-    if touches_memory and (writes_beyond_items or not loaded.is_attribute) {
+    if not loaded.region.is_empty() {
+        return may_move_a_region_load(loaded, block_index)
+    }
+    if uses_threads or block_index != header or touches_memory {
+        return false
+    }
+    return true
+}
+
+func may_move_a_region_load(loaded: LowIntermediaryRepresentation.Instructions.Load, block_index: Integer): Boolean {
+    var held = no_other_thread_writes(loaded.region)
+    if not held or writes_outside_regions or stored_regions.contains(loaded.region) {
         return false
     }
     if block_index == header {
         return true
     }
-    return loaded.is_attribute and dominates(block_index, latch_block) and not is_tested_inside(loaded.address)
+    return dominates(block_index, latch_block) and not is_tested_inside(loaded.address)
 }
 
 func hoist(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
