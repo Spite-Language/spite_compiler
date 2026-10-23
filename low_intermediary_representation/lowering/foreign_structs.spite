@@ -1,0 +1,199 @@
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low_program = LowIntermediaryRepresentation.LowProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
+var passed = List<HighIntermediaryRepresentation.Values.Value>()
+var rooms = List<Integer>()
+var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+
+func ForeignStructs(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+func is_a_struct(argument: HighIntermediaryRepresentation.Values.Value): Boolean {
+    return argument.value_type.kind == 'shape'
+}
+
+func is_a_number_list(argument: HighIntermediaryRepresentation.Values.Value): Boolean {
+    var argument_type = argument.value_type
+    if argument_type.kind != 'object' or argument_type.name == "String" or argument_type.name == "Buffer" {
+        return false
+    }
+    var model = lowering.layout.program.class_named(argument_type.name)
+    crash model
+    var buffer_attribute = model.attribute_named("_buffer")
+    if buffer_attribute {
+        return true
+    }
+    return false
+}
+
+func shape_of(argument: HighIntermediaryRepresentation.Values.Value): Model.ShapeModel {
+    var shape = lowering.layout.program.shape_keyed(argument.value_type.name)
+    crash shape
+    return shape
+}
+
+func offsets_of(shape: Model.ShapeModel): List<Integer> {
+    var offsets = List<Integer>()
+    var offset = 0
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        crash member.answer
+        if member.is_an_attribute {
+            var width = width_in_a_struct(member.answer)
+            var past = offset % width
+            if past > 0 {
+                offset = offset + width - past
+            }
+            offsets.append(offset)
+            offset = offset + width
+        }
+        index = index + 1
+    }
+    return offsets
+}
+
+func size_of(shape: Model.ShapeModel): Integer {
+    var offset = 0
+    var widest = 1
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        crash member.answer
+        if member.is_an_attribute {
+            var width = width_in_a_struct(member.answer)
+            if width > widest {
+                widest = width
+            }
+            var past = offset % width
+            if past > 0 {
+                offset = offset + width - past
+            }
+            offset = offset + width
+        }
+        index = index + 1
+    }
+    var tail = offset % widest
+    if tail > 0 {
+        offset = offset + widest - tail
+    }
+    return offset
+}
+
+func width_in_a_struct(held: Model.Type): Integer {
+    var scalar = lowering.scalars.of(held.name)
+    crash scalar
+    return scalar.size
+}
+
+func struct_of(argument: HighIntermediaryRepresentation.Values.Value): Integer {
+    var shape = shape_of(argument)
+    var offsets = offsets_of(shape)
+    var size = size_of(shape)
+    var room = lowering.new_register()
+    if lowering.resumable_mode {
+        var allocated = LowIntermediaryRepresentation.Instructions.Allocate(room, size)
+        lowering.emit(allocated)
+    } else {
+        var reserved = LowIntermediaryRepresentation.Instructions.FrameRoom(room, size)
+        lowering.emit(reserved)
+    }
+    var place = 0
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.is_an_attribute {
+            var offset = offsets[place]
+            crash offset
+            write_a_field(argument, shape, member, room, offset)
+            place = place + 1
+        }
+        index = index + 1
+    }
+    passed.append(argument)
+    rooms.append(room)
+    return room
+}
+
+func write_a_field(
+    argument: HighIntermediaryRepresentation.Values.Value,
+    shape: Model.ShapeModel,
+    member: Model.FunctionModel,
+    room: Integer,
+    offset: Integer,
+) {
+    crash member.answer
+    var read = HighIntermediaryRepresentation.Values.ShapeCall(shape, member, argument, no_arguments)
+    var field = lowering.lower_value(read)
+    var width = lowering.width_of(member.answer)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(room, offset, field.value, width)
+    lowering.emit(stored)
+}
+
+func storage_of_a_list(argument: HighIntermediaryRepresentation.Values.Value): Integer {
+    var list = lowering.lower_value(argument)
+    lowering.release_later(list, argument.value_type)
+    var model = lowering.layout.program.class_named(argument.value_type.name)
+    crash model
+    var buffer_attribute = model.attribute_named("_buffer")
+    crash buffer_attribute
+    var buffer_offset = lowering.layout.offset_of(buffer_attribute)
+    var buffer = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(buffer, list.value, buffer_offset, 'bits_64')
+    lowering.emit(loaded)
+    return lowering.storage_of(buffer)
+}
+
+func written_back() {
+    var index = 0
+    while index < passed.count() {
+        var argument = passed[index]
+        var room = rooms[index]
+        crash room
+        write_back(argument, room)
+        index = index + 1
+    }
+}
+
+func write_back(argument: HighIntermediaryRepresentation.Values.Value, room: Integer) {
+    var shape = shape_of(argument)
+    var offsets = offsets_of(shape)
+    var object = lowering.lower_value(argument)
+    var place = 0
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.is_an_attribute {
+            var offset = offsets[place]
+            crash offset
+            read_a_field(shape, member, object.value, room, offset)
+            place = place + 1
+        }
+        index = index + 1
+    }
+    lowering.release_later(object, argument.value_type)
+    if lowering.resumable_mode {
+        var freed = LowIntermediaryRepresentation.Instructions.Free(room)
+        lowering.emit(freed)
+    }
+}
+
+func read_a_field(
+    shape: Model.ShapeModel,
+    member: Model.FunctionModel,
+    object: Integer,
+    room: Integer,
+    offset: Integer,
+) {
+    crash member.answer
+    var target = lowering.new_register()
+    var width = lowering.width_of(member.answer)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(target, room, offset, width)
+    loaded.is_signed = lowering.is_signed(member.answer)
+    lowering.emit(loaded)
+    var field = lowering.single(target)
+    lowering.store_through_shape(shape, member.name, object, field, member.answer)
+}
