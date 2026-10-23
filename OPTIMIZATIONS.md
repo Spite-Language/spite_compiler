@@ -71,12 +71,15 @@ uncounted. Ten million calls of `measure` went from 0.35 s to 0.22 s.
 
 ## A name holding an item or an attribute is not counted
 
-`var held = this.part`, or a list's own `var held = _read_value(index)`, does not count `held` when nothing after
-it in its block can write the slot it came from: no assignment of an attribute on its path and no call that may
+`var held = this.part`, `var point = points[position]` once the read is proven, or a list's own
+`var held = _read_value(index)`, does not count `held` when nothing after it in its block can write the slot it
+came from: no assignment of an attribute on its path and no call that may
 write one, no write into a list of that class (`_write_value`, `_forget_value`) and no call that may make one. The
 name is then read as it is and let go of nothing when its block ends. This is what makes a list's templates
 (`contains`, `index_of`, `join`, `copy`, and the others handed a function that cannot write the list) read their
-items without counting them.
+items without counting them, and a loop that reads `var point = points[position]` and only reads its attributes
+neither counts nor lets go of each point (`objects_of_one_class_sit_together`: 94 ms before, 64 ms after;
+`report_over_records`: 866 ms before, 517 ms after).
 
 **When it does not apply:** when the name is assigned again anywhere in the function, when what it came from is
 itself a name that is assigned again, when anything after it in the block may write the slot (by the same rules as
@@ -890,6 +893,43 @@ A call keeps nothing of its argument at a position when, in the called function,
 are only read through, written through or compared: never stored, answered, passed on, retained or released. An
 object passed only to such calls can still live in the frame (the third placement above), since nothing can hold
 its address after the call returns.
+
+## A local list of known size lives in the frame
+
+A list literal kept in a local (`var weights = [4, 3, 2, 1]`) that the function only counts and reads by index is
+never made: its items are written into room in the function's frame (`FrameRoom`), its `count()` is the number of
+items written, and `list[index]` tests the index against that number and loads the item from the room. No list, no
+buffer and no count is allocated, so nothing is freed either.
+
+**When it applies:** to a literal of whole numbers (any `Integer`, `Long`, `Byte`... list that is not nullable),
+of at most 4096 bytes, kept in a local that is never assigned again, and whose every use in the function is
+`count()`, `list[index]` (read, tested with `crash`, `assert` or `if`), or the literal itself. A list passed to a
+call, answered, kept in an attribute, appended to, read by any other function of `List`, or held by a function
+that waits is made as before. A list of decimals or objects is made as before.
+
+**What a program can observe:** fewer allocations under `--debug-memory`. An index outside the list still stops
+the program with the same report.
+
+```spite
+func largest_remainder(round: Integer): Integer {
+    var remainders = [round % 10, round % 7, round % 13, round % 3]
+    var weights = [4, 3, 2, 1]
+    var biggest = 0
+    var index = 0
+    while index < remainders.count() {
+        crash weights[index]
+        var weighted = remainders[index] * weights[index]
+        if weighted > biggest {
+            biggest = weighted
+        }
+        index = index + 1
+    }
+    return biggest
+}
+```
+
+Both lists live in the frame: four stores each, a count of 4 and loads at fixed offsets
+(`a_local_list_of_known_size_lives_in_the_frame`: 695 ms before, 98 ms after).
 
 ## Maths left on constants after lowering is worked out too
 
@@ -1749,7 +1789,10 @@ stores (`while_no_task_runs_a_singletons_lock_is_skipped`).
 A `while` outside a singleton whose condition is `counter < bound` or `counter <= bound`, whose last statement is
 `counter = counter + n` with `n` a positive whole number written out and that assigns the counter nowhere else,
 holds the lock of one locked singleton for the whole loop when every call in it is a call to that singleton's
-functions answering a number, a `Boolean`, an enum or nothing, and nothing in it but local `var`s and assignments
+functions answering a number, a `Boolean`, an enum or nothing, or to a helper of a class that is not a singleton
+which answers one of those and calls nothing, makes nothing, has no loop and calls nothing in C (a `weight_of(index)`
+that only computes: `singletons_a_parallel_reaches_take_a_lock` went from 18 ms to 5.9 ms), and nothing in it but
+local `var`s and assignments
 of plain values, `if`s, plain `crash`es and arithmetic. None of the singleton's functions it calls, nor anything
 they call, may wait, start work, call through a function value or take another singleton's lock. The lock is taken
 before the loop's first test and let go after its last, and each call inside goes to the function's body compiled

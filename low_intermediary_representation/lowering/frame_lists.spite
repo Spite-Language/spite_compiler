@@ -1,0 +1,405 @@
+# ../../OPTIMIZATIONS.md#a-local-list-of-known-size-lives-in-the-frame
+var program = Model.ProgramModel()
+var library = Validators.LibraryFile()
+var counts = Dictionary<String, Integer>()
+var aliases = Dictionary<String, String>()
+var appended = Dictionary<String, Integer>()
+var refused = List<String>()
+var largest_room = 4096
+
+func FrameLists(starting_program: Model.ProgramModel) {
+    program = starting_program
+}
+
+func found(high: HighIntermediaryRepresentation.HighFunction): Dictionary<String, Integer> {
+    counts = Dictionary<String, Integer>()
+    aliases = Dictionary<String, String>()
+    appended = Dictionary<String, Integer>()
+    refused = List<String>()
+    find_in_a_block(high.body)
+    var kept = Dictionary<String, Integer>()
+    if counts.is_empty() {
+        return kept
+    }
+    walk_a_block(high.body)
+    var names = counts.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        keep_if_whole(kept, name)
+        index = index + 1
+    }
+    var alias_names = aliases.keys()
+    var alias_index = 0
+    while alias_index < alias_names.count() {
+        var alias = alias_names[alias_index]
+        keep_an_alias(kept, alias)
+        alias_index = alias_index + 1
+    }
+    return kept
+}
+
+func keep_if_whole(kept: Dictionary<String, Integer>, name: String) {
+    var count = counts[name]
+    crash count
+    var filled = appended[name]
+    assert filled and filled == count
+    assert not refused.contains(name)
+    kept[name] = count
+}
+
+func keep_an_alias(kept: Dictionary<String, Integer>, alias: String) {
+    var made = aliases[alias]
+    crash made
+    var count = kept[made]
+    assert count
+    if refused.contains(alias) {
+        kept.remove_at(made)
+        return
+    }
+    kept[alias] = count
+}
+
+func find_in_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        find_in_a_statement(statement)
+        note_a_literal(block.statements, index)
+        index = index + 1
+    }
+}
+
+func find_in_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.If: find_in_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: find_in_a_block(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: find_in_a_block(statement)
+        _: return
+    }
+}
+
+func find_in_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    find_in_a_block(branch.then_branch)
+    find_in_a_block(branch.else_branch)
+}
+
+func note_a_literal(statements: List<HighIntermediaryRepresentation.Statements.Statement>, at: Integer) {
+    var statement = statements[at]
+    assert statement == HighIntermediaryRepresentation.Statements.Declare
+    assert statement.hides == "" and not statement.declared_type.is_nullable
+    var made = statement.value
+    assert made == HighIntermediaryRepresentation.Values.MakeObject
+    assert made.arguments.is_empty()
+    var size = item_size_of(statement.declared_type)
+    assert size > 0
+    var count = 0
+    var index = at + 1
+    while index < statements.count() and appends_to(statements[index], statement.name) {
+        count = count + 1
+        index = index + 1
+    }
+    assert count > 0 and count * size <= largest_room
+    counts[statement.name] = count
+    var next = statements[index]
+    assert next
+    note_an_alias(next, statement.name, statement.declared_type)
+}
+
+func note_an_alias(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+    made_name: String,
+    made_type: Model.Type,
+) {
+    assert statement == HighIntermediaryRepresentation.Statements.Declare
+    assert statement.hides == "" and statement.declared_type.name == made_type.name
+    assert not statement.declared_type.is_nullable
+    var source = statement.value
+    assert source == HighIntermediaryRepresentation.Values.LocalRead
+    assert source.name == made_name
+    aliases[statement.name] = made_name
+}
+
+func appends_to(statement: HighIntermediaryRepresentation.Statements.Statement?, name: String): Boolean {
+    if statement == HighIntermediaryRepresentation.Statements.Evaluate {
+        return is_an_append_to(statement.value, name)
+    }
+    return false
+}
+
+func is_an_append_to(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        if value.function.name != "append" or value.arguments.count() != 1 {
+            return false
+        }
+        if not is_the_library_list(value.function) {
+            return false
+        }
+        return reads_the_name(value.receiver, name)
+    }
+    return false
+}
+
+func reads_the_name(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        return value.name == name
+    }
+    return false
+}
+
+func item_size_of(list_type: Model.Type): Integer {
+    if list_type.kind != 'object' {
+        return 0
+    }
+    var owner = program.class_named(list_type.name)
+    if not owner {
+        return 0
+    }
+    if not is_the_library_list_file(owner.file.path) {
+        return 0
+    }
+    var element = owner.bound_types["$element_type"]
+    if not element {
+        return 0
+    }
+    if element.kind != 'scalar' or element.is_nullable {
+        return 0
+    }
+    var scalars = Model.Scalars()
+    var scalar = scalars.of(element.name)
+    if not scalar {
+        return 0
+    }
+    if scalar.is_decimal {
+        return 0
+    }
+    return scalar.size
+}
+
+func is_the_library_list(function: Model.FunctionModel): Boolean {
+    if not function.declaration {
+        return false
+    }
+    return is_the_library_list_file(function.declaration.path)
+}
+
+func is_the_library_list_file(path: String): Boolean {
+    var written = path.replace("\\", "/")
+    if not library.holds(written) {
+        return false
+    }
+    return written.ends_with("/common/list.spite")
+}
+
+func is_listed(name: String): Boolean {
+    if counts.contains(name) {
+        return true
+    }
+    return aliases.contains(name)
+}
+
+func listed_receiver(value: HighIntermediaryRepresentation.Values.Value?): String {
+    if value == HighIntermediaryRepresentation.Values.LocalRead and is_listed(value.name) {
+        return value.name
+    }
+    return ""
+}
+
+func refuse(name: String) {
+    if not refused.contains(name) {
+        refused.append(name)
+    }
+}
+
+func walk_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(walk_a_statement)
+}
+
+func walk_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: walk_a_declare(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: walk_an_assignment(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: walk_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: walk_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: walk_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.Return: walk_a_value(statement.value)
+        HighIntermediaryRepresentation.Statements.If: walk_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: walk_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Stop: walk_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: walk_a_block(statement)
+    }
+}
+
+func walk_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    walk_a_value(written.object)
+    walk_a_value(written.value)
+}
+
+func walk_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    walk_a_value(written.object)
+    walk_a_value(written.value)
+}
+
+func walk_a_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    if declare.hides != "" {
+        refuse(declare.hides)
+    }
+    assert not is_the_alias(declare)
+    if aliases.contains(declare.name) {
+        refuse(declare.name)
+    }
+    var making = declare.value
+    var is_listed_making = counts.contains(declare.name) and making == HighIntermediaryRepresentation.Values.MakeObject
+    if is_listed_making {
+        walk_a_making(making)
+        return
+    }
+    if counts.contains(declare.name) {
+        refuse(declare.name)
+    }
+    walk_a_value(declare.value)
+}
+
+func is_the_alias(declare: HighIntermediaryRepresentation.Statements.Declare): Boolean {
+    var made = aliases[declare.name]
+    if made {
+        return reads_the_name(declare.value, made)
+    }
+    return false
+}
+
+func walk_a_making(made: HighIntermediaryRepresentation.Values.Value?) {
+    if made == HighIntermediaryRepresentation.Values.MakeObject {
+        made.arguments.each(walk_a_present)
+    }
+}
+
+func walk_an_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign) {
+    if is_listed(assigned.name) {
+        refuse(assigned.name)
+    }
+    walk_a_value(assigned.value)
+}
+
+func walk_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
+    var value = evaluated.value
+    if value == HighIntermediaryRepresentation.Values.Call {
+        var filled = listed_receiver(value.receiver)
+        if not filled.is_empty() and counts.contains(filled) and is_an_append_to(value, filled) {
+            var before = appended[filled]
+            var now = 1
+            if before {
+                now = before + 1
+            }
+            appended[filled] = now
+            value.arguments.each(walk_a_present)
+            walk_a_value(evaluated.waited)
+            return
+        }
+    }
+    walk_a_value(evaluated.value)
+    walk_a_value(evaluated.waited)
+}
+
+func walk_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    walk_a_value(branch.condition)
+    walk_a_block(branch.then_branch)
+    walk_a_block(branch.else_branch)
+}
+
+func walk_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    walk_a_value(loop.condition)
+    walk_a_block(loop.body)
+}
+
+func walk_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(walk_a_present)
+    walk_a_value(stop.then)
+}
+
+func walk_a_present(value: HighIntermediaryRepresentation.Values.Value) {
+    walk_a_value(value)
+}
+
+func walk_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    walk_a_value(first)
+    walk_a_value(second)
+}
+
+func walk_a_value(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.LocalRead: walk_a_local(value)
+        HighIntermediaryRepresentation.Values.Call: walk_a_call(value)
+        HighIntermediaryRepresentation.Values.Conversion: walk_a_conversion(value)
+        HighIntermediaryRepresentation.Values.AttributeRead: walk_a_value(value.object)
+        HighIntermediaryRepresentation.Values.Class.OfValue: walk_a_value(value.described)
+        HighIntermediaryRepresentation.Values.Class.Test: walk_a_value(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: walk_a_value(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: walk_a_value(value.number)
+        HighIntermediaryRepresentation.Values.ForeignCall: walk_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.Function.Value: walk_a_value(value.receiver)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: walk_a_function_value_call(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: walk_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MakeObject: walk_a_making(value)
+        HighIntermediaryRepresentation.Values.Negation: walk_a_value(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: walk_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: walk_a_tested(value.tested)
+        HighIntermediaryRepresentation.Values.ShapeCall: walk_a_shape_call(value)
+        _: return
+    }
+}
+
+func walk_a_local(read: HighIntermediaryRepresentation.Values.LocalRead) {
+    if is_listed(read.name) {
+        refuse(read.name)
+    }
+}
+
+func walk_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    var listed = listed_receiver(call.receiver)
+    var is_a_count = call.function.name == "count" and call.arguments.is_empty()
+    assert listed.is_empty() or not is_a_count or not is_the_library_list(call.function)
+    walk_a_value(call.receiver)
+    call.arguments.each(walk_a_present)
+}
+
+func walk_a_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion) {
+    if conversion.kind == 'proven' {
+        walk_a_tested(conversion.converted)
+        return
+    }
+    walk_a_value(conversion.converted)
+}
+
+func walk_a_tested(tested: HighIntermediaryRepresentation.Values.Value?) {
+    if tested == HighIntermediaryRepresentation.Values.Call {
+        var listed = listed_receiver(tested.receiver)
+        var is_a_get = tested.function.name == "get_at" and tested.arguments.count() == 1
+        if not listed.is_empty() and is_a_get and is_the_library_list(tested.function) {
+            tested.arguments.each(walk_a_present)
+            return
+        }
+    }
+    walk_a_value(tested)
+}
+
+func walk_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall) {
+    call.arguments.each(walk_a_present)
+    walk_a_value(call.library)
+}
+
+func walk_a_function_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
+    walk_a_value(call.called)
+    call.arguments.each(walk_a_present)
+}
+
+func walk_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    walk_a_value(call.receiver)
+    call.arguments.each(walk_a_present)
+}

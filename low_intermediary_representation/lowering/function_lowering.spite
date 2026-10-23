@@ -31,6 +31,8 @@ var locked_class = ""
 var lowering_owner = ""
 var skips_the_lock = false
 var coarse_class = ""
+var frame_list_counts = Dictionary<String, Integer>()
+var frame_list_filled = Dictionary<String, Integer>()
 
 func FunctionLowering(
     starting_layout: Layout,
@@ -61,6 +63,7 @@ func lowered(
     }
     start(key)
     function.is_resumable = resumable_mode
+    note_the_frame_lists(high)
     if high.function.declaration {
         note_the_place(high.function, high.function.declaration.line)
     }
@@ -97,6 +100,91 @@ func lowered(
         dispatch_the_resumes(dispatch, body)
     }
     return function
+}
+
+# ../../OPTIMIZATIONS.md#a-local-list-of-known-size-lives-in-the-frame
+func note_the_frame_lists(high: HighIntermediaryRepresentation.HighFunction) {
+    frame_list_counts = Dictionary<String, Integer>()
+    frame_list_filled = Dictionary<String, Integer>()
+    assert not resumable_mode
+    var finding = FrameLists(layout.program)
+    frame_list_counts = finding.found(high)
+}
+
+func lower_a_frame_list(declare: HighIntermediaryRepresentation.Statements.Declare, count: Integer) {
+    line = declare.line
+    var source = declare.value
+    if source == HighIntermediaryRepresentation.Values.LocalRead {
+        var room = locals[source.name]
+        crash room
+        locals[declare.name] = room
+        return
+    }
+    var size = frame_item_size(declare.declared_type)
+    var made = new_register()
+    var taken = LowIntermediaryRepresentation.Instructions.FrameRoom(made, count * size)
+    emit(taken)
+    locals[declare.name] = made
+    frame_list_filled[declare.name] = 0
+}
+
+func frame_item_size(list_type: Model.Type): Integer {
+    var element = frame_element_of(list_type)
+    var scalar = scalars.of(element.name)
+    crash scalar
+    return scalar.size
+}
+
+func frame_element_of(list_type: Model.Type): Model.Type {
+    var owner = layout.program.class_named(list_type.name)
+    crash owner
+    var element = owner.bound_types["$element_type"]
+    crash element
+    return element
+}
+
+func fills_a_frame_list(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        var receiver = value.receiver
+        if receiver == HighIntermediaryRepresentation.Values.LocalRead and value.function.name == "append" {
+            return fill_a_frame_list(value, receiver)
+        }
+    }
+    return false
+}
+
+func fill_a_frame_list(
+    call: HighIntermediaryRepresentation.Values.Call,
+    receiver: HighIntermediaryRepresentation.Values.LocalRead,
+): Boolean {
+    if not frame_list_filled.contains(receiver.name) {
+        return false
+    }
+    var filled = frame_list_filled[receiver.name]
+    crash filled
+    var room = locals[receiver.name]
+    crash room
+    var item = call.arguments[0]
+    crash item
+    var stored_value = lower_value(item)
+    var size = frame_item_size(receiver.value_type)
+    var element = frame_element_of(receiver.value_type)
+    var width = width_of(element)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(room, filled * size, stored_value.value, width)
+    stored.region = items_region_of(receiver.value_type.name, element)
+    emit(stored)
+    frame_list_filled[receiver.name] = filled + 1
+    return true
+}
+
+func frame_list_count_of(value: HighIntermediaryRepresentation.Values.Value?): Integer {
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        var count = frame_list_counts[value.name]
+        if count {
+            return count
+        }
+    }
+    return 0
 }
 
 func note_the_borrowed_parameters(high: HighIntermediaryRepresentation.HighFunction) {
@@ -547,8 +635,13 @@ func lower_a_statement(statement: HighIntermediaryRepresentation.Statements.Stat
 }
 
 func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    var listed = frame_list_counts[declare.name]
+    if listed {
+        lower_a_frame_list(declare, listed)
+        return
+    }
     line = declare.line
-    var value = lower_value(declare.value)
+    var value = lower_a_declared_value(declare)
     var register = new_register()
     locals[declare.name] = register
     var borrowed = is_a_borrowed_local(declare, value)
@@ -581,6 +674,46 @@ func let_go_of_the_hidden(hidden: String) {
     assert at
     innermost.remove_at(at)
     release_held(register)
+}
+
+# ../../OPTIMIZATIONS.md#a-name-holding-an-item-or-an-attribute-is-not-counted
+func lower_a_declared_value(declare: HighIntermediaryRepresentation.Statements.Declare): Lowered {
+    var given = declare.value
+    if given == HighIntermediaryRepresentation.Values.Conversion and is_a_borrowed_item(declare, given) {
+        var reads = ListReads(this)
+        return reads.held_item(given)
+    }
+    return lower_value(declare.value)
+}
+
+func is_a_borrowed_item(
+    declare: HighIntermediaryRepresentation.Statements.Declare,
+    conversion: HighIntermediaryRepresentation.Values.Conversion,
+): Boolean {
+    if not borrows_parameters or resumable_mode or not is_a_pointer(declare.declared_type) {
+        return false
+    }
+    if conversion.kind != 'proven' or reassigned_names.contains(declare.name) {
+        return false
+    }
+    var read = conversion.converted
+    if read == HighIntermediaryRepresentation.Values.Call {
+        return is_a_borrowed_read(read)
+    }
+    return false
+}
+
+func is_a_borrowed_read(read: HighIntermediaryRepresentation.Values.Call): Boolean {
+    var reads = ListReads(this)
+    if not reads.is_a_plain_get(read) or not is_a_pointer(read.value_type) {
+        return false
+    }
+    var watched = List<String>()
+    if not gather_the_sources(read, watched) or not assignments {
+        return false
+    }
+    var after = statement_index + 1
+    return assignments.leaves_alone(block_statements, after, watched)
 }
 
 func is_a_borrowed_local(declare: HighIntermediaryRepresentation.Statements.Declare, value: Lowered): Boolean {
@@ -638,7 +771,9 @@ func gather_through_an_attribute(
 }
 
 func gather_through_a_slot(call: HighIntermediaryRepresentation.Values.Call, watched: List<String>): Boolean {
-    if call.function.has_a_body() or call.function.name != "_read_value" {
+    var reads = ListReads(this)
+    var is_a_read = not call.function.has_a_body() and call.function.name == "_read_value"
+    if not is_a_read and not reads.is_a_plain_get(call) {
         return false
     }
     watched.append("[]{call.function.owner}")
@@ -874,6 +1009,7 @@ func lower_evaluate(evaluate: HighIntermediaryRepresentation.Statements.Evaluate
         discard(in_place, evaluate.waited.value_type)
         return
     }
+    assert not fills_a_frame_list(evaluate.value)
     var value = lower_value(evaluate.value)
     crash evaluate.value
     discard(value, evaluate.value.value_type)

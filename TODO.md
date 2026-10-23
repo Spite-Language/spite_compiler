@@ -169,7 +169,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The compiler places memory
 - Reading an address is one machine operation (`reading_an_address_is_one_machine_operation` is about 50 times expert C: `Base64._encoded`'s values are nearly all spilled, see the register intervals in Architecture, and every `append_code` keeps the buffer's and the text's counts in memory)
 - Objects that never leave their function live in the frame (built after inlining, D801: in registers or the frame, made at the `return` when answered, its count followed while compiling, D953; not built: an object whose class has a `drop`, back references or frees its attributes other than by releasing them, an object of a class that releases attributes passed to a call that is not inlined, and anything in a function that waits)
-- A local list of known size lives in the frame
+- A local list of known size lives in the frame (built for a literal of whole numbers only counted and read by index, D991; not built: a literal of decimals or objects, one passed to a call that only reads it, and one made with `List()` and a known count of appends)
 - A variadic list the callee only reads lives in the caller's frame
 - A list held only by another list lives in its slot
 - A list of lists filled again keeps each list's room
@@ -306,7 +306,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - A buffer freed in its block lives in the frame
 - Objects that never leave their function live in the frame
-- Local and variadic lists in the frame
+- Local and variadic lists in the frame (built: a literal of whole numbers only counted and read by index, D991)
 - A function value its callee only calls lives in the frame
 
 ### Borrowing and lending
@@ -323,7 +323,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A list's templates read their elements uncounted
 - An item written back to its own slot is the slot
 - A value followed through calls is the slot it was read from
-- An item a name holds from its list is not counted
+- An item a name holds from its list is not counted (built for `var item = list[index]` with a proven read when nothing after it in its block can write the slot, D992; not built: a name kept across a call that may write any list of the item's class, even another one)
 - A list item read only to test it is not counted
 - An item used at once is not counted
 - A list held only in a slot of another list
