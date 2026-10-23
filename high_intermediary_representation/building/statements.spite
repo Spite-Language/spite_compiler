@@ -937,16 +937,41 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
         facts_types = List<Model.Type>()
         read_a_negated_fact(statement.condition)
         narrow_all(facts_paths, facts_types)
+        note_the_leaving_if(written_condition, statement.line)
+    }
+}
+
+func refuse_a_check_of_a_plain_value(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, keyword: String) {
+    if condition == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        refuse_a_check_of_a_plain_name(condition, keyword)
+    }
+}
+
+func refuse_a_check_of_a_plain_name(
+    condition: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+    keyword: String,
+) {
+    var written_value = values.value_of(condition, null)
+    var is_converted = written_value == HighIntermediaryRepresentation.Values.Conversion
+    assert not is_converted
+    var checked_type = written_value.value_type
+    var is_plain = checked_type.kind == 'object' or checked_type.kind == 'union' or checked_type.kind == 'shape'
+    assert is_plain and not checked_type.is_nullable
+    var shown = context.shown(checked_type)
+    typing.refuse_a_check_of_a_plain_value(context, shown, keyword)
+}
+
+func note_the_leaving_if(written_condition: String, line: Integer) {
+    var index = 0
+    while index < facts_paths.count() {
+        var path = facts_paths[index]
+        context.scope.note_the_check(path, "the 'if {written_condition}' on line {line}, which leaves")
+        index = index + 1
     }
 }
 
 func always_leaves(block: HighIntermediaryRepresentation.Statements.Block): Boolean {
-    var last = block.statements.last()
-    if not last {
-        return false
-    }
-    var returns = last == HighIntermediaryRepresentation.Statements.Return
-    return returns or last == HighIntermediaryRepresentation.Statements.Stop
+    return endings.always_leaves(block)
 }
 
 func read_a_negated_fact(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
@@ -1226,6 +1251,7 @@ func build_inner_block(statement: AbstractSyntaxTree.Shapes.Statements.Block) {
 func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatement) {
     refuse_a_proven_check(statement.condition)
     refuse_a_proven_read_check(statement.condition, "assert")
+    refuse_a_check_of_a_plain_value(statement.condition, "assert")
     statement.condition = values.with_its_links(statement.condition)
     var condition = values.condition_of(statement.condition)
     var failed = HighIntermediaryRepresentation.Statements.Block()
@@ -1376,8 +1402,28 @@ func default_return(): HighIntermediaryRepresentation.Statements.Statement {
         return HighIntermediaryRepresentation.Statements.Return(nothing)
     }
     var shown = context.shown(answer)
+    if is_a_collection(answer, shown) {
+        var empty = values.default_of_a_type(answer)
+        return HighIntermediaryRepresentation.Statements.Return(empty)
+    }
     typing.refuse_default_answer(context, shown)
     return HighIntermediaryRepresentation.Statements.Return(null)
+}
+
+func is_a_collection(answer: Model.Type, shown: String): Boolean {
+    if answer.kind != 'object' {
+        return false
+    }
+    var collections = ["List<", "Dictionary<", "Vector<", "Items<"]
+    var index = 0
+    while index < collections.count() {
+        var opening = collections[index]
+        if shown.starts_with(opening) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement) {
@@ -1391,6 +1437,7 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     }
     refuse_a_proven_check(statement.condition)
     refuse_a_proven_read_check(statement.condition, "crash")
+    refuse_a_check_of_a_plain_value(statement.condition, "crash")
     refuse_a_false_build_field(statement)
     show_the_values(stopped, statement.condition)
     statement.condition = values.with_its_links(statement.condition)
@@ -1493,10 +1540,18 @@ func build_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatemen
     var subject = values.value_of(statement.value, null)
     var printer = Printers.Spite.ExpressionPrinter(statement.value)
     var path = printer.text()
+    check_the_case_kinds(statement, subject.value_type)
     if is_closed(subject.value_type) {
         check_the_cover(statement, subject.value_type, path)
     }
+    check_the_rest_of_values(statement, subject.value_type, path)
+    context.line = statement.line
     var narrowed_path = path_of(statement.value, path)
+    var is_computed = statement.value == AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    if is_computed {
+        subject = values.held_once(subject)
+        flush_the_pending()
+    }
     var chain = switch_chain(statement, subject, narrowed_path, 0)
     crash chain
     add(chain)
@@ -1531,6 +1586,7 @@ func switch_chain(
         name_the_case(other_body, written, statement.line)
         return other_body
     }
+    context.line = switch_case.line
     var condition = case_condition(subject, written, path, paths, types)
     var body = narrowed_block_of(switch_case.body, paths, types)
     name_the_case(body, written, statement.line)
@@ -1662,7 +1718,124 @@ func check_the_cover(
         }
     }
     var cover = Validators.HighIntermediaryRepresentation.SwitchCover.Validator()
+    var shown = context.shown(subject_type)
+    context.line = rest_line_of(statement, is_an_enum)
+    cover.check_the_rest(context, shown, is_an_enum, every, written)
+    context.line = statement.line
     cover.check(context, subject, is_an_enum, every, written)
+}
+
+func rest_line_of(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement, is_an_enum: Boolean): Integer {
+    var last = statement.cases.count() - 1
+    var place = last
+    if not is_an_enum and last > 0 {
+        place = last - 1
+    }
+    var switch_case = statement.cases[place]
+    crash switch_case
+    return switch_case.line
+}
+
+func check_the_case_kinds(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement, subject_type: Model.Type) {
+    assert not subject_type.is_nullable
+    var is_an_enum = subject_type.kind == 'enumeration'
+    var is_a_union = subject_type.kind == 'union'
+    assert is_an_enum or is_a_union
+    var index = 0
+    while index < statement.cases.count() {
+        var switch_case = statement.cases[index]
+        context.line = switch_case.line
+        check_a_case_kind(switch_case.value, subject_type, is_an_enum)
+        index = index + 1
+    }
+}
+
+func check_a_case_kind(
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    subject_type: Model.Type,
+    is_an_enum: Boolean,
+) {
+    var shown = context.shown(subject_type)
+    var class_path = values.class_path_of(written)
+    var is_a_class = not class_path.is_empty() and not is_the_rest_case(written)
+    var is_a_value = written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression
+    is_a_value = is_a_value or written == AbstractSyntaxTree.Shapes.Expressions.TextLiteral
+    var cases = Validators.HighIntermediaryRepresentation.SwitchCover.Validator()
+    if is_an_enum and is_a_class {
+        var enumeration = values.enum_model_of(subject_type)
+        var first = enumeration.values[0]
+        crash first
+        var class_name = class_path.join(".")
+        cases.refuse_a_class_case(context, shown, class_name, first)
+    }
+    assert not is_an_enum and is_a_value
+    crash written
+    var printer = Printers.Spite.ExpressionPrinter(written)
+    var value_text = printer.text()
+    var united = values.union_model_of(subject_type)
+    var member = united.members[0]
+    crash member
+    var member_segments = member.name.split(".")
+    var member_name = member_segments.last()
+    crash member_name
+    cases.refuse_a_value_case(context, shown, value_text, member_name)
+}
+
+func reads_through_a_call(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if written {
+        return expression_reads_through_a_call(written)
+    }
+    return false
+}
+
+func expression_reads_through_a_call(written: AbstractSyntaxTree.Shapes.Expressions.Expression): Boolean {
+    switch written {
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return true
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return reads_through_a_call(written.target)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return index_reads_through_a_call(written)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return reads_through_a_call(written.operand)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return either_reads_through_a_call(written)
+        _: return false
+    }
+}
+
+func index_reads_through_a_call(read: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): Boolean {
+    if reads_through_a_call(read.target) {
+        return true
+    }
+    return reads_through_a_call(read.index)
+}
+
+func either_reads_through_a_call(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
+    if reads_through_a_call(binary.left) {
+        return true
+    }
+    return reads_through_a_call(binary.right)
+}
+
+func is_the_rest_case(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if written == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return written.name == "_"
+    }
+    return false
+}
+
+func check_the_rest_of_values(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    subject_type: Model.Type,
+    path: String,
+) {
+    assert not subject_type.is_nullable
+    var is_a_whole_number = subject_type.kind == 'scalar' and values.is_a_whole_number(subject_type)
+    var is_a_text = subject_type.kind == 'object' and subject_type.name == "String"
+    assert is_a_whole_number or is_a_text
+    var last = statement.cases.last()
+    crash last
+    assert not is_the_rest_case(last.value)
+    context.line = statement.line
+    var shown = context.shown(subject_type)
+    var cases = Validators.HighIntermediaryRepresentation.SwitchCover.Validator()
+    cases.refuse_no_rest(context, path, shown)
 }
 
 func is_closed(subject_type: Model.Type): Boolean {
@@ -1734,6 +1907,7 @@ func read_a_fact(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
     is_a_path = is_a_path or condition == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
     is_a_path = is_a_path or condition == AbstractSyntaxTree.Shapes.Expressions.IndexExpression
     assert is_a_path
+    assert not reads_through_a_call(condition)
     crash condition
     var written_value = values.value_of(condition, null)
     var value = values.result_of_handle(written_value)

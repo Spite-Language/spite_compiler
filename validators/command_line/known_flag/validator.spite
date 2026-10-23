@@ -1,11 +1,20 @@
 var operating_systems = ["windows", "linux", "mac"]
-var compiler_flags = ["check", "high_ir", "low_ir", "optimization_report"]
+var compiler_flags = ["check", "build", "executable_path", "high_ir", "low_ir", "optimization_report"]
+var smallest_port = 1
+var largest_port = 65535
 
-func check(flags: Dictionary<String, String>, written_flags: List<String>, build: Model.ClassModel?) {
+func check(
+    flags: Dictionary<String, String>,
+    written_flags: List<String>,
+    bare_flags: List<String>,
+    build: Model.ClassModel?,
+    environment: Model.ClassModel?,
+) {
     var seen = List<String>()
     var index = 0
     while index < written_flags.count() {
         var written = written_flags[index]
+        check_separator(written)
         check_spelling(written)
         check_once(written, seen)
         seen.append(written)
@@ -17,9 +26,29 @@ func check(flags: Dictionary<String, String>, written_flags: List<String>, build
         var name = names[name_index]
         var value = flags[name]
         crash value
-        check_one(name, value, build)
+        var is_bare = bare_flags.contains(name)
+        check_one(name, value, is_bare, build, environment)
         name_index = name_index + 1
     }
+    check_the_outputs(flags)
+}
+
+func check_separator(written: String) {
+    assert written.is_empty()
+    refuse(
+        "'--' is not a separator: a program's settings are given beside the compiler's flags, kebab-case like them: spite program --optimized --player-name=Bob",
+    )
+}
+
+func check_the_outputs(flags: Dictionary<String, String>) {
+    assert flags["check"] == "true"
+    if flags["build"] == "true" {
+        refuse("'--check' only checks that the program compiles and '--build' builds its executable: give one of them")
+    }
+    assert flags["executable_path"]
+    refuse(
+        "'--executable-path' says where the executable goes, and '--check' builds none: leave out --check to build it",
+    )
 }
 
 func check_spelling(written: String) {
@@ -35,8 +64,24 @@ func check_once(written: String, seen: List<String>) {
     refuse("'--{written}' is given twice: a flag or a setting is given once")
 }
 
-func check_one(name: String, value: String, build: Model.ClassModel?) {
+func check_one(
+    name: String,
+    value: String,
+    is_bare: Boolean,
+    build: Model.ClassModel?,
+    environment: Model.ClassModel?,
+) {
     var flag = name.replace("_", "-")
+    if name == "operating_system" {
+        refuse(
+            "'--operating-system' cannot be given: Build.operating_system is the system doing the compiling (windows). To write the program for another system, give --target-operating-system=linux (or windows, or mac)",
+        )
+    }
+    if name == "program" {
+        refuse(
+            "'--program' cannot be given: the program is the folder named on the command line, 'spite folder', and Build.program is set from it",
+        )
+    }
     if name == "format" {
         refuse(
             "'--format' is not a compiler option: every compile formats the program's own files first, and nothing turns that off: '--check' formats and checks a program without building it",
@@ -48,10 +93,18 @@ func check_one(name: String, value: String, build: Model.ClassModel?) {
         attribute = build.attribute_named(name)
     }
     if not attribute {
+        var setting = setting_named(name, environment)
+        if setting {
+            check_the_setting(setting, flag, value, is_bare)
+            return
+        }
         refuse_unknown(name, flag, build)
     }
     crash attribute
     check_the_value(attribute, flag, value)
+    if name == "repl_port" {
+        check_the_port(value)
+    }
     if name == "target_operating_system" {
         check_the_system(value)
     }
@@ -88,6 +141,41 @@ func check_the_value(attribute: Model.AttributeModel, flag: String, value: Strin
             )
         }
     }
+}
+
+func setting_named(name: String, environment: Model.ClassModel?): Model.AttributeModel? {
+    assert environment
+    return environment.attribute_named(name)
+}
+
+func check_the_setting(setting: Model.AttributeModel, flag: String, value: String, is_bare: Boolean) {
+    var kind = setting.attribute_type.name
+    var given = "--{flag}={value}"
+    if is_bare {
+        given = "--{flag}"
+    }
+    var expected = ""
+    if kind == "Boolean" and value != "true" and value != "false" {
+        expected = "a Boolean: --{flag}, --{flag}=true or --{flag}=false"
+    }
+    if kind == "Integer" {
+        var number = value.to_long()
+        if is_bare or not number {
+            expected = "an Integer: a whole number, like --{flag}=3"
+        }
+    }
+    if kind == "String" and is_bare {
+        expected = "a String: --{flag}=text"
+    }
+    assert not expected.is_empty()
+    refuse("'{given}' was given, but 'Environment.{setting.name}' is {expected}")
+}
+
+func check_the_port(value: String) {
+    var port = value.to_long()
+    crash port
+    assert port < smallest_port or port > largest_port
+    refuse("--repl-port takes a port number from 1 to 65535: spite program --repl-port=4000")
 }
 
 func check_the_system(value: String) {

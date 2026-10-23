@@ -478,6 +478,9 @@ func literal_value(
 
 func whole_number_value(written: String, expected: Model.Type?): HighIntermediaryRepresentation.Values.Value {
     var number = written.to_long()
+    if not number {
+        typing.refuse_a_literal_too_large(context, written)
+    }
     crash number
     var number_type = context.scalar_type("Integer")
     if expected {
@@ -1637,6 +1640,11 @@ func reflected_member(
     assert object
     var reflection_model = context.class_of(object.value_type)
     var getter = reflection_model.function_named("get_{member.name}")
+    if not getter and scalars.is_a_scalar(written) {
+        var number = number_class_of(described_path)
+        var constants = constants_of(number)
+        typing.refuse_an_unknown_number_constant(context, written, member.name, constants)
+    }
     assert getter
     var no_written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
     var read = called(getter, object, no_written)
@@ -1783,6 +1791,55 @@ func reflected_object_of(
     var is_a_class = described.kind == 'object' or described.kind == 'scalar'
     assert is_a_class
     return reflection.class_object(described.name)
+}
+
+func refuse_a_call_on_a_number_class(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    receiver: HighIntermediaryRepresentation.Values.Value,
+) {
+    var class_path = class_path_of(callee.target)
+    var written = class_path.join(".")
+    assert scalars.is_a_scalar(written)
+    var reflection_model = context.class_of(receiver.value_type)
+    assert not reflection_model.function_named(callee.name)
+    var number = number_class_of(class_path)
+    var constants = constants_of(number)
+    var getter = number.function_named("get_{callee.name}")
+    if getter {
+        typing.refuse_a_called_constant(context, "{written}.{callee.name}")
+    }
+    var function = number.function_named(callee.name)
+    if function {
+        typing.refuse_a_value_function_on_a_class(context, written, callee.name, constants)
+    }
+    typing.refuse_an_unknown_number_constant(context, written, callee.name, constants)
+}
+
+func number_class_of(class_path: List<String>): Model.ClassModel {
+    var no_type_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described = context.resolver.class_type_in(class_path, no_type_arguments, context.current_class, context.line)
+    return context.class_of(described)
+}
+
+func constants_of(number: Model.ClassModel): String {
+    var names = List<String>()
+    var index = 0
+    while index < number.declared_functions.count() {
+        var function = number.declared_functions[index]
+        if function.name.starts_with("get_") {
+            var name_length = function.name.length()
+            var constant = function.name.slice(4, name_length)
+            names.append(constant)
+        }
+        index = index + 1
+    }
+    var last = names.remove_last()
+    crash last
+    if names.is_empty() {
+        return last
+    }
+    var listed = names.join(", ")
+    return "{listed} and {last}"
 }
 
 func reflected_receiver(
@@ -2601,6 +2658,7 @@ func member_call(
     }
     var class_receiver = reflected_receiver(callee.target)
     if class_receiver {
+        refuse_a_call_on_a_number_class(callee, class_receiver)
         return called_on_a_class(class_receiver, callee.name, call.arguments)
     }
     var written_receiver = value_of(callee.target, null)
@@ -5199,6 +5257,7 @@ func arguments_for(
         crash parameter
         var given = value_of(argument, parameter.parameter_type)
         refuse_a_nullable_answer(shown, argument, given.value_type, parameter.parameter_type)
+        refuse_another_answer(shown, argument, given.value_type, parameter.parameter_type)
         var value = fitted(given, parameter.parameter_type)
         arguments.append(value)
         index = index + 1
@@ -5232,6 +5291,29 @@ func refuse_a_nullable_answer(
     var given_shown = context.shown(given_answer)
     var wanted_shown = context.shown(wanted_answer)
     typing.refuse_a_nullable_answer(context, called_name, argument_text, given_shown, wanted_shown)
+}
+
+func refuse_another_answer(
+    shown: String,
+    argument: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    given: Model.Type,
+    wanted: Model.Type,
+) {
+    assert given.kind == 'function' and wanted.kind == 'function' and argument
+    assert given.answer and wanted.answer
+    var given_answer: Model.Type = given.answer
+    var wanted_answer: Model.Type = wanted.answer
+    assert not given_answer.is_nullable
+    assert not given_answer.is_the_same_as(wanted_answer)
+    assert given.parameters.count() == wanted.parameters.count()
+    var parts = shown.split(".")
+    var called_name = parts.last()
+    crash called_name
+    var printer = Printers.Spite.ExpressionPrinter(argument)
+    var argument_text = printer.text()
+    var given_shown = context.shown(given_answer)
+    var wanted_shown = context.shown(wanted_answer)
+    typing.refuse_another_answer(context, called_name, argument_text, given_shown, wanted_shown)
 }
 
 func gathered_list(
@@ -5828,6 +5910,73 @@ func constant_operand(
     return value_of(expression, double_type)
 }
 
+func refuse_an_operator_on_a_shape(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: HighIntermediaryRepresentation.Values.Value,
+) {
+    assert left.value_type.kind == 'shape' and not left.value_type.is_nullable
+    var shape = context.program.shape_keyed(left.value_type.name)
+    crash shape
+    var name = operator_function_name(operator)
+    assert not shape.member_named(name)
+    var printer = Printers.Spite.ExpressionPrinter(binary)
+    var symbol = printer.operator_text(binary.operator)
+    typing.refuse_an_operator_on_a_shape(context, symbol, shape.name)
+}
+
+func comparison_through_a_maybe(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var asks_equality = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    assert asks_equality
+    var link = maybe_link_of(binary.left)
+    if not link {
+        link = maybe_link_of(binary.right)
+    }
+    assert link
+    crash binary.left
+    crash binary.right
+    var equal = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(binary.left, 'equal_equal', binary.right)
+    var guarded = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(link, 'and', equal)
+    if binary.operator == 'equal_equal' {
+        return value_of(guarded, null)
+    }
+    var negated = AbstractSyntaxTree.Shapes.Expressions.UnaryExpression('not', guarded)
+    return value_of(negated, null)
+}
+
+func maybe_link_of(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return maybe_target_of(expression)
+    }
+    return null
+}
+
+func maybe_target_of(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    assert not member.is_a_class_name and is_a_value_path(member.target)
+    crash member.target
+    var target_value = value_of(member.target, null)
+    assert target_value.value_type.is_nullable
+    return member.target
+}
+
+func is_a_value_path(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var is_known = context.scope.internal_name_of(expression.name)
+        var is_an_attribute = context.current_class.attribute_named(expression.name)
+        return is_known or is_an_attribute
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return not expression.is_a_class_name and is_a_value_path(expression.target)
+    }
+    return false
+}
+
 func binary_value(
     binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
 ): HighIntermediaryRepresentation.Values.Value {
@@ -5840,6 +5989,10 @@ func binary_value(
     }
     if is_a_class_test(binary) {
         return class_test_value(binary)
+    }
+    var linked = comparison_through_a_maybe(binary)
+    if linked {
+        return linked
     }
     var operands = operands_of(binary)
     var left = operands[0]
@@ -5864,6 +6017,8 @@ func binary_value(
         }
         return same
     }
+    refuse_a_maybe_operand(binary, left)
+    refuse_a_maybe_operand(binary, right)
     if is_machine_comparable(left.value_type) {
         var fitted_right = fitted(right, left.value_type)
         refuse_a_cut(binary, fitted_right, left.value_type, right.value_type)
@@ -5880,8 +6035,10 @@ func binary_value(
         made.shown_left = left_printer.text()
         var right_printer = Printers.Spite.ExpressionPrinter(binary.right)
         made.shown_right = right_printer.text()
+        refuse_a_constant_overflow(made)
         return made
     }
+    refuse_an_operator_on_a_shape(binary, operator, left)
     var answered = operator_call(operator, left, right)
     var printed = Printers.Spite.ExpressionPrinter(binary)
     var shown = printed.text()
@@ -5949,9 +6106,43 @@ func refuse_a_division_by_zero(
 ) {
     assert operator == 'divide' or operator == 'remainder'
     assert not is_a_decimal_type(left.value_type)
-    if right == HighIntermediaryRepresentation.Values.WholeNumber {
-        refuse_a_zero(binary, right.number)
+    var folded = folded_whole(right)
+    assert folded
+    refuse_a_zero(binary, folded)
+}
+
+func folded_whole(value: HighIntermediaryRepresentation.Values.Value?): Long? {
+    if value == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value.number
     }
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        return folded_operation(value)
+    }
+    return null
+}
+
+func folded_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation): Long? {
+    var left = folded_whole(operation.left)
+    var right = folded_whole(operation.right)
+    assert left
+    assert right
+    switch operation.operator {
+        'add': return left + right
+        'subtract': return left - right
+        'multiply': return left * right
+        _: return null
+    }
+}
+
+func refuse_a_constant_overflow(made: HighIntermediaryRepresentation.Values.MachineOperation) {
+    var is_an_integer = made.value_type.kind == 'scalar' and made.value_type.name == "Integer"
+    assert is_an_integer and not made.value_type.is_nullable
+    var folded = folded_operation(made)
+    assert folded
+    var smallest: Long = -2147483648
+    var largest: Long = 2147483647
+    assert folded < smallest or folded > largest
+    typing.refuse_a_constant_overflow(context, made.shown, folded)
 }
 
 func refuse_a_zero(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression, number: Long) {
@@ -6041,7 +6232,14 @@ func codegen_member_of(bound: Model.Type, member: String): Model.Type {
     if not inner {
         var member_rule = Validators.NameResolution.TypeMember.Validator()
         var path = context.path()
-        member_rule.refuse(path, context.line, shown, member)
+        member_rule.refuse(
+            path,
+            context.line,
+            context.current_class.shown,
+            context.current_function.name,
+            shown,
+            member,
+        )
     }
     crash inner
     return inner
@@ -6282,6 +6480,7 @@ func refuse_a_cut_conversion(
 ) {
     var cuts = conversion.kind == 'narrow' or conversion.kind == 'narrow_decimal' or conversion.kind == 'to_whole'
     assert cuts
+    assert not changes_only_its_sign(left_type, right_type)
     var printer = Printers.Spite.ExpressionPrinter(binary)
     var shown = printer.text()
     var function = context.current_function
@@ -6295,8 +6494,74 @@ func refuse_a_cut_conversion(
         context.pending.append(stopped)
         return
     }
+    crash binary.left
+    crash binary.right
+    var left_printer = Printers.Spite.ExpressionPrinter(binary.left)
+    var left_text = left_printer.text()
+    var turned_operator = turned_around(binary.operator)
+    var turned = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(binary.right, turned_operator, binary.left)
+    var turned_printer = Printers.Spite.ExpressionPrinter(turned)
+    var turned_text = turned_printer.text()
+    if is_a_comparison(binary.operator) {
+        typing.refuse_cut_comparison(context, shown, left_type.name, right_type.name, turned_text)
+    }
     var operation = operation_name_of(binary.operator)
-    typing.refuse_cut_operand(context, shown, operation, left_type.name, right_type.name)
+    var order_free = binary.operator == 'plus' or binary.operator == 'star'
+    typing.refuse_cut_operand(
+        context,
+        shown,
+        operation,
+        left_type.name,
+        right_type.name,
+        left_text,
+        turned_text,
+        order_free,
+    )
+}
+
+func refuse_a_maybe_operand(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    operand: HighIntermediaryRepresentation.Values.Value,
+) {
+    var operand_type = operand.value_type
+    var asks_if_equal = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    assert operand_type.is_nullable and operand_type.kind == 'scalar' and not asks_if_equal
+    var shown = context.shown(operand_type)
+    var printer = Printers.Spite.ExpressionPrinter(binary)
+    var symbol = printer.operator_text(binary.operator)
+    typing.refuse_maybe_null_operand(context, shown, symbol)
+}
+
+func changes_only_its_sign(left_type: Model.Type, right_type: Model.Type): Boolean {
+    if not are_whole_numbers(left_type, right_type) {
+        return false
+    }
+    var left_scalar = scalars.of(left_type.name)
+    var right_scalar = scalars.of(right_type.name)
+    crash left_scalar
+    crash right_scalar
+    return left_scalar.size == right_scalar.size
+}
+
+func is_a_comparison(operator: AbstractSyntaxTree.Tokens.TokenKind): Boolean {
+    switch operator {
+        'plus': return false
+        'minus': return false
+        'star': return false
+        'slash': return false
+        'percent': return false
+        _: return true
+    }
+}
+
+func turned_around(operator: AbstractSyntaxTree.Tokens.TokenKind): AbstractSyntaxTree.Tokens.TokenKind {
+    switch operator {
+        'less': return 'greater'
+        'greater': return 'less'
+        'less_or_equal': return 'greater_or_equal'
+        'greater_or_equal': return 'less_or_equal'
+        _: return operator
+    }
 }
 
 func article_for(name: String): String {
