@@ -11,8 +11,8 @@ The old compiler builds this one:
     .spite/spite-0.0.6-windows/spite.exe .spite/spite_compiler --build --executable-path=.spite/spite.exe
 
 `.spite/spite_compiler` is a junction to this folder under a snake_case name. `.spite/library` is a junction to
-`../SpiteStandardLibrary`. A compiler finds `internal/` (its own Spite classes) beside its executable or one folder
-up, so a release puts `internal/` beside `spite.exe` and `library/` (`ARCHITECTURE.md`).
+`../SpiteStandardLibrary`. The compiler carries every class it adds to a program inside its own executable
+(`ARCHITECTURE.md`), so a release is `spite.exe` and `library/`.
 
 ## Run it
 

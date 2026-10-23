@@ -41,13 +41,12 @@ have no body (`is_written_by_the_compiler`), so a call to one is an ordinary cal
 the stand-in for a null in a shape (`Spite.Absent`) are high functions the builder writes. A program that makes no
 handle writes none of it, and a program that never starts calls in a row has no table.
 
-`internal/` still holds the Spite classes the compiler adds for the rest (the assert ring, the fault and crash
-reports, the REPL prompt, the copy table), until they are written the same way. `spite_compiler.spite` names the
-folder in a `load` no build takes, so the compiler that builds this one leaves it out. When a program that loads
-the library first names a `Spite.Internal` class, `mapping/internal_folder.spite` finds `internal/` beside the
-running executable, or one folder up, and the folder map maps its files as `Spite.Internal.<Class>` with the
-library's rights. No program loads that folder or names `Spite.Internal`, in an expression or a written type, and
-a class of its own in `spite/internal/` is refused.
+The rest is Spite code the compiler holds as text (`symbols/machinery_text.spite`: the fault and crash reports
+`Spite.Fault`, the assert ring `Spite.Asserts`, the deep copy table `Spite.CopyTable`; and, only in a `--repl` build,
+`high_intermediary_representation/building/prompt_text.spite`: `Spite.Prompt` and `Spite.PromptPath`). The first
+time a program names one, the symbol table adds it as a generated class under the program's
+`.spite/build/spite/`, with the library's rights; a program that never needs one reads none of it. No folder holds
+them, so nothing can load them, and a program that names one of them, or any `Spite.Internal` name, is refused.
 
 ## The first error stops the run
 

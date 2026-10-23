@@ -23,7 +23,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - An argument is passed by its parameter's type only, never by where the caller's value came from
 - Mortaro confirms or drops D634 to D637 and D643 to D653; D636 (type argument given at run time) contradicts monomorphisation
 
-- The rest of `internal/` is still Spite classes (D931): the assert ring (`asserts.spite`), the fault and crash reports (`fault.spite`), the copy table (`copy_table.spite`) and the REPL prompt (`prompt.spite`, `prompt_path.spite`) become functions the compiler writes, as the scheduler did, and then `internal/`, its folder map and `spite_compiler.spite`'s `load "internal"` go
 - The scheduler's crash lines name the program's frames only where the walk reaches them: a halt inside a `Concurrent`'s state machine prints no `spite.frame` line, since its frame lives on the heap (`concurrent_wait_cycle_in_place`)
 
 ## Faults found
@@ -56,7 +55,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A cycle the program's code does not link as owner and back reference still leaks (D759): two objects stored in each other's attributes where neither was made in that function, one attribute pointing both ways (`partner`), a cycle through a union or a `type`, a non-nullable back attribute, or links made in two different functions; a leak no run reports until `--debug-memory` has its report (D244)
 - A back reference is read without a count (D760), so a call on it (`child.parent.leave()`) whose body lets the owner go runs on freed memory, and on two threads the check that its object lives races with the owner's last release
 - A `load` of a repository pinned to a commit is refused even when well formed (D839): fetching into `.spite/git/` is not built
-- The library and the compiler's generated files break three rules they are exempt from for now (D838): a case of two statements (`Duration.part`), an `if` that only holds an `if` (`ZoneRules.transition_offset_seconds_at`), and `crash` on a value that cannot be null (`internal/prompt.spite`, the generated REPL)
+- The library and the compiler's generated files break three rules they are exempt from for now (D838): a case of two statements (`Duration.part`), an `if` that only holds an `if` (`ZoneRules.transition_offset_seconds_at`), and `crash` on a value that cannot be null (`Spite.Prompt`, the generated REPL)
 - An `assert`/`crash` on a value that cannot be null is refused only on a parameter or an attribute, not on a local; a lone hole in an untyped `var` knows a text only from a local or parameter declared with text (D836); a reopening's attribute type is compared only between two written types or two literals (D840)
 - The unread-attribute check counts a read of any attribute of the same name in any class of the program's own folder (reads by name, not per class, D878); in a folder the program loads it checks only singleton bindings, counting reads from that folder
 - The spec pages in `../SpiteLanguage/specs` still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D750 to D756
@@ -112,7 +111,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Class objects are filled from a worklist once compiling ends, but every read of a constant one still reads the run-time object: fold the constant ones while compiling (the 64 MB main stack reserve raised for the nested fills can come back down)
 - The study behind `function_waits` (D673) follows a call through a function value only when the compiler knows its function, so a function that waits only behind a function value it is handed answers `false` (a silent wrong answer under D244: answer `true` where it cannot tell, as `docs/proofs.md` says)
 
-- A program can still name a `Spite.Internal` class in a text, in a `type` member's or union's written type, or reach `internal/` through a junction or a `load` of a folder that holds it: only expressions, written types and a `load` of `internal/` itself are refused
+- A program can still name a `Spite.Internal` class, or one of the classes the compiler adds (`Spite.Fault`, `Spite.Asserts`, `Spite.CopyTable`, `Spite.Prompt`, `Spite.PromptPath`), in a text, or in a `type` member's or union's written type: only expressions and written types are refused
+- The fault and crash reports and the assert ring are Spite source the compiler holds as text (D936): they become low functions writing the site texts from one table of data labels, with `cut` and the value texts as synthetic high functions
 - The library breaks three rules it is exempt from for now (D680): singletons bound as locals (`Arguments`, `Environment._setting`, `Spite.Internal.Fault.report`), locals that only copy a path to narrow it (`BinaryCursor._buffer`, `BinaryWriterCursor`, `JsonReader`, `JsonWriter`), and a terminal `if` (`Dictionary.remove_at`)
 - The `if` that narrows a path does not record which check narrowed it, so a second check inside its branch is "a condition is a Boolean" instead of "already narrowed by"; `while value` does not narrow its body
 
