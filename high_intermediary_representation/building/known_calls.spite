@@ -1,0 +1,224 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
+
+func KnownCalls(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func made_by(
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    var written = statement.value
+    if written == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return made_from(statement, written)
+    }
+    return null
+}
+
+func made_from(
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    written: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    var path = values.class_path_of(written.callee)
+    var joined = path.join(".")
+    assert joined == "Spite.Call" and written.arguments.count() == 2
+    var declared_written = written.arguments[0]
+    var declared = declaration_named_by(declared_written)
+    assert declared
+    var instance_written = written.arguments[1]
+    var instance = values.value_of(instance_written, null)
+    refuse_another_class(instance, instance_written, declared)
+    var instance_type = instance.value_type
+    var hidden = context.scope.declare("{statement.name}_instance", instance_type)
+    context.known_calls[statement.name] = declared
+    context.known_call_instances[statement.name] = hidden
+    context.known_call_types[statement.name] = instance_type
+    var made = HighIntermediaryRepresentation.Statements.Declare(hidden, instance_type, instance)
+    made.line = statement.line
+    return made
+}
+
+func declaration_named_by(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): Model.FunctionModel? {
+    if written == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return context.known_declarations[written.name]
+    }
+    if written == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return declaration_listed_at(written)
+    }
+    return null
+}
+
+func declaration_listed_at(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): Model.FunctionModel? {
+    var listed = index.target
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return declaration_in(listed, index.index)
+    }
+    return null
+}
+
+func declaration_in(
+    listed: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): Model.FunctionModel? {
+    assert listed.name == "functions"
+    var name = values.symbol_text_of(written)
+    assert name
+    var described = values.constant_class_of(listed.target)
+    assert described
+    var model = context.program.class_named(described)
+    assert model and model.key != context.program.entry
+    var function = model.function_named(name)
+    assert function
+    var reflection = Reflection(context, values)
+    assert reflection.is_listed(function)
+    return function
+}
+
+func remember_a_declaration(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    var declared = declaration_named_by(statement.value)
+    assert declared and not statement.declared_type
+    context.known_declarations[statement.name] = declared
+}
+
+func forget_a_declaration(name: String) {
+    assert context.known_declarations[name]
+    context.known_declarations.remove(name)
+}
+
+func refuse_another_class(
+    instance: HighIntermediaryRepresentation.Values.Value,
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    declared: Model.FunctionModel,
+) {
+    var instance_type = instance.value_type
+    var owner = context.program.class_named(declared.owner)
+    crash owner
+    var is_its_own = instance_type.kind == 'object' and instance_type.name == declared.owner
+    assert not is_its_own or instance_type.is_nullable
+    var printer = Printers.Spite.ExpressionPrinter(written)
+    var shown = printer.text()
+    var shown_type = context.shown(instance_type)
+    typing.refuse_a_call_on_another_class(context, shown, shown_type, declared.name, owner.shown)
+}
+
+func fill_of(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    var target = statement.target
+    if target == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return fill_at(statement, target)
+    }
+    return null
+}
+
+func fill_at(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    var listed = index.target
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return fill_through(statement, index, listed)
+    }
+    return null
+}
+
+func fill_through(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    assert member.name == "arguments"
+    var named = member.target
+    if named == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return fill_named(statement, index, named.name)
+    }
+    return null
+}
+
+func fill_named(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    call_name: String,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    var declared = context.known_calls[call_name]
+    assert declared
+    var argument_name = values.symbol_text_of(index.index)
+    if not argument_name {
+        typing.refuse_an_unnamed_call_argument(context, call_name)
+    }
+    crash argument_name
+    var parameter = parameter_named(declared, argument_name)
+    if not parameter {
+        typing.refuse_an_unknown_call_argument(context, call_name, argument_name, declared.name)
+    }
+    crash parameter
+    var key = "{call_name}.{argument_name}"
+    if context.known_call_arguments[key] {
+        typing.refuse_a_refilled_call_argument(context, call_name, argument_name)
+    }
+    var value = values.fitted_value_of(statement.value, parameter.parameter_type)
+    var hidden = context.scope.declare("{call_name}_{argument_name}", parameter.parameter_type)
+    context.known_call_arguments[key] = hidden
+    var made = HighIntermediaryRepresentation.Statements.Declare(hidden, parameter.parameter_type, value)
+    made.line = statement.line
+    return made
+}
+
+func parameter_named(declared: Model.FunctionModel, name: String): Model.ParameterModel? {
+    return declared.parameters.find_by_name(name)
+}
+
+func ran_by(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert callee.name == "call"
+    var named = callee.target
+    if named == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return ran_named(call, named.name)
+    }
+    return null
+}
+
+func ran_named(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    call_name: String,
+): HighIntermediaryRepresentation.Values.Value? {
+    var declared = context.known_calls[call_name]
+    assert declared
+    var hidden = context.known_call_instances[call_name]
+    crash hidden
+    var instance_type = context.known_call_types[call_name]
+    crash instance_type
+    if not call.arguments.is_empty() {
+        typing.refuse_arguments_to_a_known_call(context, call_name)
+    }
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var index = 0
+    while index < declared.parameters.count() {
+        var parameter = declared.parameters[index]
+        var key = "{call_name}.{parameter.name}"
+        var filled = context.known_call_arguments[key]
+        if not filled {
+            typing.refuse_an_unfilled_call_argument(context, call_name, parameter.name, declared.name)
+        }
+        crash filled
+        var read = HighIntermediaryRepresentation.Values.LocalRead(parameter.parameter_type, filled)
+        arguments.append(read)
+        index = index + 1
+    }
+    var instance = HighIntermediaryRepresentation.Values.LocalRead(instance_type, hidden)
+    values.need(declared)
+    return HighIntermediaryRepresentation.Values.Call(declared, instance, arguments)
+}
+
+func refuse_a_value_read(name: String) {
+    assert context.known_calls[name]
+    typing.refuse_a_known_call_as_a_value(context, name)
+}
