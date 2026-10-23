@@ -54,6 +54,27 @@ hexadecimal). Nothing of it is in the executable. When a native fault halts the 
 file and adds `spite.function\t<key>` for the function that faulted and one `spite.caller\t<key>` for each frame it
 walks up through the frame pointers; without the file it prints only the fault line.
 
+## How the compiler is built
+
+The source is written to the language this compiler checks: its entry file loads `.spite/library/windows`, and
+every rule of `../SpiteLanguage/specs` holds in it. The old compiler (0.0.6) cannot build it, so a build from
+nothing is a chain, and `scripts/bootstrap.sh` runs all of it:
+
+1. **The seed.** Commit `47767ec` is the last source the old compiler builds. The old compiler builds it into
+   `.spite/bootstrap/spite_seed.exe`. Its executables reserve 1 MB of stack, too little for this compiler to
+   resolve its own source, so the script sets the seed's `SizeOfStackReserve` (offset 72 of the PE optional header)
+   to 256 MB. Only the seed is ever built by the old compiler.
+2. **The seed builds the source**, about five minutes (`--check` about three). `.spite/library` must be a junction
+   to `../SpiteStandardLibrary`, since the entry file's `load` reaches it through `.spite/spite_compiler`.
+3. **The compiler builds itself** until two builds write the same bytes, about seventy seconds each; the compiler
+   the seed writes already rebuilds itself byte for byte. That fixed point is the compiler, and
+   `bash scripts/bootstrap.sh --install` puts it in `.spite/spite.exe`.
+
+Day to day nobody runs the chain: `.spite/spite.exe` builds the next compiler from the current source
+(`.spite/spite.exe .spite/spite_compiler --build --executable-path=.spite/spite_next.exe`), and the next one is
+kept when it rebuilds itself to the same bytes. A change the current compiler cannot build is built by the
+compiler of the commit before it.
+
 ## The first error stops the run
 
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed

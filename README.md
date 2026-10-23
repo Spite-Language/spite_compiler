@@ -6,9 +6,12 @@ specified in `../SpiteLanguage`, the standard library is `../SpiteStandardLibrar
 
 ## Build it
 
-The old compiler builds this one:
+This compiler builds itself:
 
-    .spite/spite-0.0.6-windows/spite.exe .spite/spite_compiler --build --executable-path=.spite/spite.exe
+    .spite/spite.exe .spite/spite_compiler --build --executable-path=.spite/spite_next.exe
+
+From nothing, `bash scripts/bootstrap.sh --install` builds it from the old compiler (0.0.6) through a seed
+(`ARCHITECTURE.md`, "How the compiler is built").
 
 `.spite/spite_compiler` is a junction to this folder under a snake_case name. `.spite/library` is a junction to
 `../SpiteStandardLibrary`. The compiler carries every class it adds to a program inside its own executable

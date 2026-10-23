@@ -43,7 +43,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## The language
 - `Spite.Call` on a declaration known only at run time (D864): `call()` of a function that takes arguments halts instead of passing the ones `.arguments` holds, and an argument filled there twice or under a name the function lacks is not refused
-- A name prefix standing in for a namespace (D819) is refused in a program's sub-folders, and the compiler's own folders break it (`building/` Borrow*, `statements/` Assign*, `values/` Class* and Function*, `low_intermediary_representation/` Low*, `instructions/` Decimal*, `abstract_syntax_tree/walk/` Found*): rename them before this compiler builds itself
 - A bare call of an operator function inside its own class (`negate()`, which `-this` writes) is not refused yet (D910)
 - A call of an operator function by name on a value of a `type` or a union (`item.less_than(other)`) is not refused yet (D907)
 - A function value of another object held in a local (`var hurt = troll.hurt`, then `describe(hurt)`) is still looked up by name in its class object's `.functions` (bound to the stand-in, not to `troll`), and halts for the entry class (D866)
@@ -144,9 +143,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## The compiler proves itself
 
-- The compiler compiles itself, and the executable it writes is itself
 - The programs of `../SpiteLanguage` (conformance, examples, docs) are ported to `../SpiteSpec/tests` and answer the same
-- This compiler's own entry file names its library with `load`, when it builds itself
 
 ## Every optimisation the original does
 - Classes specialised by use (D758, D769): one layout per allocation site, following each object to every place it reaches and merging or specialising the code at each meeting point by measured cost (built: one layout per class from the whole program, so an attribute only some objects use is still stored in all of them); an attribute only written is still stored; a member read through a union is never folded to its classes' constants; the functions only a dropped default called are still in the executable
