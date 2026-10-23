@@ -784,6 +784,34 @@ not fit, the instruction is kept, so the program still halts at run time with th
 
 A retain or a release of a register known to hold nothing (the 0 an attribute of a fresh object reads) is removed.
 
+## Walks over classes, values and members are unrolled while compiling
+
+A walk whose list is known while compiling is no loop in the program: the compiler writes one call per element.
+`Namespace.classes.each(walker)`, with `walker` taking a `Spite.Class`, makes one copy of `walker` for each class
+of the namespace's folder, in which the parameter is that class (`Runner<system>()`, `system.has_function(...)`,
+`system.name` are all constants); `Enum.values.each(walker)` calls `walker` once per value, with the value as a
+constant; and a template's plural (`fill_attributes(row)`, `run_phases_each()`) is one call of the template's copy
+for each member it ranges over. `$type.values`, where the generic is bound to an enum, is a constant list of its
+values. Nothing of a walk is left at run time: no reflection object is made, no list of classes or values is
+kept, and a walker nobody walks is not compiled.
+
+```spite
+func Schedule() {
+    System.classes.each(add_system)
+}
+
+func add_system(system: Spite.Class) {
+    var runner = Runner<system>()
+    runners.append(runner)
+}
+```
+
+It applies when the namespace or the enum is named directly (or `$type` bound to an enum) and the walker is a
+function of the same class taking one parameter. A list of classes or values reached at run time
+(`thing.class.namespace.classes`) is walked as an ordinary list of reflection objects. What a user can observe:
+the order of the calls is the order of the folder's files and of the enum's values, the same as the walk at run
+time would take.
+
 ## Calls on constants are run while compiling
 
 A call whose arguments are all known while compiling, and whose function touches nothing but its own memory, is run

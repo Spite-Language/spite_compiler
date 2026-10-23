@@ -6,6 +6,7 @@ var context = Context(no_program, no_resolver)
 var scalars = Model.Scalars()
 var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
 var temporary_count = 0
+var spread_into: Model.FunctionModel? = null
 
 func Values(starting_context: Context) {
     context = starting_context
@@ -867,6 +868,9 @@ func name_value(
 }
 
 func walked_symbol(walking: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value {
+    if walking.binds_a_class {
+        return bound_class_object(walking)
+    }
     need_text_constants()
     var made = HighIntermediaryRepresentation.Values.TextConstant(walking.bound_member)
     made.value_type = context.resolver.symbol_type()
@@ -990,6 +994,10 @@ func member_value(
     var described_member = bound_parameter_member(member)
     if described_member {
         return described_member
+    }
+    var generic_values = generic_enum_values(member)
+    if generic_values {
+        return generic_values
     }
     var reflected = reflected_member(member)
     if reflected {
@@ -1122,6 +1130,9 @@ func described_by_the_parameter(
     function: Model.FunctionModel,
 ): HighIntermediaryRepresentation.Values.Value? {
     assert target.name == function.bound_parameter
+    if function.binds_a_function_declaration {
+        return described_function_declaration(asked, function)
+    }
     var integer = context.scalar_type("Integer")
     var camel = camel_case_of(function.bound_member)
     var pascal = pascal_case_of(function.bound_member)
@@ -1132,6 +1143,19 @@ func described_by_the_parameter(
         "index": return HighIntermediaryRepresentation.Values.WholeNumber(integer, function.bound_member_index)
         "class": return bound_class_object(function)
         "value": return walked_value(function)
+        _: return null
+    }
+}
+
+func described_function_declaration(
+    asked: String,
+    function: Model.FunctionModel,
+): HighIntermediaryRepresentation.Values.Value? {
+    var integer = context.scalar_type("Integer")
+    switch asked {
+        "name": return described_text(function.bound_function)
+        "hole": return walked_symbol(function)
+        "index": return HighIntermediaryRepresentation.Values.WholeNumber(integer, function.bound_member_index)
         _: return null
     }
 }
@@ -1238,6 +1262,106 @@ func bound_class_made(
         }
     }
     return null
+}
+
+func walked_classes_or_values(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert callee.name == "each" and call.arguments.count() == 1
+    var listed = callee.target
+    var argument = call.arguments[0]
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if argument == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+            return walked_listing(listed, argument.name)
+        }
+    }
+    return null
+}
+
+func walked_listing(
+    listed: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    walker_name: String,
+): HighIntermediaryRepresentation.Values.Value? {
+    var lists_values = listed.name == "values" or listed.name == "classes"
+    assert lists_values
+    var walker = context.current_class.function_named(walker_name)
+    assert walker
+    assert walker.template_index < 0 and walker.parameters.count() == 1
+    var path = tested_class_path_of(listed.target)
+    assert not path.is_empty()
+    if listed.name == "values" {
+        return walked_values(walker, path)
+    }
+    return walked_classes(walker, path)
+}
+
+func walked_values(walker: Model.FunctionModel, path: List<String>): HighIntermediaryRepresentation.Values.Value? {
+    var declared = declared_enum_of(path)
+    assert declared
+    assert declared.kind == 'enumeration'
+    var enumeration = enum_model_of(declared)
+    need(walker)
+    var index = 0
+    while index < enumeration.values.count() {
+        var value_name = enumeration.values[index]
+        var value = enum_value(value_name, declared)
+        var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+        arguments.append(value)
+        var own = this_value()
+        var walk_call = HighIntermediaryRepresentation.Values.Call(walker, own, arguments)
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(walk_call)
+        evaluated.line = context.line
+        context.pending.append(evaluated)
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func walked_classes(walker: Model.FunctionModel, path: List<String>): HighIntermediaryRepresentation.Values.Value? {
+    var namespace = path.join(".")
+    var folder = context.resolver.symbols.namespace_folder(namespace)
+    assert folder
+    var parameter = walker.parameters[0]
+    crash parameter
+    assert parameter.parameter_type.name == "Spite.Class"
+    var names = classes_of_a_namespace(namespace)
+    var index = 0
+    while index < names.count() {
+        var shown = names[index]
+        var made = class_walk_copy(walker, shown, index)
+        need(made)
+        var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+        var own = this_value()
+        var walk_call = HighIntermediaryRepresentation.Values.Call(made, own, arguments)
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(walk_call)
+        evaluated.line = context.line
+        context.pending.append(evaluated)
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func class_walk_copy(walker: Model.FunctionModel, shown: String, index: Integer): Model.FunctionModel {
+    var owner_name = shown.replace(".", "_")
+    var called_name = "{walker.name}_over_{owner_name}"
+    var known = context.current_class.function_named(called_name)
+    if known {
+        return known
+    }
+    var model = context.resolver.class_model_named(shown)
+    crash model
+    var member_type = Model.Type('object', model.key)
+    walker.template_index = 0
+    var made = context.resolver.specialized(walker, called_name, shown, member_type, false, context.current_class)
+    walker.template_index = -1
+    made.is_a_walk_copy = true
+    made.bound_member_index = index
+    made.binds_a_class = true
+    context.current_class.declared_functions.append(made)
+    return made
 }
 
 func walked_attributes(
@@ -1464,6 +1588,17 @@ func namespace_named(
     return reflection.namespace_object(folder.namespace)
 }
 
+func generic_enum_values(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert member.name == "values"
+    var path = tested_class_path_of(member.target)
+    assert path.count() == 1
+    var first = path[0]
+    assert first.starts_with("$")
+    return enum_values_of(path)
+}
+
 func reflected_member(
     member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): HighIntermediaryRepresentation.Values.Value? {
@@ -1547,7 +1682,7 @@ func enum_path_of(listed: AbstractSyntaxTree.Shapes.Expressions.Expression?): Li
 }
 
 func enum_values_of(path: List<String>): HighIntermediaryRepresentation.Values.Value? {
-    var declared = context.resolver.declared_type_in(path, context.current_class)
+    var declared = declared_enum_of(path)
     assert declared
     assert declared.kind == 'enumeration'
     var enumeration = enum_model_of(declared)
@@ -1561,6 +1696,15 @@ func enum_values_of(path: List<String>): HighIntermediaryRepresentation.Values.V
         index = index + 1
     }
     return listed
+}
+
+func declared_enum_of(path: List<String>): Model.Type? {
+    var first = path[0]
+    crash first
+    if first.starts_with("$") and path.count() == 1 {
+        return context.current_class.bound_types[first]
+    }
+    return context.resolver.declared_type_in(path, context.current_class)
 }
 
 func shape_size_of(path: List<String>): HighIntermediaryRepresentation.Values.Value? {
@@ -2299,6 +2443,7 @@ func specialised_for_the_pattern(
     made.bound_pattern = current.bound_pattern
     made.bound_function = current.bound_function
     made.bound_class = current.bound_class
+    made.binds_a_function_declaration = current.binds_a_function_declaration
     context.current_class.declared_functions.append(made)
     return made
 }
@@ -2419,6 +2564,10 @@ func member_call(
     var walked = walked_attributes(call, callee)
     if walked {
         return walked
+    }
+    var listing_walk = walked_classes_or_values(call, callee)
+    if listing_walk {
+        return listing_walk
     }
     var question = reflection_question(call, callee)
     if question {
@@ -2934,11 +3083,11 @@ func dictionary_template(
 }
 
 func specialized_for(owner: Model.ClassModel, template: Model.FunctionModel, name: String): Model.FunctionModel? {
-    var member_owner = context.resolver.template_owner_of(template, owner)
-    assert member_owner
-    var written_owner: Model.Type = member_owner
     var match = template_match(template, name)
     assert match
+    var member_owner = owner_of_a_template(template, owner, name)
+    assert member_owner
+    var written_owner: Model.Type = member_owner
     var owner_type = bound_parameters(template, written_owner)
     var is_rebound = owner_type.name != written_owner.name
     var known_name = name
@@ -2996,16 +3145,6 @@ func replaced_word(text: String, word: String, replacement: String): String {
     return renamed.join("_")
 }
 
-func hole_enum(word: String, owner: Model.ClassModel): Model.Type? {
-    var path = List<String>()
-    var enum_name = pascal_case_of(word)
-    path.append(enum_name)
-    var declared = context.resolver.declared_type_in(path, owner)
-    assert declared
-    assert declared.kind == 'enumeration'
-    return declared
-}
-
 func pattern_names(template: Model.FunctionModel, owner: Model.ClassModel, pattern: Model.Type): List<String> {
     var names = List<String>()
     var parts = pattern.name.split("|")
@@ -3014,21 +3153,63 @@ func pattern_names(template: Model.FunctionModel, owner: Model.ClassModel, patte
     crash class_key
     crash function_part
     var word = walked_word(template)
-    var enum_type = hole_enum(word, owner)
-    crash enum_type
-    var enumeration = enum_model_of(enum_type)
     var walked_class = context.program.class_named(class_key)
     crash walked_class
     var index = 0
-    while index < enumeration.values.count() {
-        var value = enumeration.values[index]
-        var function_name = replaced_word(function_part, word, value)
-        if walked_class.function_named(function_name) {
-            names.append(value)
+    while index < walked_class.declared_functions.count() {
+        var function = walked_class.declared_functions[index]
+        var hole = hole_of(function, function_part, word)
+        if not hole.is_empty() and not names.contains(hole) {
+            names.append(hole)
         }
         index = index + 1
     }
     return names
+}
+
+func hole_of(function: Model.FunctionModel, function_part: String, word: String): String {
+    var is_written = function.declaration and function.bound_member.is_empty() and not function.is_a_member_template
+    if not is_written or function.is_synthetic or function.is_a_walk_copy {
+        return ""
+    }
+    return hole_in(function.name, function_part, word)
+}
+
+func hole_in(name: String, function_part: String, word: String): String {
+    var words = function_part.split("_")
+    var place = words.index_of(word)
+    if not place {
+        return ""
+    }
+    var before = List<String>()
+    var after = List<String>()
+    var word_index = 0
+    while word_index < words.count() {
+        var each_word = words[word_index]
+        if word_index < place {
+            before.append(each_word)
+        }
+        if word_index > place {
+            after.append(each_word)
+        }
+        word_index = word_index + 1
+    }
+    var prefix = before.join("_")
+    if not prefix.is_empty() {
+        prefix = "{prefix}_"
+    }
+    var suffix = after.join("_")
+    if not suffix.is_empty() {
+        suffix = "_{suffix}"
+    }
+    var fixed_length = prefix.length() + suffix.length()
+    var fits = name.starts_with(prefix) and name.ends_with(suffix) and name.length() > fixed_length
+    if not fits {
+        return ""
+    }
+    var prefix_length = prefix.length()
+    var middle_end = name.length() - suffix.length()
+    return name.slice(prefix_length, middle_end)
 }
 
 func specialized_over_a_pattern(
@@ -3047,22 +3228,64 @@ func specialized_over_a_pattern(
     crash class_key
     crash function_part
     var word = walked_word(template)
-    var enum_type = hole_enum(word, owner)
-    assert enum_type
-    var enumeration = enum_model_of(enum_type)
-    var place = enumeration.values.index_of(written)
-    assert place
+    var holes = pattern_names(template, owner, pattern)
+    var place = holes.index_of(written)
     var bound_function = replaced_word(function_part, word, written)
     var walked_class = context.program.class_named(class_key)
     crash walked_class
-    assert walked_class.function_named(bound_function)
-    var made = context.resolver.specialized(template, name, written, enum_type, false, owner)
+    assert place or not walks_by_the_name(template, name)
+    if not place {
+        refuse_an_unmatched_hole(template, name, written, word, walked_class, bound_function, function_part, holes)
+    }
+    crash place
+    var symbol = context.resolver.symbol_type()
+    var made = context.resolver.specialized(template, name, written, symbol, false, owner)
     made.bound_member_index = place
     made.bound_pattern = function_part
     made.bound_function = bound_function
     made.bound_class = class_key
+    made.binds_a_function_declaration = true
     owner.declared_functions.append(made)
     return made
+}
+
+func refuse_an_unmatched_hole(
+    template: Model.FunctionModel,
+    name: String,
+    written: String,
+    word: String,
+    walked_class: Model.ClassModel,
+    missing: String,
+    function_part: String,
+    holes: List<String>,
+) {
+    var fitting = List<String>()
+    var index = 0
+    while index < holes.count() {
+        var hole = holes[index]
+        var fitted_name = replaced_word(function_part, word, hole)
+        fitting.append("'{fitted_name}'")
+        index = index + 1
+    }
+    var matched = "it has no function that fits '{function_part}'"
+    if not fitting.is_empty() {
+        var listed = fitting.join(", ")
+        matched = "the functions there that fit '{function_part}' are {listed}"
+    }
+    var refusal = Validators.NameResolution.TemplateRange.Validator()
+    refusal.refuse_an_unmatched_hole(
+        context.current_class.file.path,
+        context.line,
+        context.current_class.shown,
+        context.current_function.name,
+        name,
+        template.name,
+        written,
+        word,
+        walked_class.shown,
+        missing,
+        matched,
+    )
 }
 
 func specialized_over_a_handle(
@@ -3696,12 +3919,16 @@ func walked_over(
     template: Model.FunctionModel,
     written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ): HighIntermediaryRepresentation.Values.Value {
-    var written_owner = context.resolver.template_owner_of(template, owner)
+    var plural_name = "{template.name}s"
+    var written_owner = owner_of_a_template(template, owner, plural_name)
     crash written_owner
     var member_owner = bound_parameters(template, written_owner)
     var names = walked_names(member_owner)
     if member_owner.kind == 'pattern' {
         names = pattern_names(template, owner, member_owner)
+    }
+    if not template.narrowed_names.is_empty() {
+        names = template.narrowed_names
     }
     var index = 0
     while index < names.count() {
@@ -4875,9 +5102,14 @@ func spread_over(
     template: Model.FunctionModel,
     written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ): List<HighIntermediaryRepresentation.Values.Value>? {
-    var member_owner = context.resolver.template_owner_of(template, owner)
-    assert member_owner
-    assert member_owner.kind == 'parameters'
+    var outer_spread = spread_into
+    spread_into = function
+    var plural_name = "{template.name}s"
+    var member_owner = owner_of_a_template(template, owner, plural_name)
+    if not member_owner or member_owner.kind != 'parameters' {
+        spread_into = outer_spread
+        return null
+    }
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
     var word = walked_word(template)
     var index = 0
@@ -4892,7 +5124,48 @@ func spread_over(
         arguments.append(fitted_answer)
         index = index + 1
     }
+    spread_into = outer_spread
     return arguments
+}
+
+func owner_of_a_template(template: Model.FunctionModel, owner: Model.ClassModel, called_name: String): Model.Type? {
+    var range = context.resolver.range_of_a_template(template)
+    if range != "Spite.Argument" {
+        return context.resolver.template_owner_of(template, owner)
+    }
+    var found = argument_owner()
+    if not found {
+        var refusal = Validators.NameResolution.TemplateRange.Validator()
+        refusal.refuse_an_unknown_argument_owner(
+            context.current_class.file.path,
+            context.line,
+            context.current_class.shown,
+            context.current_function.name,
+            called_name,
+        )
+    }
+    return found
+}
+
+func argument_owner(): Model.Type? {
+    var current = context.current_function
+    if spread_into {
+        var into: Model.FunctionModel = spread_into
+        return parameters_of_a_call(into, current)
+    }
+    var is_bound = not current.bound_pattern.is_empty() and not current.bound_class.is_empty()
+    if is_bound {
+        return Model.Type('parameters', "{current.bound_class}|{current.bound_pattern}")
+    }
+    return null
+}
+
+func parameters_of_a_call(into: Model.FunctionModel, current: Model.FunctionModel): Model.Type {
+    var is_the_pattern = into.name == current.bound_function and not current.bound_pattern.is_empty()
+    if is_the_pattern {
+        return Model.Type('parameters', "{into.owner}|{current.bound_pattern}")
+    }
+    return Model.Type('parameters', "{into.owner}|{into.name}")
 }
 
 func arguments_for(
@@ -6746,6 +7019,11 @@ func constant_class_of(target: AbstractSyntaxTree.Shapes.Expressions.Expression?
 
 func constant_class_named(name: String): String? {
     assert not context.scope.internal_name_of(name)
+    var function = context.current_function
+    if function.binds_a_class and name == function.bound_parameter {
+        crash function.bound_member_type
+        return function.bound_member_type.name
+    }
     if name.starts_with("$") {
         return bound_class_named(name)
     }

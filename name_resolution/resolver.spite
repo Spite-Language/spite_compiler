@@ -11,6 +11,10 @@ var read_parameters = List<Model.ParameterModel>()
 var typing = Inference()
 var bound_member_name = ""
 var bound_member_type: Model.Type? = null
+var bound_member_is_a_class = false
+var read_function_name = ""
+var read_function_path = ""
+var passing_depth = 0
 
 func Resolver(starting_symbols: Symbols.SymbolTable) {
     symbols = starting_symbols
@@ -216,16 +220,18 @@ func note_the_room(
 
 func read_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
     line = declaration.line
+    read_function_name = declaration.name
+    read_function_path = declaration.path
     var made = Model.FunctionModel(declaration.name, context.key)
     made.declaration = declaration
     var simple_name = simple_name_of(context.file)
     made.is_constructor = declaration.name == simple_name
-    declaration.parameters.each(refuse_a_bound_attribute)
+    declaration.parameters.each(refuse_an_old_range)
     var template_index = template_index_of(declaration)
     if template_index >= 0 {
-        refuse_a_plain_symbol(declaration, template_index)
         made.is_a_member_template = true
         made.template_index = template_index
+        mark_the_attribute_reads(declaration, template_index)
         context.declared_functions.append(made)
         return
     }
@@ -238,32 +244,104 @@ func read_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionD
     context.declared_functions.append(made)
 }
 
-func refuse_a_bound_attribute(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
+func refuse_an_old_range(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
     var written = parameter.declared_type
     if written == AbstractSyntaxTree.Shapes.Types.NamedType {
-        var path = written.path.join(".")
-        var is_bound = path == "Spite.Attribute" and not written.arguments.is_empty()
-        var spelling = Validators.NameResolution.TemplateSpelling.Validator()
-        spelling.check(context.file.path, line, context.shown, parameter.name, is_bound)
+        refuse_a_written_range(parameter.name, written)
     }
 }
 
-func refuse_a_plain_symbol(
-    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
-    template_index: Integer,
-) {
-    var namespace = context.file.namespace
-    var is_a_collection = namespace == "List" or namespace == "Vector" or namespace == "Items"
-    assert is_a_collection
-    var parameter = declaration.parameters[template_index]
-    crash parameter
-    var written = parameter.declared_type
-    if written == AbstractSyntaxTree.Shapes.Types.NamedType {
-        var joined = written.path.join(".")
-        var is_plain = joined == "Symbol" and written.arguments.is_empty()
-        var plain_symbol = Validators.NameResolution.PlainSymbol.Validator()
-        plain_symbol.check(declaration.path, declaration.line, namespace, declaration.name, parameter.name, is_plain)
+func refuse_a_written_range(name: String, written: AbstractSyntaxTree.Shapes.Types.NamedType) {
+    assert not written.arguments.is_empty()
+    var path = written.path.join(".")
+    var argument = written.arguments[0]
+    var owner = generic_argument_text(argument)
+    var refusal = Validators.NameResolution.TemplateRange.Validator()
+    if path == "Symbol" {
+        var symbol_advice = advice_for_a_symbol(name, owner)
+        refusal.refuse_a_symbol(read_function_path, line, context.shown, read_function_name, name, owner, symbol_advice)
     }
+    var ranges = ["Spite.AttributeDeclaration", "Spite.Attribute", "Spite.FunctionDeclaration", "Spite.Argument"]
+    assert ranges.contains(path)
+    var advice = "write '{name}: Spite.AttributeDeclaration' and read it as 'value[{name}]' on a value of '{owner}'"
+    if path == "Spite.FunctionDeclaration" {
+        advice = "write '{name}: Spite.FunctionDeclaration' and call the function on a value of '{owner}', as in 'value.{name}_each(...)'"
+    }
+    if path == "Spite.Argument" {
+        advice = "write '{name}: Spite.Argument' and spread its plural into a call of the function whose arguments it walks"
+    }
+    refusal.refuse_a_written_owner(
+        read_function_path,
+        line,
+        context.shown,
+        read_function_name,
+        name,
+        path,
+        owner,
+        advice,
+    )
+}
+
+func generic_argument_text(argument: AbstractSyntaxTree.Shapes.Types.GenericArgument): String {
+    var written = argument.type_reference
+    if written == AbstractSyntaxTree.Shapes.Types.NamedType {
+        return written.path.join(".")
+    }
+    return argument.text
+}
+
+func advice_for_a_symbol(name: String, owner: String): String {
+    var parts = owner.split(".")
+    var last_part = parts.last()
+    crash last_part
+    var initial = last_part.slice(0, 1)
+    var names_a_function = parts.count() == 2 and initial == initial.lower_case()
+    if names_a_function {
+        return advice_for_a_function(name, parts)
+    }
+    var attribute_advice = "write '{name}: Spite.AttributeDeclaration' and read the attribute as 'value[{name}]' on a value of '{owner}'"
+    if owner.starts_with("$") {
+        return attribute_advice
+    }
+    var folder = symbols.namespace_folder(owner)
+    var named_class = symbols.find(owner, context.file.namespace)
+    if folder and not named_class {
+        return "walk the classes of '{owner}' as ordinary code, '{owner}.classes.each({read_function_name})', with '{name}: Spite.Class'"
+    }
+    var declared = declared_type_in(parts, context)
+    if declared and declared.kind == 'enumeration' {
+        return "walk the values of '{owner}' as ordinary code, '{owner}.values.each({read_function_name})', with '{name}: {owner}'"
+    }
+    return attribute_advice
+}
+
+func advice_for_a_function(name: String, parts: List<String>): String {
+    var class_part = parts[0]
+    var function_part = parts[1]
+    crash class_part
+    crash function_part
+    var words = function_part.split("_")
+    if words.contains(name) {
+        return "write '{name}: Spite.FunctionDeclaration' and call the function as 'value.{function_part}(...)' on a value of '{class_part}'"
+    }
+    var plural = replaced_name_word(read_function_name, name, "{name}s")
+    return "write '{name}: Spite.Argument' and spread its plural into the call, as in 'value.{function_part}({plural}())'"
+}
+
+func replaced_name_word(text: String, word: String, replacement: String): String {
+    var words = text.split("_")
+    var renamed = List<String>()
+    var index = 0
+    while index < words.count() {
+        var each_word = words[index]
+        if each_word == word {
+            renamed.append(replacement)
+        } else {
+            renamed.append(each_word)
+        }
+        index = index + 1
+    }
+    return renamed.join("_")
 }
 
 func template_index_of(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): Integer {
@@ -281,104 +359,605 @@ func template_index_of(declaration: AbstractSyntaxTree.Shapes.Declarations.Funct
 }
 
 func is_a_declaration_type(written: AbstractSyntaxTree.Shapes.Types.Type?): Boolean {
+    var path = range_of(written)
+    var ranges = ["Spite.AttributeDeclaration", "Spite.FunctionDeclaration", "Spite.Argument"]
+    return ranges.contains(path)
+}
+
+func range_of(written: AbstractSyntaxTree.Shapes.Types.Type?): String {
     if written == AbstractSyntaxTree.Shapes.Types.NamedType {
-        var path = written.path.join(".")
-        if path == "Symbol" {
-            return true
+        if written.arguments.is_empty() {
+            return written.path.join(".")
         }
-        return path == "Spite.AttributeDeclaration" and not written.arguments.is_empty()
+    }
+    return ""
+}
+
+func range_of_a_template(template: Model.FunctionModel): String {
+    crash template.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = template.declaration
+    var parameter = declaration.parameters[template.template_index]
+    crash parameter
+    return range_of(parameter.declared_type)
+}
+
+func mark_the_attribute_reads(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    template_index: Integer,
+) {
+    var parameter = declaration.parameters[template_index]
+    crash parameter
+    assert range_of(parameter.declared_type) == "Spite.AttributeDeclaration" and declaration.body
+    var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+    walk.read_function(declaration)
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var expression = found.expression
+        if expression == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+            mark_an_attribute_read(expression, parameter.name)
+        }
+        index = index + 1
+    }
+}
+
+func mark_an_attribute_read(indexed: AbstractSyntaxTree.Shapes.Expressions.IndexExpression, name: String) {
+    assert indexes_by(indexed, name)
+    var target = indexed.target
+    crash target
+    if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        assert target.name != "attributes"
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        assert target.name != "attributes"
+    }
+    var listed = AbstractSyntaxTree.Shapes.Expressions.MemberExpression(target, "attributes")
+    indexed.target = listed
+}
+
+func indexes_by(indexed: AbstractSyntaxTree.Shapes.Expressions.IndexExpression, name: String): Boolean {
+    var written = indexed.index
+    if written == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return written.name == name
     }
     return false
 }
 
 func template_owner_of(template: Model.FunctionModel, model: Model.ClassModel): Model.Type? {
+    if template.inferred_owner {
+        return template.inferred_owner
+    }
     crash template.declaration
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = template.declaration
     var parameter = declaration.parameters[template.template_index]
     crash parameter
-    var written = parameter.declared_type
-    if written == AbstractSyntaxTree.Shapes.Types.NamedType {
-        return owner_of_a_declaration(written, declaration, model)
-    }
-    return null
-}
-
-func owner_of_a_declaration(
-    written: AbstractSyntaxTree.Shapes.Types.NamedType,
-    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
-    model: Model.ClassModel,
-): Model.Type? {
-    if written.arguments.is_empty() {
-        return Model.Type('object', model.key)
-    }
-    var argument = written.arguments[0]
-    var owner_written = argument.type_reference
-    if owner_written == AbstractSyntaxTree.Shapes.Types.NamedType {
-        return owner_named(owner_written, declaration, model)
-    }
-    return null
-}
-
-func owner_named(
-    owner_written: AbstractSyntaxTree.Shapes.Types.NamedType,
-    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
-    model: Model.ClassModel,
-): Model.Type? {
-    if owner_written.path.count() == 2 {
-        return parameters_owner(owner_written, declaration, model)
-    }
-    assert owner_written.path.count() == 1
-    var written = owner_written.path[0]
-    var folder = symbols.namespace_folder(written)
-    var named_class = symbols.find(written, model.file.namespace)
-    if folder and not named_class {
-        return Model.Type('namespace', folder.namespace)
-    }
-    var is_plain_name = not named_class and not written.starts_with("$")
-    if is_plain_name and not scalars.is_a_scalar(written) {
-        var single = List<String>()
-        single.append(written)
-        var declared = declared_type_in(single, model)
-        if not declared {
-            return Model.Type('namespace', written)
-        }
-    }
+    var range = range_of(parameter.declared_type)
+    var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+    walk.read_function(declaration)
     var outer = context
     context = model
     line = declaration.line
-    var found = type_of(owner_written)
+    var found: Model.Type? = null
+    if range == "Spite.AttributeDeclaration" {
+        found = attribute_owner(template, declaration, parameter.name, walk)
+    }
+    if range == "Spite.FunctionDeclaration" {
+        found = function_owner(declaration, parameter.name, walk)
+    }
     context = outer
     fill_the_waiting()
+    template.inferred_owner = found
     return found
 }
 
-func parameters_owner(
-    owner_written: AbstractSyntaxTree.Shapes.Types.NamedType,
+func attribute_owner(
+    template: Model.FunctionModel,
     declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
-    model: Model.ClassModel,
+    name: String,
+    walk: AbstractSyntaxTree.Walk.Walk,
 ): Model.Type? {
-    var class_part = owner_written.path[0]
-    var function_part = owner_written.path[1]
-    crash class_part
-    crash function_part
-    var class_path = List<String>()
-    class_path.append(class_part)
-    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
-    var outer = context
-    context = model
-    line = declaration.line
-    var found = type_of_a_path(class_path, no_arguments)
-    context = outer
-    fill_the_waiting()
-    assert found.kind == 'object' and not found.is_nullable
-    var walked_class = program.class_named(found.name)
-    if walked_class {
-        var enumeration = walked_class.enum_named(function_part)
-        if enumeration {
-            return Model.Type('enumeration', enumeration.key)
+    var classes = List<Model.Type>()
+    note_the_attribute_uses(declaration, name, walk, classes, true)
+    note_the_attribute_uses(declaration, name, walk, classes, false)
+    if classes.is_empty() {
+        return owner_without_a_read(declaration, name, walk)
+    }
+    var owner = classes[0]
+    template.narrowed_names = common_attributes(declaration, name, classes)
+    return owner
+}
+
+func owner_without_a_read(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    walk: AbstractSyntaxTree.Walk.Walk,
+): Model.Type? {
+    var passed = attribute_owner_passed_on(name, walk)
+    if passed {
+        return passed
+    }
+    var given = class_of_a_parameter(declaration, name)
+    if given {
+        return given
+    }
+    assert passing_depth == 0
+    var refusal = Validators.NameResolution.TemplateRange.Validator()
+    refusal.refuse_an_unused_attribute(declaration.path, declaration.line, context.shown, declaration.name, name)
+    return null
+}
+
+func attribute_owner_passed_on(name: String, walk: AbstractSyntaxTree.Walk.Walk): Model.Type? {
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var expression = found.expression
+        if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            var owner = attribute_owner_in_a_call(expression, name)
+            if owner {
+                return owner
+            }
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func attribute_owner_in_a_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, name: String): Model.Type? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var helper = context.function_named(callee.name)
+        assert helper and helper.declaration
+        var place = place_of_the_name(call, name)
+        assert place >= 0 and passing_depth < 8
+        return attribute_owner_in_a_helper(helper, place)
+    }
+    return null
+}
+
+func attribute_owner_in_a_helper(helper: Model.FunctionModel, place: Integer): Model.Type? {
+    crash helper.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = helper.declaration
+    var parameter = declaration.parameters[place]
+    assert parameter
+    assert range_of(parameter.declared_type) == "Spite.AttributeDeclaration" and declaration.body
+    var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+    walk.read_function(declaration)
+    var standing_in = Model.FunctionModel(helper.name, helper.owner)
+    passing_depth = passing_depth + 1
+    var found = attribute_owner(standing_in, declaration, parameter.name, walk)
+    passing_depth = passing_depth - 1
+    return found
+}
+
+func class_of_a_parameter(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+): Model.Type? {
+    var index = 0
+    while index < declaration.parameters.count() {
+        var parameter = declaration.parameters[index]
+        if parameter.name != name and parameter.declared_type {
+            var given = type_of(parameter.declared_type)
+            if given.kind == 'object' or given.kind == 'shape' {
+                return given
+            }
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func note_the_attribute_uses(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    classes: List<Model.Type>,
+    on_parameters: Boolean,
+) {
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var expression = found.expression
+        if expression == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+            if reads_a_parameter(expression, declaration) == on_parameters {
+                note_an_attribute_use(expression, declaration, name, walk, classes)
+            }
+        }
+        index = index + 1
+    }
+}
+
+func reads_a_parameter(
+    indexed: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+): Boolean {
+    var listed = indexed.target
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var target = listed.target
+        if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+            var names = declaration.parameters.map_names()
+            return names.contains(target.name)
         }
     }
-    return Model.Type('parameters', "{found.name}|{function_part}")
+    return false
+}
+
+func note_an_attribute_use(
+    indexed: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    classes: List<Model.Type>,
+) {
+    assert indexes_by(indexed, name)
+    var listed = indexed.target
+    var used: Model.Type? = null
+    if listed == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        assert listed.name == "attributes"
+        used = Model.Type('object', context.key)
+    }
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        assert listed.name == "attributes"
+        used = class_of_a_use(listed.target, declaration, name, walk)
+    }
+    crash used
+    var index = 0
+    while index < classes.count() {
+        var known = classes[index]
+        assert not known.is_the_same_as(used)
+        index = index + 1
+    }
+    classes.append(used)
+}
+
+func class_of_a_use(
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    walk: AbstractSyntaxTree.Walk.Walk,
+): Model.Type {
+    var known = class_of_a_value(target, declaration, walk, 0)
+    if known {
+        return known
+    }
+    crash target
+    var printer = Printers.Spite.ExpressionPrinter(target)
+    var shown = printer.text()
+    var refusal = Validators.NameResolution.TemplateRange.Validator()
+    refusal.refuse_an_unknown_value(declaration.path, declaration.line, context.shown, declaration.name, name, shown)
+    crash
+}
+
+func class_of_a_value(
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    depth: Integer,
+): Model.Type? {
+    assert depth < 8
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return class_of_a_name(target.name, declaration, walk, depth)
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return class_of_a_call(target)
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return class_of_an_element(target, declaration, walk, depth)
+    }
+    return null
+}
+
+func class_of_a_name(
+    name: String,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    depth: Integer,
+): Model.Type? {
+    var parameter_index = 0
+    while parameter_index < declaration.parameters.count() {
+        var parameter = declaration.parameters[parameter_index]
+        if parameter.name == name and parameter.declared_type {
+            return type_of(parameter.declared_type)
+        }
+        parameter_index = parameter_index + 1
+    }
+    var statement_index = 0
+    while statement_index < walk.statements.count() {
+        var found = walk.statements[statement_index]
+        var statement = found.statement
+        if statement == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+            if statement.name == name {
+                return class_of_a_local(statement, declaration, walk, depth)
+            }
+        }
+        statement_index = statement_index + 1
+    }
+    var attribute = context.attribute_named(name)
+    if attribute {
+        return attribute.attribute_type.present()
+    }
+    return null
+}
+
+func class_of_a_local(
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    depth: Integer,
+): Model.Type? {
+    if statement.declared_type {
+        return present_type_of(statement.declared_type)
+    }
+    return class_of_a_value(statement.value, declaration, walk, depth + 1)
+}
+
+func present_type_of(written: AbstractSyntaxTree.Shapes.Types.Type): Model.Type {
+    var found = type_of(written)
+    return found.present()
+}
+
+func class_of_a_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Model.Type? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return class_of_a_called_name(callee)
+    }
+    return null
+}
+
+func class_of_a_called_name(callee: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression): Model.Type? {
+    var function = context.function_named(callee.name)
+    if function {
+        return answer_of_a_function(function)
+    }
+    var first = callee.name.slice(0, 1)
+    assert first != first.lower_case()
+    var path = List<String>()
+    path.append(callee.name)
+    return type_of_a_path(path, callee.generic_arguments)
+}
+
+func answer_of_a_function(function: Model.FunctionModel): Model.Type? {
+    if function.answer {
+        return function.answer.present()
+    }
+    return null
+}
+
+func class_of_an_element(
+    indexed: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    depth: Integer,
+): Model.Type? {
+    var listed = class_of_a_value(indexed.target, declaration, walk, depth + 1)
+    assert listed and listed.kind == 'object'
+    var model = program.class_named(listed.name)
+    assert model
+    var element = model.bound_types["$element_type"]
+    if element {
+        return element.present()
+    }
+    var held = model.bound_types["$value_type"]
+    if held {
+        return held.present()
+    }
+    return null
+}
+
+func common_attributes(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    classes: List<Model.Type>,
+): List<String> {
+    var common = List<String>()
+    if classes.count() < 2 {
+        return common
+    }
+    var owner = classes[0]
+    var owner_names = attribute_names_of(owner)
+    var index = 0
+    while index < owner_names.count() {
+        var attribute = owner_names[index]
+        if every_class_has(classes, attribute) {
+            common.append(attribute)
+        }
+        index = index + 1
+    }
+    if common.is_empty() {
+        var second = classes[1]
+        var first_shown = shown_type(owner)
+        var second_shown = shown_type(second)
+        var refusal = Validators.NameResolution.TemplateRange.Validator()
+        refusal.refuse_no_common_attribute(
+            declaration.path,
+            declaration.line,
+            context.shown,
+            declaration.name,
+            name,
+            first_shown,
+            second_shown,
+        )
+    }
+    return common
+}
+
+func shown_type(of_type: Model.Type): String {
+    var model = program.class_named(of_type.name)
+    if model {
+        return model.shown
+    }
+    return of_type.name
+}
+
+func every_class_has(classes: List<Model.Type>, attribute: String): Boolean {
+    var index = 1
+    while index < classes.count() {
+        var other = classes[index]
+        var names = attribute_names_of(other)
+        if not names.contains(attribute) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func attribute_names_of(of_type: Model.Type): List<String> {
+    if of_type.kind == 'shape' {
+        return shape_attribute_names(of_type)
+    }
+    var model = program.class_named(of_type.name)
+    assert model
+    return model.declared_attributes.map_names()
+}
+
+func shape_attribute_names(of_type: Model.Type): List<String> {
+    var shape = program.shape_keyed(of_type.name)
+    assert shape
+    return shape.members.filter_is_an_attribute().map_names()
+}
+
+func function_owner(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    walk: AbstractSyntaxTree.Walk.Walk,
+): Model.Type? {
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var expression = found.expression
+        if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            var owner = owner_of_a_pattern_use(expression, declaration, name, walk)
+            if owner {
+                return owner
+            }
+        }
+        index = index + 1
+    }
+    assert passing_depth == 0
+    var refusal = Validators.NameResolution.TemplateRange.Validator()
+    refusal.refuse_an_unused_function(declaration.path, declaration.line, context.shown, declaration.name, name)
+    return null
+}
+
+func owner_of_a_pattern_use(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    walk: AbstractSyntaxTree.Walk.Walk,
+): Model.Type? {
+    var called = owner_of_a_pattern_call(call, declaration, name, walk)
+    if called {
+        return called
+    }
+    var written = owner_of_a_written_pattern(call, name)
+    if written {
+        return written
+    }
+    return owner_passed_on(call, name)
+}
+
+func owner_of_a_written_pattern(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, name: String): Model.Type? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var pattern = written_pattern_of(call, name)
+        assert not pattern.is_empty()
+        var path = class_path_named(callee.target)
+        assert not path.is_empty()
+        var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+        var walked = type_of_a_path(path, no_arguments)
+        return Model.Type('parameters', "{walked.name}|{pattern}")
+    }
+    return null
+}
+
+func written_pattern_of(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, name: String): String {
+    var hole = "<{name}>"
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if argument == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+            var text = text_of_a_literal(argument)
+            if text.contains(hole) {
+                return text.replace(hole, name)
+            }
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func text_of_a_literal(literal: AbstractSyntaxTree.Shapes.Expressions.TextLiteral): String {
+    var pieces = literal.pieces.map_texts()
+    return pieces.join("")
+}
+
+func class_path_named(target: AbstractSyntaxTree.Shapes.Expressions.Expression?): List<String> {
+    var path = List<String>()
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var initial = target.name.slice(0, 1)
+        if target.name.starts_with("$") or initial != initial.lower_case() {
+            path.append(target.name)
+        }
+    }
+    return path
+}
+
+func owner_passed_on(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, name: String): Model.Type? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var helper = context.function_named(callee.name)
+        assert helper and helper.declaration
+        var place = place_of_the_name(call, name)
+        assert place >= 0 and passing_depth < 8
+        return owner_in_a_helper(helper, place)
+    }
+    return null
+}
+
+func owner_in_a_helper(helper: Model.FunctionModel, place: Integer): Model.Type? {
+    crash helper.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = helper.declaration
+    var parameter = declaration.parameters[place]
+    assert parameter
+    assert range_of(parameter.declared_type) == "Spite.FunctionDeclaration" and declaration.body
+    var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+    walk.read_function(declaration)
+    passing_depth = passing_depth + 1
+    var found = function_owner(declaration, parameter.name, walk)
+    passing_depth = passing_depth - 1
+    return found
+}
+
+func place_of_the_name(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, name: String): Integer {
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if argument == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+            if argument.name == name {
+                return index
+            }
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func owner_of_a_pattern_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    walk: AbstractSyntaxTree.Walk.Walk,
+): Model.Type? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var words = callee.name.split("_")
+        if words.contains(name) {
+            var walked = class_of_a_use(callee.target, declaration, name, walk)
+            return Model.Type('parameters', "{walked.name}|{callee.name}")
+        }
+    }
+    return null
 }
 
 func function_of_parameters(owner: Model.Type): Model.FunctionModel? {
@@ -410,6 +989,7 @@ func specialized(
     made.template_index = template.template_index
     var outer_name = bound_member_name
     var outer_type = bound_member_type
+    var outer_is_a_class = bound_member_is_a_class
     var outer = context
     context = model
     line = declaration.line
@@ -430,6 +1010,7 @@ func specialized(
     }
     bound_member_name = outer_name
     bound_member_type = outer_type
+    bound_member_is_a_class = outer_is_a_class
     context = outer
     fill_the_waiting()
     return made
@@ -444,11 +1025,13 @@ func bind_member(
     crash parameter
     bound_member_name = parameter.name
     bound_member_type = member_type
+    bound_member_is_a_class = range_of(parameter.declared_type) == "Spite.Class"
 }
 
 func unbind_member() {
     bound_member_name = ""
     bound_member_type = null
+    bound_member_is_a_class = false
 }
 
 func read_parameter(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
@@ -500,6 +1083,9 @@ func type_of_a_path(path: List<String>, arguments: List<AbstractSyntaxTree.Shape
         return bound_type_of(path)
     }
     var written = path.join(".")
+    if bound_member_type and bound_member_is_a_class and written == bound_member_name {
+        return bound_member_type
+    }
     if bound_member_type and written == "{bound_member_name}.class" {
         return bound_member_type
     }

@@ -33,7 +33,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `conformance/own_template_borrows` reopens `Vector` with the old library's `item_count`, `values` and `items`, which the library no longer has, so it fails on `item_count` before any borrow rule
 - `conformance/lent_arguments` stops on `unknown type 'argument.class'` (the reflection walks over a function's arguments, as `tests/reflection_walks`), before its plural-naming error
 - A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
-- A pattern template whose hole names no enum (`Symbol<$t.phase_each>` with no `Phase`) crashes the compiler instead of the old error naming the enum to declare
 - A class name that reaches no file is collected in `SymbolTable.unknown_names` and never reported
 - The emitter resolves a call whose class is unknown by the function's name alone, when one class has it
 - A `load` inside an `if` is refused; the language allows it when the condition reads only build settings
@@ -41,7 +40,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 
 ## The language
-- No `Symbol<...>` (D798): templates by a parameter named in the function's name, typed `Spite.AttributeDeclaration`/`Attribute`/`FunctionDeclaration`/`Function`, the class inferred from the body; namespace and enum walks as reflection code unrolled while compiling; every program and the library rewritten
+- Templates over `Spite.Attribute` and `Spite.Function`, bound to one object (D798, D815): a parameter of those types is still an ordinary parameter; and `Namespace.classes.each(walker)` unrolls only with a walker of one parameter named in the same class (D813)
 - SpiteSpec as the whole specification (D799): one program per rule and corner of every spec page, then the Markdown spec retired
 - Fixes instead of errors (D800, to discuss): the formatter, and each rule whose fix needs no choice
 - A cycle the program's code does not link as owner and back reference still leaks (D759): two objects stored in each other's attributes where neither was made in that function, one attribute pointing both ways (`partner`), a cycle through a union or a `type`, a non-nullable back attribute, or links made in two different functions; a leak no run reports until `--debug-memory` has its report (D244)
