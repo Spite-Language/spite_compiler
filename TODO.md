@@ -227,7 +227,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The thread pool only where a `Parallel` is made
 - Thread safety for singletons, the cheapest safe form (built: unreached, never changing, atomic and locked, D780 to D783): a read or write of a locked singleton's attribute from another class takes no lock yet
 - A singleton no other thread reaches takes no lock: the walk is made only from what a `Parallel` starts, not again over the tree-shaken program
-- A singleton's reading functions do not exclude each other: a counted loop of reads holds the lock once (D982), but two threads' loops still take it one after the other, and a single read still takes it alone
+- A singleton's reading functions do not exclude each other: a counted loop of reads shares the lock (D988), but a single read outside such a loop still takes it alone, and the test for what a reader writes treats a write to any `Buffer` other than the singleton's own as none of its state
 - An attribute read only under its singleton's lock is a plain number
 - A loop of calls to one singleton tests for tasks once
 - Thread safety for singletons, the rest of the plan
@@ -260,6 +260,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - An object let go unread is never made (D984) only when nothing but its class and count is written into it and its class frees nothing but its memory: a default object with attributes, or one holding objects, is still made and freed
 - An object read from a steady load is not counted (D985) only when every register holding it is written by that load or copies of it: a local that may hold either a steady object or another one is counted
 - Loops are not rotated (each pass jumps back to the test at the top)
+- Live-range splitting is not built: a value spilled anywhere is spilled across every loop it lives in, and a value live across a call takes a kept register for its whole life
+- A slot a loop assigns from a list's items is counted on every pass (the write-back case's `Desk.open`): counting it once around the loop needs a proof that the list keeps each item while the slot holds it
 
 ## Every proof the original makes
 

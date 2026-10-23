@@ -20,6 +20,7 @@ var seen_keys = List<String>()
 var found_singletons = List<String>()
 var steady_singletons = List<String>()
 var atomic_singletons = List<String>()
+var shared_singletons = List<String>()
 var shared_classes = List<String>()
 var touched_owners = Dictionary<String, List<String>>()
 var current_touched = List<String>()
@@ -674,4 +675,72 @@ func note_a_shape_start(work: HighIntermediaryRepresentation.Values.ShapeCall) {
     }
     read_a_value(work.receiver)
     work.arguments.each(read_a_present)
+}
+
+# ../../OPTIMIZATIONS.md#a-counted-loop-of-reads-shares-its-singletons-lock
+func locks_only_itself(key: String): Boolean {
+    var seen = List<String>()
+    seen.append(key)
+    var waiting = List<String>()
+    add_the_callees(key, waiting)
+    while not waiting.is_empty() {
+        var next = waiting.remove_last()
+        crash next
+        if not seen.contains(next) {
+            seen.append(next)
+            if is_locked(next) or next == "$value" or starts_itself.contains(next) {
+                return false
+            }
+            add_the_callees(next, waiting)
+        }
+    }
+    return true
+}
+
+func shares_the_lock(class_key: String): Boolean {
+    return shared_singletons.contains(class_key)
+}
+
+func find_the_shared_loops(high: HighIntermediaryRepresentation.HighProgram, assignments: Assignments) {
+    var coarse = CoarseLoops(model, this)
+    var index = 0
+    while index < high.built_functions.count() {
+        var function = high.built_functions[index]
+        var key = function.function.key()
+        if not is_resumable(key) {
+            coarse.owner = function.function.owner
+            find_the_shared_in(coarse, assignments, function.body)
+        }
+        index = index + 1
+    }
+}
+
+func find_the_shared_in(coarse: CoarseLoops, assignments: Assignments, block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        find_the_shared_at(coarse, assignments, statement)
+        index = index + 1
+    }
+}
+
+func find_the_shared_at(coarse: CoarseLoops, assignments: Assignments, statement: HighIntermediaryRepresentation.Statements.Statement) {
+    if statement == HighIntermediaryRepresentation.Statements.While {
+        var held = coarse.singleton_held_by(statement)
+        var reading = not held.is_empty() and coarse.only_reads(assignments)
+        if reading and not shared_singletons.contains(held) {
+            shared_singletons.append(held)
+        }
+        find_the_shared_in(coarse, assignments, statement.body)
+        return
+    }
+    if statement == HighIntermediaryRepresentation.Statements.If {
+        find_the_shared_in(coarse, assignments, statement.then_branch)
+        find_the_shared_in(coarse, assignments, statement.else_branch)
+        return
+    }
+    if statement == HighIntermediaryRepresentation.Statements.Block {
+        find_the_shared_in(coarse, assignments, statement)
+    }
 }
