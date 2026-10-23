@@ -687,6 +687,23 @@ A function that waits (a resumable function, whose values live in a heap frame a
 the lowering wrote it by every pass, and its values stay in its frame: the frame is sized from its registers
 before these passes run, and a value must be in the frame when the function resumes.
 
+## A crash's report is a cold call
+
+The code that reports a failed `crash` (every value it shows, the `spite: the program stopped` line and the
+frames) runs only once, as the program halts, so the compiler moves it out of the function before inlining: every
+run of blocks that can only end the program, eight instructions or more, becomes a function of its own
+(`<function>$cold<n>`) that takes the values it reads, and the guard calls it. The passing path is unchanged, and
+the function holding the guard is as small as it was without it, so it is inlined again.
+
+    func checked_half(value: Integer): Integer {
+        crash value >= 0
+        return value / 2
+    }
+
+is inlined into its caller as a compare, a branch to `checked_half$cold0(value)` and the division. The report reads
+the same: the cold function's calls carry no frame line of their own, and the call to it carries the guard's line,
+so `spite.frame` lines name the guard's function and its callers as before.
+
 ## Small functions are inlined
 
 A call to a function that waits for nothing and holds at most 24 instructions (an accessor, a list's `get_at` and
@@ -1217,6 +1234,21 @@ returns. A list of numbers passes the address of its own storage, so C reads and
 text answer (`_as_text`) is copied into a new `String`; a null pointer stops the program naming the function. What a
 user can observe: none of it allocates in an ordinary function, and the object C changed holds C's values after the
 call.
+
+## The scheduler is written only for a program that makes work
+
+The scheduler, the handle's functions and the table of calls in a row are low functions the compiler writes,
+only when the program makes a `Concurrent` or a `Parallel`; a program that makes neither carries none of them,
+not even an import. The table that bounds calls in a row (eight unfinished per site) is sized while compiling,
+nine slots for each site the program has plus one, so it never grows; a program without such a site has no table.
+A thread's loop is found by its id: the program's first thread compares one word, and only another thread takes
+the lock that guards the list of loops.
+
+    var first = Concurrent(slow_read)
+    var answer: Integer = first
+
+writes `_scheduler_start` and `_scheduler_wait_for` for this program, and `Spite.Work_of_Integer._settled` for the
+join; `--low-ir` shows them.
 
 ## Thread safety for singletons, the cheapest safe form
 

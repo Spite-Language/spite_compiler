@@ -17,6 +17,15 @@ var rest_is_folded_away = false
 var enclosing_blocks = List<EnclosingBlock>()
 var at_function_root = false
 var last_site_identity = ""
+var shown_parts = List<ShownPart>()
+var shown_texts = List<String>()
+var reads_before = false
+var reported_count = 0
+var report_name = ""
+var report_types = List<String>()
+var shown_count = 0
+var missing_conjuncts = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+var missing_links = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
 
 func Statements(starting_context: Context) {
     context = starting_context
@@ -199,7 +208,7 @@ func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
         local_type = declared
     }
     var hidden = context.scope.hidden_by(statement.name)
-    var name = context.scope.declare(statement.name, local_type)
+    var name = context.scope.declare_written(statement.name, local_type)
     var made = HighIntermediaryRepresentation.Statements.Declare(name, local_type, value)
     made.line = statement.line
     made.hides = hidden
@@ -1503,10 +1512,7 @@ func noted_failure(
     crash failing
     values.need(failing)
     var site = site_line(statement.condition, statement.line, "spite.assert")
-    var answered = "nothing"
-    if context.current_function.answer {
-        answered = "null"
-    }
+    var answered = answered_by_a_failed_assert()
     var site_text = values.described_text("{site}\tanswered={answered}")
     var streams = 0
     var asked = context.build_flags["trace_asserts"]
@@ -1525,11 +1531,27 @@ func noted_failure(
     return evaluated
 }
 
+func answered_by_a_failed_assert(): String {
+    var answered = "nothing"
+    if context.current_function.answer {
+        answered = answered_by(context.current_function.answer)
+    }
+    return answered
+}
+
+func answered_by(answer: Model.Type): String {
+    var shown = context.shown(answer)
+    if not answer.is_nullable and is_a_collection(answer, shown) {
+        return "empty"
+    }
+    return "null"
+}
+
 func assert_ring(): Model.ClassModel? {
     assert context.resolver.symbols.program_asserts
-    var found = context.resolver.symbols.find("Spite.Internal.Asserts", "")
+    var found = context.resolver.symbols.find("Spite.Asserts", "")
     assert found
-    var ring = context.resolver.class_model_named("Spite.Internal.Asserts")
+    var ring = context.resolver.class_model_named("Spite.Asserts")
     assert ring
     context.need_defaults(ring.key)
     return ring
@@ -1760,28 +1782,41 @@ func is_a_collection(answer: Model.Type, shown: String): Boolean {
 
 func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement) {
     var message = "spite: the program stopped at {context.path()}:{statement.line} in {context.current_function.owner}.{context.current_function.name}"
-    var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
-    stopped.line = statement.line
-    stopped.then = crash_report()
+    shown_parts = List<ShownPart>()
+    shown_texts = List<String>()
+    reads_before = false
     if always_stops(statement.condition) {
         var always = identity_of_a_site(null, "|crash")
         note_a_crash_site(always, statement.line, statement.column, "crash", null, "")
-        add(stopped)
+        var nothing_mentioned = List<String>()
+        var stopping = report_of(message, null, nothing_mentioned, statement.line)
+        stopping.each(add)
         return
     }
     refuse_a_proven_check(statement.condition)
     refuse_a_proven_read_check(statement.condition, "crash")
     refuse_a_check_of_a_plain_value(statement.condition, "crash")
     refuse_a_false_build_field(statement)
-    show_the_values(stopped, statement.condition)
-    var operands = operands_of(statement.condition)
     var identity = identity_of_a_site(statement.condition, "|crash")
-    note_a_crash_site(identity, statement.line, statement.column, "crash", statement.condition, operands)
+    var written = statement.condition
+    crash written
+    context.line = statement.line
+    var held_before = reported_count
+    var rewritten = held_for_the_report(written, 2, 0, true)
+    var mentioned = List<String>()
+    gather_every_name(written, mentioned)
     statement.condition = values.with_its_links(statement.condition)
-    var condition = values.condition_of(statement.condition)
+    var linked = statement.condition
+    if reported_count > held_before {
+        linked = values.with_its_links(rewritten)
+    }
+    var condition = values.condition_of(linked)
     refuse_a_folded_crash(statement, condition)
+    flush_the_pending()
     var failed = HighIntermediaryRepresentation.Statements.Block()
-    failed.statements.append(stopped)
+    failed.statements = report_of(message, written, mentioned, statement.line)
+    var operands = report_types.join(" ")
+    note_a_crash_site(identity, statement.line, statement.column, "crash", written, operands)
     var negated = HighIntermediaryRepresentation.Values.Negation(condition)
     var made = HighIntermediaryRepresentation.Statements.If(negated, failed, null)
     made.line = statement.line
@@ -1804,47 +1839,769 @@ func crash_report(): HighIntermediaryRepresentation.Values.Value? {
     return HighIntermediaryRepresentation.Values.Call(reporting, fetched, no_arguments)
 }
 
-func show_the_values(
-    stopped: HighIntermediaryRepresentation.Statements.Stop,
+func report_of(
+    message: String,
     condition: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    mentioned: List<String>,
+    line: Integer,
+): List<HighIntermediaryRepresentation.Statements.Statement> {
+    var outer = built
+    built = List<HighIntermediaryRepresentation.Statements.Statement>()
+    report_types = List<String>()
+    shown_count = 0
+    var fault = fault_class()
+    if fault {
+        context.scope.enter()
+        write_the_report(message, condition, mentioned, line)
+        context.scope.leave()
+    } else {
+        var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+        stopped.line = line
+        add(stopped)
+    }
+    var made = built
+    built = outer
+    return made
+}
+
+func write_the_report(
+    message: String,
+    condition: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    mentioned: List<String>,
+    line: Integer,
 ) {
-    var names = List<String>()
-    gather_the_names(condition, names)
-    var opening = " ("
+    var text = context.text()
+    report_name = context.scope.declare("___report", text)
+    var empty = values.described_text("")
+    var declared = HighIntermediaryRepresentation.Statements.Declare(report_name, text, empty)
+    declared.line = line
+    add(declared)
+    var is_a_narrowing = false
+    if condition {
+        is_a_narrowing = reports_what_is_missing(condition)
+    }
+    if not is_a_narrowing {
+        shown_parts.each(show_a_part)
+        show_the_values_in_scope(mentioned)
+    }
+    var head = values.described_text(message)
+    var body = HighIntermediaryRepresentation.Values.LocalRead(text, report_name)
+    var crashed_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    crashed_arguments.append(head)
+    crashed_arguments.append(body)
+    var crashed = fault_call("crashed", crashed_arguments)
+    evaluate_at(crashed, line)
+    if context.resolver.symbols.program_asserts {
+        var ring_report = crash_report()
+        crash ring_report
+        evaluate_at(ring_report, line)
+    }
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var walked = fault_call("frames", no_arguments)
+    evaluate_at(walked, line)
+    var stopped = HighIntermediaryRepresentation.Statements.Stop("")
+    stopped.line = line
+    add(stopped)
+}
+
+func evaluate_at(value: HighIntermediaryRepresentation.Values.Value, line: Integer) {
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(value)
+    evaluated.line = line
+    add(evaluated)
+}
+
+func fault_class(): Model.ClassModel? {
+    var found = context.resolver.symbols.find("Spite.Fault", "")
+    assert found
+    var fault = context.resolver.class_model_named("Spite.Fault")
+    assert fault
+    context.need_defaults(fault.key)
+    return fault
+}
+
+func fault_call(
+    name: String,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+): HighIntermediaryRepresentation.Values.Value {
+    var fault = fault_class()
+    crash fault
+    var function = fault.function_named(name)
+    crash function
+    values.need(function)
+    var made = ring_object(fault)
+    return HighIntermediaryRepresentation.Values.Call(function, made, arguments)
+}
+
+func held_for_the_report(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    mode: Integer,
+    at_failure: Integer,
+    is_whole: Boolean,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return held_name(expression)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return held_member(expression, mode)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return held_index(expression, mode)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return held_call(expression, mode, is_whole)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return held_binary(expression, mode, at_failure)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return held_unary(expression, mode, at_failure, is_whole)
+        _: return expression
+    }
+}
+
+func held_name(
+    identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    if is_a_value_name(identifier.name) {
+        note_a_shown_part(identifier.name, identifier)
+        var local = context.scope.internal_name_of(identifier.name)
+        if not local {
+            reads_before = true
+        }
+    }
+    return identifier
+}
+
+func held_member(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    mode: Integer,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    if mode >= 1 and is_a_value_path(member) {
+        var printer = Printers.Spite.ExpressionPrinter(member)
+        var printed = printer.text()
+        note_a_shown_part(printed, member)
+        reads_before = true
+        return member
+    }
+    crash member.target
+    var target = held_for_the_report(member.target, mode, -1, false)
+    reads_before = true
+    var made = AbstractSyntaxTree.Shapes.Expressions.MemberExpression(target, member.name)
+    made.is_a_class_name = member.is_a_class_name
+    return made
+}
+
+func held_index(
+    read: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    mode: Integer,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    if mode >= 1 and is_a_value_path(read) {
+        var printer = Printers.Spite.ExpressionPrinter(read)
+        var printed = printer.text()
+        note_a_shown_part(printed, read)
+        reads_before = true
+        return read
+    }
+    crash read.target
+    crash read.index
+    var target = held_for_the_report(read.target, mode, -1, false)
+    var index = held_for_the_report(read.index, mode, -1, false)
+    reads_before = true
+    return AbstractSyntaxTree.Shapes.Expressions.IndexExpression(target, index)
+}
+
+func held_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    mode: Integer,
+    is_whole: Boolean,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var before = reads_before
+    var printer = Printers.Spite.ExpressionPrinter(call)
+    var printed = printer.text()
+    var placeholder = ShownPart(printed, null)
+    if not shown_texts.contains(printed) and not is_whole {
+        shown_parts.append(placeholder)
+        shown_texts.append(printed)
+    }
+    crash call.callee
+    var held_callee = held_callee_of(call.callee, mode)
+    var arguments = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
     var index = 0
-    while index < names.count() {
-        var name = names[index]
-        var identifier = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression(name)
-        var read = values.value_of(identifier, null)
-        if shows_as_a_number(read.value_type) {
-            var before = stopped.message
-            if not stopped.pieces.is_empty() {
-                var last_index = stopped.pieces.count() - 1
-                var last = stopped.pieces[last_index]
-                crash last
-                before = last
-                stopped.pieces.remove_at(last_index)
-            }
-            stopped.pieces.append("{before}{opening}{name}=")
-            stopped.pieces.append("")
-            stopped.shown.append(read)
-            opening = ", "
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var held_argument = held_for_the_report(argument, mode, -1, false)
+        arguments.append(held_argument)
+        index = index + 1
+    }
+    var rebuilt = AbstractSyntaxTree.Shapes.Expressions.CallExpression(held_callee, call.generic_arguments, arguments)
+    if mode >= 1 and is_a_read_call(call) {
+        placeholder.value = rebuilt
+        reads_before = true
+        return rebuilt
+    }
+    if mode == 2 and not is_whole and not before {
+        var held = held_answer_of(rebuilt)
+        placeholder.value = held
+        return held
+    }
+    reads_before = true
+    return rebuilt
+}
+
+func held_callee_of(
+    callee: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    mode: Integer,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        crash callee.target
+        var target = held_for_the_report(callee.target, mode, -1, false)
+        var made = AbstractSyntaxTree.Shapes.Expressions.MemberExpression(target, callee.name)
+        made.is_a_class_name = callee.is_a_class_name
+        return made
+    }
+    return callee
+}
+
+func held_answer_of(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var value = values.value_of(call, null)
+    reported_count = reported_count + 1
+    var hidden = "___reported_{reported_count}"
+    var name = context.scope.declare(hidden, value.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, value.value_type, value)
+    declared.line = context.line
+    add(declared)
+    return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression(hidden)
+}
+
+func held_binary(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    mode: Integer,
+    at_failure: Integer,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    crash binary.left
+    crash binary.right
+    var is_logical = binary.operator == 'and' or binary.operator == 'or'
+    var both_true = binary.operator == 'and' and at_failure == 1
+    var both_false = binary.operator == 'or' and at_failure == 0
+    var sides_known = both_true or both_false
+    var side_failure = -1
+    var right_mode = mode
+    if sides_known {
+        side_failure = at_failure
+        right_mode = lower_of(mode, 1)
+    } else if is_logical {
+        right_mode = 0
+    }
+    var left = held_for_the_report(binary.left, mode, side_failure, false)
+    var right = held_for_the_report(binary.right, right_mode, side_failure, false)
+    return AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(left, binary.operator, right)
+}
+
+func lower_of(first_mode: Integer, second_mode: Integer): Integer {
+    if first_mode < second_mode {
+        return first_mode
+    }
+    return second_mode
+}
+
+func held_unary(
+    unary: AbstractSyntaxTree.Shapes.Expressions.UnaryExpression,
+    mode: Integer,
+    at_failure: Integer,
+    is_whole: Boolean,
+): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    crash unary.operand
+    var failure = -1
+    var is_a_not = unary.operator == 'not'
+    if is_a_not and at_failure >= 0 {
+        failure = 1 - at_failure
+    }
+    var operand = held_for_the_report(unary.operand, mode, failure, is_whole and is_a_not)
+    return AbstractSyntaxTree.Shapes.Expressions.UnaryExpression(unary.operator, operand)
+}
+
+func note_a_shown_part(text: String, value: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    assert not shown_texts.contains(text)
+    var part = ShownPart(text, value)
+    shown_parts.append(part)
+    shown_texts.append(text)
+}
+
+func is_a_value_name(name: String): Boolean {
+    var local = context.scope.internal_name_of(name)
+    if local {
+        return true
+    }
+    var attribute = context.current_class.attribute_named(name)
+    if attribute {
+        return true
+    }
+    return false
+}
+
+func is_a_value_path(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    crash expression
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return is_a_value_name(expression.name)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return is_a_value_member(expression)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return is_a_value_read(expression)
+        _: return false
+    }
+}
+
+func is_a_value_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Boolean {
+    if member.is_a_class_name {
+        return false
+    }
+    return is_a_value_path(member.target)
+}
+
+func is_a_value_read(read: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): Boolean {
+    if holds_a_call(read.index) {
+        return false
+    }
+    return is_a_value_path(read.target)
+}
+
+func is_a_read_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Boolean {
+    crash call.callee
+    return call.arguments.is_empty() and is_a_read_callee(call.callee)
+}
+
+func is_a_read_callee(callee: AbstractSyntaxTree.Shapes.Expressions.Expression): Boolean {
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return is_a_read_of(callee)
+    }
+    return false
+}
+
+func is_a_read_of(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Boolean {
+    var reads = ["count", "length", "is_empty"]
+    var target = callee.target
+    var is_plain = target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    is_plain = is_plain or target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    if not reads.contains(callee.name) or not is_plain or not is_a_value_path(target) {
+        return false
+    }
+    var read = values.value_of(target, null)
+    var shown = context.shown(read.value_type)
+    return is_a_collection(read.value_type, shown) or shown == "String"
+}
+
+func gather_every_name(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, names: List<String>) {
+    assert expression
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: names.append(expression.name)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: gather_every_name(expression.target, names)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: gather_both_reads(expression, names)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: gather_every_call_name(expression, names)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: gather_both_sides(expression, names)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: gather_every_name(expression.operand, names)
+        _: return
+    }
+}
+
+func gather_both_reads(read: AbstractSyntaxTree.Shapes.Expressions.IndexExpression, names: List<String>) {
+    gather_every_name(read.target, names)
+    gather_every_name(read.index, names)
+}
+
+func gather_both_sides(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression, names: List<String>) {
+    gather_every_name(binary.left, names)
+    gather_every_name(binary.right, names)
+}
+
+func gather_every_call_name(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, names: List<String>) {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        gather_every_name(callee.target, names)
+    }
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        gather_every_name(argument, names)
+        index = index + 1
+    }
+}
+
+func show_a_part(part: ShownPart) {
+    assert part.value
+    var value = values.value_of(part.value, null)
+    var shown = context.shown(value.value_type)
+    report_types.append("{part.text}:{shown}")
+    show_a_value(part.text, part.value, value, true)
+}
+
+func show_a_value(
+    text: String,
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    value: HighIntermediaryRepresentation.Values.Value,
+    objects_too: Boolean,
+) {
+    var present = value.value_type.present()
+    var shows = can_be_shown(present, objects_too)
+    var is_nullable = value.value_type.is_nullable
+    if not is_nullable and shows {
+        shown_count = shown_count + 1
+        append_a_value(text, value)
+    }
+    if is_nullable and value.value_type.kind != 'handle' {
+        shown_count = shown_count + 1
+        flush_the_pending()
+        var then_branch = shown_when_present(text, written, present, shows)
+        var else_branch = block_of_the_missing(written, text)
+        var tested = HighIntermediaryRepresentation.Values.PresenceTest(value)
+        var made = HighIntermediaryRepresentation.Statements.If(tested, then_branch, else_branch)
+        made.line = context.line
+        add(made)
+    }
+}
+
+func shown_when_present(
+    text: String,
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    present: Model.Type,
+    shows: Boolean,
+): HighIntermediaryRepresentation.Statements.Block {
+    var outer = built
+    built = List<HighIntermediaryRepresentation.Statements.Statement>()
+    context.scope.enter()
+    var printer = Printers.Spite.ExpressionPrinter(written)
+    var printed = printer.text()
+    var path = path_of(written, printed)
+    context.scope.narrow(path, present)
+    if shows {
+        var narrowed = values.value_of(written, null)
+        append_a_value(text, narrowed)
+    }
+    context.scope.leave()
+    var made = HighIntermediaryRepresentation.Statements.Block()
+    made.statements = built
+    built = outer
+    return made
+}
+
+func append_a_value(text: String, value: HighIntermediaryRepresentation.Values.Value) {
+    var shown = text_of_a_shown(value)
+    crash shown
+    var named = values.described_text(", {text}=")
+    var joined = values.joined_with(named, shown)
+    append_to_the_report(joined)
+}
+
+func append_to_the_report(piece: HighIntermediaryRepresentation.Values.Value) {
+    var text = context.text()
+    var current = HighIntermediaryRepresentation.Values.LocalRead(text, report_name)
+    var joined = values.joined_with(current, piece)
+    var assigned = HighIntermediaryRepresentation.Statements.Assign(report_name, joined)
+    assigned.line = context.line
+    add(assigned)
+}
+
+func can_be_shown(present: Model.Type, objects_too: Boolean): Boolean {
+    if present.is_symbol or not present.constant.is_empty() {
+        return false
+    }
+    if present.kind == 'scalar' {
+        return not present.name.contains("Address")
+    }
+    if present.kind == 'enumeration' {
+        return true
+    }
+    if present.kind != 'object' {
+        return false
+    }
+    var text = context.text()
+    if present.is_the_same_as(text) {
+        return true
+    }
+    if not objects_too or not context.has_a_class(present) {
+        return false
+    }
+    var model = context.class_of(present)
+    var shown = model.function_named("to_string")
+    if shown {
+        return shown.parameters.is_empty()
+    }
+    return false
+}
+
+func text_of_a_shown(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value? {
+    var text = context.text()
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    if value.value_type.is_the_same_as(text) {
+        return cut_text(value)
+    }
+    if value.value_type.kind == 'enumeration' {
+        return values.enum_text(value)
+    }
+    var written = values.method_call(value, "to_string", no_arguments)
+    if value.value_type.kind == 'scalar' {
+        return written
+    }
+    return cut_text(written)
+}
+
+func cut_text(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(value)
+    return fault_call("cut", arguments)
+}
+
+func block_of_the_missing(
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    printed: String,
+): HighIntermediaryRepresentation.Statements.Block {
+    var outer = built
+    built = List<HighIntermediaryRepresentation.Statements.Statement>()
+    context.scope.enter()
+    append_the_missing(written, printed)
+    context.scope.leave()
+    var made = HighIntermediaryRepresentation.Statements.Block()
+    made.statements = built
+    built = outer
+    return made
+}
+
+func append_the_missing(written: AbstractSyntaxTree.Shapes.Expressions.Expression, printed: String) {
+    if written == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        append_a_missing_item(written, printed)
+    } else {
+        var missing = values.described_text(", {printed} is null")
+        append_to_the_report(missing)
+    }
+}
+
+func append_a_missing_item(read: AbstractSyntaxTree.Shapes.Expressions.IndexExpression, printed: String) {
+    crash read.target
+    crash read.index
+    var target = values.value_of(read.target, null)
+    var shown_target = context.shown(target.value_type)
+    var index_value = values.value_of(read.index, null)
+    var shows_the_index = can_be_shown(index_value.value_type, true) and not index_value.value_type.is_nullable
+    var is_listed = shown_target.starts_with("List<") or shown_target.starts_with("Vector<") or shown_target.starts_with("Items<")
+    if is_listed and shows_the_index {
+        var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+        var counted = values.method_call(target, "count", no_arguments)
+        var counted_text = text_of_a_shown(counted)
+        var index_text = text_of_a_shown(index_value)
+        crash counted_text
+        crash index_text
+        var opening = values.described_text(", {printed} is missing: index ")
+        var middle = values.described_text(", count ")
+        var with_index = values.joined_with(opening, index_text)
+        var with_middle = values.joined_with(with_index, middle)
+        var whole = values.joined_with(with_middle, counted_text)
+        append_to_the_report(whole)
+    } else if shows_the_index {
+        append_a_missing_key(printed, index_value)
+    } else {
+        var missing = values.described_text(", {printed} is missing")
+        append_to_the_report(missing)
+    }
+}
+
+func append_a_missing_key(printed: String, key: HighIntermediaryRepresentation.Values.Value) {
+    var key_text = text_of_a_shown(key)
+    crash key_text
+    var text = context.text()
+    var quote = ""
+    if key.value_type.is_the_same_as(text) {
+        quote = "\""
+    }
+    var opening = values.described_text(", {printed} is missing: key {quote}")
+    var closing = values.described_text(quote)
+    var with_key = values.joined_with(opening, key_text)
+    var whole = values.joined_with(with_key, closing)
+    append_to_the_report(whole)
+}
+
+func reports_what_is_missing(condition: AbstractSyntaxTree.Shapes.Expressions.Expression): Boolean {
+    missing_conjuncts = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    gather_the_conjuncts(condition)
+    var index = 0
+    while index < missing_conjuncts.count() {
+        var conjunct = missing_conjuncts[index]
+        if not is_a_narrowed_path(conjunct) {
+            return false
         }
         index = index + 1
     }
-    assert not stopped.pieces.is_empty()
-    var closing_index = stopped.pieces.count() - 1
-    var closing = stopped.pieces[closing_index]
-    crash closing
-    stopped.pieces[closing_index] = "{closing})"
+    missing_links = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    missing_conjuncts.each(gather_the_links)
+    report_the_links(0)
+    return true
 }
 
-func shows_as_a_number(value_type: Model.Type): Boolean {
-    if value_type.kind != 'scalar' or value_type.is_nullable {
+func is_a_narrowed_path(written: AbstractSyntaxTree.Shapes.Expressions.Expression): Boolean {
+    if not is_a_value_path(written) {
         return false
     }
-    var whole = ["Byte", "Tiny", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong"]
-    return whole.contains(value_type.name)
+    var kept = context.pending
+    context.pending = List<HighIntermediaryRepresentation.Statements.Statement>()
+    missing_links = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    gather_the_links(written)
+    context.scope.enter()
+    var found = false
+    var index = 0
+    while index < missing_links.count() {
+        var link = missing_links[index]
+        var value = values.value_of(link, null)
+        if value.value_type.is_nullable {
+            found = true
+            narrow_a_link(link, value.value_type)
+        }
+        index = index + 1
+    }
+    context.scope.leave()
+    context.pending = kept
+    return found
+}
+
+func narrow_a_link(link: AbstractSyntaxTree.Shapes.Expressions.Expression, link_type: Model.Type) {
+    var printer = Printers.Spite.ExpressionPrinter(link)
+    var printed = printer.text()
+    var path = path_of(link, printed)
+    var present = link_type.present()
+    context.scope.narrow(path, present)
+}
+
+func gather_the_conjuncts(written: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    if written == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        gather_a_binary_conjunct(written)
+    } else {
+        missing_conjuncts.append(written)
+    }
+}
+
+func gather_a_binary_conjunct(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
+    if binary.operator == 'and' {
+        crash binary.left
+        crash binary.right
+        gather_the_conjuncts(binary.left)
+        gather_the_conjuncts(binary.right)
+    } else {
+        missing_conjuncts.append(binary)
+    }
+}
+
+func gather_the_links(written: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    if written == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        crash written.target
+        gather_the_links(written.target)
+    }
+    if written == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        crash written.target
+        gather_the_links(written.target)
+    }
+    missing_links.append(written)
+}
+
+func report_the_links(index: Integer) {
+    if index >= missing_links.count() {
+        missing_conjuncts.each(show_a_present_conjunct)
+    } else {
+        var link = missing_links[index]
+        crash link
+        report_a_link(link, index)
+    }
+}
+
+func report_a_link(link: AbstractSyntaxTree.Shapes.Expressions.Expression, index: Integer) {
+    var value = values.value_of(link, null)
+    var printer = Printers.Spite.ExpressionPrinter(link)
+    var printed = printer.text()
+    var shown = context.shown(value.value_type)
+    report_types.append("{printed}:{shown}")
+    if not value.value_type.is_nullable {
+        report_the_links(index + 1)
+    } else {
+        flush_the_pending()
+        var present = value.value_type.present()
+        var rest = narrowed_rest(link, present, index + 1)
+        var missing = block_of_the_missing(link, printed)
+        var tested = HighIntermediaryRepresentation.Values.PresenceTest(value)
+        var made = HighIntermediaryRepresentation.Statements.If(tested, rest, missing)
+        made.line = context.line
+        add(made)
+    }
+}
+
+func narrowed_rest(
+    link: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    present: Model.Type,
+    next_index: Integer,
+): HighIntermediaryRepresentation.Statements.Block {
+    var outer = built
+    built = List<HighIntermediaryRepresentation.Statements.Statement>()
+    context.scope.enter()
+    var printer = Printers.Spite.ExpressionPrinter(link)
+    var printed = printer.text()
+    var path = path_of(link, printed)
+    context.scope.narrow(path, present)
+    report_the_links(next_index)
+    context.scope.leave()
+    var made = HighIntermediaryRepresentation.Statements.Block()
+    made.statements = built
+    built = outer
+    return made
+}
+
+func show_a_present_conjunct(conjunct: AbstractSyntaxTree.Shapes.Expressions.Expression) {
+    var value = values.value_of(conjunct, null)
+    var shows = can_be_shown(value.value_type, true)
+    if shows and not value.value_type.is_nullable {
+        var printer = Printers.Spite.ExpressionPrinter(conjunct)
+        var printed = printer.text()
+        append_a_value(printed, value)
+    }
+}
+
+func show_the_values_in_scope(mentioned: List<String>) {
+    var path = context.path()
+    var forward = path.replace("\\", "/")
+    if not forward.contains("/.spite/build/spite/") {
+        show_the_scope(mentioned)
+    }
+}
+
+func show_the_scope(mentioned: List<String>) {
+    var names = context.scope.visible_written_names()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        if shown_count < 12 and not mentioned.contains(name) {
+            show_a_named_value(name)
+        }
+        index = index + 1
+    }
+    var own = values.this_value()
+    if own.value_type.kind == 'object' {
+        show_the_attributes(mentioned, names)
+    }
+}
+
+func show_the_attributes(mentioned: List<String>, names: List<String>) {
+    var library = Validators.LibraryFile()
+    var path = context.path()
+    var in_the_library = library.holds(path)
+    var attributes = context.current_class.declared_attributes
+    var attribute_index = 0
+    while attribute_index < attributes.count() {
+        var attribute = attributes[attribute_index]
+        var is_hidden = shown_count >= 12 or mentioned.contains(attribute.name) or names.contains(attribute.name)
+        is_hidden = is_hidden or in_the_library and attribute.name.starts_with("_")
+        var present = attribute.attribute_type.present()
+        if not is_hidden and can_be_shown(present, false) {
+            show_a_named_value(attribute.name)
+        }
+        attribute_index = attribute_index + 1
+    }
+}
+
+func show_a_named_value(name: String) {
+    var identifier = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression(name)
+    var internal_name = context.scope.internal_name_of(name)
+    if internal_name {
+        var local_type = context.scope.type_of(internal_name)
+        crash local_type
+        var present = local_type.present()
+        assert can_be_shown(present, false)
+    }
+    var value = values.value_of(identifier, null)
+    show_a_value(name, identifier, value, false)
 }
 
 func gather_the_names(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, names: List<String>) {

@@ -1,0 +1,445 @@
+var program = LowIntermediaryRepresentation.LowProgram()
+var operands = LowOptimizationPasses.Operands()
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var made = List<LowIntermediaryRepresentation.LowFunction>()
+var stops = List<Boolean>()
+var region = List<Integer>()
+var smallest_region = 8
+var empty_label = -1
+var cold_count = 0
+
+func Pass(starting_program: LowIntermediaryRepresentation.LowProgram) {
+    program = starting_program
+}
+
+func transformed(): LowIntermediaryRepresentation.LowProgram {
+    program.lowered_functions.each(cool)
+    var index = 0
+    while index < made.count() {
+        var cold = made[index]
+        program.lowered_functions.append(cold)
+        index = index + 1
+    }
+    return program
+}
+
+func cool(cooled: LowIntermediaryRepresentation.LowFunction) {
+    var is_plain = not cooled.is_resumable and cooled.key != "_start"
+    assert is_plain and not cooled.key.contains("$cold")
+    function = cooled
+    cold_count = 0
+    var keeps_going = true
+    while keeps_going {
+        keeps_going = moved_one_region()
+    }
+}
+
+func moved_one_region(): Boolean {
+    find_the_stops()
+    var index = 0
+    while index < function.blocks.count() {
+        if is_an_entry(index) and is_movable_from(index) {
+            move_the_region(index)
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func find_the_stops() {
+    var returns = List<Boolean>()
+    var index = 0
+    while index < function.blocks.count() {
+        var ends_here = may_return_here(index)
+        returns.append(ends_here)
+        index = index + 1
+    }
+    var changed = true
+    while changed {
+        changed = false
+        var block_index = 0
+        while block_index < function.blocks.count() {
+            var known = returns[block_index] == true
+            if not known and reaches_a_return(block_index, returns) {
+                returns[block_index] = true
+                changed = true
+            }
+            block_index = block_index + 1
+        }
+    }
+    stops = List<Boolean>()
+    var stop_index = 0
+    while stop_index < returns.count() {
+        var returning = returns[stop_index] == true
+        stops.append(not returning)
+        stop_index = stop_index + 1
+    }
+}
+
+func may_return_here(index: Integer): Boolean {
+    var block = function.blocks[index]
+    crash block
+    var last = block.instructions.last()
+    if not last {
+        return true
+    }
+    switch last {
+        LowIntermediaryRepresentation.Instructions.Exit: return false
+        LowIntermediaryRepresentation.Instructions.Stop: return last.continues
+        LowIntermediaryRepresentation.Instructions.Jump: return false
+        LowIntermediaryRepresentation.Instructions.Branch: return false
+        _: return true
+    }
+}
+
+func reaches_a_return(index: Integer, returns: List<Boolean>): Boolean {
+    var next = successors_of(index)
+    var position = 0
+    while position < next.count() {
+        var following = next[position]
+        var is_known = following >= 0 and following < returns.count()
+        if not is_known {
+            return true
+        }
+        if returns[following] == true {
+            return true
+        }
+        position = position + 1
+    }
+    return false
+}
+
+func stops_at(index: Integer): Boolean {
+    if index < 0 or index >= stops.count() {
+        return false
+    }
+    return stops[index] == true
+}
+
+func successors_of(index: Integer): List<Integer> {
+    var found = List<Integer>()
+    var block = function.blocks[index]
+    crash block
+    var last = block.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        found.append(last.block)
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        found.append(last.when_true)
+        found.append(last.when_false)
+    }
+    return found
+}
+
+func is_an_entry(index: Integer): Boolean {
+    if index == 0 or not stops_at(index) {
+        return false
+    }
+    var from = 0
+    while from < function.blocks.count() {
+        var next = successors_of(from)
+        var leads_here = next.contains(index)
+        if leads_here and not stops_at(from) {
+            return true
+        }
+        from = from + 1
+    }
+    return false
+}
+
+func is_movable_from(entry: Integer): Boolean {
+    region = List<Integer>()
+    region.append(entry)
+    var position = 0
+    while position < region.count() {
+        var here = region[position]
+        var next = successors_of(here)
+        var index = 0
+        while index < next.count() {
+            var following = next[index]
+            if not region.contains(following) {
+                region.append(following)
+            }
+            index = index + 1
+        }
+        position = position + 1
+    }
+    return is_closed(entry) and is_worth_moving() and is_supported()
+}
+
+func is_closed(entry: Integer): Boolean {
+    var from = 0
+    while from < function.blocks.count() {
+        var next = successors_of(from)
+        var index = 0
+        while index < next.count() {
+            var following = next[index]
+            var enters = following != entry and region.contains(following)
+            if enters and not region.contains(from) {
+                return false
+            }
+            index = index + 1
+        }
+        from = from + 1
+    }
+    return true
+}
+
+func is_worth_moving(): Boolean {
+    var count = 0
+    var index = 0
+    while index < region.count() {
+        var at = region[index]
+        var block = function.blocks[at]
+        crash block
+        count = count + block.instructions.count()
+        index = index + 1
+    }
+    return count >= smallest_region
+}
+
+func is_supported(): Boolean {
+    var index = 0
+    while index < region.count() {
+        var at = region[index]
+        var block = function.blocks[at]
+        crash block
+        var instruction_index = 0
+        while instruction_index < block.instructions.count() {
+            var instruction = block.instructions[instruction_index]
+            if not is_movable(instruction) {
+                return false
+            }
+            instruction_index = instruction_index + 1
+        }
+        index = index + 1
+    }
+    return lives_are_untouched()
+}
+
+func is_movable(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return true
+        LowIntermediaryRepresentation.Instructions.Load: return true
+        LowIntermediaryRepresentation.Instructions.Store: return true
+        LowIntermediaryRepresentation.Instructions.Call: return true
+        LowIntermediaryRepresentation.Instructions.DataAddress: return true
+        LowIntermediaryRepresentation.Instructions.Allocate: return true
+        LowIntermediaryRepresentation.Instructions.Retain: return true
+        LowIntermediaryRepresentation.Instructions.Free: return true
+        LowIntermediaryRepresentation.Instructions.CopyBytes: return true
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Branch: return true
+        LowIntermediaryRepresentation.Instructions.Stop: return true
+        LowIntermediaryRepresentation.Instructions.Exit: return true
+        _: return false
+    }
+}
+
+func lives_are_untouched(): Boolean {
+    var used = registers_of(true)
+    var defined = registers_of(false)
+    var outside = defined_outside()
+    var index = 0
+    while index < used.count() {
+        var register = used[index]
+        var is_both = defined.contains(register) and outside.contains(register)
+        if is_both {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func defined_outside(): List<Integer> {
+    var found = List<Integer>()
+    var parameter = 0
+    while parameter < function.parameter_count {
+        found.append(parameter)
+        parameter = parameter + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        if not region.contains(block_index) {
+            var index = 0
+            while index < block.instructions.count() {
+                var instruction = block.instructions[index]
+                operands.read(instruction)
+                operands.defines.each(found.append)
+                index = index + 1
+            }
+        }
+        block_index = block_index + 1
+    }
+    return found
+}
+
+func registers_of(wants_uses: Boolean): List<Integer> {
+    var found = List<Integer>()
+    var index = 0
+    while index < region.count() {
+        var at = region[index]
+        var block = function.blocks[at]
+        crash block
+        var instruction_index = 0
+        while instruction_index < block.instructions.count() {
+            var instruction = block.instructions[instruction_index]
+            operands.read(instruction)
+            if wants_uses {
+                operands.uses.each(found.append)
+            } else {
+                operands.defines.each(found.append)
+            }
+            instruction_index = instruction_index + 1
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func live_ins(): List<Integer> {
+    var used = registers_of(true)
+    var defined = registers_of(false)
+    var found = List<Integer>()
+    var register = 0
+    while register < function.register_count {
+        var comes_in = used.contains(register) and not defined.contains(register)
+        if comes_in {
+            found.append(register)
+        }
+        register = register + 1
+    }
+    return found
+}
+
+func move_the_region(entry: Integer) {
+    var incoming = live_ins()
+    var shift = incoming.count()
+    var key = "{function.key}$cold{cold_count}"
+    cold_count = cold_count + 1
+    var cold = LowIntermediaryRepresentation.LowFunction(key, shift)
+    cold.register_count = function.register_count + shift
+    var renaming = LowOptimizationPasses.Renaming()
+    var register = 0
+    while register < function.register_count {
+        renaming.renames.append(register + shift)
+        register = register + 1
+    }
+    var parameter = 0
+    while parameter < shift {
+        var passed = incoming[parameter]
+        renaming.renames[passed] = parameter
+        parameter = parameter + 1
+    }
+    var line = 0
+    var index = 0
+    while index < region.count() {
+        var at = region[index]
+        var block = function.blocks[at]
+        crash block
+        var first_line = cooled_block(block, renaming, shift)
+        if line == 0 {
+            line = first_line
+        }
+        cold.blocks.append(block)
+        var emptied = LowIntermediaryRepresentation.LowBlock()
+        function.blocks[at] = emptied
+        index = index + 1
+    }
+    cold.blocks.each(point_into_the_region)
+    made.append(cold)
+    write_the_call(entry, key, incoming, line)
+}
+
+func cooled_block(
+    block: LowIntermediaryRepresentation.LowBlock,
+    renaming: LowOptimizationPasses.Renaming,
+    shift: Integer,
+): Integer {
+    block.place = ""
+    var line = 0
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        operands.read(instruction)
+        var defined = List<Integer>()
+        operands.defines.each(defined.append)
+        renaming.rename(instruction)
+        var defined_index = 0
+        while defined_index < defined.count() {
+            var target = defined[defined_index]
+            retarget(instruction, target, target + shift)
+            defined_index = defined_index + 1
+        }
+        if instruction == LowIntermediaryRepresentation.Instructions.Call {
+            if line == 0 {
+                line = instruction.line
+            }
+            instruction.line = 0
+            instruction.frames = List<String>()
+        }
+        index = index + 1
+    }
+    return line
+}
+
+func retarget(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    replaced: Integer,
+    replacement: Integer,
+) {
+    if instruction == LowIntermediaryRepresentation.Instructions.DataAddress {
+        instruction.target = replacement
+        return
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Allocate {
+        instruction.target = replacement
+        return
+    }
+    var done = operands.retarget(instruction, replaced, replacement)
+    crash done
+}
+
+func point_into_the_region(block: LowIntermediaryRepresentation.LowBlock) {
+    var last = block.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        last.block = position_of(last.block)
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        last.when_true = position_of(last.when_true)
+        last.when_false = position_of(last.when_false)
+    }
+}
+
+func position_of(block_index: Integer): Integer {
+    var found = region.index_of(block_index)
+    crash found
+    return found
+}
+
+func write_the_call(entry: Integer, key: String, incoming: List<Integer>, line: Integer) {
+    var stub = function.blocks[entry]
+    crash stub
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, key, incoming)
+    called.line = line
+    stub.instructions.append(called)
+    var label = halt_label()
+    var halted = LowIntermediaryRepresentation.Instructions.Stop(label)
+    stub.instructions.append(halted)
+}
+
+func halt_label(): Integer {
+    if empty_label < 0 {
+        var nothing = Buffer()
+        program.data.append(nothing)
+        empty_label = program.data.count() - 1
+        program.constant_labels.append(empty_label)
+    }
+    return empty_label
+}

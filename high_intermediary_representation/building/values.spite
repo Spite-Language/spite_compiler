@@ -2228,30 +2228,15 @@ func handle_value(
 }
 
 func need_the_scheduler(handle_type: Model.Type) {
+    assert handle_type.kind == 'handle'
     context.makes_work = true
-    var work_type = Model.Type('object', handle_type.carrier)
-    var work_model = context.class_of(work_type)
-    context.need_defaults(work_model.key)
-    need_every_function(work_model)
-    var running = context.resolver.class_model_named("Spite.Internal.Running")
-    crash running
-    context.need_defaults(running.key)
-    need_every_function(running)
-    var scheduler = context.resolver.class_model_named("Spite.Internal.Scheduler")
-    crash scheduler
-    context.need_defaults(scheduler.key)
-    need_every_function(scheduler)
-}
-
-func need_every_function(model: Model.ClassModel) {
-    var index = 0
-    while index < model.declared_functions.count() {
-        var function = model.declared_functions[index]
-        if function.has_a_body() {
-            need(function)
-        }
-        index = index + 1
-    }
+    var found = context.resolver.symbols.find("Spite.Fault", "")
+    assert found
+    var fault = context.resolver.class_model_named("Spite.Fault")
+    crash fault
+    var walking = fault.function_named("frames")
+    crash walking
+    need(walking)
 }
 
 func work_call(
@@ -2262,7 +2247,9 @@ func work_call(
     var work_model = context.class_of(work_type)
     var function = work_model.function_named(name)
     crash function
-    need(function)
+    if name == "to_debug" {
+        need_the_work_text(work_model)
+    }
     var no_values = List<HighIntermediaryRepresentation.Values.Value>()
     return HighIntermediaryRepresentation.Values.Call(function, handle, no_values)
 }
@@ -2339,9 +2326,7 @@ func handle_debugged(
     assert member.name == "to_debug"
     var carrier_type = Model.Type('object', value.value_type.carrier)
     var carrier = context.class_of(carrier_type)
-    var debugging = carrier.function_named("to_debug")
-    crash debugging
-    need(debugging)
+    need_the_work_text(carrier)
     var carried = HighIntermediaryRepresentation.Values.Conversion(carrier_type, 'proven', value)
     return fitted(carried, wanted)
 }
@@ -2357,11 +2342,15 @@ func result_of_handle(value: HighIntermediaryRepresentation.Values.Value): HighI
 }
 
 func need_the_settling(handle: Model.Type) {
-    var carrier = context.program.class_named(handle.carrier)
-    crash carrier
-    var settled = carrier.function_named("_settled")
-    crash settled
-    need(settled)
+    assert handle.kind == 'handle'
+    context.makes_work = true
+}
+
+func need_the_work_text(work_model: Model.ClassModel) {
+    assert not context.work_texts.contains(work_model.key)
+    context.work_texts.append(work_model.key)
+    var debugging = Debugging(context, this)
+    debugging.work_to_debug(work_model)
 }
 
 func refuse_a_cast_by_name(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
@@ -3055,12 +3044,12 @@ func member_call(
     crash function
     refuse_a_comparison_of_objects(receiver, owner, callee.name)
     refuse_a_drop_by_name(owner, function)
+    refuse_an_operator_call(callee, call, function, receiver)
     var specialised = specialised_for_a_constant(function, receiver, call.arguments)
     if specialised {
         return specialised
     }
     refuse_an_accessor_call(callee, call, function)
-    refuse_an_operator_call(callee, call, function, receiver)
     var made = called(function, receiver, call.arguments)
     refuse_a_wider_bitwise_operand(callee, call, made)
     return made
@@ -3181,18 +3170,12 @@ func refuse_an_operator_call(
     function: Model.FunctionModel,
     receiver: HighIntermediaryRepresentation.Values.Value,
 ) {
-    var library = Validators.LibraryFile()
     var path = context.path()
-    assert not library.holds(path)
     assert not context.resolver.symbols.generated_texts[path]
-    assert receiver.value_type.kind == 'object'
+    var receiver_kind = receiver.value_type.kind
+    assert receiver_kind == 'object' or receiver_kind == 'scalar'
     var owner = present_class_of(receiver)
-    var namespace = owner.file.namespace
-    assert namespace != "Vector" and namespace != "Items"
-    var is_a_collection = namespace == "List" or namespace == "Dictionary"
     var name = callee.name
-    var is_an_index = name == "get_at" or name == "set_at"
-    assert not is_a_collection or not is_an_index
     var written_count = call.arguments.count()
     assert function.name == name and function.parameters.count() == written_count
     var operator = operator_written(name, written_count)
@@ -3203,7 +3186,7 @@ func refuse_an_operator_call(
     if first_parameter {
         var parameter_kind = first_parameter.parameter_type.kind
         assert parameter_kind != 'function'
-        assert name != "equals" or parameter_kind == 'object'
+        assert name != "equals" or parameter_kind == 'object' or receiver_kind == 'scalar'
     }
     crash callee.target
     var printer = Printers.Spite.ExpressionPrinter(callee.target)
@@ -6398,11 +6381,33 @@ func is_answered_by_null(member: Model.FunctionModel): Boolean {
 }
 
 func absent_stand_in(): Model.Type {
-    var found = context.resolver.symbols.find("Spite.Internal.Absent", "")
-    crash found
-    var absent = context.resolver.class_model_named("Spite.Internal.Absent")
-    crash absent
-    return absent.type_of_an_instance()
+    var key = "Spite.Absent"
+    var made = Model.Type('object', key)
+    if context.program.has(key) {
+        return made
+    }
+    var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+    var absent = Model.ClassModel(key, key, no_file)
+    context.program.add(absent)
+    need_text_constants()
+    answer_null(absent, "to_string")
+    answer_null(absent, "to_debug")
+    return made
+}
+
+func answer_null(absent: Model.ClassModel, name: String) {
+    var function = Model.FunctionModel(name, absent.key)
+    function.is_synthetic = true
+    var text = context.text()
+    function.answer = text
+    absent.declared_functions.append(function)
+    var null_text = HighIntermediaryRepresentation.Values.TextConstant("null")
+    null_text.value_type = text
+    var answered = HighIntermediaryRepresentation.Statements.Return(null_text)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements.append(answered)
+    var built = HighIntermediaryRepresentation.HighFunction(function, body)
+    context.synthetic_functions.append(built)
 }
 
 func named_key_of(

@@ -29,16 +29,24 @@ A representation is data only: no function on it writes text or decides an error
 
 No step reaches back into an earlier one.
 
-## The compiler's own Spite classes
+## What the compiler writes itself
 
-`internal/` holds the Spite classes the compiler adds to the programs it compiles (the scheduler and its work and
-running frames, the assert ring, the fault report, the debug-text guard, the REPL prompt, the copy table, the null
-stand-in). They are not part of the compiler: `spite_compiler.spite` names the folder in a `load` no build takes, so
-the compiler that builds this one leaves it out. When a program that loads the library first names a
-`Spite.Internal` class (the library's own code, or a lookup by name in a step), `mapping/internal_folder.spite`
-finds `internal/` beside the running executable, or one folder up (`.spite/spite.exe` finds this folder's), and the
-folder map maps its files as `Spite.Internal.<Class>` with the library's rights. No program loads that folder or
-names `Spite.Internal`, in an expression or a written type, and a class of its own in `spite/internal/` is refused.
+`Concurrent`, `Parallel` and their scheduler are not Spite classes: the lowering writes them as low functions
+(`low_intermediary_representation/lowering/machine_writing.spite` is the kit). `scheduling.spite` writes the
+scheduler (`_scheduler_*`: the frames each thread steps, joins, sleeps, the poll limit and the circle of joins),
+`work_writing.spite` the functions of each handle and the table of calls in a row, and `debug_guard_writing.spite`
+the guard that cuts a `to_debug()` cycle. A handle is a block the compiler lays out (`Spite.Work_of_<T>`: the frame
+it waits for, its answer and its presence); the resolver makes its class model with no source, and its functions
+have no body (`is_written_by_the_compiler`), so a call to one is an ordinary call. Only `to_debug` of a handle and
+the stand-in for a null in a shape (`Spite.Absent`) are high functions the builder writes. A program that makes no
+handle writes none of it, and a program that never starts calls in a row has no table.
+
+The rest is Spite code the compiler holds as text (`symbols/machinery_text.spite`: the fault and crash reports
+`Spite.Fault`, the assert ring `Spite.Asserts`, the deep copy table `Spite.CopyTable`; and, only in a `--repl` build,
+`high_intermediary_representation/building/prompt_text.spite`: `Spite.Prompt` and `Spite.PromptPath`). The first
+time a program names one, the symbol table adds it as a generated class under the program's
+`.spite/build/spite/`, with the library's rights; a program that never needs one reads none of it. No folder holds
+them, so nothing can load them, and a program that names one of them, or any `Spite.Internal` name, is refused.
 
 ## The first error stops the run
 

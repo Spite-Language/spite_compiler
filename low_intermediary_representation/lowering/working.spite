@@ -3,8 +3,6 @@ var no_layout = Layout(no_program)
 var no_low = LowIntermediaryRepresentation.LowProgram()
 var no_slots = Dictionary<String, Integer>()
 var lowering = FunctionLowering(no_layout, no_low, no_slots)
-var scheduler_key = "Spite.Internal.Scheduler"
-var running_key = "Spite.Internal.Running"
 
 func Working(starting_lowering: FunctionLowering) {
     lowering = starting_lowering
@@ -28,21 +26,49 @@ func started_in_parallel(work: HighIntermediaryRepresentation.Values.Value?, car
 
 func started_on_a_thread(work: HighIntermediaryRepresentation.Values.Call, carrier: String): Lowered {
     var block = block_on_a_thread(work)
-    var running = lowering.make_object(running_key)
-    var running_arguments = List<Integer>()
-    running_arguments.append(running)
-    running_arguments.append(block)
-    call_by_name(running_key, "Running", running_arguments)
-    var marking = List<Integer>()
-    marking.append(running)
-    call_by_name(running_key, "runs_on_a_thread", marking)
-    var made = lowering.make_object(carrier)
-    var work_arguments = List<Integer>()
-    work_arguments.append(made)
-    work_arguments.append(running)
-    call_by_name(carrier, "Work", work_arguments)
-    lowering.release(running)
+    var on_a_thread = lowering.constant(1)
+    var running = running_of(block, on_a_thread)
+    var made = handle_of(carrier, running)
     return lowering.owned(made)
+}
+
+func running_of(frame: Integer, on_a_thread: Integer): Integer {
+    var arguments = List<Integer>()
+    arguments.append(frame)
+    arguments.append(on_a_thread)
+    var running = lowering.new_register()
+    var made = LowIntermediaryRepresentation.Instructions.Call(running, "_scheduler_running", arguments)
+    lowering.emit(made)
+    return running
+}
+
+func handle_of(carrier: String, running: Integer): Integer {
+    var size = lowering.constant(40)
+    var made = lowering.new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(made, size)
+    lowering.emit(allocated)
+    var class_id = lowering.layout.class_id_of(carrier)
+    var id_register = lowering.constant(class_id)
+    store(made, 0, id_register)
+    var one = lowering.constant(1)
+    store(made, 8, one)
+    store(made, 16, running)
+    var zero = lowering.constant(0)
+    store(made, 24, zero)
+    store(made, 32, zero)
+    return made
+}
+
+func store(address: Integer, offset: Integer, value: Integer) {
+    var stored = LowIntermediaryRepresentation.Instructions.Store(address, offset, value, 'bits_64')
+    lowering.emit(stored)
+}
+
+func call_with(key: String, first_register: Integer) {
+    var arguments = List<Integer>()
+    arguments.append(first_register)
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, key, arguments)
+    lowering.emit(called)
 }
 
 func helped(call: HighIntermediaryRepresentation.Values.Call): Lowered {
@@ -57,25 +83,17 @@ func helped(call: HighIntermediaryRepresentation.Values.Call): Lowered {
         var test = LowIntermediaryRepresentation.Instructions.Branch(done, after, waiting)
         lowering.emit(test)
         lowering.switch_to(waiting)
-        var scheduler = scheduler_object()
-        var soon = ticks(scheduler)
+        var soon = ticks()
         var one = lowering.constant(1)
         var deadline = lowering.new_register()
         var added = LowIntermediaryRepresentation.Instructions.Arithmetic(deadline, 'add', soon, one)
         added.is_checked = false
         lowering.emit(added)
-        var noting = List<Integer>()
-        noting.append(scheduler)
-        noting.append(deadline)
-        call_by_name(scheduler_key, "note_deadline", noting)
+        call_with("_scheduler_note_deadline", deadline)
         lowering.suspend_at(point)
         lowering.switch_to(after)
     } else {
-        var plain_scheduler = scheduler_object()
-        var waiting_arguments = List<Integer>()
-        waiting_arguments.append(plain_scheduler)
-        waiting_arguments.append(block)
-        call_by_name(scheduler_key, "wait_for_a_helper", waiting_arguments)
+        call_with("_scheduler_wait_for_a_helper", block)
     }
     var thread = lowering.new_register()
     var loaded_thread = LowIntermediaryRepresentation.Instructions.Load(thread, block, 32, 'bits_64')
@@ -297,33 +315,15 @@ func started_filler(key: String, receiver: Integer, carrier: String): Integer {
     }
     var called = LowIntermediaryRepresentation.Instructions.Call(-1, key, arguments)
     lowering.emit(called)
-    var made = lowering.make_object(carrier)
     var no_running = lowering.constant(0)
-    var work_arguments = List<Integer>()
-    work_arguments.append(made)
-    work_arguments.append(no_running)
-    call_by_name(carrier, "Work", work_arguments)
-    return made
+    return handle_of(carrier, no_running)
 }
 
 func handed_frame(frame: Integer, carrier: String): Integer {
-    var running = lowering.make_object(running_key)
-    var running_arguments = List<Integer>()
-    running_arguments.append(running)
-    running_arguments.append(frame)
-    call_by_name(running_key, "Running", running_arguments)
-    var scheduler = scheduler_object()
-    var start_arguments = List<Integer>()
-    start_arguments.append(scheduler)
-    start_arguments.append(running)
-    call_by_name(scheduler_key, "start", start_arguments)
-    var made = lowering.make_object(carrier)
-    var work_arguments = List<Integer>()
-    work_arguments.append(made)
-    work_arguments.append(running)
-    call_by_name(carrier, "Work", work_arguments)
-    lowering.release(running)
-    return made
+    var stepped_here = lowering.constant(0)
+    var running = running_of(frame, stepped_here)
+    call_with("_scheduler_start", running)
+    return handle_of(carrier, running)
 }
 
 func started_call(work: HighIntermediaryRepresentation.Values.Call, carrier: String): Lowered {
@@ -344,43 +344,25 @@ func started_in_a_frame(work: HighIntermediaryRepresentation.Values.Call, carrie
     lowering.emit(made_frame)
     lowering.release_the_pending()
     lowering.pending_releases = outer
-    var running = lowering.make_object(running_key)
-    var running_arguments = List<Integer>()
-    running_arguments.append(running)
-    running_arguments.append(frame)
-    call_by_name(running_key, "Running", running_arguments)
-    var scheduler = scheduler_object()
-    var start_arguments = List<Integer>()
-    start_arguments.append(scheduler)
-    start_arguments.append(running)
-    call_by_name(scheduler_key, "start", start_arguments)
-    var made = lowering.make_object(carrier)
-    var work_arguments = List<Integer>()
-    work_arguments.append(made)
-    work_arguments.append(running)
-    call_by_name(carrier, "Work", work_arguments)
-    lowering.release(running)
+    var made = handed_frame(frame, carrier)
     return lowering.owned(made)
 }
 
 func finished_at_once(work: HighIntermediaryRepresentation.Values.Value, carrier: String): Lowered {
     var value = lowering.lower_value(work)
-    var made = lowering.make_object(carrier)
     var no_running = lowering.constant(0)
-    var work_arguments = List<Integer>()
-    work_arguments.append(made)
-    work_arguments.append(no_running)
-    call_by_name(carrier, "Work", work_arguments)
+    var made = handle_of(carrier, no_running)
     if not work.value_type.is_nothing() {
-        var finishing = List<Integer>()
-        finishing.append(made)
-        finishing.append(value.value)
+        store(made, 24, value.value)
         if value.presence >= 0 {
-            finishing.append(value.presence)
+            store(made, 32, value.presence)
+        } else {
+            var present = lowering.constant(1)
+            store(made, 32, present)
         }
-        call_by_name(carrier, "finished_with", finishing)
-        if value.owned and lowering.is_a_pointer(work.value_type) {
-            lowering.release(value.value)
+        var keeps_a_reference = lowering.is_a_pointer(work.value_type) and not value.owned
+        if keeps_a_reference {
+            lowering.retain(value.value)
         }
     }
     return lowering.owned(made)
@@ -488,15 +470,13 @@ func waiting_sleep(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var milliseconds_value = call.arguments[0]
     crash milliseconds_value
     var milliseconds = lowering.lower_value(milliseconds_value)
-    var scheduler = scheduler_object()
-    var now = ticks(scheduler)
+    var now = ticks()
     var deadline = lowering.new_register()
     var added = LowIntermediaryRepresentation.Instructions.Arithmetic(deadline, 'add', now, milliseconds.value)
     added.is_checked = false
     lowering.emit(added)
     var point = lowering.resume_point()
-    var later_scheduler = scheduler_object()
-    var later = ticks(later_scheduler)
+    var later = ticks()
     var due = lowering.new_register()
     var compared = LowIntermediaryRepresentation.Instructions.Compare(due, 'greater_or_equal', later, deadline)
     compared.is_signed = true
@@ -506,10 +486,7 @@ func waiting_sleep(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var test = LowIntermediaryRepresentation.Instructions.Branch(due, after, waiting)
     lowering.emit(test)
     lowering.switch_to(waiting)
-    var noting = List<Integer>()
-    noting.append(later_scheduler)
-    noting.append(deadline)
-    call_by_name(scheduler_key, "note_deadline", noting)
+    call_with("_scheduler_note_deadline", deadline)
     lowering.suspend_at(point)
     lowering.switch_to(after)
     return Lowered(-1, -1)
@@ -519,44 +496,37 @@ func plain_sleep(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var milliseconds_value = call.arguments[0]
     crash milliseconds_value
     var milliseconds = lowering.lower_value(milliseconds_value)
-    var scheduler = scheduler_object()
-    var arguments = List<Integer>()
-    arguments.append(scheduler)
-    arguments.append(milliseconds.value)
-    call_by_name(scheduler_key, "sleep", arguments)
+    call_with("_scheduler_sleep", milliseconds.value)
     return Lowered(-1, -1)
 }
 
-func drain() {
-    var scheduler = scheduler_object()
+func call_with_nothing(key: String) {
     var arguments = List<Integer>()
-    arguments.append(scheduler)
-    call_by_name(scheduler_key, "drain", arguments)
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, key, arguments)
+    lowering.emit(called)
 }
 
-func ticks(scheduler: Integer): Integer {
+func begin() {
+    call_with_nothing("_scheduler_begin")
+}
+
+func drain() {
+    call_with_nothing("_scheduler_drain")
+}
+
+func end(lets_go_of_flights: Boolean) {
+    if lets_go_of_flights {
+        call_with_nothing("_in_flight_let_go")
+    }
+    call_with_nothing("_scheduler_end")
+}
+
+func ticks(): Integer {
     var arguments = List<Integer>()
-    arguments.append(scheduler)
     var now = lowering.new_register()
-    var called = LowIntermediaryRepresentation.Instructions.Call(now, "{scheduler_key}.ticks", arguments)
+    var called = LowIntermediaryRepresentation.Instructions.Call(now, "_scheduler_ticks", arguments)
     lowering.emit(called)
     return now
-}
-
-func scheduler_object(): Integer {
-    var scheduler_type = Model.Type('object', scheduler_key)
-    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
-    var scheduler_model = lowering.layout.program.class_named(scheduler_key)
-    crash scheduler_model
-    var constructor = scheduler_model.function_named("Scheduler")
-    crash constructor
-    var made = HighIntermediaryRepresentation.Values.MakeObject(scheduler_type, constructor, no_arguments)
-    return lowering.singleton_of(scheduler_key, made)
-}
-
-func call_by_name(class_key: String, name: String, arguments: List<Integer>) {
-    var called = LowIntermediaryRepresentation.Instructions.Call(-1, "{class_key}.{name}", arguments)
-    lowering.emit(called)
 }
 
 func frame_function(
