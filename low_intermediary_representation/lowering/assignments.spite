@@ -13,6 +13,8 @@ var current_calls = List<String>()
 var current_writes = List<String>()
 var reassigned = List<String>()
 var anything = "*"
+var bodies = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var skipping_ends = false
 var waiting = [
     "Program.sleep"
     "Socket.accept_handle"
@@ -75,6 +77,7 @@ func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
     current_writes = List<String>()
     read_a_block(function.body)
     var key = function.function.key()
+    bodies[key] = function
     if function.function.name == "drop" {
         drops.append(key)
     }
@@ -283,7 +286,16 @@ func gather_from_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
 
 func read_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
     assert block
+    assert not skipping_ends or not ends_the_program(block)
     block.statements.each(read_a_statement)
+}
+
+func ends_the_program(block: HighIntermediaryRepresentation.Statements.Block): Boolean {
+    var last = block.statements.last()
+    if last and last == HighIntermediaryRepresentation.Statements.Stop {
+        return not last.then
+    }
+    return false
 }
 
 func read_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
@@ -458,4 +470,67 @@ func read_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
     }
     read_a_value(call.receiver)
     call.arguments.each(read_a_present)
+}
+
+# ../../OPTIMIZATIONS.md#a-counted-loop-of-reads-shares-its-singletons-lock
+func writes_none_of(key: String, class_keys: List<String>, names: List<String>): Boolean {
+    var seen = List<String>()
+    var pending = List<String>()
+    pending.append(key)
+    drops.each(pending.append)
+    skipping_ends = true
+    var clean = true
+    while clean and not pending.is_empty() {
+        var next = pending.remove_last()
+        crash next
+        if not seen.contains(next) {
+            seen.append(next)
+            clean = writes_none_in(next, class_keys, names, pending)
+        }
+    }
+    skipping_ends = false
+    return clean
+}
+
+func writes_none_in(key: String, class_keys: List<String>, names: List<String>, pending: List<String>): Boolean {
+    if key == "$value" or key == "$foreign" or key == "$unknown" {
+        return false
+    }
+    var found = bodies[key]
+    if not found {
+        return true
+    }
+    current_calls = List<String>()
+    current_writes = List<String>()
+    read_a_block(found.body)
+    var index = 0
+    while index < current_writes.count() {
+        var written = current_writes[index]
+        crash written
+        if touches_one_of(written, class_keys, names) {
+            return false
+        }
+        index = index + 1
+    }
+    current_calls.each(pending.append)
+    return true
+}
+
+func touches_one_of(attribute_key: String, class_keys: List<String>, names: List<String>): Boolean {
+    if attribute_key == anything {
+        return true
+    }
+    var length = attribute_key.length()
+    if attribute_key.starts_with("[]") {
+        var listed = attribute_key.slice(2, length)
+        return class_keys.contains(listed)
+    }
+    if attribute_key.starts_with("?.") {
+        var named = attribute_key.slice(2, length)
+        return names.contains(named)
+    }
+    var parts = attribute_key.split(".")
+    parts.remove_last()
+    var owner = parts.join(".")
+    return owner.is_empty() or class_keys.contains(owner)
 }

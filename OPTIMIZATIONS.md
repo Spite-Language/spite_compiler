@@ -1622,8 +1622,9 @@ only its own elements.
 
 ## Loops and functions start on a 16-byte boundary
 
-The generator pads with no-operation instructions (of up to eight bytes each) so that every function and every
-block a later block jumps back to (a loop's head) starts at an address that is a multiple of 16. A loop's body is then
+The generator pads with no-operation instructions (of up to eight bytes each) so that every function starts at an
+address that is a multiple of 16, and every block a later block jumps back to (a loop's head) at a multiple of 32,
+the width the processor fetches each cycle: a loop's first 32 bytes are one fetch, whatever comes before it. A loop's body is then
 fetched and decoded the same way whatever code comes before it, so a change elsewhere in a program no longer moves
 a hot loop across a fetch boundary and changes its time. The padding before a loop head runs once each time the loop
 is entered from above. **What a program can observe:** the time, and an executable a few bytes larger per loop.
@@ -2011,6 +2012,40 @@ compare-exchange on every call, four threads fighting over one cache line (144 m
 once and adds with plain loads and stores (8.4 ms).
 
 **Not built:** a loop that is not counted testing the task count once before it starts.
+
+## A counted loop of reads shares its singleton's lock
+
+A counted loop that [holds a singleton's lock](#a-counted-loop-of-calls-to-one-singleton-takes-its-lock-once) and
+calls only functions of it that write none of its state (no attribute of the singleton, of a class it reaches
+through its attributes or their type parameters, nor their items, followed through every call they make and every
+`drop()`; a write on a path that ends the program, such as the report a failed `crash` builds, does not count) and
+reach no other locked function holds the lock shared: it adds one to the singleton's count of readers, and
+when no thread owns the lock it runs, or it takes the one back and retries after giving the processor up. The
+readers of one singleton then run at once, each loop on its own thread. A function that takes the lock to change
+the singleton claims it as before and then waits until no reader is left, so a reader never sees it half-way
+through a change and a change never runs beside a reader. A thread that already owns the lock (a reading loop
+inside one of its changing calls) takes it again as the owner. The count of readers is a word of the singleton's
+slot, and only a singleton some such loop reads makes its changing functions wait for it.
+
+```spite
+func run(): Integer {
+    var total = 0
+    var row = 0
+    while row < rows {
+        var transform = transforms.at(row)
+        total = total + transform.across
+        row = row + 1
+    }
+    return total
+}
+```
+
+Eight `Parallel`s running `run` read `Transforms` together; `insert`, called between ticks, waits for them
+(`a_singletons_reading_functions_do_not_exclude_each_other`).
+
+**What a program can observe:** only the time: readers run in an order they could already run in, and nothing they
+read changes while they run. **When it does not apply:** a loop that calls a function writing anything, or one
+reaching another lock, takes the lock alone; a single call outside such a loop takes it alone too.
 
 ## A loop whose passes write only their own item runs in bands
 
