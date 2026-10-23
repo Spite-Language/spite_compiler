@@ -15,6 +15,7 @@ var known_lends = Dictionary<String, BorrowSource>()
 var lending_checked = List<String>()
 var block_ended = false
 var typing_depth = 0
+var lent_bodies = List<LentParameter>()
 var resizing_names = [
     "append"
     "prepend"
@@ -1295,11 +1296,38 @@ func lends(model: Model.ClassModel, function: Model.FunctionModel): BorrowSource
         var source = storage_read(model, returned.value)
         if source {
             known_lends[key] = source
+            refuse_another_lent_return(model, function, returns, source)
             return source
         }
         index = index + 1
     }
     return null
+}
+
+func refuse_another_lent_return(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    returns: List<AbstractSyntaxTree.Shapes.Statements.ReturnStatement>,
+    source: BorrowSource,
+) {
+    var index = 0
+    while index < returns.count() {
+        var returned = returns[index]
+        var is_stored = storage_read(model, returned.value)
+        if not is_stored and not is_a_null(returned.value) {
+            var other = printed(returned.value)
+            enter_the_lent_function(model, function, returned.line)
+            refusals.refuse_another_lent_return(context, function.name, source, other)
+        }
+        index = index + 1
+    }
+}
+
+func is_a_null(value: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if value == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return value.kind == 'keyword_null'
+    }
+    return false
 }
 
 func collect_returns(
@@ -1585,7 +1613,7 @@ func check_a_lending_call(
     var index = 0
     while index < call.arguments.count() {
         var argument = call.arguments[index]
-        check_a_lent_argument(frame, statement, call, argument)
+        check_a_lent_argument(frame, statement, call, argument, index)
         index = index + 1
     }
 }
@@ -1595,6 +1623,7 @@ func check_a_lent_argument(
     statement: AbstractSyntaxTree.Shapes.Statements.Statement,
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     argument: AbstractSyntaxTree.Shapes.Expressions.Expression,
+    position: Integer,
 ) {
     var sources = List<BorrowSource>()
     var item = held_of(argument)
@@ -1608,6 +1637,10 @@ func check_a_lent_argument(
         }
     }
     assert not sources.is_empty()
+    var first = sources[0]
+    var lent_name = printed(argument)
+    context.line = statement.line
+    refuse_a_lend_not_made(frame, call, position, lent_name, first)
     var function = called_function_of(frame, call)
     assert function
     var effects = effects_of_call(frame, call)
@@ -1622,13 +1655,276 @@ func check_a_lent_argument(
         }
         index = index + 1
     }
+    var model = called_class_of(frame, call)
+    crash model
+    var no_row = BorrowedItem("", 0, "")
+    check_the_lent_body(model, function, position, statement.line, no_row)
+}
+
+func refuse_a_lend_not_made(
+    frame: BorrowFrame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    position: Integer,
+    name: String,
+    source: BorrowSource,
+) {
+    var model = called_class_of(frame, call)
+    assert model
+    var called_name = called_name_of(call)
+    var function = model.function_named(called_name)
+    assert function
+    var parameter = parameter_at(function, position)
+    assert parameter
+    assert not parameter.is_variadic
+    var is_a_listing = listing_names.contains(called_name) and is_a_list_model(model)
+    if not is_a_program_function(model, function) and not is_a_listing {
+        refusals.refuse_a_library_lend(context, name, source, function.name)
+    }
+    if parameter.parameter_type.kind == 'union' {
+        refusals.refuse_a_union_lend(context, name, source, function.name)
+    }
+}
+
+func is_a_list_model(model: Model.ClassModel): Boolean {
+    return model.file.namespace == "List" and library.holds(model.file.path)
+}
+
+func called_name_of(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): String {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return callee.name
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return callee.name
+    }
+    return ""
+}
+
+func check_the_lent_body(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    position: Integer,
+    call_line: Integer,
+    row: BorrowedItem,
+) {
+    assert function.declaration
+    var parameter = parameter_at(function, position)
+    assert parameter
+    assert not parameter.is_variadic
+    var lent = LentParameter(parameter.name, function.name, call_line, context.current_function.name)
+    lent.row = row
+    lent.parameter_type = parameter.parameter_type
+    lent.model = model
+    lent.function = function
+    lent_bodies.append(lent)
+}
+
+func check_the_lent_bodies() {
+    var index = 0
+    while index < lent_bodies.count() {
+        var lent = lent_bodies[index]
+        check_a_lent_body(lent)
+        index = index + 1
+    }
+    lent_bodies = List<LentParameter>()
+}
+
+func check_a_lent_body(lent: LentParameter) {
+    var model = lent.model
+    var function = lent.function
+    assert function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    assert declaration.body
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_block(declaration.body)
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        crash found.statement
+        check_a_lent_statement(model, function, lent, found.statement)
+        index = index + 1
+    }
+    var expression_index = 0
+    while expression_index < walk.expressions.count() {
+        var found_expression = walk.expressions[expression_index]
+        check_a_lent_expression(model, function, lent, walk, found_expression)
+        expression_index = expression_index + 1
+    }
+}
+
+func enter_the_lent_function(model: Model.ClassModel, function: Model.FunctionModel, line: Integer) {
+    context.current_class = model
+    context.current_function = function
+    context.line = line
+}
+
+func check_a_lent_statement(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    lent: LentParameter,
+    statement: AbstractSyntaxTree.Shapes.Statements.Statement,
+) {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: check_a_lent_alias(model, function, lent, statement)
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: check_a_lent_assignment(model, function, lent, statement)
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: check_a_lent_return(model, function, lent, statement)
+        _: return
+    }
+}
+
+func check_a_lent_alias(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    lent: LentParameter,
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+) {
+    assert is_the_name(statement.value, lent.name)
+    enter_the_lent_function(model, function, statement.line)
+    if lent.row.is_row {
+        var sources = sources_text(lent.row)
+        refusals.refuse_a_second_row_name(context, lent.name, sources, statement.name)
+    }
+    refusals.refuse_a_lent_alias(context, lent, statement.name)
+}
+
+func check_a_lent_assignment(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    lent: LentParameter,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+) {
+    var target = statement.target
+    if lent.row.is_row {
+        check_a_row_attribute_assigned(model, function, lent, statement)
+    }
+    assert is_the_name(statement.value, lent.name)
+    var attribute = printed(target)
+    if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        attribute = target.name
+    }
+    enter_the_lent_function(model, function, statement.line)
+    if lent.row.is_row {
+        var sources = sources_text(lent.row)
+        refusals.refuse_a_kept_row(context, lent.name, sources, attribute)
+    }
+    refusals.refuse_a_lent_kept(context, lent, attribute)
+}
+
+func check_a_row_attribute_assigned(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    lent: LentParameter,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+) {
+    var target = statement.target
+    if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        refuse_an_assigned_row_member(model, function, lent, statement, target)
+    }
+}
+
+func refuse_an_assigned_row_member(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    lent: LentParameter,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+) {
+    assert is_the_name(target.target, lent.name)
+    enter_the_lent_function(model, function, statement.line)
+    var sources = sources_text(lent.row)
+    refusals.refuse_an_assigned_row_attribute(context, lent.name, sources, target.name)
+}
+
+func check_a_lent_return(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    lent: LentParameter,
+    statement: AbstractSyntaxTree.Shapes.Statements.ReturnStatement,
+) {
+    assert is_the_name(statement.value, lent.name)
+    enter_the_lent_function(model, function, statement.line)
+    if lent.row.is_row {
+        var sources = sources_text(lent.row)
+        refusals.refuse_a_returned_row(context, lent.name, sources)
+    }
+    refusals.refuse_a_lent_return(context, lent)
+}
+
+func check_a_lent_expression(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    lent: LentParameter,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    found: AbstractSyntaxTree.Walk.FoundExpression,
+) {
+    var expression = found.expression
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        check_a_lent_listing(model, function, lent, expression, found.line)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        check_a_lent_function_value(model, function, lent, walk, expression, found.line)
+    }
+}
+
+func check_a_lent_listing(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    lent: LentParameter,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    line: Integer,
+) {
+    var called_name = called_name_of(call)
+    assert listing_names.contains(called_name)
+    assert passes_the_row(call, lent.name)
+    enter_the_lent_function(model, function, line)
+    if lent.row.is_row {
+        var sources = sources_text(lent.row)
+        refusals.refuse_a_listed_row(context, lent.name, sources)
+    }
+    refusals.refuse_a_lent_listing(context, lent)
+}
+
+func check_a_lent_function_value(
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    lent: LentParameter,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    line: Integer,
+) {
+    assert not lent.row.is_row
+    assert is_the_name(member.target, lent.name)
+    assert not is_called(walk, member)
+    var held_model = class_of_type(lent.parameter_type)
+    assert held_model
+    assert held_model.function_named(member.name)
+    enter_the_lent_function(model, function, line)
+    refusals.refuse_a_lent_function_value(context, lent, member.name)
+}
+
+func is_called(
+    walk: AbstractSyntaxTree.Walk.Walk,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): Boolean {
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var expression = found.expression
+        if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            if expression.callee == member {
+                return true
+            }
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func check_the_keeping(frame: BorrowFrame, statement: AbstractSyntaxTree.Shapes.Statements.Statement) {
     context.line = statement.line
     switch statement {
         AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: check_an_assignment(frame, statement)
-        AbstractSyntaxTree.Shapes.Statements.VariableStatement: check_a_named_value(statement)
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: check_a_named_value(frame, statement)
         AbstractSyntaxTree.Shapes.Statements.ReturnStatement: check_a_return(frame, statement)
         _: context.line = statement.line
     }
@@ -1750,11 +2046,33 @@ func is_a_list(frame: BorrowFrame, listed: AbstractSyntaxTree.Shapes.Expressions
     return model.file.namespace == "List" and library.holds(model.file.path)
 }
 
-func check_a_named_value(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+func check_a_named_value(frame: BorrowFrame, statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    refuse_a_lending_function_value(frame, statement.value)
     check_a_function_value(statement.value)
     var item = held_of(statement.value)
     assert item
     refuse_a_second_name(item, statement.name)
+}
+
+func refuse_a_lending_function_value(frame: BorrowFrame, value: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+    if value == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        refuse_a_lending_member(frame, value)
+    }
+}
+
+func refuse_a_lending_member(frame: BorrowFrame, member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    assert not member.is_a_class_name
+    var owner = type_of(frame, member.target)
+    assert owner
+    var present = owner.present()
+    var model = class_of_type(present)
+    assert model
+    var function = model.function_named(member.name)
+    assert function
+    assert is_a_program_function(model, function)
+    var source = lends(model, function)
+    assert source
+    refusals.refuse_a_lending_function_value(context, function.name, source)
 }
 
 func check_a_function_value(value: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
@@ -1860,6 +2178,7 @@ func note_a_declaration(
     var source = borrowed_read(frame, statement.value)
     if source {
         check_an_unkept_collection(statement)
+        refuse_a_reused_name(statement, index, source)
         var item = made_item(statement.name)
         item.sources.append(source)
         held.append(item)
@@ -1883,6 +2202,26 @@ func note_a_row(
             note_a_walked_row(frame, statement, index)
         }
     }
+}
+
+func refuse_a_reused_name(
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    index: Integer,
+    source: BorrowSource,
+) {
+    var top = blocks.last()
+    crash top
+    var earlier = 0
+    var reused = false
+    while earlier < index and earlier < top.statements.count() {
+        var before = top.statements[earlier]
+        if before == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+            reused = reused or before.name == statement.name
+        }
+        earlier = earlier + 1
+    }
+    assert reused
+    refusals.refuse_a_reused_name(context, statement.name, source)
 }
 
 func forget_the_name(name: String) {
@@ -1930,8 +2269,40 @@ func note_a_row_literal(
         pair_index = pair_index + 1
     }
     assert not row.sources.is_empty()
+    refuse_a_kept_value_in_a_row(frame, statement, literal)
     held.append(row)
     check_the_row_calls(frame, row, index + 1)
+}
+
+func refuse_a_kept_value_in_a_row(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    literal: AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral,
+) {
+    var pair_index = 0
+    while pair_index < literal.pairs.count() {
+        var pair = literal.pairs[pair_index]
+        if pair == AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
+            refuse_a_kept_entry(frame, statement, pair)
+        }
+        pair_index = pair_index + 1
+    }
+}
+
+func refuse_a_kept_entry(
+    frame: BorrowFrame,
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    pair: AbstractSyntaxTree.Shapes.Expressions.EntryLiteral,
+) {
+    assert not held_of(pair.value)
+    assert not borrowed_read(frame, pair.value)
+    var entry_type = type_of(frame, pair.value)
+    assert entry_type
+    var present = entry_type.present()
+    assert present.kind == 'object' or present.kind == 'union' or present.kind == 'shape'
+    var shown = context.shown(present)
+    var key = printed(pair.key)
+    refusals.refuse_a_kept_value_in_a_row(context, statement.name, key, shown)
 }
 
 func add_a_row_source(frame: BorrowFrame, row: BorrowedItem, value: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
@@ -1984,6 +2355,7 @@ func check_a_row_call(
     line: Integer,
 ) {
     assert passes_the_row(call, row.name)
+    refuse_a_row_passed_to_a_value(frame, row, call, line)
     var effects = effects_of_call(frame, call)
     var callee = printed(call.callee)
     var index = 0
@@ -1995,6 +2367,41 @@ func check_a_row_call(
         }
         index = index + 1
     }
+    var model = called_class_of(frame, call)
+    assert model
+    var function = called_function_of(frame, call)
+    assert function
+    var position = row_position(call, row.name)
+    check_the_lent_body(model, function, position, line, row)
+}
+
+func row_position(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, name: String): Integer {
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if is_the_name(argument, name) {
+            return index
+        }
+        index = index + 1
+    }
+    return 0
+}
+
+func refuse_a_row_passed_to_a_value(
+    frame: BorrowFrame,
+    row: BorrowedItem,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    line: Integer,
+) {
+    var callee = call.callee
+    var is_a_value_call = false
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        is_a_value_call = is_a_local(frame, callee.name)
+    }
+    assert is_a_value_call
+    context.line = line
+    var sources = sources_text(row)
+    refusals.refuse_a_row_passed_to_a_value(context, row.name, sources)
 }
 
 func passes_the_row(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, name: String): Boolean {

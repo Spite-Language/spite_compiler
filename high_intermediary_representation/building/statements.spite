@@ -14,6 +14,8 @@ var lost_writes = LostWrites()
 var borrows = Borrows(context)
 var template_walks = TemplateWalks()
 var rest_is_folded_away = false
+var enclosing_blocks = List<EnclosingBlock>()
+var at_function_root = false
 
 func Statements(starting_context: Context) {
     context = starting_context
@@ -35,23 +37,43 @@ func block_of(written: AbstractSyntaxTree.Shapes.Statements.Block?): HighInterme
     return made
 }
 
+func function_body_of(
+    written: AbstractSyntaxTree.Shapes.Statements.Block?,
+): HighIntermediaryRepresentation.Statements.Block {
+    var outer_blocks = enclosing_blocks
+    enclosing_blocks = List<EnclosingBlock>()
+    at_function_root = true
+    var made = block_of(written)
+    enclosing_blocks = outer_blocks
+    return made
+}
+
 func build_all(written: List<AbstractSyntaxTree.Shapes.Statements.Statement>) {
     rest_is_folded_away = false
     var outer_statements = context.block_statements
     var outer_index = context.block_index
+    var pushed = not at_function_root
+    at_function_root = false
+    if pushed {
+        var enclosing = EnclosingBlock(outer_statements, outer_index)
+        enclosing_blocks.append(enclosing)
+    }
     context.block_statements = written
     borrows.enter(written)
     var index = 0
     while index < written.count() and not rest_is_folded_away {
         var statement = written[index]
         context.block_index = index
-        lost_writes.check(context, written, index)
+        lost_writes.check(context, written, index, enclosing_blocks)
         borrows.check(index)
         build(statement)
         context.block_statements = written
         index = index + 1
     }
     borrows.leave()
+    if pushed {
+        enclosing_blocks.remove_last()
+    }
     context.block_statements = outer_statements
     context.block_index = outer_index
     rest_is_folded_away = false
@@ -1226,6 +1248,7 @@ func build_inner_block(statement: AbstractSyntaxTree.Shapes.Statements.Block) {
 func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatement) {
     refuse_a_proven_check(statement.condition)
     refuse_a_proven_read_check(statement.condition, "assert")
+    var written_condition = statement.condition
     statement.condition = values.with_its_links(statement.condition)
     var condition = values.condition_of(statement.condition)
     var failed = HighIntermediaryRepresentation.Statements.Block()
@@ -1233,7 +1256,7 @@ func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatemen
     if noting {
         failed.statements.append(noting)
     }
-    var leaving = default_return()
+    var leaving = default_return(written_condition)
     failed.statements.append(leaving)
     if condition == HighIntermediaryRepresentation.Values.WholeNumber {
         if condition.number == 0 {
@@ -1366,7 +1389,9 @@ func four_hexadecimal_digits(number: Integer): String {
     return shown
 }
 
-func default_return(): HighIntermediaryRepresentation.Statements.Statement {
+func default_return(
+    written_condition: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): HighIntermediaryRepresentation.Statements.Statement {
     if not context.current_function.answer {
         return HighIntermediaryRepresentation.Statements.Return(null)
     }
@@ -1375,9 +1400,115 @@ func default_return(): HighIntermediaryRepresentation.Statements.Statement {
         var nothing = HighIntermediaryRepresentation.Values.NullConstant(answer)
         return HighIntermediaryRepresentation.Statements.Return(nothing)
     }
-    var shown = context.shown(answer)
-    typing.refuse_default_answer(context, shown)
+    var full_name = context.shown(answer)
+    var shown = plain_type_name(full_name)
+    var condition_text = ""
+    var opposite = ""
+    if written_condition {
+        var printer = Printers.Spite.ExpressionPrinter(written_condition)
+        condition_text = printer.text()
+        opposite = printer.opposite_text()
+    }
+    var default_shown = default_value_shown(answer)
+    var chosen = chosen_answer_text(answer)
+    typing.refuse_default_answer(context, shown, default_shown, chosen, condition_text, opposite)
     return HighIntermediaryRepresentation.Statements.Return(null)
+}
+
+func plain_type_name(full_name: String): String {
+    if full_name.contains("<") {
+        return full_name
+    }
+    return last_part_of(full_name)
+}
+
+func default_value_shown(answer: Model.Type): String {
+    if answer.kind == 'scalar' {
+        return default_scalar_shown(answer.name)
+    }
+    if answer.kind == 'enumeration' {
+        return first_enum_value_shown(answer)
+    }
+    if answer.kind == 'object' and answer.name == "String" {
+        return "\"\""
+    }
+    return "an object with every attribute at its default"
+}
+
+func first_enum_value_shown(answer: Model.Type): String {
+    var made = values.enum_model_of(answer)
+    var first_value = made.values.first()
+    crash first_value
+    return "'{first_value}'"
+}
+
+func default_scalar_shown(name: String): String {
+    if name == "Boolean" {
+        return "false"
+    }
+    if name == "Float" or name == "Double" {
+        return "0.0"
+    }
+    return "0"
+}
+
+func chosen_answer_text(answer: Model.Type): String {
+    if answer.kind == 'scalar' {
+        return chosen_scalar_text(answer.name)
+    }
+    if answer.kind == 'enumeration' {
+        return first_enum_value_shown(answer)
+    }
+    if answer.kind == 'object' and answer.name == "String" {
+        return "\"\""
+    }
+    if answer.kind == 'object' {
+        return chosen_object_text(answer)
+    }
+    return ""
+}
+
+func chosen_scalar_text(name: String): String {
+    if name == "Boolean" {
+        return "false"
+    }
+    if name == "Float" or name == "Double" {
+        return "-1.0"
+    }
+    if name.starts_with("Unsigned") or name == "Byte" or name.contains("Address") {
+        return ""
+    }
+    return "-1"
+}
+
+func chosen_object_text(answer: Model.Type): String {
+    if context.current_class.bound_types.count() > 0 {
+        return ""
+    }
+    if not context.has_a_class(answer) {
+        return ""
+    }
+    var model = context.class_of(answer)
+    if model.is_singleton or model.bound_types.count() > 0 {
+        return ""
+    }
+    if made_with_arguments(model) {
+        return ""
+    }
+    var simple = last_part_of(model.shown)
+    return "{simple}()"
+}
+
+func made_with_arguments(model: Model.ClassModel): Boolean {
+    var index = 0
+    while index < model.declared_functions.count() {
+        var function = model.declared_functions[index]
+        if function.is_constructor and function.parameters.count() > 0 {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement) {

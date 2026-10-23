@@ -1,14 +1,19 @@
 var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
 var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
 
-func check(context: Context, written: List<AbstractSyntaxTree.Shapes.Statements.Statement>, index: Integer) {
+func check(
+    context: Context,
+    written: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    index: Integer,
+    enclosing: List<EnclosingBlock>,
+) {
     var statement = written[index]
     crash statement
     var library = Validators.LibraryFile()
     var path = context.path()
     assert not library.holds(path)
     if statement == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
-        check_an_assignment(context, written, index, statement)
+        check_an_assignment(context, written, index, statement, enclosing)
     }
 }
 
@@ -17,10 +22,11 @@ func check_an_assignment(
     written: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
     index: Integer,
     statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    enclosing: List<EnclosingBlock>,
 ) {
     var target = statement.target
     if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        check_a_replaced_item(context, written, index, statement, target.name)
+        check_a_replaced_item(context, written, index, statement, target.name, enclosing)
     }
     if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
         check_a_member_write(context, written, index, statement, target)
@@ -95,13 +101,141 @@ func check_a_replaced_item(
     index: Integer,
     statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
     name: String,
+    enclosing: List<EnclosingBlock>,
 ) {
     var declared_at = declaration_of(written, index, name)
+    if declared_at < 0 {
+        check_an_enclosed_item(context, written, index, statement, name, enclosing)
+    }
     assert declared_at >= 0
     var declaration = written[declared_at]
     if declaration == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
         check_an_item_local(context, written, index, declared_at, statement, declaration)
     }
+}
+
+func check_an_enclosed_item(
+    context: Context,
+    written: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    index: Integer,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    name: String,
+    enclosing: List<EnclosingBlock>,
+) {
+    var level = enclosing.count() - 1
+    var searching = true
+    while level >= 0 and searching {
+        var outer = enclosing[level]
+        crash outer
+        var holder = outer.statements[outer.index]
+        if holder == AbstractSyntaxTree.Shapes.Statements.WhileStatement {
+            searching = false
+        }
+        var declared_at = declaration_of(outer.statements, outer.index, name)
+        if searching and declared_at >= 0 {
+            check_an_outer_item(context, written, index, statement, enclosing, level, declared_at)
+            searching = false
+        }
+        level = level - 1
+    }
+}
+
+func check_an_outer_item(
+    context: Context,
+    written: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    index: Integer,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    enclosing: List<EnclosingBlock>,
+    level: Integer,
+    declared_at: Integer,
+) {
+    var outer = enclosing[level]
+    crash outer
+    var declaration = outer.statements[declared_at]
+    if declaration == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        check_an_outer_item_local(context, written, index, statement, enclosing, level, declared_at, declaration)
+    }
+}
+
+func check_an_outer_item_local(
+    context: Context,
+    written: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    index: Integer,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    enclosing: List<EnclosingBlock>,
+    level: Integer,
+    declared_at: Integer,
+    declaration: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+) {
+    var read = declaration.value
+    if read == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        refuse_an_outer_replaced_item(context, written, index, statement, enclosing, level, declared_at, read)
+    }
+}
+
+func refuse_an_outer_replaced_item(
+    context: Context,
+    written: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    index: Integer,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    enclosing: List<EnclosingBlock>,
+    level: Integer,
+    declared_at: Integer,
+    read: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+) {
+    assert is_a_list_or_a_dictionary(context, read.target)
+    var name = assigned_name(statement)
+    var statement_count = written.count()
+    var after = walk_of(written, index + 1, statement_count)
+    assert not names_it(after, name)
+    assert not read_in_an_outer_block(enclosing, level, name)
+    var outer = enclosing[level]
+    crash outer
+    var between = walk_of(outer.statements, declared_at + 1, outer.index)
+    assert not assigns_it(between, name)
+    var before = walk_of(written, 0, index)
+    assert not assigns_it(before, name)
+    refuse_the_replaced_item(context, statement, name, read)
+}
+
+func read_in_an_outer_block(enclosing: List<EnclosingBlock>, level: Integer, name: String): Boolean {
+    var current = level
+    while current < enclosing.count() {
+        var block = enclosing[current]
+        var block_count = block.statements.count()
+        var later = walk_of(block.statements, block.index + 1, block_count)
+        if names_it(later, name) {
+            return true
+        }
+        current = current + 1
+    }
+    return false
+}
+
+func assigned_name(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement): String {
+    var target = statement.target
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return target.name
+    }
+    return ""
+}
+
+func refuse_the_replaced_item(
+    context: Context,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    name: String,
+    read: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+) {
+    crash read.target
+    crash statement.value
+    var item_printer = Printers.Spite.ExpressionPrinter(read)
+    var item = item_printer.text()
+    var list_printer = Printers.Spite.ExpressionPrinter(read.target)
+    var list_text = list_printer.text()
+    var value_printer = Printers.Spite.ExpressionPrinter(statement.value)
+    var value_text = value_printer.text()
+    context.line = statement.line
+    typing.refuse_replaced_item(context, name, item, list_text, value_text)
 }
 
 func check_an_item_local(
@@ -116,6 +250,217 @@ func check_an_item_local(
     if read == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
         check_a_listed_item(context, written, index, declared_at, statement, read)
     }
+    if read == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        check_an_answered_item(context, written, index, declared_at, statement, read)
+    }
+}
+
+func check_an_answered_item(
+    context: Context,
+    written: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    index: Integer,
+    declared_at: Integer,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        check_a_member_answer(context, written, index, declared_at, statement, call, callee)
+    }
+}
+
+func check_a_member_answer(
+    context: Context,
+    written: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    index: Integer,
+    declared_at: Integer,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+) {
+    var holder = callee.target
+    var holder_name = ""
+    if holder == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        holder_name = holder.name
+    }
+    assert not holder_name.is_empty()
+    var holder_type = type_of_a_name(context, holder_name)
+    assert holder_type
+    var present = holder_type.present()
+    assert present.kind == 'object' and context.has_a_class(present)
+    var model = context.class_of(present)
+    var found = AnsweredItem()
+    answered_item_of(context, model, callee.name, found, 0)
+    assert not found.attribute.is_empty()
+    var name = assigned_name(statement)
+    var statement_count = written.count()
+    var after = walk_of(written, index + 1, statement_count)
+    assert not names_it(after, name)
+    var between = walk_of(written, declared_at + 1, index)
+    assert not assigns_it(between, name)
+    var call_printer = Printers.Spite.ExpressionPrinter(call)
+    var answered_by = call_printer.text()
+    var owner_parts = found.model.shown.split(".")
+    var owner = owner_parts.last()
+    crash owner
+    var writer = writer_of(found.model, found.attribute)
+    context.line = statement.line
+    typing.refuse_a_replaced_answer(context, name, found.item, owner, answered_by, writer, found.attribute)
+}
+
+func answered_item_of(
+    context: Context,
+    model: Model.ClassModel,
+    function_name: String,
+    found: AnsweredItem,
+    depth: Integer,
+) {
+    assert depth < 4
+    var library = Validators.LibraryFile()
+    assert not library.holds(model.file.path)
+    var function = model.function_named(function_name)
+    assert function
+    assert function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    assert declaration.body
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_block(declaration.body)
+    var returned = the_one_returned(walk)
+    assert returned
+    if returned == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        answered_by_an_index(context, model, returned, found)
+    }
+    if returned == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        answered_by_a_call(context, model, returned, found, depth)
+    }
+}
+
+func the_one_returned(walk: AbstractSyntaxTree.Walk.Walk): AbstractSyntaxTree.Shapes.Expressions.Expression? {
+    var returned: AbstractSyntaxTree.Shapes.Expressions.Expression? = null
+    var returned_text = ""
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        var statement = found.statement
+        if statement == AbstractSyntaxTree.Shapes.Statements.ReturnStatement {
+            var text = returned_text_of(statement.value)
+            if returned_text.is_empty() {
+                returned_text = text
+                returned = statement.value
+            }
+            assert text == returned_text and not text.is_empty()
+        }
+        index = index + 1
+    }
+    return returned
+}
+
+func returned_text_of(value: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if not value {
+        return ""
+    }
+    var printer = Printers.Spite.ExpressionPrinter(value)
+    return printer.text()
+}
+
+func answered_by_an_index(
+    context: Context,
+    model: Model.ClassModel,
+    returned: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    found: AnsweredItem,
+) {
+    var listed = returned.target
+    var listed_name = ""
+    if listed == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        listed_name = listed.name
+    }
+    var attribute = model.attribute_named(listed_name)
+    assert attribute
+    var shown = context.shown(attribute.attribute_type)
+    assert shown.starts_with("List<") or shown.starts_with("Dictionary<")
+    found.model = model
+    found.attribute = listed_name
+    found.item = returned_text_of(returned)
+}
+
+func answered_by_a_call(
+    context: Context,
+    model: Model.ClassModel,
+    returned: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    found: AnsweredItem,
+    depth: Integer,
+) {
+    var callee = returned.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        answered_through_an_attribute(context, model, callee, found, depth)
+    }
+}
+
+func answered_through_an_attribute(
+    context: Context,
+    model: Model.ClassModel,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    found: AnsweredItem,
+    depth: Integer,
+) {
+    var holder = callee.target
+    var holder_name = ""
+    if holder == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        holder_name = holder.name
+    }
+    var attribute = model.attribute_named(holder_name)
+    assert attribute
+    var present = attribute.attribute_type.present()
+    assert present.kind == 'object' and context.has_a_class(present)
+    var held_model = context.class_of(present)
+    answered_item_of(context, held_model, callee.name, found, depth + 1)
+}
+
+func writer_of(model: Model.ClassModel, attribute: String): String {
+    var index = 0
+    while index < model.declared_functions.count() {
+        var function = model.declared_functions[index]
+        if writes_an_item_of(function, attribute) {
+            return function.name
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func writes_an_item_of(function: Model.FunctionModel, attribute: String): Boolean {
+    if not function.declaration {
+        return false
+    }
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    if not declaration.body {
+        return false
+    }
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_block(declaration.body)
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        if assigns_an_item_of(found.statement, attribute) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func assigns_an_item_of(statement: AbstractSyntaxTree.Shapes.Statements.Statement?, attribute: String): Boolean {
+    if statement == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        return is_an_item_of(statement.target, attribute)
+    }
+    return false
+}
+
+func is_an_item_of(target: AbstractSyntaxTree.Shapes.Expressions.Expression?, attribute: String): Boolean {
+    if target == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return is_the_name(target.target, attribute)
+    }
+    return false
 }
 
 func check_a_listed_item(
