@@ -1186,6 +1186,43 @@ chain where every addition waited for the store before it to come back from memo
 **What a program can observe:** only the time. Every store is still made, so another thread or a later read sees
 the same memory.
 
+## An attribute a loop updates lives in a register until the loop ends
+
+Every load and store of an attribute through an object whose class is known exactly where it is read (not a union,
+a shape or a type parameter) carries the attribute it reads, its region (`Tally.total`; `--low-ir` prints it as
+`in Tally.total`). Two regions never share memory: an object has one class, and two attributes of one class have
+their own slots, so a store to `Tally.calls` cannot change what a load of `Tally.total` or `Counter.rounds` reads,
+whichever objects the registers hold. A load or store the compiler wrote itself (a count, a list's buffer, a
+singleton's lock) carries no region and may touch anything.
+
+A loop in which every memory access carries a region, and which makes no call, allocation or other write of memory,
+keeps each region it stores to in a register when all its accesses go through one register written before the loop
+at one offset: the attribute is loaded once before the loop, each read inside is the register, each store writes
+the register (narrowed to the attribute's width when the value might not fit it), and it is stored once at each
+way out of the loop. It applies when the object is known to be there before the loop runs (the register is the
+slot of a singleton made at start, or the loop's first block reads through it) and every way out leads only from
+the loop. In a program with threads it applies only to the attributes of a singleton that takes its lock, since
+those are only touched while the lock is held; any other object's attribute is still loaded and stored on every
+pass.
+
+```spite
+func add(amount: Integer) {
+    total = total + amount
+    calls = calls + 1
+    if amount > largest {
+        largest = amount
+    }
+}
+```
+
+Called from a counted loop that [holds `Tally`'s lock](#a-counted-loop-of-calls-to-one-singleton-takes-its-lock-once),
+`total`, `calls` and `largest` live in registers for the whole loop and are stored once when it ends
+(`a_counted_loop_of_calls_to_one_singleton_takes_its_lock_once` went from 42 ms to 22 ms,
+`thread_safety_for_singletons_the_cheapest_safe_form` from 8.4 ms to 2.1 ms).
+
+**What a program can observe:** only the time. A loop that stops the program halfway (a crash, an addition that does
+not fit) leaves the attribute as it was before the loop, which nothing can read afterwards.
+
 ## A block nothing reaches leads nowhere
 
 A block no path from the function's start reaches (an empty block left after a branch was decided, the making of a
@@ -1208,7 +1245,9 @@ when it is in the loop's first block (which every pass runs) and nothing in the 
 (a retain only blocks a load of the count). Each instruction moved runs once instead of once per pass.
 
 It does not apply to a function of more than 400 blocks or that waits, to checked arithmetic, divisions and
-comparisons, nor to a load past the loop's first block, since a pass that leaves early would not have made it. A
+comparisons, nor to a load past the loop's first block, since a pass that leaves early would not have made it. In a
+program with threads a plain load never moves: another thread may write what it reads, and a loop waiting for that
+write (`while not gate.is_open() { }`) would never see it and spin forever. A
 load the compiler knows never changes and can always be made (the slot of a singleton made at start, an attribute
 of a steady one) moves from any block of the loop, whatever the loop writes or calls.
 
@@ -1646,6 +1685,12 @@ loop reads the step once before it starts and finds the counter's slot once.
 **When it does not apply:** a singleton made only by some paths of the defaults, or not by the entry class at all
 (then [made on first use](#a-singleton-is-made-on-first-use-by-a-function-of-its-own) as before), and every function
 the defaults, the fault handler or a destroy can reach. **What a program can observe:** only the time.
+
+A quiet singleton (its defaults and constructor only assign its own attributes from pure values, in a program with
+no `drop()`) read in a loop is tested once before the loop instead: making it earlier cannot be seen, and once made
+its slot never changes, so the loop reads the slot once. This is not done in a `--debug-memory` build, where making
+a singleton a loop that never runs would have made counts one more allocation (`singletons_made_on_first_use_never_counted`
+went from 15.5 ms to 13.9 ms).
 
 ## A chain of `filter_` steps runs as one loop
 

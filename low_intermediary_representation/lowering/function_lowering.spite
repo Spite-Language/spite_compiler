@@ -678,13 +678,14 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
     assert not is_atomic_here or not updates.lowered_an_update(assign)
     var object = lower_value(assign.object)
     var value = lower_value(assign.value)
+    crash assign.object
+    var region = region_of(assign.object.value_type, assign.attribute)
     if layout.is_back(assign.attribute) {
         store_a_back_reference(object.value, assign.attribute, value)
     } else {
-        store_an_attribute(object.value, assign.attribute, value)
+        store_an_attribute(object.value, assign.attribute, value, region)
     }
     bind_the_foreign_names(assign.attribute, value.value)
-    crash assign.object
     discard(object, assign.object.value_type)
 }
 
@@ -709,7 +710,7 @@ func bind_the_foreign_names(attribute: Model.AttributeModel, library: Integer) {
     }
 }
 
-func store_an_attribute(object: Integer, attribute: Model.AttributeModel, value: Lowered) {
+func store_an_attribute(object: Integer, attribute: Model.AttributeModel, value: Lowered, region: String) {
     var offset = layout.offset_of(attribute)
     var attribute_type = attribute.attribute_type
     var width = width_of(attribute_type)
@@ -717,9 +718,11 @@ func store_an_attribute(object: Integer, attribute: Model.AttributeModel, value:
     var old = new_register()
     if is_a_pointer(attribute_type) {
         var loaded_old = LowIntermediaryRepresentation.Instructions.Load(old, object, offset, 'bits_64')
+        loaded_old.region = region
         emit(loaded_old)
     }
     var stored = LowIntermediaryRepresentation.Instructions.Store(object, offset, value.value, width)
+    stored.region = region
     emit(stored)
     if is_a_pointer(attribute_type) {
         settle_before_letting_go(old, attribute_type)
@@ -734,6 +737,9 @@ func store_an_attribute(object: Integer, attribute: Model.AttributeModel, value:
         value.presence,
         presence_width,
     )
+    if not region.is_empty() {
+        stored_presence.region = "{region}?"
+    }
     emit(stored_presence)
 }
 
@@ -1114,8 +1120,9 @@ func lower_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead):
         return lower_value(standing)
     }
     var object = lower_value(read.object)
-    var loaded = load_attribute(object.value, read.attribute)
     crash read.object
+    var region = region_of(read.object.value_type, read.attribute)
+    var loaded = load_attribute_in(object.value, read.attribute, region)
     var is_a_temporary = is_a_pointer(read.object.value_type) and object.owned
     if gathers_for_the_statement and is_a_temporary {
         statement_releases.append(object.value)
@@ -1125,7 +1132,18 @@ func lower_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead):
     return loaded
 }
 
+func region_of(object_type: Model.Type, attribute: Model.AttributeModel): String {
+    if object_type.kind != 'object' or object_type.name != attribute.owner {
+        return ""
+    }
+    return "{attribute.owner}.{attribute.name}"
+}
+
 func load_attribute(object_register: Integer, attribute: Model.AttributeModel): Lowered {
+    return load_attribute_in(object_register, attribute, "")
+}
+
+func load_attribute_in(object_register: Integer, attribute: Model.AttributeModel, region: String): Lowered {
     var rebuilder = layout.rebuilder_of(attribute)
     if rebuilder {
         return rebuilt_in_place(object_register, rebuilder)
@@ -1137,6 +1155,7 @@ func load_attribute(object_register: Integer, attribute: Model.AttributeModel): 
     var width = width_of(attribute_type)
     var loaded = LowIntermediaryRepresentation.Instructions.Load(target, object.value, offset, width)
     loaded.is_signed = is_signed(attribute_type)
+    loaded.region = region
     emit(loaded)
     if layout.is_back(attribute) {
         return held_back(target)
@@ -1154,6 +1173,9 @@ func load_attribute(object_register: Integer, attribute: Model.AttributeModel): 
         presence_width,
     )
     loaded_presence.is_signed = false
+    if not region.is_empty() {
+        loaded_presence.region = "{region}?"
+    }
     emit(loaded_presence)
     return Lowered(target, presence)
 }
