@@ -7,6 +7,7 @@ var values = Values(context)
 var statements = List<HighIntermediaryRepresentation.Statements.Statement>()
 var local_count = 0
 var stand_in: HighIntermediaryRepresentation.Values.Value? = null
+var declares_in_scope = false
 
 func Reflection(starting_context: Context, starting_values: Values) {
     context = starting_context
@@ -87,6 +88,9 @@ func features(): String {
     }
     if wants("Spite.Class.get_is_stateful") {
         found = "{found}s"
+    }
+    if wants("Spite.Function._call_on") {
+        found = "{found}o"
     }
     return found
 }
@@ -403,6 +407,39 @@ func add_a_function_object(
     makes_a_stand_in: Boolean,
     with_accesses: Boolean,
 ) {
+    var local = function_object(declared, model, makes_a_stand_in, with_accesses)
+    appended(listed, local)
+}
+
+func function_object_in_place(
+    declared: Model.FunctionModel,
+    receiver: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    var model = context.program.class_named(declared.owner)
+    crash model
+    var function_type = reflection_type("Spite.Function")
+    need_the_making(function_type)
+    var argument_type = reflection_type("Spite.Argument")
+    need_the_making(argument_type)
+    declares_in_scope = true
+    stand_in = receiver
+    var local = function_object(declared, model, false, true)
+    var index = 0
+    while index < statements.count() {
+        var statement = statements[index]
+        context.pending.append(statement)
+        index = index + 1
+    }
+    statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+    return local
+}
+
+func function_object(
+    declared: Model.FunctionModel,
+    model: Model.ClassModel,
+    makes_a_stand_in: Boolean,
+    with_accesses: Boolean,
+): HighIntermediaryRepresentation.Values.Value {
     var function_type = reflection_type("Spite.Function")
     var function_model = context.class_of(function_type)
     var argument_type = reflection_type("Spite.Argument")
@@ -429,7 +466,79 @@ func add_a_function_object(
     if called {
         set_value(local, function_model, "_called", called)
     }
-    appended(listed, local)
+    if called and has_feature("o") {
+        var called_on = called_on_value_of(declared, model, function_model)
+        set_value(local, function_model, "_called_on", called_on)
+    }
+    return local
+}
+
+func called_on_value_of(
+    declared: Model.FunctionModel,
+    model: Model.ClassModel,
+    function_model: Model.ClassModel,
+): HighIntermediaryRepresentation.Values.Value {
+    crash stand_in
+    var receiver: HighIntermediaryRepresentation.Values.Value = stand_in
+    var called_on_attribute = function_model.attribute_named("_called_on")
+    crash called_on_attribute
+    var wanted = called_on_attribute.attribute_type.present()
+    var parameter_type = wanted.parameters[0]
+    crash parameter_type
+    var wrapper = calling_on_wrapper(model, declared, parameter_type)
+    return HighIntermediaryRepresentation.Values.FunctionValue(wanted, wrapper, receiver)
+}
+
+func calling_on_wrapper(
+    model: Model.ClassModel,
+    declared: Model.FunctionModel,
+    instance_type: Model.Type,
+): Model.FunctionModel {
+    var name = "_call_{declared.name}_on"
+    var known = model.function_named(name)
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel(name, model.key)
+    made.is_synthetic = true
+    var parameter = Model.ParameterModel("instance", instance_type, false)
+    made.parameters.append(parameter)
+    model.declared_functions.append(made)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    if declared.parameters.is_empty() {
+        called_on_its_instance(body, model, declared, instance_type)
+    } else {
+        var message = "spite: call() cannot pass arguments to '{model.shown}.{declared.name}' when the call is known only at run time: build the call from a function named in the code, 'Spite.Call({model.shown}.functions['{declared.name}'], instance)'"
+        var refused = HighIntermediaryRepresentation.Statements.Stop(message)
+        body.statements.append(refused)
+    }
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func called_on_its_instance(
+    body: HighIntermediaryRepresentation.Statements.Block,
+    model: Model.ClassModel,
+    declared: Model.FunctionModel,
+    instance_type: Model.Type,
+) {
+    context.need(declared)
+    var own_type = model.type_of_an_instance()
+    var instance = HighIntermediaryRepresentation.Values.LocalRead(instance_type, "instance")
+    var tested = HighIntermediaryRepresentation.Values.ClassTest(instance, own_type)
+    var narrowed = HighIntermediaryRepresentation.Values.Conversion(own_type, 'present', instance)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var call = HighIntermediaryRepresentation.Values.Call(declared, narrowed, no_arguments)
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(call)
+    var running = HighIntermediaryRepresentation.Statements.Block()
+    running.statements.append(evaluated)
+    var message = "spite: call() runs '{declared.name}', declared by '{model.shown}', on an instance of another class: a call runs a declaration on an instance of its own class"
+    var refused = HighIntermediaryRepresentation.Statements.Stop(message)
+    var refusing = HighIntermediaryRepresentation.Statements.Block()
+    refusing.statements.append(refused)
+    var branch = HighIntermediaryRepresentation.Statements.If(tested, running, refusing)
+    body.statements.append(branch)
 }
 
 func fact(
@@ -1038,6 +1147,9 @@ func kept(
 ): HighIntermediaryRepresentation.Values.Value {
     local_count = local_count + 1
     var name = "reflected_{local_count}"
+    if declares_in_scope {
+        name = context.scope.declare("reflected", made_type)
+    }
     var declared = HighIntermediaryRepresentation.Statements.Declare(name, made_type, made)
     statements.append(declared)
     return HighIntermediaryRepresentation.Values.LocalRead(made_type, name)
@@ -1183,6 +1295,99 @@ func every_class(): HighIntermediaryRepresentation.Values.Value {
         key_index = key_index + 1
     }
     return listed
+}
+
+func made_anew(): Model.FunctionModel {
+    var class_type = reflection_type("Spite.Class")
+    var class_model = context.class_of(class_type)
+    var known = class_model.function_named("_made_anew")
+    if known {
+        return known
+    }
+    var anything = context.resolver.type_of_a_name("Anything")
+    var made = Model.FunctionModel("_made_anew", class_model.key)
+    made.is_synthetic = true
+    made.answer = anything
+    class_model.declared_functions.append(made)
+    var entry = context.program.class_named(context.program.entry)
+    crash entry
+    var folder = folder_of(entry.file.path)
+    read_every_class_in(folder)
+    var keys = List<String>()
+    var index = 0
+    while index < context.program.order.count() {
+        var model = context.program.order[index]
+        var bound = model.bound_types.keys()
+        if is_inside(model.file.path, folder) and bound.is_empty() {
+            insert_in_order(keys, model.key)
+        }
+        index = index + 1
+    }
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(class_type)
+    var key_index = 0
+    while key_index < keys.count() {
+        var key = keys[key_index]
+        var branch = making_branch(own, key, anything)
+        body.statements.append(branch)
+        key_index = key_index + 1
+    }
+    var message = "spite: a class known only at run time makes an object only of a class of the program's own folder"
+    var refused = HighIntermediaryRepresentation.Statements.Stop(message)
+    body.statements.append(refused)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func making_branch(
+    own: HighIntermediaryRepresentation.Values.Value,
+    key: String,
+    anything: Model.Type,
+): HighIntermediaryRepresentation.Statements.Statement {
+    var described = class_object(key)
+    var compared = List<HighIntermediaryRepresentation.Values.Value>()
+    compared.append(described)
+    var is_this_class = values.method_call(own, "equals", compared)
+    var model = context.program.class_named(key)
+    crash model
+    var making = HighIntermediaryRepresentation.Statements.Block()
+    var constructor = values.constructor_of(model)
+    var takes_nothing = true
+    if constructor {
+        takes_nothing = constructor.parameters.is_empty()
+    }
+    if key == context.program.entry {
+        var entered = HighIntermediaryRepresentation.Statements.Stop(
+            "spite: '{model.shown}' is the program's entry class, made once when the program starts, so a class known only at run time cannot make another",
+        )
+        making.statements.append(entered)
+    } else if not takes_nothing {
+        var refused = HighIntermediaryRepresentation.Statements.Stop(
+            "spite: '{model.shown}' takes arguments to be made, so a class known only at run time cannot make one: call the class by its name with its arguments",
+        )
+        making.statements.append(refused)
+    } else {
+        var answered = made_of_a_class(model, constructor, anything)
+        making.statements.append(answered)
+    }
+    return HighIntermediaryRepresentation.Statements.If(is_this_class, making, null)
+}
+
+func made_of_a_class(
+    model: Model.ClassModel,
+    constructor: Model.FunctionModel?,
+    anything: Model.Type,
+): HighIntermediaryRepresentation.Statements.Statement {
+    context.need_defaults(model.key)
+    if constructor {
+        context.need(constructor)
+    }
+    var instance_type = model.type_of_an_instance()
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var made = HighIntermediaryRepresentation.Values.MakeObject(instance_type, constructor, no_arguments)
+    var fitted = values.fitted(made, anything)
+    return HighIntermediaryRepresentation.Statements.Return(fitted)
 }
 
 func is_inside(path: String, folder: String): Boolean {
