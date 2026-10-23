@@ -45,6 +45,11 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Fixes instead of errors (D800, to discuss): the formatter, and each rule whose fix needs no choice
 - A cycle the program's code does not link as owner and back reference still leaks (D759): two objects stored in each other's attributes where neither was made in that function, one attribute pointing both ways (`partner`), a cycle through a union or a `type`, a non-nullable back attribute, or links made in two different functions; a leak no run reports until `--debug-memory` has its report (D244)
 - A back reference is read without a count (D760), so a call on it (`child.parent.leave()`) whose body lets the owner go runs on freed memory, and on two threads the check that its object lives races with the owner's last release
+- A `load` of a repository pinned to a commit is refused even when well formed (D839): fetching into `.spite/git/` is not built
+- The library and the compiler's generated files break three rules they are exempt from for now (D838): a case of two statements (`Duration.part`), an `if` that only holds an `if` (`ZoneRules.transition_offset_seconds_at`), and `crash` on a value that cannot be null (`internal/prompt.spite`, the generated REPL)
+- An `assert`/`crash` on a value that cannot be null is refused only on a parameter or an attribute, not on a local; a lone hole in an untyped `var` knows a text only from a local or parameter declared with text (D836); a reopening's attribute type is compared only between two written types or two literals (D840)
+- The unread-attribute check counts a read of any attribute of the same name in any class, so a loaded class's unread singleton is not reported (`conformance/loaded_singleton_unread`); a shadowed local is dropped at its scope's end, not where the next declaration hides it (`tests/shadow_drop_order`)
+- A crash whose condition is decided per instance through a reflection question (`$system_type.functions['update_each']`, `function_writes_parameter`) is not refused (`folded_crash_and_side`, `io_system_writes_row`)
 - The spec pages in `../SpiteLanguage/specs` still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D750 to D756
 
 - The runtime the library needs, as machine code: console, files, directories, clock, sockets, processes, dynamic library
@@ -117,7 +122,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## The outputs
 
-- `spite program` builds and runs; `--check`, `--build`, `--executable-path`, with the original's error texts for every other flag
+- `spite program` builds and runs (this compiler only builds, so a setting its `Environment` declares is checked and then unused, D842), and the formatter (`conformance/blank_line`)
 - Crash reports and the `<program>.crashes` map
 - `--optimization-report` (it writes only `Waits that hold the frame`), `--final-classes`
 - `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
