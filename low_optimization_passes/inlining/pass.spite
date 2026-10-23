@@ -5,8 +5,11 @@ var doing_nothing = List<String>()
 var largest_callee = 24
 var largest_calling_callee = 40
 var calls_on = false
+var addresses_on = false
+var calls_others_on = false
 var makes_on = false
-var largest_plain_calling_callee = 12
+var largest_plain_calling_callee = 24
+var largest_written_calling_callee = 12
 var wanting_a_made_argument = List<String>()
 var largest_caller = 4000
 var most_inlined = 64
@@ -19,6 +22,9 @@ var callee_place = ""
 var callee_key = ""
 var passed_arguments = List<Integer>()
 var inlined_frames = List<String>()
+var outer_frames = List<String>()
+var outer_line = 0
+var callee_is_placeless = false
 var call_frames = LowIntermediaryRepresentation.CallFrames()
 var held_register = 0
 
@@ -42,21 +48,35 @@ func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
     var copyable = true
     calls_on = false
     makes_on = false
+    addresses_on = false
+    calls_others_on = false
     var block_index = 0
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
+        var halts = only_halts(block)
+        var calling_before = calls_on
+        var making_before = makes_on
         var index = 0
         while index < block.instructions.count() {
             var instruction = block.instructions[index]
             copyable = copyable and is_copyable(instruction)
-            count = count + 1
+            if not halts {
+                count = count + 1
+            }
             index = index + 1
+        }
+        if halts {
+            calls_on = calling_before
+            makes_on = making_before
         }
         block_index = block_index + 1
     }
     var largest = largest_callee
     if calls_on {
         largest = largest_plain_calling_callee
+        if function.place.is_empty() and calls_others_on {
+            largest = largest_written_calling_callee
+        }
     }
     if makes_on {
         largest = largest_calling_callee
@@ -66,7 +86,18 @@ func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
         wanting_a_made_argument.append(function.key)
     }
     assert copyable and count <= largest
+    assert not function.place.is_empty() or not addresses_on or not calls_others_on
     inlinable[function.key] = function
+}
+
+func only_halts(block: LowIntermediaryRepresentation.LowBlock): Boolean {
+    var last = block.instructions.last()
+    if last {
+        if last == LowIntermediaryRepresentation.Instructions.Stop {
+            return not last.continues
+        }
+    }
+    return false
 }
 
 func does_nothing(function: LowIntermediaryRepresentation.LowFunction): Boolean {
@@ -101,12 +132,26 @@ func is_copyable(instruction: LowIntermediaryRepresentation.Instructions.Instruc
         LowIntermediaryRepresentation.Instructions.DecimalCompare: return true
         LowIntermediaryRepresentation.Instructions.DecimalConversion: return true
         LowIntermediaryRepresentation.Instructions.FrameRoom: return true
+        LowIntermediaryRepresentation.Instructions.DataAddress: return takes_an_address()
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return takes_an_address()
         LowIntermediaryRepresentation.Instructions.Retain: return true
-        LowIntermediaryRepresentation.Instructions.Call: return calls_a_function()
+        LowIntermediaryRepresentation.Instructions.Call: return calls_a_function_named(instruction.function)
         LowIntermediaryRepresentation.Instructions.Allocate: return makes_an_object()
         LowIntermediaryRepresentation.Instructions.Free: return calls_a_function()
         _: return false
     }
+}
+
+func takes_an_address(): Boolean {
+    addresses_on = true
+    return true
+}
+
+func calls_a_function_named(name: String): Boolean {
+    if not name.starts_with("_make_") and not name.contains("$cold") {
+        calls_others_on = true
+    }
+    return calls_a_function()
 }
 
 func makes_an_object(): Boolean {
@@ -263,6 +308,10 @@ func inline_the_call(
     answer_presence = call.presence
     callee_place = callee.place
     callee_key = callee.key
+    callee_is_placeless = callee.place.is_empty()
+    outer_line = call.line
+    outer_frames = List<String>()
+    call_frames.add_every(outer_frames, call.frames)
     note_the_inlined_frames(function, block, call)
     var before = List<LowIntermediaryRepresentation.Instructions.Instruction>()
     var after = LowIntermediaryRepresentation.LowBlock()
@@ -426,6 +475,8 @@ func copy_into(
         LowIntermediaryRepresentation.Instructions.DecimalCompare: copy_decimal_compare(made, instruction)
         LowIntermediaryRepresentation.Instructions.DecimalConversion: copy_decimal_conversion(made, instruction)
         LowIntermediaryRepresentation.Instructions.FrameRoom: copy_frame_room(made, instruction)
+        LowIntermediaryRepresentation.Instructions.DataAddress: copy_data_address(made, instruction)
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: copy_function_address(made, instruction)
         LowIntermediaryRepresentation.Instructions.Retain: copy_retain(made, instruction)
         LowIntermediaryRepresentation.Instructions.Call: copy_call(made, instruction)
         LowIntermediaryRepresentation.Instructions.Allocate: copy_allocate(made, instruction)
@@ -481,6 +532,24 @@ func copy_frame_room(
     made.instructions.append(copied)
 }
 
+func copy_data_address(
+    made: LowIntermediaryRepresentation.LowBlock,
+    address: LowIntermediaryRepresentation.Instructions.DataAddress,
+) {
+    var target = moved(address.target)
+    var copied = LowIntermediaryRepresentation.Instructions.DataAddress(target, address.label)
+    made.instructions.append(copied)
+}
+
+func copy_function_address(
+    made: LowIntermediaryRepresentation.LowBlock,
+    address: LowIntermediaryRepresentation.Instructions.FunctionAddress,
+) {
+    var target = moved(address.target)
+    var copied = LowIntermediaryRepresentation.Instructions.FunctionAddress(target, address.function)
+    made.instructions.append(copied)
+}
+
 func copy_retain(
     made: LowIntermediaryRepresentation.LowBlock,
     retain: LowIntermediaryRepresentation.Instructions.Retain,
@@ -505,7 +574,12 @@ func copy_call(made: LowIntermediaryRepresentation.LowBlock, call: LowIntermedia
     copied.presence = moved(call.presence)
     copied.line = call.line
     call_frames.add_every(copied.frames, call.frames)
-    call_frames.add_every(copied.frames, inlined_frames)
+    if callee_is_placeless and call.function.starts_with("_make_") {
+        copied.line = outer_line
+        call_frames.add_every(copied.frames, outer_frames)
+    } else {
+        call_frames.add_every(copied.frames, inlined_frames)
+    }
     made.instructions.append(copied)
 }
 

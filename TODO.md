@@ -27,7 +27,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found
 - `tests/memory_debug_memory_balance` prints `allocations: 24 frees: 22` under `--debug-memory` (D883): two blocks are never freed, and nothing names them until the leaked-object summary is built
-- An object made only to read one attribute inside an `if`, `while` or `return` condition, with no call reading it, is never released (D871): a leak no run reports until `--debug-memory` has its report (D244)
 
 - A serializer's `keys` map (D893) is refused when assigned through an index, but `clear()`, `set_at`, `remove_at` called on it, or a local holding it, change a map whose folded keys stay as they were: a lost write (D244)
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D748)
@@ -67,7 +66,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `File.lock()` waits in place: inside a `Concurrent` it does not return to the scheduler while another process holds the lock
 - A header's prototype casts each foreign argument to its C type's number (D848), but a prototype written over several lines, or with a `typedef`'d parameter type, is not read, so its arguments pass as written
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
-- `--debug-memory` prints its counts (D883), but not the leaked-object summary by class name, and fresh memory is zeroed, not filled with `0xA5`; an attribute read from an object made in the same expression is let go at the end of its statement (D871) only in a declaration, an assignment or an evaluated call: in an `if`, `while` or `return` it goes after the call that reads it, and where no call reads it there it leaks; the counts a pass proves unneeded are still written
+- `--debug-memory` prints its counts (D883), but not the leaked-object summary by class name, and fresh memory is zeroed, not filled with `0xA5`; the counts a pass proves unneeded are still written
 - Chains of member templates as one loop beyond `filter_` steps on a `List` (D876: a `map_` in the middle, a passed function `filter(f)`, a chain on a `Dictionary`'s values or a `Vector`/`Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A dictionary keyed by hashing instead of a walk of its keys
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
@@ -172,7 +171,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The small-block allocator (D794 to D796) never gives a chunk back to the system and never moves a free block to another size class, so a program's peak of small blocks of one size stays its memory; an allocation of a constant size above 120 bytes, and every free of a block above 1016 bytes, is a call
 - The compiler places memory
 - Reading an address is one machine operation
-- Objects that never leave their function live in the frame (built after inlining, D801: in registers or the frame, made at the `return` when answered; not built: an object whose class has a `drop`, back references or frees its attributes another way, an object of a class that releases attributes passed to a call that is not inlined, and anything in a function that waits)
+- Objects that never leave their function live in the frame (built after inlining, D801: in registers or the frame, made at the `return` when answered, its count followed while compiling, D953; not built: an object whose class has a `drop`, back references or frees its attributes other than by releasing them, an object of a class that releases attributes passed to a call that is not inlined, and anything in a function that waits)
 - A local list of known size lives in the frame
 - A variadic list the callee only reads lives in the caller's frame
 - A list held only by another list lives in its slot
@@ -187,7 +186,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The counts
 
-- Singletons: made on first use, never counted (a singleton passed to a call is not counted; kept in a local, an attribute or a list it still is)
+- Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, one answered and read once is counted and let go with nothing between and both are removed, D951, and an attribute holding a quiet singleton is the singleton itself, D954; not built: kept in a local or a list it still is, and so is an attribute in a program with a `drop()`)
 - Singletons that hold nothing are static objects
 - Atomic reference counts only with threads
 - Plain reference counts where no thread reaches a class
@@ -198,7 +197,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A list item read only to test it is not counted
 - A write-back of what the slot already holds is not written
 - An item a name holds from its list is not counted
-- Reading through a `type` without counting
+- Reading through a `type` without counting (built for a row placed in registers whose reads meet their releases on one path, D951 to D953; not built: a row passed to a call too large to inline, and a count taken before a call that is not inlined)
 - Objects made for their owner are told apart
 - Counts stay plain for what one of the calls run at once counts
 

@@ -577,6 +577,14 @@ and makes the default where the attribute is read, when that cannot be told apar
   not answer it (the facts the compiler keeps on every function say which), or is the value of a local used only
   that way, and none of those reads is inside a loop.
 
+An attribute whose default is a singleton (`var rules = Rules()`) is read as the singleton itself wherever it is
+read, inside loops too, and takes no slot, when the singleton's defaults and its constructor only assign its own
+attributes from pure values and nothing in the program has a `drop()`: the singleton is the same object at every
+read, so only when it is made can move, and making it does nothing a program can see. A singleton's or the entry
+class's attribute keeps its slot, and so does every such attribute in a program with a `drop()`, since a `drop()` at
+exit may read it after the singleton is destroyed, which the slot's count keeps from happening. See [a singleton is made on first use, by a function of its
+own](#a-singleton-is-made-on-first-use-by-a-function-of-its-own).
+
 It never applies to an attribute written anywhere outside its default, read through a union, read from an
 object the read computes (`maker().items`), or whose default is not pure. A singleton's and the entry class's
 object attributes keep their slots, because there is one object, so a slot costs once and a rebuild costs at
@@ -671,6 +679,7 @@ These run in this order on the low representation, then in the x64 generator:
    [jump threading](#jumps-to-jumps-go-straight-to-the-end) (`jump_threading`),
    [copy propagation](#a-copy-of-a-value-that-never-changes-is-the-value) (`copy_propagation`),
    [dead code](#a-value-nobody-reads-is-not-computed) (`dead_code`),
+   [counted pairs](#a-count-taken-and-let-go-with-nothing-between-is-never-taken) (`counted_pairs`),
    [common subexpressions](#the-same-computation-in-a-block-is-made-once) (`common_subexpressions`), copy propagation
    again, [remainder tests](#a-remainder-by-a-power-of-two-tested-against-zero-is-a-mask) (`remainder_tests`),
    [loop invariants](#what-a-loop-does-not-change-is-computed-before-it) (`loop_invariants`), dead code again,
@@ -707,8 +716,14 @@ so `spite.frame` lines name the guard's function and its callers as before.
 ## Small functions are inlined
 
 A call to a function that waits for nothing and holds at most 24 instructions (an accessor, a list's `get_at` and
-`set_at`, a tiny helper), at most 12 when it calls other functions, or at most 40 when it makes an object or is
-passed one the caller made, is replaced by a copy of the function's body. Its parameters become the caller's argument registers when the body never writes
+`set_at`, a tiny helper, a read of a singleton), at most 24 when it calls other functions too, or at most 40 when it
+makes an object or is passed one the caller made, is replaced by a copy of the function's body. The blocks that can
+only stop the program (a failed `crash` calling its [cold report](#a-crashs-report-is-a-cold-call)) are not counted,
+and their call to the report does not count as a call, so a guard costs a function nothing toward its size. The
+address of a singleton's slot or of a function is copied like any other instruction, so a function that reads a
+singleton is inlined too. A function the compiler wrote (the scheduler's, a list's machinery) that calls others is
+inlined only up to 12 instructions, and not at all when it takes an address and calls anything but a singleton's
+maker, so the frames a call inside it reports stay those of the call it was written for. Its parameters become the caller's argument registers when the body never writes
 them, and a copy otherwise; its answers are copied into the call's answer registers; its blocks are added at the
 end of the caller and the call becomes a jump into them. A call to a function whose whole body is a bare `return`
 (an empty `_attribute_defaults`, a constructor's `$defaults` with nothing to set) is removed.
@@ -789,6 +804,15 @@ func simulate(steps: Integer): Offset {
 
 `scaled` and `+` are inlined, `moved` and every `position` but the answer live in registers, and the one object
 made is the answer, at the `return`.
+
+### A row's count is followed while compiling
+
+What a class lets go when it is freed is read from its compiled `_free_` function, whether that releases each
+attribute with a call or with the release written in place (a test for null, the count taken down by one and the
+object's own `_free_` where it reaches zero), so a row of a `type` holding objects is placed in registers like any
+other. Where the count of an object placed in registers is known (one when it is made, one more at each retain, one
+less at each release, followed along every path), a retain and a release write the new count and nothing else, and
+the release that brings it to zero lets go of the row's attributes in place, with no test.
 
 ### What a call keeps nothing of
 
@@ -961,6 +985,64 @@ Before, each call made a `DynamicLibrary` (three `String`s copied byte by byte),
 function up and called it through a pointer. When it does not apply: nothing else calls the C library this way;
 the system classes still open their library with `DynamicLibrary`. What a user can observe: the answers are the C
 library's, bit for bit, as before; the time; and one more imported library in the executable.
+
+## A count taken and let go with nothing between is never taken
+
+A `retain` of an object followed, on the only path from it, by a release of the same object (through any copy of
+the register that holds it) with nothing in between that can let any object go is removed together with that
+release: the count would only have gone up by one and down by one. Nothing in between may call a function, free
+memory, release another object, or read or write a count (offset 8 of an object). The path may leave its block
+through jumps and through branches whose other side can only stop the program (a failed `crash` or a halted
+arithmetic check, with no release on the way), as long as every block it enters has no other way in. The pairs are
+found from the last `retain` of a block backwards, again and again, so a count taken twice and let go twice goes
+in two rounds, and a pair inside another pair is removed before the outer one.
+
+**When it applies:** to what the lowering counts for a moment: an item read from a list into a row and let go when
+the row goes, an argument counted for a call that was inlined, a singleton answered by a function and let go after
+one read. With a [row placed in registers](#objects-that-never-leave-their-function-live-in-registers-or-the-frame),
+the row's attributes are let go where its count reaches zero, so the item's count and its release meet in one path
+and both go.
+
+**When it does not apply:** across any call that is not inlined, across a release of another object (that one could
+be the same object, and its release the last but for ours), across a loop's head or any block two paths enter, and
+in a function that waits.
+
+**What a program can observe:** nothing but time. `drop()` runs at the same moment, since the count removed was
+never the one that reached zero.
+
+```spite
+func ticks(positions: Vector<Position>, velocities: Vector<Velocity>) {
+    var index = 0
+    while index < positions.count() {
+        crash velocities[index]
+        var moving = {position: positions[index], velocity: velocities[index]}
+        mover.advance(moving, 2)
+        index = index + 1
+    }
+}
+```
+
+The row is registers, `advance` is inlined, and neither the position nor the velocity is counted: the loop reads
+both, moves the position and goes on (`reading_through_a_type_without_counting` went from 0.77 s to 0.12 s).
+
+## A branch its predecessor decides goes straight to its side
+
+A jump, or one side of a branch, that leads to a block which only computes a condition and branches on it goes
+straight to the side that block would take, when what the jumping block leaves is enough to decide it: a constant it
+wrote last (`missing = 0`), a copy of one, or, on a branch's side, the branch's own condition (false on the false
+side; true on the true side when the condition is a comparison). The block jumped over may compute constants,
+copies and comparisons that nothing outside it reads, and release a register that is known to be null there.
+
+```spite
+crash velocities[index]
+```
+
+reads the item, and when the index is out of range writes `0` and jumps to the test of `0 != 0`: that path now goes
+straight to the report, so the test is entered only from the path that read an item, and the item's count can meet
+its release ([counted pairs](#a-count-taken-and-let-go-with-nothing-between-is-never-taken)). A counted loop's first
+test of a constant start (`index = 0`, `index < 200`) is decided the same way.
+
+**What a program can observe:** nothing but time.
 
 ## Jumps to jumps go straight to the end
 
@@ -1249,6 +1331,31 @@ the lock that guards the list of loops.
 
 writes `_scheduler_start` and `_scheduler_wait_for` for this program, and `Spite.Work_of_Integer._settled` for the
 join; `--low-ir` shows them.
+
+## A singleton is made on first use, by a function of its own
+
+A read of a singleton is a load of its slot and a test that it is made; making it (the claim of the slot, the wait
+for another thread making it, the constructor, the record for its `drop()` at exit) is a function of its own,
+`_make_<Class>$<slot>`, written once for each singleton and called only when the slot is empty. A function that
+reads a singleton is then small enough to be [inlined](#small-functions-are-inlined), and with the singleton's
+attribute [read in place](#attributes-nothing-writes-are-rebuilt-where-read) an object that held it holds nothing
+but its numbers, so it lives in registers.
+
+```spite
+var rules = Rules()
+var number = 0
+
+func weight(): Integer {
+    return number % 7 + rules.base
+}
+```
+
+A loop that makes a `Visit` and asks its `weight()` makes no object, counts nothing and calls nothing once `Rules`
+is made (`singletons_made_on_first_use_never_counted` went from 0.53 s to 0.016 s on two threads).
+
+**What a program can observe:** nothing but time. A singleton read through an attribute is made at its first read
+instead of when the object holding it is made, which nothing tells apart, since making it does nothing a program
+sees; `--debug-memory` counts the same allocations. A fault while making it reports as before.
 
 ## Thread safety for singletons, the cheapest safe form
 

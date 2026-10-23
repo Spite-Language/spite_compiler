@@ -526,11 +526,40 @@ func fits_in_registers(root: Integer): Boolean {
 }
 
 func read_the_free(root: Integer, freeing: LowIntermediaryRepresentation.LowFunction): Boolean {
-    if freeing.blocks.count() != 1 or freeing.parameter_count != 1 {
+    if freeing.parameter_count != 1 {
+        return false
+    }
+    var children = List<Integer>()
+    var released = released_children(freeing, children)
+    if not released {
+        children = List<Integer>()
+        released = inlined_children(freeing, children)
+    }
+    if not released {
+        return false
+    }
+    free_children[root] = children
+    plain[root] = children.is_empty()
+    if escaped[root] == true {
+        return false
+    }
+    var child_index = 0
+    while child_index < children.count() {
+        var child = children[child_index]
+        var field = field_of(root, child)
+        if field < 0 {
+            note_a_field(root, child, 8, 0)
+        }
+        child_index = child_index + 1
+    }
+    return escaped[root] != true
+}
+
+func released_children(freeing: LowIntermediaryRepresentation.LowFunction, children: List<Integer>): Boolean {
+    if freeing.blocks.count() != 1 {
         return false
     }
     var block = freeing.blocks[0]
-    var children = List<Integer>()
     var count = block.instructions.count()
     if count < 2 {
         return false
@@ -551,24 +580,21 @@ func read_the_free(root: Integer, freeing: LowIntermediaryRepresentation.LowFunc
     }
     var freed = block.instructions[index]
     var returned = block.instructions[index + 1]
-    if not frees_the_object(freed) or not returns_nothing(returned) {
+    return frees_the_object(freed) and returns_nothing(returned)
+}
+
+func inlined_children(freeing: LowIntermediaryRepresentation.LowFunction, children: List<Integer>): Boolean {
+    var reading = LowOptimizationPasses.ObjectPlacement.InlinedFree(freeing)
+    if not reading.read() {
         return false
     }
-    free_children[root] = children
-    plain[root] = children.is_empty()
-    if escaped[root] == true {
-        return false
+    var index = 0
+    while index < reading.offsets.count() {
+        var offset = reading.offsets[index]
+        children.append(offset)
+        index = index + 1
     }
-    var child_index = 0
-    while child_index < children.count() {
-        var child = children[child_index]
-        var field = field_of(root, child)
-        if field < 0 {
-            note_a_field(root, child, 8, 0)
-        }
-        child_index = child_index + 1
-    }
-    return escaped[root] != true
+    return true
 }
 
 func released_offset(
@@ -830,31 +856,43 @@ func follow_the_fields(
         return
     }
     if instruction == LowIntermediaryRepresentation.Instructions.Retain {
-        forget_the_count(instruction.object, known)
+        move_the_count(instruction.object, known, values, 1)
         return
     }
     if instruction == LowIntermediaryRepresentation.Instructions.Call {
-        forget_the_released(instruction, known)
+        forget_the_released(instruction, known, values)
     }
 }
 
-func forget_the_released(call: LowIntermediaryRepresentation.Instructions.Call, known: List<Boolean>) {
+func forget_the_released(
+    call: LowIntermediaryRepresentation.Instructions.Call,
+    known: List<Boolean>,
+    values: List<Long>,
+) {
     assert call.function == "_release"
     var index = 0
     while index < call.arguments.count() {
         var argument = call.arguments[index]
-        forget_the_count(argument, known)
+        move_the_count(argument, known, values, -1)
         index = index + 1
     }
 }
 
-func forget_the_count(register: Integer, known: List<Boolean>) {
+func move_the_count(register: Integer, known: List<Boolean>, values: List<Long>, step: Integer) {
     assert mode_of(register) == 1
     var root = root_of(register)
-    var field = field_of(root, 8)
-    if field >= 0 {
+    assert plain[root] != true
+    var field = count_field_of(root)
+    assert field >= 0
+    assert known[field] == true
+    var value = values[field]
+    crash value
+    var moved = value + step
+    if moved < 0 {
         known[field] = false
+        return
     }
+    values[field] = moved
 }
 
 func set_every_field(root: Integer, known: List<Boolean>, values: List<Long>) {
@@ -1171,6 +1209,15 @@ func place_a_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
     assert mode == 1 and plain[root] != true
     var field = count_field_of(root)
     var count = shared_register(field)
+    if placing_known[field] == true {
+        var known_count = placing_values[field]
+        crash known_count
+        var raised: Long = known_count + 1
+        var counted = LowIntermediaryRepresentation.Instructions.Constant(count, raised)
+        placed.append(counted)
+        placing_values[field] = raised
+        return
+    }
     var one = new_register()
     var made_one = LowIntermediaryRepresentation.Instructions.Constant(one, 1)
     placed.append(made_one)
@@ -1197,13 +1244,20 @@ func place_a_call(call: LowIntermediaryRepresentation.Instructions.Call): Boolea
     if mode != 1 or plain[root] == true {
         return false
     }
-    count_down(root)
-    return true
+    return count_down(root)
 }
 
-func count_down(root: Integer) {
+func count_down(root: Integer): Boolean {
     var field = count_field_of(root)
     var count = shared_register(field)
+    if placing_known[field] == true {
+        var known_count = placing_values[field]
+        crash known_count
+        if known_count >= 1 {
+            count_down_known(root, field, count, known_count)
+            return false
+        }
+    }
     var one = new_register()
     var made_one = LowIntermediaryRepresentation.Instructions.Constant(one, 1)
     placed.append(made_one)
@@ -1248,4 +1302,27 @@ func count_down(root: Integer) {
     placed = List<LowIntermediaryRepresentation.Instructions.Instruction>()
     placing_block = continuing_index
     placing_known[field] = false
+    return true
+}
+
+func count_down_known(root: Integer, field: Integer, count: Integer, known_count: Long) {
+    var lowered: Long = known_count - 1
+    var counted = LowIntermediaryRepresentation.Instructions.Constant(count, lowered)
+    placed.append(counted)
+    placing_values[field] = lowered
+    assert lowered == 0
+    var children = free_children[root]
+    crash children
+    var index = 0
+    while index < children.count() {
+        var child = children[index]
+        var child_field = field_of(root, child)
+        crash child_field >= 0
+        var held = shared_register(child_field)
+        var arguments = List<Integer>()
+        arguments.append(held)
+        var released = LowIntermediaryRepresentation.Instructions.Call(-1, "_release", arguments)
+        placed.append(released)
+        index = index + 1
+    }
 }
