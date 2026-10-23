@@ -727,23 +727,33 @@ func lower_assign_through_shape(assign: HighIntermediaryRepresentation.Statement
     crash assign.value
     var value_type = assign.value.value_type
     kept(value, value_type)
-    var shared = shared_filler(assign.shape.key, assign.member)
+    store_through_shape(assign.shape, assign.member, object.value, value, value_type)
+}
+
+func store_through_shape(
+    shape: Model.ShapeModel,
+    member: String,
+    object: Integer,
+    value: Lowered,
+    value_type: Model.Type,
+) {
+    var shared = shared_filler(shape.key, member)
     if shared {
-        store_in_a_shared_block(shared, assign.member, object.value, value, value_type)
+        store_in_a_shared_block(shared, member, object, value, value_type)
         return
     }
     var class_id = new_register()
-    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, object.value, 0, 'bits_64')
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, object, 0, 'bits_64')
     emit(loaded)
     var after = new_block()
-    var fillers = layout.program.fillers_of(assign.shape.key)
+    var fillers = layout.program.fillers_of(shape.key)
     var index = 0
     while index < fillers.count() {
         var filler = fillers[index]
-        store_in_a_filler(filler, assign.member, object.value, class_id, value, value_type, after)
+        store_in_a_filler(filler, member, object, class_id, value, value_type, after)
         index = index + 1
     }
-    var label = text_label("spite: no class fills '{assign.shape.name}' here, at {path}:{line}\n")
+    var label = text_label("spite: no class fills '{shape.name}' here, at {path}:{line}\n")
     var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
     emit(stopped)
     switch_to(after)
@@ -3132,10 +3142,11 @@ func lower_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall)
     var arguments = List<Integer>()
     var decimal_sizes = List<Integer>()
     var callbacks = Callbacks(this)
+    var structs = ForeignStructs(this)
     var index = 0
     while index < call.arguments.count() {
         var argument = call.arguments[index]
-        var passed = passed_into_c(argument, callbacks)
+        var passed = passed_into_c(argument, callbacks, structs)
         arguments.append(passed)
         var size = decimal_size_of(argument.value_type)
         decimal_sizes.append(size)
@@ -3157,9 +3168,14 @@ func lower_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall)
         var cleared = LowIntermediaryRepresentation.Instructions.Store(slot, 0, unused_site, 'bits_64')
         emit(cleared)
     }
+    structs.written_back()
     callbacks.restore()
     release_the_pending()
     pending_releases = outer
+    if call.value_type.kind == 'object' and call.value_type.name == "String" {
+        var joins = TextJoins(this)
+        return joins.copied_c_text(target, call.function_name)
+    }
     return single(target)
 }
 
@@ -3192,9 +3208,19 @@ func decimal_size_of(of_type: Model.Type): Integer {
     return scalar.size
 }
 
-func passed_into_c(argument: HighIntermediaryRepresentation.Values.Value, callbacks: Callbacks): Integer {
+func passed_into_c(
+    argument: HighIntermediaryRepresentation.Values.Value,
+    callbacks: Callbacks,
+    structs: ForeignStructs,
+): Integer {
     if argument.value_type.kind == 'function' {
         return callbacks.handed_for_the_call(argument)
+    }
+    if structs.is_a_struct(argument) {
+        return structs.struct_of(argument)
+    }
+    if structs.is_a_number_list(argument) {
+        return structs.storage_of_a_list(argument)
     }
     return foreign_argument(argument)
 }

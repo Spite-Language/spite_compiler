@@ -1,0 +1,505 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+
+func KnownWalks(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func note_a_function_list(
+    internal_name: String,
+    written_name: String,
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+) {
+    var class_key = ""
+    if not values.is_assigned_again(written_name) {
+        class_key = listed_class_of(written)
+    }
+    if class_key.is_empty() {
+        context.known_function_lists.remove(internal_name)
+    } else {
+        context.known_function_lists[internal_name] = class_key
+    }
+}
+
+func listed_class_of(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if written == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return filtered_class_of(written)
+    }
+    return functions_class_of(written)
+}
+
+func filtered_class_of(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): String {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if callee.name == "filter" and call.arguments.count() == 1 {
+            return functions_class_of(callee.target)
+        }
+    }
+    return ""
+}
+
+func functions_class_of(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    if written == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if written.name == "functions" {
+            return class_named_by(written.target)
+        }
+    }
+    return ""
+}
+
+func class_named_by(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    var path = values.tested_class_path_of(written)
+    if path.is_empty() {
+        return ""
+    }
+    var first = path[0]
+    if first.starts_with("$") {
+        return ""
+    }
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+    if described.kind != 'object' {
+        return ""
+    }
+    return described.name
+}
+
+func unrolled(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert callee.name == "each" and call.arguments.count() == 1
+    var argument = call.arguments[0]
+    if argument == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return unrolled_by(callee, argument.name)
+    }
+    return null
+}
+
+func unrolled_by(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    walker_name: String,
+): HighIntermediaryRepresentation.Values.Value? {
+    var walker = context.current_class.function_named(walker_name)
+    assert walker
+    assert walker.parameters.count() == 1 and walker.template_index < 0
+    var parameter = walker.parameters[0]
+    var walked_type = parameter.parameter_type
+    assert walked_type.kind == 'object' and not walked_type.is_nullable
+    var walks_functions = walked_type.name == "Spite.Function"
+    var walks_arguments = walked_type.name == "Spite.Argument"
+    assert walks_functions or walks_arguments
+    assert needs_a_known(walker, 0)
+    var descriptions = List<String>()
+    var names = List<String>()
+    if walks_functions {
+        var class_key = known_list_class(callee.target)
+        assert class_key
+        listed_functions(class_key, descriptions, names)
+    } else {
+        var described = known_function_of(callee.target)
+        assert described
+        listed_arguments(described, descriptions, names)
+    }
+    walk_each(callee, walker, descriptions, names)
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func known_list_class(listed: AbstractSyntaxTree.Shapes.Expressions.Expression?): String? {
+    if listed == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return known_local_list(listed.name)
+    }
+    var class_key = functions_class_of(listed)
+    assert not class_key.is_empty()
+    return class_key
+}
+
+func known_local_list(name: String): String? {
+    var internal_name = context.scope.internal_name_of(name)
+    assert internal_name
+    return context.known_function_lists[internal_name]
+}
+
+func known_function_of(listed: AbstractSyntaxTree.Shapes.Expressions.Expression?): String? {
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if listed.name == "arguments" {
+            return known_parameter(listed.target)
+        }
+    }
+    return null
+}
+
+func known_parameter(target: AbstractSyntaxTree.Shapes.Expressions.Expression?): String? {
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var described = context.current_function.known_reflections[target.name]
+        assert described
+        var parts = described.split("|")
+        assert parts.count() == 2
+        return described
+    }
+    return null
+}
+
+func listed_functions(class_key: String, descriptions: List<String>, names: List<String>) {
+    var model = context.program.class_named(class_key)
+    crash model
+    var reflection = Reflection(context, values)
+    var index = 0
+    while index < model.declared_functions.count() {
+        var declared = model.declared_functions[index]
+        if reflection.is_listed(declared) {
+            descriptions.append("{class_key}|{declared.name}")
+            names.append(declared.name)
+        }
+        index = index + 1
+    }
+}
+
+func listed_arguments(described: String, descriptions: List<String>, names: List<String>) {
+    var function = described_function(described)
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        descriptions.append("{described}|{index}")
+        names.append(parameter.name)
+        index = index + 1
+    }
+}
+
+func described_function(described: String): Model.FunctionModel {
+    var parts = described.split("|")
+    var class_key = parts[0]
+    var function_name = parts[1]
+    crash class_key
+    crash function_name
+    var model = context.program.class_named(class_key)
+    crash model
+    var function = model.function_named(function_name)
+    crash function
+    return function
+}
+
+func needs_a_known(walker: Model.FunctionModel, depth: Integer): Boolean {
+    if depth >= 4 or not walker.declaration {
+        return false
+    }
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = walker.declaration
+    var parameter = walker.parameters[0]
+    crash parameter
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_function(declaration)
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        if needs_it_here(found.expression, parameter.name, depth) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func needs_it_here(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    name: String,
+    depth: Integer,
+): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return a_call_needs_it(expression, name, depth)
+    }
+    return false
+}
+
+func a_call_needs_it(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+    depth: Integer,
+): Boolean {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return passes_it_for_an_answer(callee.name, call, name)
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walks_its_arguments(callee, call, name, depth)
+    }
+    return false
+}
+
+func passes_it_for_an_answer(
+    called_name: String,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+): Boolean {
+    var function = context.current_class.function_named(called_name)
+    if not function {
+        return false
+    }
+    var place = function.reflected_answer_index
+    if place < 0 or place >= call.arguments.count() {
+        return false
+    }
+    var passed = call.arguments[place]
+    if passed == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return passed.name == name
+    }
+    return false
+}
+
+func walks_its_arguments(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+    depth: Integer,
+): Boolean {
+    var is_a_walk = callee.name == "each" and call.arguments.count() == 1
+    var listed = callee.target
+    var walked_name = ""
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        walked_name = arguments_owner_of(listed)
+    }
+    var walks_the_name = is_a_walk and walked_name == name
+    if not walks_the_name {
+        return false
+    }
+    var argument = call.arguments[0]
+    if argument == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return walker_needs_it(argument.name, depth)
+    }
+    return false
+}
+
+func arguments_owner_of(listed: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): String {
+    var target = listed.target
+    if listed.name != "arguments" {
+        return ""
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return target.name
+    }
+    return ""
+}
+
+func walker_needs_it(walker_name: String, depth: Integer): Boolean {
+    var walker = context.current_class.function_named(walker_name)
+    if not walker {
+        return false
+    }
+    if walker.parameters.count() != 1 or walker.template_index >= 0 {
+        return false
+    }
+    return needs_a_known(walker, depth + 1)
+}
+
+func walk_each(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    walker: Model.FunctionModel,
+    descriptions: List<String>,
+    names: List<String>,
+) {
+    values.temporary_count = values.temporary_count + 1
+    var walk_count = values.temporary_count
+    var listed_value = values.value_of(callee.target, null)
+    var listed_type = listed_value.value_type
+    var listed_name = context.scope.declare("walked_{walk_count}", listed_type)
+    add_a_declaration(listed_name, listed_type, listed_value)
+    var integer = context.scalar_type("Integer")
+    var start = HighIntermediaryRepresentation.Values.WholeNumber(integer, 0)
+    var position_name = context.scope.declare("walked_position_{walk_count}", integer)
+    add_a_declaration(position_name, integer, start)
+    var index = 0
+    while index < descriptions.count() {
+        var described = descriptions[index]
+        var name = names[index]
+        crash name
+        walk_one(walker, listed_name, listed_type, position_name, described, name, index, walk_count)
+        index = index + 1
+    }
+    var listed = HighIntermediaryRepresentation.Values.LocalRead(listed_type, listed_name)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var counted = values.method_call(listed, "count", no_arguments)
+    var position = HighIntermediaryRepresentation.Values.LocalRead(integer, position_name)
+    var boolean = context.boolean()
+    var unmatched = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'not_equal', position, counted)
+    var printer = Printers.Spite.ExpressionPrinter(callee)
+    var shown = printer.text()
+    var path = context.path()
+    var function = context.current_function
+    var message = "spite: '{shown}' holds an item the compiler did not list for it, at {path}:{context.line} in {function.owner}.{function.name}"
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+    stopped.line = context.line
+    var failed = HighIntermediaryRepresentation.Statements.Block()
+    failed.statements.append(stopped)
+    var checked = HighIntermediaryRepresentation.Statements.If(unmatched, failed, null)
+    checked.line = context.line
+    context.pending.append(checked)
+}
+
+func walk_one(
+    walker: Model.FunctionModel,
+    listed_name: String,
+    listed_type: Model.Type,
+    position_name: String,
+    described: String,
+    name: String,
+    place: Integer,
+    walk_count: Integer,
+) {
+    var integer = context.scalar_type("Integer")
+    var listed = HighIntermediaryRepresentation.Values.LocalRead(listed_type, listed_name)
+    var position = HighIntermediaryRepresentation.Values.LocalRead(integer, position_name)
+    var at_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    at_arguments.append(position)
+    var read = values.method_call(listed, "get_at", at_arguments)
+    var item_type = read.value_type
+    var item_name = context.scope.declare("walked_item_{walk_count}_{place}", item_type)
+    add_a_declaration(item_name, item_type, read)
+    var item = HighIntermediaryRepresentation.Values.LocalRead(item_type, item_name)
+    var present_type = item_type.present()
+    var proven = HighIntermediaryRepresentation.Values.Conversion(present_type, 'proven', item)
+    var item_model = context.class_of(present_type)
+    var name_attribute = item_model.attribute_named("_name")
+    crash name_attribute
+    var named = HighIntermediaryRepresentation.Values.AttributeRead(proven, name_attribute)
+    var expected = values.described_text(name)
+    var matches = values.present_equal(named, expected)
+    var copy = known_copy(walker, described)
+    values.need(copy)
+    var passed = List<HighIntermediaryRepresentation.Values.Value>()
+    passed.append(proven)
+    var own = values.this_value()
+    var walked = HighIntermediaryRepresentation.Values.Call(copy, own, passed)
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(walked)
+    evaluated.line = context.line
+    var one = HighIntermediaryRepresentation.Values.WholeNumber(integer, 1)
+    var stepped = HighIntermediaryRepresentation.Values.MachineOperation(integer, 'add', position, one)
+    var step = HighIntermediaryRepresentation.Statements.Assign(position_name, stepped)
+    step.line = context.line
+    var matched = HighIntermediaryRepresentation.Statements.Block()
+    matched.statements.append(evaluated)
+    matched.statements.append(step)
+    var named_check = HighIntermediaryRepresentation.Statements.If(matches, matched, null)
+    named_check.line = context.line
+    var present = HighIntermediaryRepresentation.Statements.Block()
+    present.statements.append(named_check)
+    var there = HighIntermediaryRepresentation.Values.PresenceTest(item)
+    var presence_check = HighIntermediaryRepresentation.Statements.If(there, present, null)
+    presence_check.line = context.line
+    context.pending.append(presence_check)
+}
+
+func add_a_declaration(name: String, declared_type: Model.Type, value: HighIntermediaryRepresentation.Values.Value) {
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, declared_type, value)
+    declared.line = context.line
+    context.pending.append(declared)
+}
+
+func known_copy(walker: Model.FunctionModel, described: String): Model.FunctionModel {
+    var shown = plain_text_of(described)
+    var called_name = "{walker.name}_over_{shown}"
+    var known = context.current_class.function_named(called_name)
+    if known {
+        return known
+    }
+    var parameter = walker.parameters[0]
+    crash parameter
+    var made = Model.FunctionModel(called_name, walker.owner)
+    made.declaration = walker.declaration
+    made.parameters = walker.parameters
+    made.answer = walker.answer
+    made.is_a_walk_copy = true
+    var reflections = Dictionary<String, String>()
+    reflections[parameter.name] = described
+    made.known_reflections = reflections
+    context.current_class.declared_functions.append(made)
+    return made
+}
+
+func plain_text_of(described: String): String {
+    var without_bars = described.replace("|", "_")
+    var without_dots = without_bars.replace(".", "_")
+    var without_openings = without_dots.replace("<", "_")
+    var without_closings = without_openings.replace(">", "_")
+    var without_commas = without_closings.replace(",", "_")
+    return without_commas.replace(" ", "")
+}
+
+func call_with_a_known(
+    function: Model.FunctionModel,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var place = function.reflected_answer_index
+    assert place >= 0 and function.template_index < 0 and place < call.arguments.count()
+    var passed = call.arguments[place]
+    var described: String? = null
+    if passed == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        described = known_argument_of(passed.name)
+    }
+    assert described
+    var parts = described.split("|")
+    var position_text = parts[2]
+    crash position_text
+    var position = position_text.to_integer()
+    crash position
+    var function_length = described.length() - position_text.length() - 1
+    var function_key = described.slice(0, function_length)
+    var described_owner = described_function(function_key)
+    var parameter = described_owner.parameters[position]
+    crash parameter
+    var shown = plain_text_of(described)
+    var called_name = "{function.name}_for_{shown}"
+    var made = context.current_class.function_named(called_name)
+    if not made {
+        made = specialised_for(function, place, called_name, parameter, position)
+    }
+    crash made
+    var written = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if index != place {
+            written.append(argument)
+        }
+        index = index + 1
+    }
+    var own = values.this_value()
+    return values.called(made, own, written)
+}
+
+func known_argument_of(name: String): String? {
+    var described = context.current_function.known_reflections[name]
+    assert described
+    var parts = described.split("|")
+    assert parts.count() == 3
+    return described
+}
+
+func specialised_for(
+    function: Model.FunctionModel,
+    place: Integer,
+    called_name: String,
+    parameter: Model.ParameterModel,
+    position: Integer,
+): Model.FunctionModel {
+    var template = Model.FunctionModel(function.name, function.owner)
+    template.declaration = function.declaration
+    template.template_index = place
+    var made = context.resolver.specialized(
+        template,
+        called_name,
+        parameter.name,
+        parameter.parameter_type,
+        false,
+        context.current_class,
+    )
+    made.bound_member_index = position
+    made.is_a_walk_copy = true
+    context.current_class.declared_functions.append(made)
+    return made
+}

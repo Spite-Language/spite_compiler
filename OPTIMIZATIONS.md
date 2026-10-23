@@ -819,6 +819,40 @@ function of the same class taking one parameter. A list of classes or values rea
 the order of the calls is the order of the folder's files and of the enum's values, the same as the walk at run
 time would take.
 
+### A walk over a known function or argument list
+
+`each` over `C.functions` (written directly, or through a local made from `C.functions` or
+`C.functions.filter(test)` that nothing assigns again), or over the `arguments` of a function that is itself known
+this way, is unrolled when its walker needs the item known: it passes the item to a function whose answer is typed
+by it (`made(argument): argument.class`), or walks the item's arguments with such a walker. The compiler writes one
+copy of the walker for each function of `C`, in the order `C.functions` lists them, or for each argument, and calls
+it with the item the list holds at run time when that item has the name the copy was made for; the item's name is
+compared once per item, and a list that holds an item the compiler did not list stops the program naming the walk.
+Inside a copy, a call that hands the item to a function typed by it is compiled once for that argument, as a walk
+over attributes is.
+
+```spite
+func ReflectionWalks() {
+    var walked = Runner.functions.filter(walks_each)
+    walked.each(run)
+}
+
+func run(function: Spite.Function) {
+    function.arguments.each(describe_taken)
+}
+
+func describe_taken(argument: Spite.Argument) {
+    var fresh = made(argument)
+}
+
+func made(argument: Spite.Argument): argument.class {
+    return argument.class()
+}
+```
+
+What a user can observe: the filter's test still runs at run time, once per function, and the reflection objects
+are made as they would be; a walker that needs nothing known walks the list as an ordinary loop.
+
 ## Calls on constants are run while compiling
 
 A call whose arguments are all known while compiling, and whose function touches nothing but its own memory, is run
@@ -1162,6 +1196,27 @@ variable, a write, `count()`, passing it, a second `var` of the same name in the
 attribute, and the interactive builds (`--repl`, `--repl-port`, `--development`, `--hot-reload`), which keep the
 dictionary a reader can inspect. What a user can observe: no dictionary, no allocation and no hashing for the
 folded ones, and nothing else.
+
+## A serializer's keys are folded into its code
+
+A `JsonWriter` or `JsonReader` given a `keys` map written out where it is set
+(`writer.keys = {MeshRecord.attributes['minimum_level_of_detail']: "min_lod"}`) holds no lookup at run time: each
+attribute's copy of `write_attribute` and `read_attribute` reads `keys[attribute]` as the text the map gives it, or
+as `null` for an attribute the map leaves out, and the copy of an attribute without a key never names the map. The
+map itself is still made, and the serializer checks only that it is not empty, so a serializer of the same class
+made without a map writes and reads the attributes' own names. Every map set on the same serializer class must be the
+same, set before the serializer is compiled, and never changed through an index; otherwise the program does not
+compile. What a user can observe: nothing but the keys.
+
+## A type crosses into C as its struct, in the frame
+
+A `type` passed to a foreign function is laid out as the C struct of its attributes, in a room of the calling
+function's frame (on the heap in a function that waits, freed after the call), with each attribute at its C
+alignment; the call passes the room's address, and C's writes are copied back into the object's attributes when it
+returns. A list of numbers passes the address of its own storage, so C reads and writes the elements in place. A
+text answer (`_as_text`) is copied into a new `String`; a null pointer stops the program naming the function. What a
+user can observe: none of it allocates in an ordinary function, and the object C changed holds C's values after the
+call.
 
 ## Thread safety for singletons, the cheapest safe form
 
