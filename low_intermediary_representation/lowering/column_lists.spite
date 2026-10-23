@@ -1,0 +1,453 @@
+# ../../OPTIMIZATIONS.md#a-lists-objects-sit-in-one-array-per-attribute
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low_program = LowIntermediaryRepresentation.LoweredProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
+
+func ColumnLists(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+func is_columnar(list_key: String): Boolean {
+    return lowering.layout.columnar.contains(list_key)
+}
+
+func listed_by(call: HighIntermediaryRepresentation.Values.Call): String {
+    if not call.receiver {
+        return ""
+    }
+    var list_key = call.receiver.value_type.name
+    if call.function.owner == list_key and is_columnar(list_key) {
+        return list_key
+    }
+    return ""
+}
+
+func declares_an_item(declare: HighIntermediaryRepresentation.Statements.Declare): Boolean {
+    var given = declare.value
+    if given == HighIntermediaryRepresentation.Values.Conversion and given.kind == 'proven' {
+        return declares_a_read(declare.name, given.converted, given.shown)
+    }
+    if given == HighIntermediaryRepresentation.Values.Call {
+        return declares_a_held(declare.name, given)
+    }
+    return false
+}
+
+func declares_a_read(name: String, read: HighIntermediaryRepresentation.Values.Value?, shown: String): Boolean {
+    if read == HighIntermediaryRepresentation.Values.Call and read.function.name == "get_at" {
+        var list_key = listed_by(read)
+        if list_key.is_empty() {
+            return false
+        }
+        note_an_item(name, read, true, shown)
+        return true
+    }
+    return false
+}
+
+func declares_a_held(name: String, call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if call.function.name != "_read_value" or call.function.has_a_body() {
+        return false
+    }
+    var list_key = listed_by(call)
+    if list_key.is_empty() {
+        return false
+    }
+    note_an_item(name, call, false, "")
+    return true
+}
+
+func note_an_item(name: String, call: HighIntermediaryRepresentation.Values.Call, checks: Boolean, shown: String) {
+    var list_key = listed_by(call)
+    var place = place_of(call, checks, shown)
+    var storage = place[0]
+    var capacity = place[1]
+    var index = place[2]
+    crash storage
+    crash capacity
+    crash index
+    lowering.column_items[name] = list_key
+    lowering.column_storages[name] = storage
+    lowering.column_capacities[name] = capacity
+    lowering.column_indices[name] = index
+    var element_key = element_of(list_key)
+    var ordered = ordered_attributes(element_key)
+    var attribute_index = 0
+    while attribute_index < ordered.count() {
+        var attribute = ordered[attribute_index]
+        var address = column_address(element_key, attribute, place)
+        lowering.column_addresses["{name}.{attribute.name}"] = address
+        attribute_index = attribute_index + 1
+    }
+}
+
+func element_of(list_key: String): String {
+    var owner = lowering.layout.program.class_named(list_key)
+    crash owner
+    var element_type = owner.bound_types["$element_type"]
+    crash element_type
+    return element_type.name
+}
+
+func address_of(object: HighIntermediaryRepresentation.Values.Value?, attribute: Model.AttributeModel): Integer {
+    if object == HighIntermediaryRepresentation.Values.LocalRead {
+        var known = lowering.column_addresses["{object.name}.{attribute.name}"]
+        if known {
+            return known
+        }
+    }
+    var place = place_of_the_object(object)
+    if place.is_empty() {
+        return -1
+    }
+    return column_address(attribute.owner, attribute, place)
+}
+
+func place_of(call: HighIntermediaryRepresentation.Values.Call, checks: Boolean, shown: String): List<Integer> {
+    crash call.receiver
+    var list = lowering.lower_value(call.receiver)
+    lowering.release_later(list, call.receiver.value_type)
+    var position = call.arguments[0]
+    crash position
+    var at = lowering.lower_value(position)
+    var owner = lowering.layout.program.class_named(call.receiver.value_type.name)
+    crash owner
+    if checks {
+        var length = load_a_field(owner, list.value, "_length", 'bits_32')
+        var inside = lowering.new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(inside, 'less', at.value, length)
+        compared.is_signed = false
+        lowering.emit(compared)
+        var tested = Lowered(-1, inside)
+        lowering.stop_if_missing(tested, shown)
+    }
+    var buffer = load_a_field(owner, list.value, "_buffer", 'bits_64')
+    var storage = lowering.storage_of(buffer)
+    var capacity = load_a_field(owner, list.value, "_capacity", 'bits_32')
+    var place = List<Integer>()
+    place.append(storage)
+    place.append(capacity)
+    place.append(at.value)
+    return place
+}
+
+func load_a_field(
+    owner: Model.ClassModel,
+    list: Integer,
+    name: String,
+    width: LowIntermediaryRepresentation.Width,
+): Integer {
+    var attribute = owner.attribute_named(name)
+    crash attribute
+    var offset = lowering.layout.offset_of(attribute)
+    var loaded_value = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(loaded_value, list, offset, width)
+    loaded.region = "{owner.key}.{name}"
+    lowering.emit(loaded)
+    return loaded_value
+}
+
+func place_of_the_object(object: HighIntermediaryRepresentation.Values.Value?): List<Integer> {
+    var nowhere = List<Integer>()
+    if object == HighIntermediaryRepresentation.Values.LocalRead {
+        return place_of_a_name(object.name)
+    }
+    if object == HighIntermediaryRepresentation.Values.Conversion and object.kind == 'proven' {
+        return place_of_a_read(object.converted, object.shown)
+    }
+    return nowhere
+}
+
+func place_of_a_name(name: String): List<Integer> {
+    var nowhere = List<Integer>()
+    if not lowering.column_items.contains(name) {
+        return nowhere
+    }
+    var storage = lowering.column_storages[name]
+    var capacity = lowering.column_capacities[name]
+    var index = lowering.column_indices[name]
+    crash storage
+    crash capacity
+    crash index
+    var place = List<Integer>()
+    place.append(storage)
+    place.append(capacity)
+    place.append(index)
+    return place
+}
+
+func place_of_a_read(read: HighIntermediaryRepresentation.Values.Value?, shown: String): List<Integer> {
+    var nowhere = List<Integer>()
+    if read == HighIntermediaryRepresentation.Values.Call and read.function.name == "get_at" {
+        if listed_by(read).is_empty() {
+            return nowhere
+        }
+        return place_of(read, true, shown)
+    }
+    return nowhere
+}
+
+func column_address(element_key: String, attribute: Model.AttributeModel, place: List<Integer>): Integer {
+    var storage = place[0]
+    var capacity = place[1]
+    var index = place[2]
+    crash storage
+    crash capacity
+    crash index
+    var before = bytes_before(element_key, attribute)
+    var size = size_of(attribute)
+    var before_register = lowering.constant(before)
+    var skipped = lowering.new_register()
+    var skipping = LowIntermediaryRepresentation.Instructions.Arithmetic(skipped, 'multiply', capacity, before_register)
+    skipping.is_checked = false
+    lowering.emit(skipping)
+    var column = lowering.address_plus(storage, skipped)
+    var size_register = lowering.constant(size)
+    var scaled = lowering.new_register()
+    var scaling = LowIntermediaryRepresentation.Instructions.Arithmetic(scaled, 'multiply', index, size_register)
+    scaling.is_checked = false
+    lowering.emit(scaling)
+    return lowering.address_plus(column, scaled)
+}
+
+func size_of(attribute: Model.AttributeModel): Integer {
+    var scalars = Model.Scalars()
+    var scalar = scalars.of(attribute.attribute_type.name)
+    if scalar {
+        return scalar.size
+    }
+    return 4
+}
+
+func ordered_attributes(element_key: String): List<Model.AttributeModel> {
+    var element = lowering.layout.program.class_named(element_key)
+    crash element
+    var ordered = List<Model.AttributeModel>()
+    var sizes = [8, 4, 2, 1]
+    var size_index = 0
+    while size_index < sizes.count() {
+        var size = sizes[size_index]
+        add_the_attributes_of_size(element, size, ordered)
+        size_index = size_index + 1
+    }
+    return ordered
+}
+
+func add_the_attributes_of_size(element: Model.ClassModel, size: Integer, ordered: List<Model.AttributeModel>) {
+    var index = 0
+    while index < element.declared_attributes.count() {
+        var attribute = element.declared_attributes[index]
+        if size_of(attribute) == size {
+            ordered.append(attribute)
+        }
+        index = index + 1
+    }
+}
+
+func bytes_before(element_key: String, attribute: Model.AttributeModel): Integer {
+    var ordered = ordered_attributes(element_key)
+    var total = 0
+    var index = 0
+    while index < ordered.count() {
+        var listed = ordered[index]
+        if listed.name == attribute.name {
+            return total
+        }
+        total = total + size_of(listed)
+        index = index + 1
+    }
+    return total
+}
+
+func item_bytes(element_key: String): Integer {
+    var ordered = ordered_attributes(element_key)
+    return ordered.sum(size_of)
+}
+
+func read_of(read: HighIntermediaryRepresentation.Values.AttributeRead): Lowered? {
+    var address = address_of(read.object, read.attribute)
+    assert address >= 0
+    var element_key = read.attribute.owner
+    var target = lowering.new_register()
+    var width = lowering.width_of(read.attribute.attribute_type)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(target, address, 0, width)
+    loaded.is_signed = lowering.is_signed(read.attribute.attribute_type)
+    loaded.region = "{element_key}.{read.attribute.name}"
+    loaded.cannot_fault = true
+    lowering.emit(loaded)
+    return lowering.single(target)
+}
+
+func writes(assign: HighIntermediaryRepresentation.Statements.Assign.Attribute): Boolean {
+    var address = address_of(assign.object, assign.attribute)
+    if address < 0 {
+        return false
+    }
+    var value = lowering.lower_value(assign.value)
+    var element_key = assign.attribute.owner
+    var width = lowering.width_of(assign.attribute.attribute_type)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, value.value, width)
+    stored.region = "{element_key}.{assign.attribute.name}"
+    lowering.emit(stored)
+    return true
+}
+
+func write_an_item(list: Integer, list_key: String, at: Integer, object: Lowered) {
+    var owner = lowering.layout.program.class_named(list_key)
+    crash owner
+    var element_type = owner.bound_types["$element_type"]
+    crash element_type
+    var buffer = load_a_field(owner, list, "_buffer", 'bits_64')
+    var storage = lowering.storage_of(buffer)
+    var capacity = load_a_field(owner, list, "_capacity", 'bits_32')
+    var place = List<Integer>()
+    place.append(storage)
+    place.append(capacity)
+    place.append(at)
+    var ordered = ordered_attributes(element_type.name)
+    var index = 0
+    while index < ordered.count() {
+        var attribute = ordered[index]
+        copy_an_attribute(element_type.name, attribute, object.value, place)
+        index = index + 1
+    }
+    if object.owned {
+        lowering.release(object.value)
+    }
+}
+
+func copy_an_attribute(element_key: String, attribute: Model.AttributeModel, object: Integer, place: List<Integer>) {
+    var loaded = lowering.load_attribute_in(object, attribute, "{element_key}.{attribute.name}")
+    var address = column_address(element_key, attribute, place)
+    var width = lowering.width_of(attribute.attribute_type)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, loaded.value, width)
+    stored.region = "{element_key}.{attribute.name}"
+    lowering.emit(stored)
+}
+
+func write_the_reserve(list_key: String) {
+    var owner = lowering.layout.program.class_named(list_key)
+    crash owner
+    var element_type = owner.bound_types["$element_type"]
+    crash element_type
+    var list = lowering.locals["this"]
+    var wanted = lowering.locals["wanted"]
+    crash list
+    crash wanted
+    var capacity = load_a_field(owner, list, "_capacity", 'bits_32')
+    var fits = lowering.new_register()
+    var comparing = LowIntermediaryRepresentation.Instructions.Compare(fits, 'less_or_equal', wanted, capacity)
+    lowering.emit(comparing)
+    var done = lowering.new_block()
+    var growing = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(fits, done, growing)
+    lowering.emit(test)
+    lowering.switch_to(growing)
+    var grown = grown_capacity(capacity, wanted)
+    var bytes = item_bytes(element_type.name)
+    var bytes_register = lowering.constant(bytes)
+    var room = lowering.new_register()
+    var sizing = LowIntermediaryRepresentation.Instructions.Arithmetic(room, 'multiply', grown, bytes_register)
+    note_a_check(sizing, "grown * size")
+    lowering.emit(sizing)
+    var buffer = load_a_field(owner, list, "_buffer", 'bits_64')
+    var passed = List<Integer>()
+    passed.append(buffer)
+    passed.append(room)
+    var resizing = LowIntermediaryRepresentation.Instructions.Call(-1, "Buffer.reserve", passed)
+    lowering.emit(resizing)
+    move_the_columns(owner, element_type.name, list, capacity, grown)
+    var capacity_attribute = owner.attribute_named("_capacity")
+    crash capacity_attribute
+    var offset = lowering.layout.offset_of(capacity_attribute)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(list, offset, grown, 'bits_32')
+    stored.region = "{owner.key}._capacity"
+    lowering.emit(stored)
+    lowering.jump_to(done)
+    lowering.switch_to(done)
+    var nothing = LowIntermediaryRepresentation.Instructions.Return(-1)
+    lowering.emit(nothing)
+    lowering.terminated = true
+}
+
+func note_a_check(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, shown: String) {
+    arithmetic.width = 'bits_32'
+    arithmetic.is_signed = true
+    arithmetic.is_checked = true
+    arithmetic.line = lowering.line
+    arithmetic.shown = shown
+    arithmetic.type_name = "Integer"
+    arithmetic.path = lowering.path
+}
+
+func grown_capacity(capacity: Integer, wanted: Integer): Integer {
+    var grown = lowering.new_register()
+    var two = lowering.constant(2)
+    var doubling = LowIntermediaryRepresentation.Instructions.Arithmetic(grown, 'multiply', capacity, two)
+    note_a_check(doubling, "_capacity * 2")
+    lowering.emit(doubling)
+    raise_to(grown, wanted)
+    var least = lowering.constant(4)
+    raise_to(grown, least)
+    return grown
+}
+
+func raise_to(grown: Integer, least: Integer) {
+    var short = lowering.new_register()
+    var comparing = LowIntermediaryRepresentation.Instructions.Compare(short, 'less', grown, least)
+    lowering.emit(comparing)
+    var raising = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(short, raising, after)
+    lowering.emit(test)
+    lowering.switch_to(raising)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(grown, least)
+    lowering.emit(copied)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+}
+
+func move_the_columns(owner: Model.ClassModel, element_key: String, list: Integer, old: Integer, grown: Integer) {
+    var buffer = load_a_field(owner, list, "_buffer", 'bits_64')
+    var storage = lowering.storage_of(buffer)
+    var length = load_a_field(owner, list, "_length", 'bits_32')
+    var ordered = ordered_attributes(element_key)
+    var index = ordered.count() - 1
+    while index > 0 {
+        var attribute = ordered[index]
+        crash attribute
+        move_a_column(element_key, attribute, storage, length, old, grown)
+        index = index - 1
+    }
+}
+
+func move_a_column(
+    element_key: String,
+    attribute: Model.AttributeModel,
+    storage: Integer,
+    length: Integer,
+    old: Integer,
+    grown: Integer,
+) {
+    var zero = lowering.constant(0)
+    var from_place = List<Integer>()
+    from_place.append(storage)
+    from_place.append(old)
+    from_place.append(zero)
+    var source = column_address(element_key, attribute, from_place)
+    var to_place = List<Integer>()
+    to_place.append(storage)
+    to_place.append(grown)
+    to_place.append(zero)
+    var destination = column_address(element_key, attribute, to_place)
+    var width = size_of(attribute)
+    var size = lowering.constant(width)
+    var bytes = lowering.new_register()
+    var counting = LowIntermediaryRepresentation.Instructions.Arithmetic(bytes, 'multiply', length, size)
+    counting.is_checked = false
+    lowering.emit(counting)
+    var copied = LowIntermediaryRepresentation.Instructions.CopyBytes(destination, source, bytes)
+    lowering.emit(copied)
+}

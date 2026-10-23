@@ -953,6 +953,39 @@ before, 433 ms after).
 **Not built:** one array per attribute (the layout the attributes a walk reads would want), an element holding
 text or objects, an object appended that is read again after, and the list's other functions.
 
+## A list's objects sit in one array per attribute
+
+A list whose objects [sit inside its storage](#a-lists-objects-sit-inside-its-storage) goes one step further when
+nothing ever needs one of its items whole: its storage holds one array per attribute, the widest first, each as
+long as the list's room, and no header at all. `points[position].down` is a load from the `down` array at
+`position`, so a loop that reads one attribute reads only that array, four bytes an item for an `Integer` where the
+whole object took twenty-four. `append` copies each attribute of the object into its array, and growing the list
+moves each array to its place in the larger room.
+
+**When it applies:** to such a list whose element's attributes are all whole numbers held in their own slots, whose
+items are only read and written for attributes (never the receiver of a function of the class, and never summed or
+counted through a function member such as `sum_fingerprint`). The list's `get_at` as a function is never called
+then; if it were, it would stop the program saying the item cannot be handed out whole.
+
+**What a program can observe:** only time and memory.
+
+```spite
+func sum_points(): Long {
+    var total: Long = 0
+    var position = 0
+    while position < points.count() {
+        var point = points[position]
+        if point.down >= round {
+            total = total + point.across + point.down
+        }
+        position = position + 1
+    }
+    return total
+}
+```
+
+`point` is the position, and `point.down` and `point.across` are reads of two arrays.
+
 ## A local list of known size lives in the frame
 
 A list literal kept in a local (`var weights = [4, 3, 2, 1]`) that the function only counts and reads by index is

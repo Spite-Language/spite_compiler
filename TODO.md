@@ -173,13 +173,13 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A variadic list the callee only reads lives in the caller's frame
 - A list held only by another list lives in its slot
 - A list of lists filled again keeps each list's room
-- Objects of one class sit together (built: a list of a class of numbers, filled only with fresh objects and read back, holds its objects inside its storage, D994; not built: one array per attribute, elements holding text or objects, and objects of one class outside a list)
+- Objects of one class sit together (built: a list of a class of numbers, filled only with fresh objects and read back, holds its objects inside its storage, D994, and one array per attribute with no header when no item is handed whole to a function of its class, D998; not built: the header dropped for a list whose items are handed to the class's functions, elements holding text, decimals or objects, and objects of one class outside a list)
 - A row of borrowed items lives in the frame (built when the function it is passed to is inlined, D801, D942: the row is registers; a row passed to a call too large to inline is still made on the heap, and the items it holds are still counted when it is made and let go when it ends)
 - An `Items`' storage is chosen while compiling
 - A deep copy is written per class, with a table only where a graph needs one
 - An object attribute only its holder ever holds lives inside the holder (`Item.owner`, `Order.customer`), and a list's objects in its storage may hold such attributes
 - A loop that sums a list filtered by its counter on every pass is one pass over the list (`report_over_records`' 64 profits)
-- An if-converted body may hold a checked product or difference when ranges prove it fits, and decimals (D996)
+- An if-converted body may hold a checked product or difference when ranges prove it fits, and decimals; the generator writes its picks as `cmov` instead of masks (D996)
 - A deep copy nothing changes is the original
 - Copies that cost nothing (built for a copy of a plain object that never leaves the function, once `copy()` is inlined, D801; not built: a copy kept or passed on, and a copy nothing changes being the original)
 - Allocation is the C library's, counted only where read
