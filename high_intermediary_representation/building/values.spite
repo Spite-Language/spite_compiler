@@ -1898,6 +1898,9 @@ func made_from_a_bound_type(
     }
     crash bound
     var made_type = bound.present()
+    if made_type.is_nothing() and call.arguments.is_empty() {
+        return HighIntermediaryRepresentation.Values.NullConstant(made_type)
+    }
     var is_a_value = made_type.kind == 'shape' or made_type.kind == 'enumeration'
     var is_plain = made_type.kind == 'scalar' or made_type.name == "String" or is_a_value
     if is_plain and call.arguments.is_empty() {
@@ -2138,6 +2141,7 @@ func constructed(
     var made = context.class_of(made_type)
     var constraints = Constraints(context, this)
     constraints.check(made)
+    refuse_an_unserializable(class_path, made)
     context.need_defaults(made.key)
     var handed_over = ""
     if made.key == "ForeignCallback" {
@@ -2160,6 +2164,15 @@ func constructed(
     var making = HighIntermediaryRepresentation.Values.MakeObject(made_type, constructor, arguments)
     making.foreign_place = handed_over
     return making
+}
+
+func refuse_an_unserializable(class_path: List<String>, made: Model.ClassModel) {
+    var last = class_path.last()
+    crash last
+    if class_path.count() == 1 {
+        var serializable = Serializable(context)
+        serializable.check(last, made)
+    }
 }
 
 func inferred_type_of(
@@ -2664,6 +2677,7 @@ func member_call(
     }
     if not function and callee.name.starts_with("parallel_each_") {
         var reach = ParallelReach()
+        reach.check_the_steps(context, callee)
         reach.check_each(context, owner, callee.name)
     }
     if not function {
@@ -5483,16 +5497,7 @@ func foreign_call(
     name: String,
     written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ): HighIntermediaryRepresentation.Values.Value {
-    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
-    var crossing = ForeignCrossing(context, this)
-    var index = 0
-    while index < written.count() {
-        var argument = written[index]
-        var value = value_of(argument, null)
-        crossing.check_an_argument(value)
-        arguments.append(value)
-        index = index + 1
-    }
+    refuse_a_library_parameter(library)
     var answer = context.scalar_type("Integer")
     var c_name = name
     if name.ends_with("_as_long") {
@@ -5512,7 +5517,49 @@ func foreign_call(
     }
     var constants = ForeignConstants(context, this)
     var named = constants.c_name_of(library, c_name)
+    var declared = constants.declared_parameters(library, named)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var crossing = ForeignCrossing(context, this)
+    var index = 0
+    while index < written.count() {
+        var argument = written[index]
+        var wanted = declared_scalar(declared, index)
+        var value = value_of(argument, wanted)
+        if wanted {
+            value = fitted(value, wanted)
+        }
+        crossing.check_an_argument(value)
+        arguments.append(value)
+        index = index + 1
+    }
+    note_a_foreign_name(library, named)
     return HighIntermediaryRepresentation.Values.ForeignCall(answer, library, named, arguments)
+}
+
+func declared_scalar(declared: List<String>, index: Integer): Model.Type? {
+    assert index < declared.count()
+    var scalar_name = declared[index]
+    assert not scalar_name.is_empty()
+    return context.scalar_type(scalar_name)
+}
+
+func note_a_foreign_name(library: HighIntermediaryRepresentation.Values.Value, named: String) {
+    if library == HighIntermediaryRepresentation.Values.AttributeRead {
+        var names = library.attribute.foreign_names
+        if not names.contains(named) {
+            names.append(named)
+        }
+    }
+}
+
+func refuse_a_library_parameter(library: HighIntermediaryRepresentation.Values.Value) {
+    if library == HighIntermediaryRepresentation.Values.LocalRead {
+        var parameter = context.current_function.parameters.find_by_name(library.name)
+        if parameter {
+            var foreign = Validators.HighIntermediaryRepresentation.Foreign.Validator()
+            foreign.refuse_a_call_through_a_parameter(context)
+        }
+    }
 }
 
 func index_value(
@@ -6114,6 +6161,7 @@ func bound_is(bound: Model.Type, written: String): Boolean {
         "Dictionary": return bound.name.starts_with("Dictionary_of_") and not bound.is_nullable
         "Symbol": return (bound.is_symbol or bound.kind == 'enumeration') and not bound.is_nullable
         "Enum": return bound.kind == 'enumeration' and not bound.is_nullable
+        "Nothing": return bound.kind == 'nothing'
         _: return is_the_class(bound, written)
     }
 }
@@ -6369,6 +6417,10 @@ func operator_call(
         return same
     }
     var name = operator_function_name(operator)
+    refuse_a_missing_operator(left, name)
+    if asks_equality {
+        refuse_a_comparison_across_classes(left, right)
+    }
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
     arguments.append(right)
     var answered = method_call(left, name, arguments)
@@ -6418,6 +6470,53 @@ func class_compares_identity(left_type: Model.Type): Boolean {
         return true
     }
     return parameter.parameter_type.kind != 'object'
+}
+
+func refuse_a_missing_operator(left: HighIntermediaryRepresentation.Values.Value, name: String) {
+    var left_type = left.value_type
+    var is_a_class = left_type.kind == 'object' and not left_type.is_nullable and context.has_a_class(left_type)
+    if is_a_class and not defines_operator(left_type, name) {
+        var shown = context.shown(left_type)
+        typing.refuse_missing_operator(context, shown, name)
+    }
+}
+
+func defines_operator(left_type: Model.Type, name: String): Boolean {
+    var owner = context.class_of(left_type)
+    var defined = owner.function_named(name)
+    if not defined {
+        defined = member_template_of(owner, name)
+    }
+    if defined {
+        return true
+    }
+    return false
+}
+
+func refuse_a_comparison_across_classes(
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+) {
+    var left_type = left.value_type
+    var right_type = right.value_type
+    var both_kinds = left_type.kind == 'object' and right_type.kind == 'object'
+    var both_classes = both_kinds and context.has_a_class(left_type) and context.has_a_class(right_type)
+    var either_nullable = left_type.is_nullable or right_type.is_nullable
+    var across = both_classes and not either_nullable and left_type.name != right_type.name
+    if across and equals_takes_its_own_class(left_type) {
+        var given = context.shown(left_type)
+        var wanted = context.shown(right_type)
+        typing.refuse_mismatch(context, given, wanted)
+    }
+}
+
+func equals_takes_its_own_class(left_type: Model.Type): Boolean {
+    var owner = context.class_of(left_type)
+    var equals = owner.function_named("equals")
+    crash equals
+    var parameter = equals.parameters[0]
+    crash parameter
+    return parameter.parameter_type.name == left_type.name
 }
 
 func operator_function_name(operator: HighIntermediaryRepresentation.Values.Operator): String {

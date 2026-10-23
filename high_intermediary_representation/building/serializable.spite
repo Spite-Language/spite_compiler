@@ -1,0 +1,153 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var format = "JSON"
+var visited = List<String>()
+
+func Serializable(starting_context: Context) {
+    context = starting_context
+}
+
+func check(serializer: String, made: Model.ClassModel) {
+    var is_a_serializer = ["JsonWriter", "JsonReader", "BinaryWriter", "BinaryReader"]
+    assert is_a_serializer.contains(serializer)
+    var serialized = made.bound_types["$value_type"]
+    assert serialized
+    if serializer.starts_with("Binary") {
+        format = "binary"
+    }
+    var problem = problem_of(serialized, "")
+    assert not problem.is_empty()
+    var serialized_shown = context.shown(serialized)
+    var written = plain_name(serialized_shown)
+    var refusal = Validators.HighIntermediaryRepresentation.Serializer.Validator()
+    refusal.refuse(context, serializer, written, problem)
+}
+
+func problem_of(serialized: Model.Type, path: String): String {
+    var present = serialized.present()
+    var named = "it"
+    if not path.is_empty() {
+        named = "'{path}'"
+    }
+    var present_shown = context.shown(present)
+    var shown = plain_name(present_shown)
+    switch present.kind {
+        'union': return union_problem(named, shown)
+        'shape': return "{named} is typed as the 'type' {shown}, which says what it has, not what it is, so there is no class to read it back into"
+        'function': return "{named} is a function value, {shown}, which has no {format} form"
+        'object': return object_problem(present, path)
+        _: return ""
+    }
+}
+
+func object_problem(present: Model.Type, path: String): String {
+    if not context.has_a_class(present) {
+        return ""
+    }
+    return class_problem(present, path)
+}
+
+func union_problem(named: String, shown: String): String {
+    if format == "JSON" {
+        return "{named} is the union {shown}, and JSON does not say which member a value is"
+    }
+    return "{named} is the union {shown}, and the bytes do not say which member a value is"
+}
+
+func class_problem(present: Model.Type, path: String): String {
+    var model = context.class_of(present)
+    if model.key.starts_with("List_of_") {
+        var element = model.bound_types["$element_type"]
+        crash element
+        return problem_of(element, path)
+    }
+    if model.key.starts_with("Dictionary_of_") {
+        return dictionary_problem(model, path)
+    }
+    if model.key == "String" or visited.contains(model.key) {
+        return ""
+    }
+    visited.append(model.key)
+    var library = Validators.LibraryFile()
+    if library.holds(model.file.path) {
+        return ""
+    }
+    return attribute_problem(model)
+}
+
+func dictionary_problem(model: Model.ClassModel, path: String): String {
+    var key = model.bound_types["$key_type"]
+    var entry = model.bound_types["$value_type"]
+    crash key
+    crash entry
+    var key_problem = key_problem_of(key, path)
+    if not key_problem.is_empty() {
+        return key_problem
+    }
+    return problem_of(entry, path)
+}
+
+func key_problem_of(key: Model.Type, path: String): String {
+    var named = "its dictionary"
+    if not path.is_empty() {
+        named = "the dictionary '{path}'"
+    }
+    var key_shown = context.shown(key)
+    var shown = plain_name(key_shown)
+    var is_text = key.kind == 'object' and key.name == "String"
+    if key.kind == 'object' and not is_text {
+        return "{named} is keyed by '{shown}' objects, each key one object's identity, which has no {format} form"
+    }
+    var whole = ["Byte", "Tiny", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong"]
+    var is_whole = key.kind == 'scalar' and whole.contains(key.name)
+    var textual = is_text or is_whole or key.kind == 'enumeration'
+    if format == "JSON" and not textual {
+        return "{named} is keyed by '{shown}', and a JSON key is text: key it by a String, a whole number or an enum value"
+    }
+    return ""
+}
+
+func attribute_problem(model: Model.ClassModel): String {
+    var owner = plain_name(model.shown)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var problem = problem_of_an_attribute(owner, attribute)
+        if not problem.is_empty() {
+            return problem
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func problem_of_an_attribute(owner: String, attribute: Model.AttributeModel): String {
+    if attribute.name.starts_with("_") or holds_a_singleton(attribute.attribute_type) {
+        return ""
+    }
+    return problem_of(attribute.attribute_type, "{owner}.{attribute.name}")
+}
+
+func holds_a_singleton(held: Model.Type): Boolean {
+    if held.kind != 'object' or not context.has_a_class(held) {
+        return false
+    }
+    var model = context.class_of(held)
+    return model.is_singleton
+}
+
+func plain_name(shown: String): String {
+    var before_generics = shown.split("<")
+    var first = before_generics.first()
+    crash first
+    var parts = first.split(".")
+    var last = parts.last()
+    crash last
+    var start = first.length()
+    var end = shown.length()
+    var rest = shown.slice(start, end)
+    return "{last}{rest}"
+}
