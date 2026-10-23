@@ -1,0 +1,351 @@
+# ../../OPTIMIZATIONS.md#a-loop-whose-passes-write-only-their-own-item-runs-in-bands
+var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var work_class = Model.ClassModel("", "", no_file)
+var studying = List<String>()
+var weights = Dictionary<String, Integer>()
+var refused = false
+var heaviest = 100000000
+var lightest_banded = 256
+var work_per_band_start = 1000000
+
+func least_count_for(context: Context, owner: Model.ClassModel, name: String): Integer {
+    if is_interactive(context) or not name.starts_with("each_") {
+        return -1
+    }
+    var library = Validators.LibraryFile()
+    var path = context.path()
+    if library.holds(path) or not is_the_library_list(owner) {
+        return -1
+    }
+    var element = owner.bound_types["$element_type"]
+    if not element {
+        return -1
+    }
+    if element.kind != 'object' or element.is_nullable or not context.has_a_class(element) {
+        return -1
+    }
+    var model = context.class_of(element)
+    if library.holds(model.file.path) or model.is_singleton {
+        return -1
+    }
+    var name_length = name.length()
+    var member_name = name.slice(5, name_length)
+    var function = model.function_named(member_name)
+    if not function {
+        return -1
+    }
+    if not function.parameters.is_empty() {
+        return -1
+    }
+    work_class = model
+    studying = List<String>()
+    weights = Dictionary<String, Integer>()
+    refused = false
+    var weight = weight_of_function(function)
+    if refused or weight < lightest_banded {
+        return -1
+    }
+    var least = (work_per_band_start + weight - 1) / weight
+    if least < 2 {
+        least = 2
+    }
+    return least
+}
+
+func is_interactive(context: Context): Boolean {
+    var flags = context.build_flags
+    var asked = flags.contains("repl") or flags.contains("repl_port") or flags.contains("development")
+    return asked or flags.contains("hot_reload")
+}
+
+func is_the_library_list(owner: Model.ClassModel): Boolean {
+    var library = Validators.LibraryFile()
+    var written = owner.file.path.replace("\\", "/")
+    return library.holds(written) and written.ends_with("/common/list.spite")
+}
+
+func holds_a_number(of_type: Model.Type?): Boolean {
+    if not of_type {
+        return false
+    }
+    return of_type.kind == 'scalar' or of_type.kind == 'enumeration'
+}
+
+func weight_of_function(function: Model.FunctionModel): Integer {
+    var known = weights[function.name]
+    if known {
+        return known
+    }
+    if studying.contains(function.name) or not function.declaration {
+        refused = true
+        return 0
+    }
+    var answers_a_number = holds_a_number(function.answer)
+    if function.answer and not answers_a_number {
+        refused = true
+        return 0
+    }
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    if not declaration.body {
+        refused = true
+        return 0
+    }
+    var own_names = List<String>()
+    var parameter_index = 0
+    while parameter_index < function.parameters.count() {
+        var parameter = function.parameters[parameter_index]
+        if not holds_a_number(parameter.parameter_type) {
+            refused = true
+        }
+        own_names.append(parameter.name)
+        parameter_index = parameter_index + 1
+    }
+    studying.append(function.name)
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_block(declaration.body)
+    note_the_locals(walk, own_names)
+    check_the_statements(walk, own_names)
+    check_the_expressions(walk, own_names)
+    var weight = 0
+    if not refused {
+        weight = weight_of_block(declaration.body)
+    }
+    studying.remove_last()
+    weights[function.name] = weight
+    return weight
+}
+
+func note_the_locals(walk: AbstractSyntaxTree.Walk.Walk, own_names: List<String>) {
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        var statement = found.statement
+        if statement == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+            own_names.append(statement.name)
+        }
+        index = index + 1
+    }
+}
+
+func check_the_statements(walk: AbstractSyntaxTree.Walk.Walk, own_names: List<String>) {
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        check_a_statement(found.statement, own_names)
+        index = index + 1
+    }
+}
+
+func check_a_statement(statement: AbstractSyntaxTree.Shapes.Statements.Statement?, own_names: List<String>) {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: return
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: check_a_write(statement.target, own_names)
+        AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: return
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: return
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: return
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: return
+        AbstractSyntaxTree.Shapes.Statements.AssertStatement: return
+        AbstractSyntaxTree.Shapes.Statements.Block: return
+        _: refused = true
+    }
+}
+
+func check_a_write(target: AbstractSyntaxTree.Shapes.Expressions.Expression?, own_names: List<String>) {
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        if not own_names.contains(target.name) and not is_a_number_attribute(target.name) {
+            refused = true
+        }
+        return
+    }
+    refused = true
+}
+
+func is_a_number_attribute(name: String): Boolean {
+    var attribute = work_class.attribute_named(name)
+    if not attribute {
+        return false
+    }
+    return holds_a_number(attribute.attribute_type)
+}
+
+func check_the_expressions(walk: AbstractSyntaxTree.Walk.Walk, own_names: List<String>) {
+    var named_functions = 0
+    var called_functions = 0
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var expression = found.expression
+        if names_a_function(expression, own_names) {
+            named_functions = named_functions + 1
+        } else if calls_an_own_function(expression, own_names) {
+            called_functions = called_functions + 1
+        } else if not is_plain(expression, own_names) {
+            refused = true
+        }
+        index = index + 1
+    }
+    if named_functions != called_functions {
+        refused = true
+    }
+}
+
+func names_a_function(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, own_names: List<String>): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var function = work_class.function_named(expression.name)
+        return function and not own_names.contains(expression.name) and not is_a_number_attribute(expression.name)
+    }
+    return false
+}
+
+func calls_an_own_function(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    own_names: List<String>,
+): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        var callee = expression.callee
+        return names_a_function(callee, own_names)
+    }
+    return false
+}
+
+func is_plain(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, own_names: List<String>): Boolean {
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return true
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return true
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return true
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return reads_a_number(expression.name, own_names)
+        _: return false
+    }
+}
+
+func reads_a_number(name: String, own_names: List<String>): Boolean {
+    return own_names.contains(name) or is_a_number_attribute(name)
+}
+
+func weight_of_block(block: AbstractSyntaxTree.Shapes.Statements.Block?): Integer {
+    if not block {
+        return 0
+    }
+    var total = 0
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        var weight = weight_of_statement(statement)
+        total = capped(total + weight)
+        index = index + 1
+    }
+    return total
+}
+
+func weight_of_statement(statement: AbstractSyntaxTree.Shapes.Statements.Statement): Integer {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: return weight_of_a_loop(statement)
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: return weight_of_an_if(statement)
+        AbstractSyntaxTree.Shapes.Statements.Block: return weight_of_block(statement)
+        _: return weight_of_a_line(statement)
+    }
+}
+
+func weight_of_a_loop(loop: AbstractSyntaxTree.Shapes.Statements.WhileStatement): Integer {
+    var body = weight_of_block(loop.body)
+    var tested = weight_of_calls_in(loop.condition)
+    var bound = bound_of(loop.condition)
+    var each_pass = capped(body + tested + 1)
+    var passes: Long = each_pass
+    passes = passes * bound
+    if passes > heaviest {
+        return heaviest
+    }
+    return passes
+}
+
+func bound_of(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?): Integer {
+    if condition == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        var is_counted = condition.operator == 'less' or condition.operator == 'less_or_equal'
+        var right = condition.right
+        if is_counted and right == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+            return literal_bound(right)
+        }
+    }
+    return 8
+}
+
+func literal_bound(literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression): Integer {
+    if literal.kind != 'integer_literal' {
+        return 8
+    }
+    var digits = literal.text.replace("_", "")
+    var value = digits.to_integer()
+    if not value {
+        return 8
+    }
+    if value < 1 {
+        return 1
+    }
+    if value > 1000000 {
+        return 1000000
+    }
+    return value
+}
+
+func weight_of_an_if(branch: AbstractSyntaxTree.Shapes.Statements.IfStatement): Integer {
+    var tested = weight_of_calls_in(branch.condition)
+    var then_weight = weight_of_block(branch.then_branch)
+    var else_weight = weight_of_block(branch.else_branch)
+    var heavier = then_weight
+    if else_weight > heavier {
+        heavier = else_weight
+    }
+    return capped(1 + tested + heavier)
+}
+
+func weight_of_a_line(statement: AbstractSyntaxTree.Shapes.Statements.Statement): Integer {
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_statement(statement)
+    var total = 1
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var weight = weight_of_a_call(found.expression)
+        total = capped(total + weight)
+        index = index + 1
+    }
+    return total
+}
+
+func weight_of_calls_in(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Integer {
+    if not expression {
+        return 0
+    }
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_expression(expression)
+    var total = 0
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var weight = weight_of_a_call(found.expression)
+        total = capped(total + weight)
+        index = index + 1
+    }
+    return total
+}
+
+func weight_of_a_call(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Integer {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        var callee = expression.callee
+        if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+            var function = work_class.function_named(callee.name)
+            if function {
+                return weight_of_function(function)
+            }
+        }
+    }
+    return 0
+}
+
+func capped(weight: Integer): Integer {
+    if weight > heaviest or weight < 0 {
+        return heaviest
+    }
+    return weight
+}

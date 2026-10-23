@@ -729,7 +729,10 @@ These run in this order on the low representation, then in the x64 generator:
    [dead code](#a-value-nobody-reads-is-not-computed) (`dead_code`),
    [counted pairs](#a-count-taken-and-let-go-with-nothing-between-is-never-taken) (`counted_pairs`),
    [common subexpressions](#the-same-computation-in-a-block-is-made-once) (`common_subexpressions`), copy propagation
-   again, [remainder tests](#a-remainder-by-a-power-of-two-tested-against-zero-is-a-mask) (`remainder_tests`),
+   again, [proven bounds](#a-bound-a-signed-test-already-proved-is-not-tested-again) (`proven_bounds`), constant
+   folding and jump threading again,
+   [attributes in registers](#a-loop-over-one-objects-attributes-keeps-them-in-registers) (`loop_attributes`),
+   [remainder tests](#a-remainder-by-a-power-of-two-tested-against-zero-is-a-mask) (`remainder_tests`),
    [loop invariants](#what-a-loop-does-not-change-is-computed-before-it) (`loop_invariants`), dead code again,
    [copy coalescing](#a-value-computed-only-to-be-copied-is-computed-in-place) (`copy_coalescing`), and dead code
    again;
@@ -1165,12 +1168,48 @@ branch that reads its flags), nor across blocks to a register written more than 
 A loop is found from each jump back to a block that dominates it. When the loop is entered from exactly one block
 that only goes on to it, an instruction in the loop is moved to the end of that block when every register it reads
 is written only outside the loop (or by an instruction already moved), it writes a register nothing else writes,
-and it is an unchecked arithmetic, a copy, a decimal arithmetic or conversion, or an address. A load moves too
-when it is in the loop's first block (which every pass runs) and nothing in the loop writes memory or calls
-(a retain only blocks a load of the count). Each instruction moved runs once instead of once per pass.
+and it is a constant, an unchecked arithmetic, a copy, a decimal arithmetic or conversion, or an address. A load
+moves too when it is in the loop's first block (which every pass runs) and nothing in the loop writes memory or calls
+(a retain only blocks a load of the count), and an attribute's load under the wider rule of
+[an attribute a loop only reads](#an-attribute-a-loop-only-reads-is-read-before-it). Each instruction moved runs once
+instead of once per pass. A block no path from the function's start reaches is no part of any loop.
 
 It does not apply to a function of more than 400 blocks or that waits, to checked arithmetic, divisions and
-comparisons, nor to a load past the loop's first block, since a pass that leaves early would not have made it.
+comparisons, nor to a load past the loop's first block that is not an attribute's, since a pass that leaves early
+would not have made it.
+
+## A loop over one object's attributes keeps them in registers
+
+A loop whose only reads and writes of memory are attributes of one object, at fixed offsets, reads each attribute
+once before it starts, works on registers, and writes back the attributes it changed where it ends
+(`low_optimization_passes/loop_attributes`):
+
+```spite
+func advance() {
+    var step = 0
+    while step < 1000 {
+        angle = angle + speed * 0.001
+        if angle > 6.28318 {
+            angle = angle - 6.28318
+            turns = turns + 1
+        }
+        step = step + 1
+    }
+}
+```
+
+`angle`, `speed` and `turns` are read once, live in registers for the thousand passes (`angle` and `speed` in
+decimal registers), and `angle` and `turns` are written once, after the loop.
+
+It applies when the object is the same register for the whole loop (a parameter, or a value written once before
+it), nothing in the loop tests it, copies it or computes with it, the loop calls nothing and makes, counts or frees
+nothing, two attributes it touches never overlap, and every block the loop leaves to is reached only from the loop
+(the writes go at its start) or only stops the program, and the object's class is not one that
+[work on another thread may write](#an-attribute-a-loop-only-reads-is-read-before-it). A failed check inside the loop (a checked `+` that
+overflows) still stops the program with its report; the attributes it changed are not written back first, and
+nothing reads them after.
+
+**What a program can observe:** nothing but time.
 
 ## A remainder by a power of two tested against zero is a mask
 
@@ -1202,6 +1241,95 @@ last in the layout order; a linear scan gives each interval a register.
 - A spilled value lives in its frame slot for its whole life.
 
 What a user can observe: nothing but time; a crash report reads its numbers from wherever the values live.
+
+## A decimal lives in a decimal register
+
+A `Float` or `Double` value of a function that does not wait lives in one of the processor's decimal registers
+(`xmm3` to `xmm15`) when every instruction that writes it and every one that reads it is decimal maths, a decimal
+comparison or conversion, a copy, a constant, a load, a store, a call's argument or answer, or a return (a
+parameter too: it is moved into its decimal register as the function starts). Decimal
+maths then works on those registers directly (`addss xmm6, xmm7`), with no move through a whole-number register
+on either side. `xmm3` to `xmm5` hold a value whose interval holds no call (nor anything that may call); `xmm6` to
+`xmm15`, which the Windows x64 calling convention keeps across calls, are saved whole (16 bytes) in the frame by a
+function that uses them and restored at each return. A value used anywhere else (a parameter, an operand of
+whole-number maths or of an address, a branch's condition) keeps a whole-number register or its frame slot, as do
+the values left over when the decimal registers run out; a value read where a whole number is needed (a store, an
+argument) is moved there at that point.
+
+A decimal constant read only by decimal maths is a value of its own in a decimal register rather than an immediate
+moved in at each use, and [a loop](#what-a-loop-does-not-change-is-computed-before-it) makes it once, before it
+starts. A decimal comparison (`<`, `<=`, `>`, `>=`) read only by the branch after it is the branch: `ucomiss` and a
+jump on its flags (a comparison with a NaN is false on either side, as unordered compares jump neither `ja` nor
+`jae`). `==` and `!=` still make their answer, since they read the parity flag too.
+
+```spite
+func scaled_sum(values: List<Float>, shift: Float): Float {
+    var total: Float = 0.0
+    var index = 0
+    while index < values.count() {
+        total = total + (values[index] + shift) * 1.5 + 0.25
+        index = index + 1
+    }
+    return total
+}
+```
+
+`total` lives in a decimal register for the whole loop: each pass is two additions and a multiplication on decimal
+registers, and the item is moved in once.
+
+**What a program can observe:** nothing but time; a crash report reads a decimal from wherever it lives.
+
+**Not built:** a load or store of a decimal straight between memory and its decimal register (it passes through
+`rax`), and a decimal constant read from the program's data.
+
+## A bound a signed test already proved is not tested again
+
+A read or write of a list's item tests its index against the count unsigned (`index < count` with both read as
+unsigned, so a negative index fails too). When that test comes on the true side of a signed `index < count` of the
+same two values (the loop's own test, `while index < values.count()`), with nothing writing either value in between,
+and the index is never negative, the test is always true and is left out: the read goes straight to the item. The
+index is never negative when every write of it is a constant of zero or more, a copy of such a value, or the sum of
+two such values that cannot wrap (checked, or proven not to overflow; the library's wrapping sums do not count). A
+signed `index >= 0` or `index < 0` of such an index is decided too (a `List.set_at`'s own check).
+
+```spite
+func add_up(values: List<Float>): Float {
+    var total = 0.0
+    var index = 0
+    while index < values.count() {
+        total = total + values[index]
+        index = index + 1
+    }
+    return total
+}
+```
+
+`values[index]` compiles to the load alone: the loop's test already proved the index is inside the list.
+
+**What a program can observe:** nothing but time; an index the tests cannot prove is still tested and still halts
+with the same report.
+
+## An attribute a loop only reads is read before it
+
+[What a loop does not change](#what-a-loop-does-not-change-is-computed-before-it) moves a load out of a loop only
+when nothing in the loop writes memory. The lowering marks two kinds of memory apart: an object's attributes (its
+own, a list's count and buffer, a buffer's storage) and the items of a list or vector of numbers. An item is never an
+attribute, so a loop whose only writes are items of numbers (`into[index] = from[index] * 1.5 + offset`) still reads
+its lists' counts and storages once, before it starts.
+
+A load of an attribute moves out of the loop from any block that every pass runs through (one that dominates the
+jump back), not only the loop's first block, when nothing in the loop tests the object it reads from: the object
+then holds the same value, and is valid, on every path into the loop, so reading it a pass early cannot fail where
+the loop would not have. A loop that tests the object (`if holder != null`, a `crash` on it) keeps the load where
+it is.
+
+An attribute of a class that work on another thread may write keeps its load in the loop, whatever the loop
+writes: a loop waiting for another thread (`while station.pumped() < 1000`) must see each new value. Such a class
+is one with a function that a `Parallel` reaches, by any chain of calls; the passes of a loop that
+[runs in bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) do not count, since each band writes
+only its own elements.
+
+**What a program can observe:** nothing but time.
 
 ## Loops and functions start on a 16-byte boundary
 
@@ -1273,6 +1401,16 @@ func shares(amounts: List<Integer>, parts: Integer): Long {
     return total
 }
 ```
+
+## An unchecked 32-bit sum is one instruction
+
+A 32-bit `+` or `-` the compiler has proven cannot overflow (`index = index + 1` under `while index < count`), and a
+32-bit bit operation (`&`, `|`, `^`) of signed numbers, is computed in place in its target's register in 64 bits,
+with no sign extension after it: a 32-bit number is held sign-extended (or zero-extended, unsigned), and the 64-bit
+sum of two such numbers whose true sum fits in 32 bits is already that same extended number, as is any bit operation
+of two sign-extended numbers. The library's wrapping sums (`_wrapping_sum`) are left alone, since they may wrap.
+
+**What a program can observe:** nothing but time.
 
 ## Arithmetic checks cost one jump on the hot path
 
@@ -1562,6 +1700,61 @@ Four `Parallel`s running `count_up` each take `Tally`'s lock once
 (`a_counted_loop_of_calls_to_one_singleton_takes_its_lock_once`).
 
 **Not built:** a loop that is not counted testing the task count once before it starts.
+
+## A loop whose passes write only their own item runs in bands
+
+`orbits.each_advance()` on a `List` of a class of the program runs on several threads at once, one band of the
+list for each processor, when every pass writes only its own element: the compiler reads `advance` (and every
+function of the class it calls) and finds that it writes only number attributes of the element and its own locals,
+reads only number attributes of the element, its locals and literals, and calls only functions of the class that
+take and answer numbers. Nothing else may appear in it: no member call, no index, no text, no object made, no
+`crash`, no `switch`. It is `parallel_each_` without writing it: the
+compiler proves what that form asks the programmer to keep true, and when it cannot, the loop is the loop as written
+(`high_intermediary_representation/building/banded_loops.spite`, the library's `List._each_in_bands_member`).
+
+```spite
+var angle = 0.0
+var speed = 0.0
+var turns = 0
+
+func Orbit(seed: Integer) {
+    speed = seed % 17 + 1
+}
+
+func advance() {
+    var step = 0
+    while step < 1000 {
+        angle = angle + speed * 0.001
+        if angle > 6.28318 {
+            angle = angle - 6.28318
+            turns = turns + 1
+        }
+        step = step + 1
+    }
+}
+```
+
+`orbits.each_advance()` over 100 000 orbits cuts them into one band per processor; the program's own thread runs the
+first band and waits for the others, so whatever comes after the loop (`orbits.sum_turns()`) runs after every pass,
+as written.
+
+**When it pays.** Starting a band costs a thread, so the compiler weighs the pass while compiling: each statement 1,
+a loop's body times its bound (the literal it is counted to, or 8), a call what its function weighs. A pass that
+weighs less than 256 never runs in bands (it is bound by memory, not by the processor). For a heavier pass the
+compiler writes the smallest count at which the bands pay, the count times the weight reaching a million; the loop
+compares the list's count with it when it starts and runs in order below it.
+
+**Why some of it is at run time.** A list may hold one object twice, and two bands would then write it at once, so
+above that count the loop first reads each element's reference count (one load per element) and runs in order when
+any element is held anywhere else too. How many processors there are (`GetActiveProcessorCount`, at most 64), how
+many elements the list holds and who else holds them are known only when the loop runs; which functions qualify,
+what they weigh and the count they need are decided while compiling. A program with no such loop carries none of
+it.
+
+**What a program can observe:** the time, and the same output. A pass whose checked arithmetic overflows still
+halts the program with the same message, but the frames it reports are those of its band (the function the band
+runs and the library's `_each_range_` loop), and when several passes would overflow, the one reported may be another
+than the first in the list's order. Not in `--hot-reload`, `--repl` or `--development` builds.
 
 ## A chain of `filter_` steps runs as one loop
 

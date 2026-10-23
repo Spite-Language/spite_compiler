@@ -167,7 +167,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - The small-block allocator (D794 to D796) never gives a chunk back to the system and never moves a free block to another size class, so a program's peak of small blocks of one size stays its memory; an allocation of a constant size above 120 bytes, and every free of a block above 1016 bytes, is a call
 - The compiler places memory
-- Reading an address is one machine operation
+- Reading an address is one machine operation (`reading_an_address_is_one_machine_operation` is about 50 times expert C: `Base64._encoded`'s values are nearly all spilled, see the register intervals in Architecture, and every `append_code` keeps the buffer's and the text's counts in memory)
 - Objects that never leave their function live in the frame (built after inlining, D801: in registers or the frame, made at the `return` when answered, its count followed while compiling, D953; not built: an object whose class has a `drop`, back references or frees its attributes other than by releasing them, an object of a class that releases attributes passed to a call that is not inlined, and anything in a function that waits)
 - A local list of known size lives in the frame
 - A variadic list the callee only reads lives in the caller's frame
@@ -207,10 +207,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A foreign name is never copied
 - Crash text out of the binary
 - A number's bits are read in place (built for a read at offset 0 of the number's own width, D786, D791 and D805; not built: a read of part of a number's bytes, or at another offset)
-- A decimal literal beside a `Float` is a `Float`
+- A decimal literal beside a `Float` is a `Float` (built: the literal is a `Float` and decimals live in decimal registers, D971; not built: a sum of decimals in a loop is never reassociated or vectorised, which needs a proof that every partial sum is exact, so `a_decimal_literal_beside_a_float_is_a_float` waits on one addition after another, about 16 times expert C)
 - Arithmetic is checked in every build
 - Arithmetic a range proves is not checked (built in `building/ranges.spite`; not built: a total that adds at most one term a pass, a counter stepped down under `>` or `>=`, a loop local other than a counter keeping the range of what it is assigned, a `-` in front reported as a negation)
-- A loop over plain values reads its count once and its items unchecked (built: `count()` is one load and a proven read is a bound test and a load; not built: the count and the item address read once before the loop, and the bound test dropped where nothing in the loop can change the list)
+- A loop over plain values reads its count once and its items unchecked (built: the count and the storage read once before the loop when it writes only number items, and the bound test dropped under the loop's own signed test, D972, D973; not built: a `set_at` into another list still tests that list's count each pass, and the loop is never vectorised nor fused with the next loop over the same list)
 - A proven read tests only its bounds (built for a library `List` of numbers or objects; not built: `Vector`, `Items`, a list of `T?` items, unions or function values)
 - A walked `crash` line's read is the row's read
 - Boxing only where a value travels as a shape
@@ -233,7 +233,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Thread safety for singletons, the rest of the plan
 - Calls in a row run at once
 - A loop over a list of different classes runs them at once
-- A loop whose passes write only their own item runs in bands
+- A loop whose passes write only their own item runs in bands (built for `each_` on a `List` of a class of the program, D975; not built: a `Vector`, a `filter_` chain before it, a pass that calls a member of another object or of a number, a pool of threads kept between loops (each band starts a thread), and running an outer counted loop inside each band, as the expert C does with its ten ticks)
 
 ### The compiler's own machinery
 
@@ -247,7 +247,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The machine code (D771 to D775 are built)
 
-- Loop-invariant code motion (built, D803): a load moves before its loop only from the loop's first block and only when nothing in the loop writes memory or calls; a load in a later block, and anything in a loop that writes memory, is still made on every pass
+- Loop-invariant code motion (built, D803, D973): a load moves before its loop from the loop's first block when nothing in the loop writes memory or calls, and an attribute load from any block every pass runs when the loop writes only number items and does not test the object; a load in a loop that calls or writes an attribute is still made on every pass
+- A loop over one object's attributes keeps them in registers (built, D974): one object only, and not in a loop that calls (a call on a cold path, such as a buffer's growth, keeps the whole loop in memory)
+- Decimals live in decimal registers (built, D971): a decimal load or store still passes through `rax`, a decimal constant is moved in from an immediate rather than read from the program's data, and `==` or `!=` of decimals still makes its answer before the branch
 - Common subexpressions across blocks only for registers written once (D803): a computation over a register written twice (a loop counter) is still made again in a later block, and a repeated comparison is made again
 - An unsigned 64-bit division by a constant that is not a power of two keeps the `div` (D804)
 - A function inlined into a loop keeps its bounds checks (ranges are proved before inlining), and a callee of more than 40 instructions, or that waits, is called (D802); inlining is chosen by size alone, with no estimate of the registers a loop then needs (`template_chains_run_as_one_loop` is about a quarter slower than before this inlining, likely from spills)

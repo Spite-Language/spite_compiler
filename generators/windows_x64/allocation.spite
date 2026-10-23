@@ -30,6 +30,10 @@ var address_bases = List<Integer>()
 var address_indexes = List<Integer>()
 var address_scales = List<Integer>()
 var address_displacements = List<Integer>()
+var decimal_sizes = List<Integer>()
+var decimal_refused = List<Boolean>()
+var decimal_touched = List<Boolean>()
+var saved_decimals = List<Integer>()
 
 func Allocation(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
@@ -64,6 +68,7 @@ func allocate() {
     }
     assert not function.is_resumable
     count_the_operands()
+    find_the_decimals()
     find_the_fused_compares()
     find_the_addresses()
     number_the_positions()
@@ -154,7 +159,165 @@ func home_of(register: Integer): Integer {
     if register < 0 or register >= homes.count() {
         return -1
     }
-    return homes[register]
+    var home = homes[register]
+    crash home
+    if home >= 16 {
+        return -1
+    }
+    return home
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
+func decimal_home_of(register: Integer): Integer {
+    if register < 0 or register >= homes.count() {
+        return -1
+    }
+    var home = homes[register]
+    crash home
+    if home >= 16 {
+        return home - 16
+    }
+    return -1
+}
+
+func decimal_size_of(register: Integer): Integer {
+    if register < 0 or register >= decimal_sizes.count() {
+        return 0
+    }
+    var size = decimal_sizes[register]
+    crash size
+    return size
+}
+
+func find_the_decimals() {
+    fill_with_numbers(decimal_sizes, register_total, 0)
+    decimal_refused.clear()
+    decimal_touched.clear()
+    var index = 0
+    while index < register_total {
+        decimal_refused.append(false)
+        decimal_touched.append(false)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_the_decimals)
+        block_index = block_index + 1
+    }
+    var round = 0
+    while round < 4 {
+        block_index = 0
+        while block_index < function.blocks.count() {
+            var copying_block = function.blocks[block_index]
+            copying_block.instructions.each(spread_through_a_copy)
+            block_index = block_index + 1
+        }
+        round = round + 1
+    }
+    index = 0
+    while index < register_total {
+        var refused = decimal_refused[index] == true
+        var touched = decimal_touched[index] == true
+        if refused or not touched {
+            decimal_sizes[index] = 0
+        } else if constant_of(index) {
+            is_constant[index] = false
+        }
+        index = index + 1
+    }
+}
+
+func note_the_decimals(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: note_a_decimal_arithmetic(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: note_a_decimal_compare(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: note_a_decimal_conversion(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: return
+        LowIntermediaryRepresentation.Instructions.Constant: return
+        LowIntermediaryRepresentation.Instructions.Load: refuse_a_decimal(instruction.address)
+        LowIntermediaryRepresentation.Instructions.Store: refuse_a_decimal(instruction.address)
+        LowIntermediaryRepresentation.Instructions.Call: refuse_a_decimal(instruction.presence)
+        LowIntermediaryRepresentation.Instructions.CallAt: note_a_decimal_call_at(instruction)
+        LowIntermediaryRepresentation.Instructions.ImportCall: return
+        LowIntermediaryRepresentation.Instructions.Return: refuse_a_decimal(instruction.presence)
+        _: refuse_every_operand(instruction)
+    }
+}
+
+func spread_through_a_copy(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        var target_size = decimal_size_of(instruction.target)
+        var source_size = decimal_size_of(instruction.source)
+        if target_size > 0 and source_size == 0 {
+            note_a_decimal_size(instruction.source, target_size)
+        }
+        if source_size > 0 and target_size == 0 {
+            note_a_decimal_size(instruction.target, source_size)
+        }
+    }
+}
+
+func note_a_decimal_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic) {
+    var size = 4
+    if arithmetic.is_double {
+        size = 8
+    }
+    note_a_decimal_size(arithmetic.target, size)
+    note_a_decimal_size(arithmetic.left, size)
+    note_a_decimal_size(arithmetic.right, size)
+}
+
+func note_a_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
+    var size = 4
+    if compare.is_double {
+        size = 8
+    }
+    note_a_decimal_size(compare.left, size)
+    note_a_decimal_size(compare.right, size)
+    refuse_a_decimal(compare.target)
+}
+
+func note_a_decimal_conversion(conversion: LowIntermediaryRepresentation.Instructions.Decimal.Conversion) {
+    if conversion.from_decimal_size > 0 {
+        note_a_decimal_size(conversion.source, conversion.from_decimal_size)
+    } else {
+        refuse_a_decimal(conversion.source)
+    }
+    if conversion.to_decimal_size > 0 {
+        note_a_decimal_size(conversion.target, conversion.to_decimal_size)
+    } else {
+        refuse_a_decimal(conversion.target)
+    }
+}
+
+func note_a_decimal_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
+    refuse_a_decimal(call.address)
+    refuse_a_decimal(call.presence)
+}
+
+func note_a_decimal_size(register: Integer, size: Integer) {
+    assert register >= 0 and register < register_total
+    decimal_touched[register] = true
+    var known = decimal_sizes[register]
+    crash known
+    if known == 0 {
+        decimal_sizes[register] = size
+    } else if known != size {
+        decimal_refused[register] = true
+    }
+}
+
+func refuse_a_decimal(register: Integer) {
+    if register >= 0 and register < register_total {
+        decimal_refused[register] = true
+    }
+}
+
+func refuse_every_operand(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    operands.uses.each(refuse_a_decimal)
+    operands.defines.each(refuse_a_decimal)
 }
 
 func reading_count_of(register: Integer): Integer {
@@ -188,6 +351,15 @@ func fuse_when_it_fits(
         var defined_once = definitions[target] == 1
         if only_read_here and defined_once and not constant_of(target) and target >= function.parameter_count {
             fused[target] = true
+        }
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Decimal.Compare and following == LowIntermediaryRepresentation.Instructions.Branch {
+        var decimal_target = instruction.target
+        var orders = instruction.comparison != 'equal' and instruction.comparison != 'not_equal'
+        var read_here = following.condition == decimal_target and reading_count_of(decimal_target) == 1
+        var written_once = definitions[decimal_target] == 1 and decimal_target >= function.parameter_count
+        if orders and read_here and written_once {
+            fused[decimal_target] = true
         }
     }
 }
@@ -829,7 +1001,7 @@ func scan_the_intervals() {
     }
     var taken = List<Boolean>()
     var physical = 0
-    while physical < 16 {
+    while physical < 32 {
         taken.append(false)
         physical = physical + 1
     }
@@ -874,6 +1046,9 @@ func place(register: Integer, active: List<Integer>, taken: List<Boolean>) {
     var end = ends[register]
     crash start
     crash end
+    var decimal_size = decimal_sizes[register]
+    crash decimal_size
+    assert decimal_size <= 0 or not placed_in_a_decimal(register, start, end, active, taken)
     var volatile_taken = taken[volatile_home] == true
     if not volatile_taken and not clobbered_between(start, end) {
         homes[register] = volatile_home
@@ -896,6 +1071,30 @@ func place(register: Integer, active: List<Integer>, taken: List<Boolean>) {
     spill_the_cheapest(register, active)
 }
 
+func placed_in_a_decimal(
+    register: Integer,
+    start: Integer,
+    end: Integer,
+    active: List<Integer>,
+    taken: List<Boolean>,
+): Boolean {
+    var clobbered = clobbered_between(start, end)
+    var candidate = 3
+    while candidate < 16 {
+        var slot = 16 + candidate
+        var is_taken = taken[slot] == true
+        var usable = candidate >= 6 or not clobbered
+        if usable and not is_taken {
+            homes[register] = slot
+            taken[slot] = true
+            active.append(register)
+            return true
+        }
+        candidate = candidate + 1
+    }
+    return false
+}
+
 func spill_the_cheapest(register: Integer, active: List<Integer>) {
     var cheapest = -1
     var cheapest_weight = weight_of(register)
@@ -905,7 +1104,7 @@ func spill_the_cheapest(register: Integer, active: List<Integer>) {
         var other_home = homes[other]
         crash other_home
         var other_weight = weight_of(other)
-        if other_home != volatile_home and other_weight < cheapest_weight {
+        if other_home != volatile_home and other_home < 16 and other_weight < cheapest_weight {
             cheapest = index
             cheapest_weight = other_weight
         }
@@ -989,5 +1188,12 @@ func find_the_saved() {
             saved.append(candidate)
         }
         index = index + 1
+    }
+    var decimal = 6
+    while decimal < 16 {
+        if homes.contains(16 + decimal) {
+            saved_decimals.append(decimal)
+        }
+        decimal = decimal + 1
     }
 }

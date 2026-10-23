@@ -34,6 +34,7 @@ var cold_immediates = List<Boolean>()
 var flags_condition = 0
 var flags_register = -1
 var frame_slots = 0
+var decimal_save_base = 0
 var room_slots = 0
 var current_place = ""
 var current_block_place = ""
@@ -439,6 +440,8 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
         if frame_slots < function.register_count {
             frame_slots = function.register_count
         }
+        decimal_save_base = frame_slots
+        frame_slots = frame_slots + 2 * allocation.saved_decimals.count()
         room_slots = rooms_of(function)
         var frame = 8 * (frame_slots + allocation.saved.count() + room_slots) + outgoing
         var rounded = (frame + 15) / 16 * 16
@@ -535,6 +538,13 @@ func save_the_kept_registers() {
         encoder.store_slot(displacement, register)
         index = index + 1
     }
+    var decimal_index = 0
+    while decimal_index < allocation.saved_decimals.count() {
+        var decimal = allocation.saved_decimals[decimal_index]
+        var decimal_displacement = encoder.slot_of(decimal_save_base + 2 * decimal_index + 1)
+        encoder.save_xmm(decimal_displacement, decimal)
+        decimal_index = decimal_index + 1
+    }
 }
 
 func restore_the_kept_registers() {
@@ -545,12 +555,25 @@ func restore_the_kept_registers() {
         encoder.load_slot(register, displacement)
         index = index + 1
     }
+    var decimal_index = 0
+    while decimal_index < allocation.saved_decimals.count() {
+        var decimal = allocation.saved_decimals[decimal_index]
+        var decimal_displacement = encoder.slot_of(decimal_save_base + 2 * decimal_index + 1)
+        encoder.load_xmm(decimal, decimal_displacement)
+        decimal_index = decimal_index + 1
+    }
 }
 
 func read_into(register: Integer, virtual: Integer) {
     if allocation.constant_of(virtual) {
         var value = allocation.value_of(virtual)
         encoder.move_small_immediate(register, value)
+        return
+    }
+    var decimal = allocation.decimal_home_of(virtual)
+    if decimal >= 0 {
+        var size = allocation.decimal_size_of(virtual)
+        encoder.register_from_xmm(register, decimal, size == 8)
         return
     }
     var home = allocation.home_of(virtual)
@@ -564,6 +587,12 @@ func read_into(register: Integer, virtual: Integer) {
 }
 
 func write_from(virtual: Integer, register: Integer) {
+    var decimal = allocation.decimal_home_of(virtual)
+    if decimal >= 0 {
+        var size = allocation.decimal_size_of(virtual)
+        encoder.xmm_from_register(decimal, register, size == 8)
+        return
+    }
     var home = allocation.home_of(virtual)
     if home >= 0 {
         if home != register {
@@ -723,7 +752,7 @@ func emit_an_instruction(instruction: LowIntermediaryRepresentation.Instructions
         LowIntermediaryRepresentation.Instructions.Arithmetic: emit_arithmetic(instruction)
         LowIntermediaryRepresentation.Instructions.Compare: emit_compare(instruction)
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: emit_decimal_arithmetic(instruction)
-        LowIntermediaryRepresentation.Instructions.Decimal.Compare: emit_decimal_compare(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: emit_a_decimal_compare(instruction)
         LowIntermediaryRepresentation.Instructions.Decimal.Conversion: emit_decimal_conversion(instruction)
         LowIntermediaryRepresentation.Instructions.Load: emit_load(instruction)
         LowIntermediaryRepresentation.Instructions.Store: emit_store(instruction)
@@ -756,6 +785,12 @@ func emit_an_instruction(instruction: LowIntermediaryRepresentation.Instructions
 
 func emit_constant(constant: LowIntermediaryRepresentation.Instructions.Constant) {
     assert not allocation.constant_of(constant.target)
+    var decimal = allocation.decimal_home_of(constant.target)
+    if decimal >= 0 {
+        encoder.move_small_immediate(encoder.rax, constant.number)
+        write_from(constant.target, encoder.rax)
+        return
+    }
     var home = allocation.home_of(constant.target)
     if home >= 0 {
         encoder.move_small_immediate(home, constant.number)
@@ -771,6 +806,14 @@ func emit_constant(constant: LowIntermediaryRepresentation.Instructions.Constant
 }
 
 func emit_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
+    var target_decimal = allocation.decimal_home_of(copy.target)
+    var source_decimal = allocation.decimal_home_of(copy.source)
+    if target_decimal >= 0 and source_decimal >= 0 {
+        if target_decimal != source_decimal {
+            encoder.move_xmm(target_decimal, source_decimal)
+        }
+        return
+    }
     var home = allocation.home_of(copy.target)
     if home >= 0 {
         read_into(home, copy.source)
@@ -988,7 +1031,8 @@ func power_of_two(value: Long): Integer {
 
 func emitted_in_place(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
     var target = allocation.home_of(arithmetic.target)
-    if target < 0 or arithmetic.width != 'bits_64' {
+    var wide_enough = arithmetic.width == 'bits_64' or keeps_its_width(arithmetic)
+    if target < 0 or not wide_enough {
         return false
     }
     var immediate = takes_an_immediate(arithmetic)
@@ -1039,6 +1083,17 @@ func emitted_in_place(arithmetic: LowIntermediaryRepresentation.Instructions.Ari
     }
     defer_a_stop(condition, arithmetic, kind, target, source, immediate)
     return true
+}
+
+# ../../OPTIMIZATIONS.md#an-unchecked-32-bit-sum-is-one-instruction
+func keeps_its_width(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
+    if arithmetic.is_checked or arithmetic.width != 'bits_32' {
+        return false
+    }
+    var bitwise = arithmetic.operator == 'bits_and' or arithmetic.operator == 'bits_or'
+    bitwise = bitwise or arithmetic.operator == 'bits_xor'
+    var sums = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
+    return bitwise and arithmetic.is_signed or sums and not arithmetic.wraps
 }
 
 func undo_in_place(
@@ -1182,47 +1237,126 @@ func symbol_of(operator: LowIntermediaryRepresentation.ArithmeticOperator): Stri
     }
 }
 
-func emit_decimal_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic) {
-    read_into(encoder.rax, arithmetic.left)
-    read_into(encoder.rcx, arithmetic.right)
-    encoder.decimal_registers_from_rax_and_rcx(arithmetic.is_double)
-    switch arithmetic.operator {
-        'add': encoder.decimal_operation(88, arithmetic.is_double)
-        'subtract': encoder.decimal_operation(92, arithmetic.is_double)
-        'multiply': encoder.decimal_operation(89, arithmetic.is_double)
-        'divide': encoder.decimal_operation(94, arithmetic.is_double)
-        'remainder': encoder.decimal_remainder(arithmetic.is_double)
-        _: encoder.decimal_square_root(arithmetic.is_double)
+# ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
+func decimal_register_of(virtual: Integer, scratch: Integer, is_double: Boolean): Integer {
+    var home = allocation.decimal_home_of(virtual)
+    if home >= 0 {
+        return home
     }
-    encoder.rax_from_the_first_decimal_register(arithmetic.is_double)
-    write_from(arithmetic.target, encoder.rax)
+    read_into(encoder.rax, virtual)
+    encoder.xmm_from_register(scratch, encoder.rax, is_double)
+    return scratch
+}
+
+func decimal_into(xmm: Integer, virtual: Integer, is_double: Boolean) {
+    var source = decimal_register_of(virtual, xmm, is_double)
+    if source != xmm {
+        encoder.move_xmm(xmm, source)
+    }
+}
+
+func decimal_from(virtual: Integer, xmm: Integer, is_double: Boolean) {
+    var home = allocation.decimal_home_of(virtual)
+    if home >= 0 {
+        if home != xmm {
+            encoder.move_xmm(home, xmm)
+        }
+        return
+    }
+    encoder.register_from_xmm(encoder.rax, xmm, is_double)
+    write_from(virtual, encoder.rax)
+}
+
+func decimal_code_of(operator: LowIntermediaryRepresentation.ArithmeticOperator): Integer {
+    switch operator {
+        'add': return 88
+        'subtract': return 92
+        'multiply': return 89
+        'divide': return 94
+        'remainder': return 0
+        _: return 81
+    }
+}
+
+func emit_decimal_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic) {
+    var is_double = arithmetic.is_double
+    var code = decimal_code_of(arithmetic.operator)
+    if code == 0 {
+        decimal_into(0, arithmetic.left, is_double)
+        decimal_into(1, arithmetic.right, is_double)
+        encoder.decimal_remainder(is_double)
+        decimal_from(arithmetic.target, 0, is_double)
+        return
+    }
+    var target = allocation.decimal_home_of(arithmetic.target)
+    var right_home = allocation.decimal_home_of(arithmetic.right)
+    var working = 0
+    if target >= 0 and target != right_home {
+        working = target
+    }
+    if code != 81 {
+        decimal_into(working, arithmetic.left, is_double)
+    }
+    var source = decimal_register_of(arithmetic.right, 1, is_double)
+    encoder.scalar_operation(code, working, source, is_double)
+    decimal_from(arithmetic.target, working, is_double)
+}
+
+func emit_a_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
+    if allocation.is_fused(compare.target) {
+        emit_fused_decimal_compare(compare)
+    } else {
+        emit_decimal_compare(compare)
+    }
 }
 
 func emit_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
-    read_into(encoder.rax, compare.left)
-    read_into(encoder.rcx, compare.right)
-    encoder.decimal_registers_from_rax_and_rcx(compare.is_double)
+    var is_double = compare.is_double
+    var left = decimal_register_of(compare.left, 0, is_double)
+    var right = decimal_register_of(compare.right, 1, is_double)
     var above = 151
     var above_or_equal = 147
     switch compare.comparison {
-        'less': emit_decimal_test(1, 0, above, compare.is_double)
-        'less_or_equal': emit_decimal_test(1, 0, above_or_equal, compare.is_double)
-        'greater': emit_decimal_test(0, 1, above, compare.is_double)
-        'greater_or_equal': emit_decimal_test(0, 1, above_or_equal, compare.is_double)
-        'equal': emit_decimal_equality(true, compare.is_double)
-        _: emit_decimal_equality(false, compare.is_double)
+        'less': emit_decimal_test(right, left, above, is_double)
+        'less_or_equal': emit_decimal_test(right, left, above_or_equal, is_double)
+        'greater': emit_decimal_test(left, right, above, is_double)
+        'greater_or_equal': emit_decimal_test(left, right, above_or_equal, is_double)
+        'equal': emit_decimal_equality(true, left, right, is_double)
+        _: emit_decimal_equality(false, left, right, is_double)
     }
     encoder.zero_extend_al_into_rax()
     write_from(compare.target, encoder.rax)
 }
 
+func emit_fused_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
+    var is_double = compare.is_double
+    var left = decimal_register_of(compare.left, 0, is_double)
+    var right = decimal_register_of(compare.right, 1, is_double)
+    var above = 151
+    var above_or_equal = 147
+    var first = left
+    var second = right
+    var setting = above_or_equal
+    if compare.comparison == 'less' or compare.comparison == 'greater' {
+        setting = above
+    }
+    var swapped = compare.comparison == 'less' or compare.comparison == 'less_or_equal'
+    if swapped {
+        first = right
+        second = left
+    }
+    encoder.compare_xmm(first, second, is_double)
+    flags_condition = setting
+    flags_register = compare.target
+}
+
 func emit_decimal_test(first: Integer, second: Integer, setting: Integer, is_double: Boolean) {
-    encoder.compare_decimals(first, second, is_double)
+    encoder.compare_xmm(first, second, is_double)
     encoder.set_low_byte(setting, 0)
 }
 
-func emit_decimal_equality(is_equal: Boolean, is_double: Boolean) {
-    encoder.compare_decimals(0, 1, is_double)
+func emit_decimal_equality(is_equal: Boolean, left: Integer, right: Integer, is_double: Boolean) {
+    encoder.compare_xmm(left, right, is_double)
     var equal = 148
     var not_equal = 149
     var parity = 154
@@ -1239,22 +1373,22 @@ func emit_decimal_equality(is_equal: Boolean, is_double: Boolean) {
 }
 
 func emit_decimal_conversion(conversion: LowIntermediaryRepresentation.Instructions.Decimal.Conversion) {
-    read_into(encoder.rax, conversion.source)
     var from_double = conversion.from_decimal_size == 8
     var to_double = conversion.to_decimal_size == 8
     if conversion.from_decimal_size == 0 {
+        read_into(encoder.rax, conversion.source)
         encoder.whole_into_decimal(to_double)
-        encoder.rax_from_the_first_decimal_register(to_double)
+        decimal_from(conversion.target, 0, to_double)
     } else if conversion.to_decimal_size == 0 {
-        encoder.decimal_registers_from_rax_and_rcx(from_double)
+        decimal_into(0, conversion.source, from_double)
         encoder.decimal_into_whole(from_double)
         cut_to_the_width(conversion)
+        write_from(conversion.target, encoder.rax)
     } else {
-        encoder.decimal_registers_from_rax_and_rcx(from_double)
+        decimal_into(0, conversion.source, from_double)
         resize_the_decimal(to_double)
-        encoder.rax_from_the_first_decimal_register(to_double)
+        decimal_from(conversion.target, 0, to_double)
     }
-    write_from(conversion.target, encoder.rax)
 }
 
 func cut_to_the_width(conversion: LowIntermediaryRepresentation.Instructions.Decimal.Conversion) {

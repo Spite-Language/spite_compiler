@@ -144,6 +144,39 @@ func held_once(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     return lowering.single(once)
 }
 
+# ../../OPTIMIZATIONS.md#a-loop-whose-passes-write-only-their-own-item-runs-in-bands
+func item_held_once(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var element = element_type_of(call)
+    var address = item_address(call, element)
+    var object = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(object, address, 0, 'bits_64')
+    lowering.emit(loaded)
+    var count = lowering.new_register()
+    var loaded_count = LowIntermediaryRepresentation.Instructions.Load(count, object, 8, 'bits_64')
+    lowering.emit(loaded_count)
+    var one = lowering.constant(1)
+    var once = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(once, 'equal', count, one)
+    lowering.emit(compared)
+    return lowering.single(once)
+}
+
+func processor_count(): Lowered {
+    var every_group = lowering.constant(65535)
+    var arguments = List<Integer>()
+    arguments.append(every_group)
+    var answered = lowering.new_register()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(answered, "GetActiveProcessorCount", arguments)
+    lowering.emit(asked)
+    var low_half = lowering.constant(4294967295)
+    var count = lowering.new_register()
+    var masked = LowIntermediaryRepresentation.Instructions.Arithmetic(count, 'bits_and', answered, low_half)
+    masked.is_checked = false
+    masked.wraps = true
+    lowering.emit(masked)
+    return lowering.single(count)
+}
+
 func freed_frame(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var frame_value = call.arguments[0]
     crash frame_value
@@ -223,6 +256,8 @@ func typed_access(call: HighIntermediaryRepresentation.Values.Call, key: String)
         "_read_long": return read_memory(call, 'bits_64')
         "_read_byte": return read_memory(call, 'bits_8')
         "_is_held_once": return held_once(call)
+        "_item_held_once": return item_held_once(call)
+        "_processor_count": return processor_count()
         "_let_go": return let_go(call)
         "_copy_bytes": return copy_bytes(call)
         _: return byte_access(call, key)
@@ -534,6 +569,7 @@ func unchecked(
     var target = lowering.new_register()
     var computed = LowIntermediaryRepresentation.Instructions.Arithmetic(target, operator, left, right)
     computed.is_checked = false
+    computed.wraps = true
     computed.width = lowering.width_of(number_type)
     computed.is_signed = lowering.is_signed(number_type)
     lowering.emit(computed)
@@ -580,6 +616,8 @@ func item_address(call: HighIntermediaryRepresentation.Values.Call, element: Mod
     var offset = lowering.layout.offset_of(buffer_attribute)
     var buffer = lowering.new_register()
     var loaded = LowIntermediaryRepresentation.Instructions.Load(buffer, list.value, offset, 'bits_64')
+    loaded.is_attribute = true
+    loaded.is_shared = lowering.is_a_shared_class(owner.key)
     lowering.emit(loaded)
     var storage = lowering.storage_of(buffer)
     var size = item_size_of(element)
@@ -621,6 +659,7 @@ func write_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
         return lowering.single(-1)
     }
     var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, value.value, width)
+    stored.is_element = element.kind == 'scalar' or element.kind == 'enumeration'
     lowering.emit(stored)
     if lowering.is_a_nullable_scalar(element) {
         var presence_offset = item_size_of(element) - 1
@@ -630,6 +669,7 @@ func write_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
             value.presence,
             'bits_8',
         )
+        stored_presence.is_element = stored.is_element
         lowering.emit(stored_presence)
     }
     return lowering.single(-1)

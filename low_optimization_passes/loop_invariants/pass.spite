@@ -3,6 +3,7 @@ var operands = LowOptimizationPasses.Operands()
 var flow = LowOptimizationPasses.ObjectPlacement.Flow()
 var block_count = 0
 var dominators = List<Boolean>()
+var reached = List<Boolean>()
 var definitions = List<Integer>()
 var inside = List<Boolean>()
 var defined_inside = List<Boolean>()
@@ -10,7 +11,11 @@ var largest_function = 400
 var header = 0
 var preheader = 0
 var touches_memory = false
+var writes_beyond_items = false
 var counts_objects = false
+var latch_block = 0
+var copied_from = List<Integer>()
+var tested_inside = List<Boolean>()
 
 func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
@@ -40,7 +45,38 @@ func dominates(dominator: Integer, block_index: Integer): Boolean {
     return dominators[block_index * block_count + dominator] == true
 }
 
+func find_the_reached() {
+    reached.clear()
+    var index = 0
+    while index < block_count {
+        reached.append(false)
+        index = index + 1
+    }
+    var waiting = List<Integer>()
+    waiting.append(0)
+    while not waiting.is_empty() {
+        var taken = waiting.remove_last()
+        crash taken
+        if reached[taken] != true {
+            reached[taken] = true
+            var leaving = flow.successors[taken]
+            crash leaving
+            var leaving_index = 0
+            while leaving_index < leaving.count() {
+                var next = leaving[leaving_index]
+                waiting.append(next)
+                leaving_index = leaving_index + 1
+            }
+        }
+    }
+}
+
+func is_reached(block_index: Integer): Boolean {
+    return reached[block_index] == true
+}
+
 func find_the_dominators() {
+    find_the_reached()
     dominators.clear()
     var total = block_count * block_count
     var index = 0
@@ -76,7 +112,7 @@ func narrow_the_dominators(block_index: Integer): Boolean {
             var index = 0
             while index < coming.count() {
                 var predecessor = coming[index]
-                if not dominates(candidate, predecessor) {
+                if is_reached(predecessor) and not dominates(candidate, predecessor) {
                     kept = false
                 }
                 index = index + 1
@@ -103,6 +139,8 @@ func count_the_definitions() {
         }
         definitions.append(implicit)
         defined_inside.append(false)
+        copied_from.append(-1)
+        tested_inside.append(false)
         index = index + 1
     }
     var block_index = 0
@@ -113,6 +151,9 @@ func count_the_definitions() {
             var instruction = block.instructions[instruction_index]
             operands.read(instruction)
             operands.defines.each(count_a_definition)
+            if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+                copied_from[instruction.target] = instruction.source
+            }
             instruction_index = instruction_index + 1
         }
         block_index = block_index + 1
@@ -126,6 +167,7 @@ func count_a_definition(register: Integer) {
 }
 
 func hoist_the_loops_ending_at(latch: Integer) {
+    assert is_reached(latch)
     var leaving = flow.successors[latch]
     crash leaving
     var index = 0
@@ -140,6 +182,7 @@ func hoist_the_loops_ending_at(latch: Integer) {
 
 func hoist_the_loop(loop_header: Integer, latch: Integer) {
     header = loop_header
+    latch_block = latch
     find_the_body(latch)
     assert find_the_preheader()
     study_the_body()
@@ -171,7 +214,7 @@ func find_the_body(latch: Integer) {
     while not waiting.is_empty() {
         var taken = waiting.remove_last()
         crash taken
-        if inside[taken] != true {
+        if inside[taken] != true and is_reached(taken) {
             inside[taken] = true
             var coming = flow.predecessors_of(taken)
             var coming_index = 0
@@ -190,7 +233,7 @@ func find_the_preheader(): Boolean {
     var index = 0
     while index < coming.count() {
         var predecessor = coming[index]
-        if inside[predecessor] != true {
+        if inside[predecessor] != true and is_reached(predecessor) {
             if found >= 0 {
                 return false
             }
@@ -212,10 +255,12 @@ func find_the_preheader(): Boolean {
 
 func study_the_body() {
     touches_memory = false
+    writes_beyond_items = false
     counts_objects = false
     var index = 0
     while index < defined_inside.count() {
         defined_inside[index] = false
+        tested_inside[index] = false
         index = index + 1
     }
     var block_index = 0
@@ -232,13 +277,58 @@ func study_the_body() {
 func study_an_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
     operands.read(instruction)
     operands.defines.each(mark_defined_inside)
+    if instruction == LowIntermediaryRepresentation.Instructions.Compare {
+        mark_tested(instruction.left)
+        mark_tested(instruction.right)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Branch {
+        mark_tested(instruction.condition)
+    }
     if instruction == LowIntermediaryRepresentation.Instructions.Retain {
         counts_objects = true
         return
     }
     if not reads_only(instruction) {
         touches_memory = true
+        if not writes_an_item(instruction) {
+            writes_beyond_items = true
+        }
     }
+}
+
+# ../../OPTIMIZATIONS.md#an-attribute-a-loop-only-reads-is-read-before-it
+func writes_an_item(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Store {
+        return instruction.is_element
+    }
+    return false
+}
+
+func mark_tested(register: Integer) {
+    var current = register
+    var steps = 0
+    while current >= 0 and current < tested_inside.count() and steps < 8 {
+        tested_inside[current] = true
+        var source = copied_from[current]
+        crash source
+        current = source
+        steps = steps + 1
+    }
+}
+
+func is_tested_inside(register: Integer): Boolean {
+    var current = register
+    var steps = 0
+    while current >= 0 and current < tested_inside.count() and steps < 8 {
+        if tested_inside[current] == true {
+            return true
+        }
+        var source = copied_from[current]
+        crash source
+        current = source
+        steps = steps + 1
+    }
+    return false
 }
 
 func mark_defined_inside(register: Integer) {
@@ -311,6 +401,7 @@ func is_invariant(instruction: LowIntermediaryRepresentation.Instructions.Instru
 
 func may_move(instruction: LowIntermediaryRepresentation.Instructions.Instruction, block_index: Integer): Boolean {
     switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return true
         LowIntermediaryRepresentation.Instructions.Copy: return true
         LowIntermediaryRepresentation.Instructions.Arithmetic: return operands.is_pure(instruction)
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return true
@@ -323,10 +414,16 @@ func may_move(instruction: LowIntermediaryRepresentation.Instructions.Instructio
 }
 
 func may_move_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load, block_index: Integer): Boolean {
-    if block_index != header or touches_memory {
+    if counts_objects and loaded.offset == 8 or loaded.is_shared {
         return false
     }
-    return not counts_objects or loaded.offset != 8
+    if touches_memory and (writes_beyond_items or not loaded.is_attribute) {
+        return false
+    }
+    if block_index == header {
+        return true
+    }
+    return loaded.is_attribute and dominates(block_index, latch_block) and not is_tested_inside(loaded.address)
 }
 
 func hoist(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
