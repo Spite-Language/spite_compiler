@@ -1,0 +1,231 @@
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var offsets = List<Integer>()
+var definitions = List<Integer>()
+var children = List<Integer>()
+var counts = List<Integer>()
+var lowered = List<Integer>()
+var constants = List<Boolean>()
+var constant_values = List<Long>()
+var released = List<Boolean>()
+var freed_directly = List<Boolean>()
+var counted_down = List<Boolean>()
+var frees = 0
+
+func InlinedFree(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func read(): Boolean {
+    if function.parameter_count != 1 or function.is_resumable {
+        return false
+    }
+    var register_total = operands.most_register_of(function)
+    var index = 0
+    while index < register_total {
+        definitions.append(0)
+        children.append(-1)
+        counts.append(-1)
+        lowered.append(-1)
+        constants.append(false)
+        constant_values.append(0)
+        released.append(false)
+        freed_directly.append(false)
+        counted_down.append(false)
+        index = index + 1
+    }
+    if not each_instruction_is(1) {
+        return false
+    }
+    if not each_instruction_is(2) {
+        return false
+    }
+    if not each_instruction_is(3) {
+        return false
+    }
+    if frees != 1 {
+        return false
+    }
+    var register = 0
+    while register < children.count() {
+        if children[register] >= 0 and released[register] != true {
+            return false
+        }
+        if freed_directly[register] == true and counted_down[register] != true {
+            return false
+        }
+        register = register + 1
+    }
+    return true
+}
+
+func each_instruction_is(step: Integer): Boolean {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if not read_in_step(instruction, step) {
+                return false
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return true
+}
+
+func read_in_step(instruction: LowIntermediaryRepresentation.Instructions.Instruction, step: Integer): Boolean {
+    if step == 1 {
+        return count_the_definitions(instruction)
+    }
+    if step == 2 {
+        note_the_meaning(instruction)
+        return true
+    }
+    return is_part_of_a_release(instruction)
+}
+
+func count_the_definitions(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        if register == 0 {
+            return false
+        }
+        var count = definitions[register]
+        crash count
+        definitions[register] = count + 1
+        index = index + 1
+    }
+    return true
+}
+
+func defined_once(register: Integer): Boolean {
+    if register <= 0 or register >= definitions.count() {
+        return false
+    }
+    return definitions[register] == 1
+}
+
+func note_the_meaning(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: note_a_constant(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: note_a_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: note_a_subtraction(instruction)
+        _: return
+    }
+}
+
+func note_a_constant(constant: LowIntermediaryRepresentation.Instructions.Constant) {
+    assert defined_once(constant.target)
+    constants[constant.target] = true
+    constant_values[constant.target] = constant.number
+}
+
+func note_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    assert defined_once(loaded.target) and loaded.width == 'bits_64' and not loaded.is_swapped
+    if loaded.address == 0 and loaded.offset >= 16 and not offsets.contains(loaded.offset) {
+        children[loaded.target] = loaded.offset
+        offsets.append(loaded.offset)
+        return
+    }
+    if loaded.offset == 8 and is_a_child(loaded.address) {
+        counts[loaded.target] = loaded.address
+    }
+}
+
+func note_a_subtraction(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    assert defined_once(arithmetic.target) and arithmetic.operator == 'subtract'
+    assert arithmetic.left >= 0 and arithmetic.right >= 0
+    var counted = counts[arithmetic.left]
+    crash counted
+    if counted >= 0 and is_one(arithmetic.right) {
+        lowered[arithmetic.target] = counted
+    }
+}
+
+func is_one(register: Integer): Boolean {
+    if constants[register] != true {
+        return false
+    }
+    var value = constant_values[register]
+    crash value
+    return value == 1
+}
+
+func is_a_child(register: Integer): Boolean {
+    if register < 0 or register >= children.count() {
+        return false
+    }
+    var offset = children[register]
+    return offset >= 0
+}
+
+func is_part_of_a_release(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return true
+        LowIntermediaryRepresentation.Instructions.Branch: return true
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Load: return is_a_known_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return lowered[instruction.target] != -1
+        LowIntermediaryRepresentation.Instructions.Store: return is_a_count_store(instruction)
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return is_a_count_subtraction(instruction)
+        LowIntermediaryRepresentation.Instructions.Call: return is_a_child_release(instruction)
+        LowIntermediaryRepresentation.Instructions.Free: return is_the_free(instruction)
+        LowIntermediaryRepresentation.Instructions.Return: return instruction.source < 0 and instruction.presence < 0
+        _: return false
+    }
+}
+
+func is_a_known_load(loaded: LowIntermediaryRepresentation.Instructions.Load): Boolean {
+    return is_a_child(loaded.target) or counts[loaded.target] != -1
+}
+
+func is_a_count_store(stored: LowIntermediaryRepresentation.Instructions.Store): Boolean {
+    if stored.offset != 8 or stored.width != 'bits_64' or stored.is_swapped or not is_a_child(stored.address) {
+        return false
+    }
+    if stored.source < 0 or stored.source >= lowered.count() {
+        return false
+    }
+    if lowered[stored.source] != stored.address {
+        return false
+    }
+    counted_down[stored.address] = true
+    return true
+}
+
+func is_a_count_subtraction(adding: LowIntermediaryRepresentation.Instructions.AtomicAdd): Boolean {
+    if adding.offset != 8 or adding.amount != -1 or not is_a_child(adding.address) {
+        return false
+    }
+    counted_down[adding.address] = true
+    return true
+}
+
+func is_a_child_release(call: LowIntermediaryRepresentation.Instructions.Call): Boolean {
+    if call.target >= 0 or call.presence >= 0 or call.arguments.count() != 1 {
+        return false
+    }
+    var argument = call.arguments[0]
+    if not is_a_child(argument) {
+        return false
+    }
+    if call.function != "_release" and not call.function.starts_with("_free_") {
+        return false
+    }
+    released[argument] = true
+    if call.function != "_release" {
+        freed_directly[argument] = true
+    }
+    return true
+}
+
+func is_the_free(freed: LowIntermediaryRepresentation.Instructions.Free): Boolean {
+    frees = frees + 1
+    return freed.pointer == 0
+}

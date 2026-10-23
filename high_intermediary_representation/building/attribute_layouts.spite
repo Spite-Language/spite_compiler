@@ -22,9 +22,20 @@ var loop_depth = 0
 var in_defaults = false
 var defaults = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
 var span_locals = List<String>()
+var quiet_depth = 0
+var library = Validators.LibraryFile()
+var drops_known = false
+var program_drops = false
 var pure_owners = ["List", "Dictionary", "String", "Buffer"]
 var protected_names = ["_buffer", "_length", "item_count", "handle", "address", "context", "_function", "_cell"]
-var plain_conversions = ['present', 'nullable', 'into_union', 'widen', 'into_shape', 'to_decimal']
+var plain_conversions: List<HighIntermediaryRepresentation.Values.ConversionKind> = [
+    'present'
+    'nullable'
+    'into_union'
+    'widen'
+    'into_shape'
+    'to_decimal'
+]
 
 func AttributeLayouts(starting_context: Context, starting_program: HighIntermediaryRepresentation.HighProgram) {
     context = starting_context
@@ -548,6 +559,11 @@ func leaves_out(
     if through_shapes.contains(key) or unplain.contains(key) {
         return false
     }
+    var is_held_by_one = model.is_singleton or model.key == context.program.entry
+    if not is_held_by_one and holds_a_quiet_singleton(span) {
+        rebuild(model, attribute, span)
+        return true
+    }
     if is_unchanging_value {
         stand_in(model, attribute, span)
         return true
@@ -700,6 +716,98 @@ func is_pure_value(value: HighIntermediaryRepresentation.Values.Value?): Boolean
     }
 }
 
+func the_program_drops(): Boolean {
+    if drops_known {
+        return program_drops
+    }
+    drops_known = true
+    var index = 0
+    while index < program.built_functions.count() {
+        var function = program.built_functions[index]
+        var declared = function.function
+        if declared.name == "drop" and is_the_programs(declared.owner) {
+            program_drops = true
+        }
+        index = index + 1
+    }
+    return program_drops
+}
+
+func is_the_programs(owner: String): Boolean {
+    var model = context.program.class_named(owner)
+    if not model {
+        return true
+    }
+    return not library.holds(model.file.path)
+}
+
+func holds_a_quiet_singleton(span: List<HighIntermediaryRepresentation.Statements.Statement>): Boolean {
+    if span.count() != 1 {
+        return false
+    }
+    var only = span.first()
+    crash only
+    var value = assigned_value(only)
+    if value == HighIntermediaryRepresentation.Values.MakeObject {
+        return is_a_quiet_singleton(value)
+    }
+    return false
+}
+
+func is_a_quiet_singleton(made: HighIntermediaryRepresentation.Values.MakeObject): Boolean {
+    if not made.arguments.is_empty() or made.value_type.kind != 'object' or quiet_depth > 3 {
+        return false
+    }
+    if the_program_drops() {
+        return false
+    }
+    var model = context.program.class_named(made.value_type.name)
+    if not model {
+        return false
+    }
+    if not model.is_singleton {
+        return false
+    }
+    if model.function_named("drop") {
+        return false
+    }
+    var outer_locals = span_locals
+    quiet_depth = quiet_depth + 1
+    var quiet = makes_only_its_own(model.key, "_attribute_defaults")
+    if quiet and made.constructor {
+        quiet = makes_only_its_own(model.key, made.constructor.name)
+    }
+    quiet_depth = quiet_depth - 1
+    span_locals = outer_locals
+    return quiet
+}
+
+func makes_only_its_own(owner: String, name: String): Boolean {
+    var index = 0
+    while index < program.built_functions.count() {
+        var function = program.built_functions[index]
+        var declared = function.function
+        if declared.owner == owner and declared.name == name {
+            if not declared.parameters.is_empty() {
+                return false
+            }
+            return function.body.statements.all(is_a_quiet_statement)
+        }
+        index = index + 1
+    }
+    return name == "_attribute_defaults"
+}
+
+func is_a_quiet_statement(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    span_locals = List<String>()
+    if statement == HighIntermediaryRepresentation.Statements.AssignAttribute {
+        var object = statement.object
+        var is_its_own = object == HighIntermediaryRepresentation.Values.ThisRead
+        return is_its_own and is_pure_value(statement.value)
+    }
+    return false
+}
+
 func is_a_pure_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
     if not plain_conversions.contains(conversion.kind) {
         return false
@@ -708,6 +816,9 @@ func is_a_pure_conversion(conversion: HighIntermediaryRepresentation.Values.Conv
 }
 
 func is_a_pure_making(made: HighIntermediaryRepresentation.Values.MakeObject): Boolean {
+    if is_a_quiet_singleton(made) {
+        return true
+    }
     if not is_a_pure_owner(made.value_type.name) {
         return false
     }

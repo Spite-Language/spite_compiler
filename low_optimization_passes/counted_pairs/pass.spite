@@ -1,0 +1,417 @@
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var reached = List<Boolean>()
+var entries = List<Integer>()
+var halting = List<Boolean>()
+var aliases = List<Integer>()
+var visited = List<Integer>()
+var found_block = -1
+var found_index = -1
+var longest_walk = 4000
+var most_blocks = 64
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if function.is_resumable or not retains_anything() {
+        return function
+    }
+    find_the_entries()
+    var round = 0
+    var changed = true
+    while changed and round < 16 {
+        changed = false
+        var block_index = 0
+        while block_index < function.blocks.count() {
+            if reached[block_index] == true and cancel_in(block_index) {
+                changed = true
+            }
+            block_index = block_index + 1
+        }
+        round = round + 1
+    }
+    return function
+}
+
+func retains_anything(): Boolean {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Retain {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func find_the_entries() {
+    var count = function.blocks.count()
+    var index = 0
+    while index < count {
+        reached.append(false)
+        entries.append(0)
+        halting.append(false)
+        index = index + 1
+    }
+    var waiting = List<Integer>()
+    waiting.append(0)
+    reached[0] = true
+    while not waiting.is_empty() {
+        var taken = waiting.remove_last()
+        crash taken
+        var onward = successors_of(taken)
+        var onward_index = 0
+        while onward_index < onward.count() {
+            var target = onward[onward_index]
+            var seen = entries[target]
+            crash seen
+            entries[target] = seen + 1
+            if reached[target] != true {
+                reached[target] = true
+                waiting.append(target)
+            }
+            onward_index = onward_index + 1
+        }
+    }
+    index = 0
+    while index < count {
+        halting[index] = only_halts(index)
+        index = index + 1
+    }
+    var changed = true
+    var round = 0
+    while changed and round < 8 {
+        changed = false
+        index = 0
+        while index < count {
+            if halting[index] != true and is_quiet(index) and leads_only_to_halts(index) {
+                halting[index] = true
+                changed = true
+            }
+            index = index + 1
+        }
+        round = round + 1
+    }
+}
+
+func leads_only_to_halts(block_index: Integer): Boolean {
+    var onward = successors_of(block_index)
+    if onward.is_empty() {
+        return false
+    }
+    var index = 0
+    while index < onward.count() {
+        var target = onward[index]
+        if halting[target] != true {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func successors_of(block_index: Integer): List<Integer> {
+    var found = List<Integer>()
+    var block = function.blocks[block_index]
+    crash block
+    var last = block.instructions.last()
+    if last {
+        if last == LowIntermediaryRepresentation.Instructions.Jump {
+            found.append(last.block)
+            return found
+        }
+        if last == LowIntermediaryRepresentation.Instructions.Branch {
+            found.append(last.when_true)
+            found.append(last.when_false)
+            return found
+        }
+        if ends_the_block(last) {
+            return found
+        }
+    }
+    if block_index + 1 < function.blocks.count() {
+        found.append(block_index + 1)
+    }
+    return found
+}
+
+func ends_the_block(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Branch: return true
+        LowIntermediaryRepresentation.Instructions.Return: return true
+        LowIntermediaryRepresentation.Instructions.Exit: return true
+        LowIntermediaryRepresentation.Instructions.Stop: return not instruction.continues
+        _: return false
+    }
+}
+
+func only_halts(block_index: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    if not is_quiet(block_index) {
+        return false
+    }
+    var last = block.instructions.last()
+    if not last {
+        return false
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Stop {
+        return not last.continues
+    }
+    return last == LowIntermediaryRepresentation.Instructions.Exit
+}
+
+func is_quiet(block_index: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    return block.instructions.all(lets_nothing_go)
+}
+
+func lets_nothing_go(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return true
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return true
+        LowIntermediaryRepresentation.Instructions.Load: return true
+        LowIntermediaryRepresentation.Instructions.DataAddress: return true
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Branch: return true
+        LowIntermediaryRepresentation.Instructions.Stop: return true
+        LowIntermediaryRepresentation.Instructions.Exit: return true
+        LowIntermediaryRepresentation.Instructions.Call: return instruction.function.contains("$cold")
+        _: return false
+    }
+}
+
+func cancel_in(block_index: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var index = block.instructions.count() - 1
+    while index >= 0 {
+        var instruction = block.instructions[index]
+        if instruction == LowIntermediaryRepresentation.Instructions.Retain {
+            if released_later(block_index, index, instruction.object) {
+                remove_the_pair(block_index, index)
+                return true
+            }
+        }
+        index = index - 1
+    }
+    return false
+}
+
+func remove_the_pair(block_index: Integer, index: Integer) {
+    var release_block = function.blocks[found_block]
+    crash release_block
+    release_block.instructions = without(release_block.instructions, found_index)
+    var block = function.blocks[block_index]
+    crash block
+    block.instructions = without(block.instructions, index)
+}
+
+func without(
+    instructions: List<LowIntermediaryRepresentation.Instructions.Instruction>,
+    removed: Integer,
+): List<LowIntermediaryRepresentation.Instructions.Instruction> {
+    var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var index = 0
+    while index < instructions.count() {
+        var instruction = instructions[index]
+        if index != removed {
+            kept.append(instruction)
+        }
+        index = index + 1
+    }
+    return kept
+}
+
+func released_later(start_block: Integer, start_index: Integer, object: Integer): Boolean {
+    if object < 0 {
+        return false
+    }
+    aliases = List<Integer>()
+    aliases.append(object)
+    find_the_earlier_names(start_block, start_index)
+    visited = List<Integer>()
+    visited.append(start_block)
+    var block_index = start_block
+    var index = start_index + 1
+    var walked = 0
+    while walked < longest_walk {
+        var block = function.blocks[block_index]
+        crash block
+        var onward = block_index + 1
+        var verdict = 3
+        if index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            verdict = judge(instruction)
+            onward = onward_of(instruction)
+        }
+        if verdict == 1 {
+            found_block = block_index
+            found_index = index
+            return true
+        }
+        if verdict == 2 {
+            return false
+        }
+        index = index + 1
+        if verdict == 3 {
+            if not may_enter(onward) {
+                return false
+            }
+            block_index = onward
+            index = 0
+        }
+        walked = walked + 1
+    }
+    return false
+}
+
+func find_the_earlier_names(block_index: Integer, retain_index: Integer) {
+    var block = function.blocks[block_index]
+    crash block
+    var written = List<Integer>()
+    var index = retain_index - 1
+    while index >= 0 {
+        var instruction = block.instructions[index]
+        if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+            var names_it = aliases.contains(instruction.target) and not written.contains(instruction.target)
+            if names_it and not written.contains(instruction.source) and instruction.source >= 0 {
+                aliases.append(instruction.source)
+            }
+        }
+        operands.read(instruction)
+        add_every(written, operands.defines)
+        index = index - 1
+    }
+}
+
+func add_every(found: List<Integer>, more: List<Integer>) {
+    var index = 0
+    while index < more.count() {
+        var register = more[index]
+        found.append(register)
+        index = index + 1
+    }
+}
+
+func may_enter(block_index: Integer): Boolean {
+    if block_index < 0 or block_index >= function.blocks.count() {
+        return false
+    }
+    if visited.contains(block_index) or visited.count() >= most_blocks {
+        return false
+    }
+    if entries[block_index] != 1 {
+        return false
+    }
+    visited.append(block_index)
+    return true
+}
+
+func onward_of(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Integer {
+    if instruction == LowIntermediaryRepresentation.Instructions.Jump {
+        return instruction.block
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Branch {
+        var true_halts = halting[instruction.when_true] == true
+        var false_halts = halting[instruction.when_false] == true
+        if true_halts and not false_halts {
+            return instruction.when_false
+        }
+        if false_halts and not true_halts {
+            return instruction.when_true
+        }
+    }
+    return -1
+}
+
+func judge(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Integer {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Call: return judge_a_call(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: return follow_a_copy(instruction)
+        LowIntermediaryRepresentation.Instructions.Jump: return 3
+        LowIntermediaryRepresentation.Instructions.Branch: return 3
+        LowIntermediaryRepresentation.Instructions.Load: return judge_a_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: return judge_a_store(instruction)
+        LowIntermediaryRepresentation.Instructions.Retain: return 0
+        LowIntermediaryRepresentation.Instructions.Constant: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.Compare: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.DecimalArithmetic: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.DecimalCompare: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.DecimalConversion: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.DataAddress: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.FrameAddress: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.FrameRoom: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.Allocate: return forget_the_defined(instruction)
+        LowIntermediaryRepresentation.Instructions.ThreadIdentity: return forget_the_defined(instruction)
+        _: return 2
+    }
+}
+
+func forget_the_defined(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Integer {
+    operands.read(instruction)
+    operands.defines.each(forget)
+    return 0
+}
+
+func forget(register: Integer) {
+    var kept = List<Integer>()
+    var index = 0
+    while index < aliases.count() {
+        var alias = aliases[index]
+        if alias != register {
+            kept.append(alias)
+        }
+        index = index + 1
+    }
+    aliases = kept
+}
+
+func follow_a_copy(copy: LowIntermediaryRepresentation.Instructions.Copy): Integer {
+    var holds = aliases.contains(copy.source)
+    forget(copy.target)
+    if holds and copy.target >= 0 {
+        aliases.append(copy.target)
+    }
+    return 0
+}
+
+func judge_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load): Integer {
+    if loaded.offset == 8 {
+        return 2
+    }
+    forget(loaded.target)
+    return 0
+}
+
+func judge_a_store(stored: LowIntermediaryRepresentation.Instructions.Store): Integer {
+    if stored.offset == 8 {
+        return 2
+    }
+    return 0
+}
+
+func judge_a_call(call: LowIntermediaryRepresentation.Instructions.Call): Integer {
+    if call.function != "_release" or call.arguments.count() != 1 {
+        return 2
+    }
+    var released = call.arguments[0]
+    if aliases.contains(released) {
+        return 1
+    }
+    return 2
+}
