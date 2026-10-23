@@ -13,6 +13,8 @@ var line = 0
 var singleton_slots = Dictionary<String, Integer>()
 var scopes = List<List<Integer>>()
 var pending_releases = List<Integer>()
+var statement_releases = List<Integer>()
+var gathers_for_the_statement = false
 var waits: Waits? = null
 var assignments: Assignments? = null
 var reassigned_names = List<String>()
@@ -444,13 +446,21 @@ func lower_block(block: HighIntermediaryRepresentation.Statements.Block?) {
     scopes.append(held)
     var outer_statements = block_statements
     var outer_index = statement_index
+    var outer_releases = statement_releases
+    var outer_gathering = gathers_for_the_statement
+    statement_releases = List<Integer>()
     block_statements = block.statements
     statement_index = 0
     while statement_index < block_statements.count() {
         var statement = block_statements[statement_index]
+        gathers_for_the_statement = not resumable_mode and is_a_plain_statement(statement)
         lower_statement(statement)
+        gathers_for_the_statement = false
         statement_index = statement_index + 1
+        release_at_the_statement_end(statement)
     }
+    statement_releases = outer_releases
+    gathers_for_the_statement = outer_gathering
     block_statements = outer_statements
     statement_index = outer_index
     if not terminated {
@@ -458,6 +468,26 @@ func lower_block(block: HighIntermediaryRepresentation.Statements.Block?) {
     }
     var last = scopes.count() - 1
     scopes.remove_at(last)
+}
+
+func is_a_plain_statement(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    var branches = statement == HighIntermediaryRepresentation.Statements.If
+    branches = branches or statement == HighIntermediaryRepresentation.Statements.While
+    branches = branches or statement == HighIntermediaryRepresentation.Statements.Block
+    var leaves = statement == HighIntermediaryRepresentation.Statements.Return
+    leaves = leaves or statement == HighIntermediaryRepresentation.Statements.Stop
+    return not branches and not leaves
+}
+
+func release_at_the_statement_end(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    assert not statement_releases.is_empty()
+    var next = block_statements[statement_index]
+    if next {
+        var continues = is_a_plain_statement(next) and next.line == statement.line
+        assert not continues
+    }
+    statement_releases.each(release)
+    statement_releases = List<Integer>()
 }
 
 func lower_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
@@ -496,6 +526,20 @@ func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
         var copied_presence = LowIntermediaryRepresentation.Instructions.Copy(presence, value.presence)
         emit(copied_presence)
     }
+    if declare.hides != "" {
+        let_go_of_the_hidden(declare.hides)
+    }
+}
+
+func let_go_of_the_hidden(hidden: String) {
+    var register = locals[hidden]
+    assert register
+    var innermost = scopes.last()
+    crash innermost
+    var at = innermost.index_of(register)
+    assert at
+    innermost.remove_at(at)
+    release_held(register)
 }
 
 func is_a_borrowed_local(declare: HighIntermediaryRepresentation.Statements.Declare, value: Lowered): Boolean {
@@ -1005,7 +1049,12 @@ func lower_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead):
     var object = lower_value(read.object)
     var loaded = load_attribute(object.value, read.attribute)
     crash read.object
-    release_later(object, read.object.value_type)
+    var is_a_temporary = is_a_pointer(read.object.value_type) and object.owned
+    if gathers_for_the_statement and is_a_temporary {
+        statement_releases.append(object.value)
+    } else {
+        release_later(object, read.object.value_type)
+    }
     return loaded
 }
 

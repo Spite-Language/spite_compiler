@@ -7,6 +7,8 @@ var values = Values(context)
 var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
 var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
 var made = Model.ClassModel("", "", no_file)
+var this_names = List<String>()
+var attribute_names = List<String>()
 
 func Constraints(starting_context: Context, starting_values: Values) {
     context = starting_context
@@ -178,52 +180,127 @@ func refuse_a_dropped_item(element: Model.Type, held: Model.ClassModel) {
 }
 
 func refuse_this_as_a_value(element: Model.Type, held: Model.ClassModel) {
+    this_names = List<String>()
+    attribute_names = List<String>()
+    held.declared_attributes.each(note_an_attribute_name)
     var walk = AbstractSyntaxTree.Walk.Walk(held.file)
-    var functions = List<String>()
-    var counts = Dictionary<String, Integer>()
+    walk.statements.each(note_an_alias)
     var index = 0
-    while index < walk.expressions.count() {
-        var found = walk.expressions[index]
-        var change = this_count_change(found.expression)
-        var known = counts[found.function_name]
-        var before = 0
-        if known {
-            before = known
-        } else {
-            functions.append(found.function_name)
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        if escapes_by_a_statement(found.statement, found.function_name) {
+            refuse_an_escape(element, found.function_name)
         }
-        counts[found.function_name] = before + change
         index = index + 1
     }
-    var function_index = 0
-    while function_index < functions.count() {
-        var function_name = functions[function_index]
-        var count = counts[function_name]
-        crash count
-        if count > 0 {
-            var shown = context.shown(element)
-            typing.refuse_a_vector_this(context, shown, function_name)
+    var expression_index = 0
+    while expression_index < walk.expressions.count() {
+        var found_expression = walk.expressions[expression_index]
+        var function_name = found_expression.function_name
+        if escapes_by_an_expression(found_expression.expression, function_name) {
+            refuse_an_escape(element, function_name)
         }
-        function_index = function_index + 1
+        expression_index = expression_index + 1
     }
 }
 
-func this_count_change(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Integer {
-    crash expression
-    if is_this(expression) {
-        return 1
-    }
-    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
-        return member_this_change(expression)
-    }
-    return 0
+func note_an_attribute_name(attribute: Model.AttributeModel) {
+    attribute_names.append(attribute.name)
 }
 
-func member_this_change(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Integer {
-    if is_this(member.target) {
-        return -1
+func refuse_an_escape(element: Model.Type, function_name: String) {
+    var shown = context.shown(element)
+    typing.refuse_a_vector_this(context, shown, function_name)
+}
+
+func note_an_alias(found: AbstractSyntaxTree.Walk.FoundStatement) {
+    note_a_statement_alias(found.statement, found.function_name)
+}
+
+func note_a_statement_alias(statement: AbstractSyntaxTree.Shapes.Statements.Statement?, function_name: String) {
+    if statement == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        note_a_named_this(statement.name, statement.value, function_name)
     }
-    return 0
+    if statement == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        note_an_assigned_this(statement.target, statement.value, function_name)
+    }
+}
+
+func note_an_assigned_this(
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    value: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    function_name: String,
+) {
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        note_a_named_this(target.name, value, function_name)
+    }
+}
+
+func note_a_named_this(name: String, value: AbstractSyntaxTree.Shapes.Expressions.Expression?, function_name: String) {
+    var is_a_local = not attribute_names.contains(name)
+    if is_a_local and is_this_in(value, function_name) {
+        this_names.append("{function_name}|{name}")
+    }
+}
+
+func is_this_in(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, function_name: String): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return this_names.contains("{function_name}|{expression.name}")
+    }
+    return is_this(expression)
+}
+
+func escapes_by_a_statement(
+    statement: AbstractSyntaxTree.Shapes.Statements.Statement?,
+    function_name: String,
+): Boolean {
+    if statement == AbstractSyntaxTree.Shapes.Statements.ReturnStatement {
+        return is_this_in(statement.value, function_name)
+    }
+    if statement == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        return stores_this(statement, function_name)
+    }
+    return false
+}
+
+func stores_this(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement, function_name: String): Boolean {
+    var stored = is_this_in(statement.value, function_name)
+    return stored and is_a_kept_place(statement.target)
+}
+
+func is_a_kept_place(target: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return attribute_names.contains(target.name)
+    }
+    return true
+}
+
+func escapes_by_an_expression(
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    function_name: String,
+): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return any_this_in(expression.arguments, function_name)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.ListLiteral {
+        return any_this_in(expression.entries, function_name)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
+        return is_this_in(expression.value, function_name)
+    }
+    return false
+}
+
+func any_this_in(expressions: List<AbstractSyntaxTree.Shapes.Expressions.Expression>, function_name: String): Boolean {
+    var index = 0
+    while index < expressions.count() {
+        var expression = expressions[index]
+        if is_this_in(expression, function_name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func is_this(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {

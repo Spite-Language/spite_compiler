@@ -25,12 +25,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found
 
-- A `crash` whose condition folds to false only once the function facts are answered (`function_writes_parameter`, `function_waits`) is not refused, and the facts keep no place for the write they found (`conformance/io_system_writes_row`, `conformance/snapshot_argument_writes`)
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D748)
 - A getter or setter called by its bare name inside its own class (`set_rotation(rotation)` in `Matrix4`) is not refused (D752 refuses `point.set_height(4)`), and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
 - `conformance/vector_rows` stops first on `'alias' is never read`, an abstract syntax tree rule that runs before any borrow rule can, where it expects the row's resize error (D731)
-- `conformance/own_template_borrows` reopens `Vector` with the old library's `item_count`, `values` and `items`, which the library no longer has, so it fails on `item_count` before any borrow rule
 - `conformance/lent_arguments` stops on `unknown type 'argument.class'` (the reflection walks over a function's arguments, as `tests/reflection_walks`), before its plural-naming error
 - A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
 - A class name that reaches no file is collected in `SymbolTable.unknown_names` and never reported
@@ -53,8 +51,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A `load` of a repository pinned to a commit is refused even when well formed (D839): fetching into `.spite/git/` is not built
 - The library and the compiler's generated files break three rules they are exempt from for now (D838): a case of two statements (`Duration.part`), an `if` that only holds an `if` (`ZoneRules.transition_offset_seconds_at`), and `crash` on a value that cannot be null (`internal/prompt.spite`, the generated REPL)
 - An `assert`/`crash` on a value that cannot be null is refused only on a parameter or an attribute, not on a local; a lone hole in an untyped `var` knows a text only from a local or parameter declared with text (D836); a reopening's attribute type is compared only between two written types or two literals (D840)
-- The unread-attribute check counts a read of any attribute of the same name in any class, so a loaded class's unread singleton is not reported (`conformance/loaded_singleton_unread`); a shadowed local is dropped at its scope's end, not where the next declaration hides it (`tests/shadow_drop_order`)
-- A crash whose condition is decided per instance through a reflection question (`$system_type.functions['update_each']`, `function_writes_parameter`) is not refused (`folded_crash_and_side`, `io_system_writes_row`)
+- The unread-attribute check counts a read through another object (`tint.name`) by name in every class, not per class: only `this.x` reads and reads inside the class's own files are per class (D872)
 - The spec pages in `../SpiteLanguage/specs` still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D750 to D756
 
 - The runtime the library needs, as machine code: console, files, directories, clock, sockets, processes, dynamic library
@@ -64,8 +61,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `File.lock()` waits in place: inside a `Concurrent` it does not return to the scheduler while another process holds the lock
 - A foreign call (D738) answers only `Integer`, `_as_long`, `_as_double` and `_as_float`: `_as_text`, a `type` passed as a pointer to its struct, and a list passed as a pointer to its numbers with C's writes coming back are not built (`tests/foreign_library`); a header's prototype casts each argument to its C type's number (D848), but a prototype written over several lines, or with a `typedef`'d parameter type, is not read, so its arguments pass as written
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
-- `--debug-memory` counts and the leak report; an attribute read from an object made in the same expression (`Maker().part`) lets it go after the call that reads it, not at the end of the statement (D833, `tests/memory_temporary_released`), and leaks it where no call reads it (`var part = Maker().part`); the counts a pass proves unneeded are still written
-- Chains of member templates as one loop, class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
+- `--debug-memory` counts and the leak report; an attribute read from an object made in the same expression is let go at the end of its statement (D871) only in a declaration, an assignment or an evaluated call: in an `if`, `while` or `return` it goes after the call that reads it, and where no call reads it there it leaks; the counts a pass proves unneeded are still written
+- Chains of member templates as one loop beyond `filter_` steps on a `List` (D876: a `map_` in the middle, a passed function `filter(f)`, a chain on a `Dictionary`'s values or a `Vector`/`Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A dictionary keyed by hashing instead of a walk of its keys
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
 - `Float` and `Double`: `%`, exponent notation in literals, a `Double` too large for a `Float` halting, and `UnsignedLong` to and from a decimal past 2^63; a decimal too large for a `Long` prints a wrong number in its range-stop message
@@ -91,6 +88,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - `String.code_at(index)` reads its bytes without testing the index (D244): past the length it answers the zeroed room's 0, and past the room or below 0 whatever memory holds, where `specs/standard_library.md` says `0` out of range (itself a default a caller cannot tell from a real 0)
 
+- A file write (`File.write`, `File.append`, `File.write_bytes`, `File.append_bytes`) answers `function_waits` true (D873) but blocks its thread inside a `Concurrent`: the helper-thread wait for file writes is not built
+- `Vector<T>` refuses a class holding a singleton attribute (`Date._time_text`), while `Items<T>` and `is_fixed_size` count it inline: the two answers of "fits a Vector" disagree (D877)
 - `--optimization-report` written without `=path` writes the report to a file named `true` in the working folder (D244): it should name its default path or refuse the bare flag
 
 - At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)

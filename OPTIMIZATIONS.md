@@ -1275,3 +1275,22 @@ Four `Parallel`s running `count_up` each take `Tally`'s lock once
 (`a_counted_loop_of_calls_to_one_singleton_takes_its_lock_once`).
 
 **Not built:** a loop that is not counted testing the task count once before it starts.
+
+## A chain of `filter_` steps runs as one loop
+
+`lamps.filter_is_lit().sum_brightness()` makes no list in between: when a `List`'s member template is called on
+the answer of a `filter_` template (or of a chain of them), the compiler writes one function on the first list's
+class, `_fused_is_lit_then_sum_brightness`, from the last template's body with its loop's step wrapped in an `if`
+per `filter_`, and calls that on the first list (`high_intermediary_representation/building/fused_chains.spite`).
+The last step may be `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_` or `find_by_`. A program sees
+only the order: each element's members run before the next element's.
+
+```spite
+var total = lamps.filter_is_lit().sum_brightness()
+```
+
+calls `is_lit` then `brightness` on the first lamp, then on the second (`tests/list_chain_order`), and allocates no
+list for the filtered lamps.
+
+**Not built:** a `map_` in the middle, a passed function (`filter(f)`), chains on a `Dictionary`'s values, on a
+`Vector` or on `Items`, and leaving out the unfused step's own function, which is still compiled.

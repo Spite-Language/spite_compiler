@@ -15,9 +15,14 @@ var starting = false
 var current_key = ""
 var current_owner = ""
 var current_parameters = List<String>()
+var current_path = ""
+var current_line = 0
+var write_paths = Dictionary<String, String>()
+var write_lines = Dictionary<String, Integer>()
 var aliases = Aliases()
 var blocking = ["Socket.accept_handle", "Socket.receive_into", "Socket.first_readable", "Console.read_line"]
 var file_reads = ["File.read", "File.read_bytes", "File.read_bytes_at"]
+var file_writes = ["File.write", "File.append", "File.write_bytes", "File.append_bytes"]
 
 func Facts(
     starting_program: Model.ProgramModel,
@@ -140,6 +145,7 @@ func read_function(key: String) {
     assert high
     current_key = key
     current_owner = high.function.owner
+    current_path = path_of(high.function)
     current_parameters = List<String>()
     aliases = Aliases()
     var index = 0
@@ -153,6 +159,55 @@ func read_function(key: String) {
     }
     ensure_lists(key)
     read_block(high.body)
+}
+
+func path_of(function: Model.FunctionModel): String {
+    var path = ""
+    var owner = program.class_named(function.owner)
+    if owner {
+        path = owner.file.path
+    }
+    if function.declaration {
+        path = declared_path_or(function.declaration, path)
+    }
+    return path
+}
+
+func declared_path_or(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    otherwise: String,
+): String {
+    if declaration.path.is_empty() {
+        return otherwise
+    }
+    return declaration.path
+}
+
+func place_of_a_write(function: Model.FunctionModel, slot: String): String {
+    var key = function.key()
+    var entry = "{key}|{slot}"
+    var path = write_paths[entry]
+    var line = write_lines[entry]
+    if path and line and not path.is_empty() {
+        return "{path}:{line}"
+    }
+    return ""
+}
+
+func source_of_a_write(function: Model.FunctionModel, slot: String): String {
+    var key = function.key()
+    var entry = "{key}|{slot}"
+    var path = write_paths[entry]
+    var line = write_lines[entry]
+    crash path
+    crash line
+    var file = File(path)
+    var text = file.read()
+    crash text
+    var lines = text.lines()
+    var found = lines[line - 1]
+    crash found
+    return found.trim()
 }
 
 func ensure_lists(key: String) {
@@ -241,6 +296,8 @@ func mark(slots: List<String>) {
         var entry = "{current_key}|{slot}"
         if not written.contains(entry) {
             written.append(entry)
+            write_paths[entry] = current_path
+            write_lines[entry] = current_line
             changed = true
         }
         index = index + 1
@@ -260,6 +317,7 @@ func read_block(block: HighIntermediaryRepresentation.Statements.Block?) {
 }
 
 func read_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    current_line = statement.line
     switch statement {
         HighIntermediaryRepresentation.Statements.Declare: read_a_naming(statement.name, statement.value)
         HighIntermediaryRepresentation.Statements.Assign: read_a_naming(statement.name, statement.value)
@@ -421,7 +479,8 @@ func look_a_call(call: HighIntermediaryRepresentation.Values.Call) {
     look(call.receiver)
     call.arguments.each(look_present)
     var key = call.function.key()
-    if key == "Program.sleep" or blocking.contains(key) or file_reads.contains(key) {
+    var touches_a_file = file_reads.contains(key) or file_writes.contains(key)
+    if key == "Program.sleep" or blocking.contains(key) or touches_a_file {
         note_waiting()
     }
     add_a_called_key(key, call.function.owner)
