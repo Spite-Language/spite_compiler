@@ -14,7 +14,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The emitter's refusals have no place (`validators/low_intermediary_representation/emittable`): each becomes a validator one level up once the high representation carries places
 - Every node carries its file, line and column, from the tree to the instructions
 - Unions and enums instead of strings in both representations (instruction kind, operator, types, call owner)
-- `printers/spite` and the formatter; the tree keeps comments, blank lines and literal spelling; `--final-classes`
+- The formatter's rules that need the tree (D901): a line wider than 120 columns broken one argument per line, the minimum parentheses, `else if` on one line, `{ }` for an empty body, `: Nothing` dropped, `crash false` as `crash`, a single named codegen value written positionally, an enum, union or type body one member per line, a multi-line list without commas; `--final-classes`
 - `printers/machine_code`
 - Low representation in SSA form; until then each value has one register interval with no holes and a spilled value is spilled for its whole life (D771), and copy propagation only crosses a block for a parameter
 - Unit passes and program passes split by input type; every function has a stable identity for cache keys
@@ -46,7 +46,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `'<path>' is not a class known while compiling` is given for an attribute typed `Spite.Class` named as a type; a local or a parameter so named is still "unknown type" (D868)
 - Templates over `Spite.Attribute` and `Spite.Function`, bound to one object (D798, D815): a parameter of those types is still an ordinary parameter; and `Namespace.classes.each(walker)` unrolls only with a walker of one parameter named in the same class (D813)
 - SpiteSpec as the whole specification (D799): one program per rule and corner of every spec page, then the Markdown spec retired
-- Fixes instead of errors (D800, to discuss): the formatter, and each rule whose fix needs no choice
+- Fixes instead of errors (D800, to discuss): the layout is fixed (D901); each other rule whose fix needs no choice, such as the declaration order, waits for Mortaro's choice in `mortaros_missing_decisions.md`
 - A cycle the program's code does not link as owner and back reference still leaks (D759): two objects stored in each other's attributes where neither was made in that function, one attribute pointing both ways (`partner`), a cycle through a union or a `type`, a non-nullable back attribute, or links made in two different functions; a leak no run reports until `--debug-memory` has its report (D244)
 - A back reference is read without a count (D760), so a call on it (`child.parent.leave()`) whose body lets the owner go runs on freed memory, and on two threads the check that its object lives races with the owner's last release
 - A `load` of a repository pinned to a commit is refused even when well formed (D839): fetching into `.spite/git/` is not built
@@ -131,7 +131,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## The outputs
 
-- `spite program` builds and runs (this compiler only builds, so a setting its `Environment` declares is checked and then unused, D842), and the formatter (`conformance/blank_line`)
+- `spite program` builds and runs (this compiler only builds, so a setting its `Environment` declares is checked and then unused, D842)
 - Crash reports and the `<program>.crashes` map
 - `--optimization-report` (it writes only `Waits that hold the frame`), `--final-classes`
 - `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest

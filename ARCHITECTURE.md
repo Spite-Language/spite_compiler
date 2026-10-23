@@ -18,7 +18,7 @@ A representation is data only: no function on it writes text or decides an error
     command_line
     mapping                                then validators/mapping
     symbols + abstract_syntax_tree         a class at a time, as names ask for it; then validators/abstract_syntax_tree
-    format                                 printers/spite writes back a changed file, which is read again
+    format                                 each file as it is parsed: printers/formatted_source, written back and read again
     name_resolution                        then validators/name_resolution
     high_intermediary_representation       then validators/high_intermediary_representation
     high_optimization_passes               unit passes, then program passes
@@ -66,8 +66,10 @@ needs. The folder is named after the rule, and the validator holds every word of
 `printers/<what>/printer.spite` holds a class `Printer(input)` answering `text(): String`. A printer never writes
 a file and never changes its input.
 
-- `printers/spite` prints a tree as Spite. It is the formatter, and `--final-classes` uses it on a merged class.
-  The tree therefore keeps comments, blank lines and how literals were spelled.
+- `printers/spite` prints a tree as Spite, to quote code in a message; `--final-classes` uses it on a merged class.
+- `printers/formatted_source` is the formatter: it prints a file's tokens and comments in the one layout (D901),
+  and `formatting/formatter.spite` checks the result (`validators/abstract_syntax_tree/formatting`), writes it
+  back and prints `formatted <path>`.
 - `printers/diagnostics`, `printers/high_intermediary_representation`, `printers/low_intermediary_representation`,
   `printers/optimization_report`, `printers/machine_code`. `--high-ir` and `--low-ir` write the two
   representations next to the executable, as `<program>.high_ir.txt` and `<program>.low_ir.txt`.
