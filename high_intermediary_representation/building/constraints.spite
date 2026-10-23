@@ -18,18 +18,130 @@ func check(starting_made: Model.ClassModel) {
     made.file.declarations.each(check_declaration)
     check_the_vector_items()
     check_the_dictionary_keys()
+    check_the_written_form()
 }
 
 func check_the_dictionary_keys() {
     assert made.shown.starts_with("Dictionary<")
     var key = made.bound_types["$key_type"]
     assert key
+    if key.kind == 'union' {
+        var union_shown = context.shown(key)
+        var union_name = values.plain_name_of(union_shown)
+        typing.refuse_a_union_key(context, union_name)
+    }
     assert key.kind == 'object' and not key.is_nullable and key.name != "String"
     assert context.has_a_class(key)
     var keyed = context.class_of(key)
     assert keyed.function_named("equals")
     var shown = context.shown(key)
     typing.refuse_equal_keys(context, shown)
+}
+
+func check_the_written_form() {
+    var format_classes = ["BinaryWriter", "BinaryReader", "JsonWriter", "JsonReader"]
+    var plain = typing.plain_class_name(made.shown)
+    assert format_classes.contains(plain)
+    var written = made.bound_types["$value_type"]
+    assert written
+    var is_binary = plain.starts_with("Binary")
+    var verb = "write"
+    if plain.ends_with("Reader") {
+        verb = "read"
+    }
+    var shown = context.shown(written)
+    var what = values.plain_name_of(shown)
+    var seen = List<String>()
+    var reason = unwritable_reason(written, what, is_binary, seen)
+    assert not reason.is_empty()
+    typing.refuse_an_unwritable_form(context, plain, verb, what, reason)
+}
+
+func unwritable_reason(written: Model.Type, path: String, is_binary: Boolean, seen: List<String>): String {
+    var present = written.present()
+    var shown = context.shown(present)
+    if seen.contains(shown) {
+        return ""
+    }
+    seen.append(shown)
+    if present.kind == 'union' {
+        var union_name = values.plain_name_of(shown)
+        var not_said = said_by(is_binary)
+        return "'{path}' is the union {union_name}, and {not_said} which member a value is"
+    }
+    if present.kind == 'shape' or present.kind == 'function' {
+        var form = form_of(is_binary)
+        return "'{path}' is a {shown}, which has no {form} form"
+    }
+    if present.kind != 'object' or present.name == "String" or not context.has_a_class(present) {
+        return ""
+    }
+    var model = context.class_of(present)
+    if shown.starts_with("Dictionary<") {
+        return dictionary_reason(model, path, is_binary, seen)
+    }
+    var is_a_list = shown.starts_with("List<") or shown.starts_with("Vector<") or shown.starts_with("Items<")
+    if is_a_list {
+        return element_reason(model, path, is_binary, seen)
+    }
+    if model.is_singleton or shown.contains("<") {
+        return ""
+    }
+    return attributes_reason(model, is_binary, seen)
+}
+
+func said_by(is_binary: Boolean): String {
+    if is_binary {
+        return "the bytes do not say"
+    }
+    return "JSON does not say"
+}
+
+func form_of(is_binary: Boolean): String {
+    if is_binary {
+        return "binary"
+    }
+    return "JSON"
+}
+
+func element_reason(model: Model.ClassModel, path: String, is_binary: Boolean, seen: List<String>): String {
+    var element = model.bound_types["$element_type"]
+    if not element {
+        return ""
+    }
+    return unwritable_reason(element, path, is_binary, seen)
+}
+
+func dictionary_reason(model: Model.ClassModel, path: String, is_binary: Boolean, seen: List<String>): String {
+    var key = model.bound_types["$key_type"]
+    var value = model.bound_types["$value_type"]
+    crash key and value
+    var is_an_object_key = key.kind == 'object' and key.name != "String"
+    if is_an_object_key {
+        var key_shown = context.shown(key)
+        var key_name = values.plain_name_of(key_shown)
+        var form = form_of(is_binary)
+        return "its dictionary is keyed by '{key_name}' objects, each key one object's identity, which has no {form} form"
+    }
+    return unwritable_reason(value, path, is_binary, seen)
+}
+
+func attributes_reason(model: Model.ClassModel, is_binary: Boolean, seen: List<String>): String {
+    var owner = values.plain_name_of(model.shown)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var is_private = attribute.name.starts_with("_")
+        var reason = ""
+        if not is_private {
+            reason = unwritable_reason(attribute.attribute_type, "{owner}.{attribute.name}", is_binary, seen)
+        }
+        if not reason.is_empty() {
+            return reason
+        }
+        index = index + 1
+    }
+    return ""
 }
 
 func check_the_vector_items() {
@@ -39,6 +151,9 @@ func check_the_vector_items() {
     assert element.kind == 'object' and not element.is_nullable and element.name != "String"
     assert context.has_a_class(element)
     var held = context.class_of(element)
+    refuse_a_held_collection(element, held)
+    refuse_a_dropped_item(element, held)
+    refuse_this_as_a_value(element, held)
     var index = 0
     while index < held.declared_attributes.count() {
         var attribute = held.declared_attributes[index]
@@ -47,6 +162,75 @@ func check_the_vector_items() {
         }
         index = index + 1
     }
+}
+
+func refuse_a_held_collection(element: Model.Type, held: Model.ClassModel) {
+    var collections = ["List", "Dictionary", "Vector", "Items"]
+    assert collections.contains(held.file.namespace)
+    var shown = context.shown(element)
+    typing.refuse_a_vector_collection(context, shown)
+}
+
+func refuse_a_dropped_item(element: Model.Type, held: Model.ClassModel) {
+    assert held.function_named("drop")
+    var shown = context.shown(element)
+    typing.refuse_a_vector_drop(context, shown)
+}
+
+func refuse_this_as_a_value(element: Model.Type, held: Model.ClassModel) {
+    var walk = AbstractSyntaxTree.Walk.Walk(held.file)
+    var functions = List<String>()
+    var counts = Dictionary<String, Integer>()
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var change = this_count_change(found.expression)
+        var known = counts[found.function_name]
+        var before = 0
+        if known {
+            before = known
+        } else {
+            functions.append(found.function_name)
+        }
+        counts[found.function_name] = before + change
+        index = index + 1
+    }
+    var function_index = 0
+    while function_index < functions.count() {
+        var function_name = functions[function_index]
+        var count = counts[function_name]
+        crash count
+        if count > 0 {
+            var shown = context.shown(element)
+            typing.refuse_a_vector_this(context, shown, function_name)
+        }
+        function_index = function_index + 1
+    }
+}
+
+func this_count_change(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Integer {
+    crash expression
+    if is_this(expression) {
+        return 1
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return member_this_change(expression)
+    }
+    return 0
+}
+
+func member_this_change(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Integer {
+    if is_this(member.target) {
+        return -1
+    }
+    return 0
+}
+
+func is_this(expression: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if expression == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return expression.kind == 'keyword_this'
+    }
+    return false
 }
 
 func is_held_inline(held: Model.Type): Boolean {
@@ -72,10 +256,13 @@ func check_a_constraint(declared: AbstractSyntaxTree.Shapes.Declarations.Generic
     assert declared.bound
     var given = made.bound_types[declared.name]
     assert given
-    assert not given.is_nullable and not given.is_symbol
+    assert not given.is_symbol
     assert given.kind != 'union' and given.kind != 'shape'
     var wanted = context.resolver.type_in(declared.bound, made, declared.line)
     assert wanted.kind == 'shape' and wanted.name != "Anything"
+    if given.is_nullable {
+        refuse_a_nullable(given, wanted, declared.name)
+    }
     if wanted.name == "Number" {
         check_a_number(given, declared.name)
         return
@@ -90,6 +277,18 @@ func check_a_constraint(declared: AbstractSyntaxTree.Shapes.Declarations.Generic
         }
         index = index + 1
     }
+}
+
+func refuse_a_nullable(given: Model.Type, wanted: Model.Type, generic_name: String) {
+    var shown = context.shown(given)
+    var wanted_parts = wanted.name.split(".")
+    var shape_name = wanted_parts.last()
+    crash shape_name
+    var plain = typing.plain_class_name(made.shown)
+    var segments = plain.split(".")
+    var owner = segments.last()
+    crash owner
+    typing.refuse_a_nullable_constraint(context, shown, shape_name, owner, generic_name)
 }
 
 func check_a_number(given: Model.Type, generic_name: String) {

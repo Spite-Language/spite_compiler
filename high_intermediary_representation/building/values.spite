@@ -368,7 +368,26 @@ func need_a_filling_function(
         typing.refuse_not_a_fit(context, shown, shape.name, member.name)
     }
     crash function
+    refuse_a_lending_fit(filler, function, shown, shape)
     need(function)
+}
+
+func refuse_a_lending_fit(
+    filler: Model.ClassModel,
+    function: Model.FunctionModel,
+    shown: String,
+    shape: Model.ShapeModel,
+) {
+    assert function.declaration
+    var library = Validators.LibraryFile()
+    assert not library.holds(filler.file.path)
+    var borrows = Borrows(context)
+    var source = borrows.lends(filler, function)
+    assert source
+    var plain = typing.plain_class_name(shown)
+    var simple = plain_name_of(plain)
+    var refusals = Validators.HighIntermediaryRepresentation.Borrows.Validator()
+    refusals.refuse_a_lending_fit(context, simple, shape.name, function.name, source)
 }
 
 func enum_text(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
@@ -644,7 +663,7 @@ func enum_value(name: String, expected: Model.Type): HighIntermediaryRepresentat
     var made = enum_model_of(expected)
     var place = made.values.index_of(name)
     if not place {
-        typing.refuse_not_a_value(context, name, made.name)
+        typing.refuse_not_a_value(context, name, made.name, made.values)
     }
     crash place
     var number = made.numbers[place]
@@ -856,10 +875,19 @@ func name_value(
     }
     if identifier.name == "namespace" {
         var own_namespace = reflection.namespace_of(context.current_class.key)
-        return reflection.namespace_object(own_namespace)
+        var found_namespace = reflection.namespace_object(own_namespace)
+        if found_namespace.value_type.is_nullable {
+            return found_namespace
+        }
+        var maybe_type = found_namespace.value_type.nullable()
+        var maybe = HighIntermediaryRepresentation.Values.Conversion(maybe_type, 'nullable', found_namespace)
+        return narrowed(maybe, "this.namespace")
     }
     if identifier.name.starts_with("$") {
         var bound = context.current_class.bound_types[identifier.name]
+        if not bound {
+            typing.refuse_an_undeclared_generic(context, identifier.name)
+        }
         crash bound
         if not bound.constant.is_empty() {
             return constant_of(bound)
@@ -1010,6 +1038,7 @@ func member_value(
     if bound_singleton {
         return bound_singleton
     }
+    refuse_a_class_function_value(member)
     var written_target = value_of(member.target, null)
     if written_target.value_type.kind == 'handle' {
         return handle_member(written_target, member.name)
@@ -1052,6 +1081,7 @@ func member_value(
         typing.refuse_maybe_null_member(context, shown_maybe, member.name)
     }
     var owner = present_class_of(target)
+    refuse_a_private_name(owner, member.name)
     var attribute = owner.attribute_named(member.name)
     var getter = owner.function_named("get_{member.name}")
     if getter and target.value_type.kind == 'scalar' {
@@ -1079,6 +1109,11 @@ func member_value(
         return named_argument(target, owner, member.name)
     }
     var lists_its_attributes = not attribute and member.name == "attributes"
+    var is_stored_inline = target.value_type.kind == 'scalar' or target.value_type.name == "String"
+    if lists_its_attributes and is_stored_inline and not target.value_type.is_nullable {
+        var inline_reflection = Reflection(context, this)
+        return inline_reflection.no_attribute_list()
+    }
     if lists_its_attributes and target.value_type.kind == 'object' {
         var reflection = Reflection(context, this)
         return reflection.attributes_of_an_object(target, owner)
@@ -1169,12 +1204,24 @@ func walked_value(function: Model.FunctionModel): HighIntermediaryRepresentation
             return enum_value(function.bound_member, function.bound_member_type)
         }
     }
+    if not function.walked_object and not function.walked_declarations_of.is_empty() {
+        refuse_a_declaration_value(function)
+    }
     assert function.walked_object
     var object = walked_object_read(function)
     var model = context.class_of(function.walked_object)
     var attribute = model.attribute_named(function.bound_member)
     crash attribute
     return HighIntermediaryRepresentation.Values.AttributeRead(object, attribute)
+}
+
+func refuse_a_declaration_value(function: Model.FunctionModel) {
+    var parts = function.walked_declarations_of.split(".")
+    var last = parts.last()
+    crash last
+    var names = Mapping.Names()
+    var instance = names.snake_case_of(last)
+    typing.refuse_a_declaration_value(context, function.bound_parameter, instance)
 }
 
 func walked_object_read(function: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value {
@@ -1507,6 +1554,9 @@ func walk_specialized(
     walker.template_index = -1
     made.is_a_walk_copy = true
     made.bound_member_index = index
+    if not object {
+        made.walked_declarations_of = described_class.name
+    }
     if object {
         made.walked_object = described_class
         var hidden = Model.ParameterModel("_walked", described_class, false)
@@ -1675,11 +1725,41 @@ func enum_value_at(
     assert declared.kind == 'enumeration'
     var enumeration = enum_model_of(declared)
     var named = enumeration.values[place]
+    var maybe = declared.nullable()
     if not named {
-        var maybe = declared.nullable()
         return HighIntermediaryRepresentation.Values.NullConstant(maybe)
     }
-    return enum_value(named, declared)
+    var found = enum_value(named, declared)
+    return HighIntermediaryRepresentation.Values.Conversion(maybe, 'nullable', found)
+}
+
+func enum_value_by_name(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert callee.name == "find_by_name" and call.arguments.count() == 1
+    var listed = callee.target
+    var lists_the_values = false
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        lists_the_values = listed.name == "values"
+    }
+    assert lists_the_values
+    var path = enum_path_of(listed)
+    assert not path.is_empty()
+    var declared = context.resolver.declared_type_in(path, context.current_class)
+    assert declared
+    assert declared.kind == 'enumeration'
+    var argument = call.arguments[0]
+    var maybe = declared.nullable()
+    if argument == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        if argument.kind == 'symbol_literal' {
+            var named = fitted_value_of(argument, declared)
+            return HighIntermediaryRepresentation.Values.Conversion(maybe, 'nullable', named)
+        }
+    }
+    var text = context.text()
+    var written = fitted_value_of(argument, text)
+    return fitted(written, maybe)
 }
 
 func enum_path_of(listed: AbstractSyntaxTree.Shapes.Expressions.Expression?): List<String> {
@@ -1859,11 +1939,81 @@ func called_on_a_class(
         function = member_template_of(owner, name)
     }
     if not function {
+        refuse_a_call_on_a_class_object(receiver, name)
+    }
+    if not function {
         var shown = context.shown(receiver.value_type)
         typing.refuse_unknown_member(context, shown, name)
     }
     crash function
     return called(function, receiver, written)
+}
+
+func refuse_a_call_on_a_class_object(receiver: HighIntermediaryRepresentation.Values.Value, name: String) {
+    if receiver == HighIntermediaryRepresentation.Values.ClassObject {
+        refuse_a_class_object_call(receiver, name)
+    }
+}
+
+func refuse_a_class_object_call(object: HighIntermediaryRepresentation.Values.ClassObject, name: String) {
+    var described = context.program.class_named(object.described)
+    assert described
+    assert described.function_named(name) or described.attribute_named(name)
+    var plain = typing.plain_class_name(described.shown)
+    if scalars.is_a_scalar(described.key) {
+        refuse_a_value_function_on_a_number_class(described, plain, name)
+    }
+    typing.refuse_a_class_as_a_value(context, plain)
+}
+
+func refuse_a_value_function_on_a_number_class(described: Model.ClassModel, plain: String, name: String) {
+    var constants = List<String>()
+    var index = 0
+    while index < described.declared_functions.count() {
+        var function = described.declared_functions[index]
+        var is_a_constant = function.name.starts_with("get_") and function.parameters.is_empty()
+        if is_a_constant {
+            var length = function.name.length()
+            var constant = function.name.slice(4, length)
+            constants.append(constant)
+        }
+        index = index + 1
+    }
+    var listed = constants.join(", ")
+    typing.refuse_a_value_function_on_a_number_class(context, plain, name, listed)
+}
+
+func refuse_a_class_function_value(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var target = member.target
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        refuse_a_function_of_a_named_class(member, target)
+    }
+}
+
+func refuse_a_function_of_a_named_class(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    target: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+) {
+    assert target.is_a_class_name
+    assert not context.scope.internal_name_of(target.name)
+    var found = context.resolver.symbols.find(target.name, context.current_class.file.namespace)
+    assert found
+    var class_path = List<String>()
+    class_path.append(target.name)
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described = context.resolver.class_type_in(class_path, no_arguments, context.current_class, context.line)
+    assert described.kind == 'object' and context.has_a_class(described)
+    var model = context.class_of(described)
+    var function = model.function_named(member.name)
+    assert function
+    var names = Mapping.Names()
+    var instance = names.snake_case_of(found.simple_name)
+    var answer = answer_or_nothing(function)
+    var template = "each_{member.name}()"
+    if context.is_boolean(answer) {
+        template = "filter_{member.name}()"
+    }
+    typing.refuse_a_class_function_value(context, target.name, member.name, instance, template)
 }
 
 func has_its_own_class(target: HighIntermediaryRepresentation.Values.Value): Boolean {
@@ -1955,6 +2105,9 @@ func made_from_a_bound_type(
     }
     crash bound
     var made_type = bound.present()
+    if made_type.is_nothing() and call.arguments.is_empty() {
+        return HighIntermediaryRepresentation.Values.NullConstant(made_type)
+    }
     var is_a_value = made_type.kind == 'shape' or made_type.kind == 'enumeration'
     var is_plain = made_type.kind == 'scalar' or made_type.name == "String" or is_a_value
     if is_plain and call.arguments.is_empty() {
@@ -2195,6 +2348,7 @@ func constructed(
     var made = context.class_of(made_type)
     var constraints = Constraints(context, this)
     constraints.check(made)
+    refuse_an_unserializable(class_path, made)
     context.need_defaults(made.key)
     var handed_over = ""
     if made.key == "ForeignCallback" {
@@ -2219,6 +2373,15 @@ func constructed(
     return making
 }
 
+func refuse_an_unserializable(class_path: List<String>, made: Model.ClassModel) {
+    var last = class_path.last()
+    crash last
+    if class_path.count() == 1 {
+        var serializable = Serializable(context)
+        serializable.check(last, made)
+    }
+}
+
 func inferred_type_of(
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     class_path: List<String>,
@@ -2234,11 +2397,21 @@ func inferred_type_of(
     var index = 0
     while index < call.arguments.count() {
         var argument = call.arguments[index]
-        var value = value_of(argument, null)
-        argument_types.append(value.value_type)
+        var argument_type = inferred_argument_type(argument)
+        argument_types.append(argument_type)
         index = index + 1
     }
     return context.resolver.inferred_instance(class_path, context.current_class, context.line, argument_types)
+}
+
+func inferred_argument_type(argument: AbstractSyntaxTree.Shapes.Expressions.Expression?): Model.Type {
+    if argument == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        if argument.kind == 'keyword_null' {
+            return Model.Type('nothing', "")
+        }
+    }
+    var value = value_of(argument, null)
+    return value.value_type
 }
 
 func constructor_of(made: Model.ClassModel): Model.FunctionModel? {
@@ -2626,6 +2799,10 @@ func member_call(
     if listing_walk {
         return listing_walk
     }
+    var named_value = enum_value_by_name(call, callee)
+    if named_value {
+        return named_value
+    }
     var question = reflection_question(call, callee)
     if question {
         return question
@@ -2649,6 +2826,12 @@ func member_call(
     var made_default = bound_class_made(call, callee)
     if made_default {
         return made_default
+    }
+    if callee.name == "count" and call.arguments.is_empty() {
+        var folded_count = folded_function_count(callee.target)
+        if folded_count {
+            return folded_count
+        }
     }
     if callee.name.starts_with("from_") {
         refuse_a_cast_by_name(callee)
@@ -2702,6 +2885,8 @@ func member_call(
         refuse_an_unproven_read(receiver, callee.name, "called on")
     }
     var owner = present_class_of(receiver)
+    refuse_a_private_name(owner, callee.name)
+    refuse_a_written_attribute_call(callee, call)
     var found_value = enum_value_found(owner, callee, call.arguments)
     if found_value {
         return found_value
@@ -2722,6 +2907,7 @@ func member_call(
     }
     if not function and callee.name.starts_with("parallel_each_") {
         var reach = ParallelReach()
+        reach.check_the_steps(context, callee)
         reach.check_each(context, owner, callee.name)
     }
     if not function {
@@ -2764,14 +2950,50 @@ func member_call(
         typing.refuse_unknown_member(context, shown, callee.name)
     }
     crash function
+    refuse_a_comparison_of_objects(receiver, owner, callee.name)
+    refuse_a_drop_by_name(owner, function)
     var specialised = specialised_for_a_constant(function, receiver, call.arguments)
     if specialised {
         return specialised
     }
     refuse_an_accessor_call(callee, call, function)
+    refuse_an_operator_call(callee, call, function, receiver)
     var made = called(function, receiver, call.arguments)
     refuse_a_wider_bitwise_operand(callee, call, made)
     return made
+}
+
+func refuse_a_drop_by_name(owner: Model.ClassModel, function: Model.FunctionModel) {
+    assert function.name == "drop" and function.parameters.is_empty() and not function.answer
+    var shown = plain_name_of(owner.shown)
+    typing.refuse_a_drop_by_name(context, shown)
+}
+
+func refuse_a_comparison_of_objects(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    owner: Model.ClassModel,
+    name: String,
+) {
+    assert name == "contains" or name == "index_of"
+    var shown = context.shown(receiver.value_type)
+    assert shown.starts_with("List<")
+    var element_type = owner.bound_types["$element_type"]
+    crash element_type
+    var is_an_object = element_type.kind == 'object' and element_type.name != "String"
+    assert is_an_object or element_type.kind == 'union'
+    var element_shown = context.shown(element_type)
+    var element_name = plain_name_of(element_shown)
+    typing.refuse_a_comparison_of_objects(context, name, element_name)
+}
+
+func plain_name_of(shown: String): String {
+    if shown.contains("<") {
+        return shown
+    }
+    var parts = shown.split(".")
+    var last = parts.last()
+    crash last
+    return last
 }
 
 func refuse_an_accessor_call(
@@ -2798,6 +3020,125 @@ func refuse_an_accessor_call(
         typing.refuse_an_accessor_call(context, callee.name, "writing", attribute_name, "{written} = {assigned_text}")
     }
     typing.refuse_an_accessor_call(context, callee.name, "reading", attribute_name, written)
+}
+
+func refuse_a_private_name(owner: Model.ClassModel, name: String) {
+    assert name.starts_with("_")
+    var library = Validators.LibraryFile()
+    var path = context.path()
+    assert not library.holds(path)
+    assert not context.resolver.symbols.generated_texts[path]
+    assert owner.file.path != context.current_class.file.path
+    var length = name.length()
+    var public_name = name.slice(1, length)
+    var reader = ""
+    var is_read_outside = owner.function_named("get_{public_name}") or owner.function_named(public_name)
+    if is_read_outside and owner.attribute_named(name) {
+        reader = public_name
+    }
+    typing.refuse_a_private_name(context, name, owner.shown, reader)
+}
+
+func refuse_a_written_attribute_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var is_a_read = callee.name == "get_attribute" and call.arguments.count() == 1
+    var is_a_write = callee.name == "set_attribute" and call.arguments.count() == 2
+    assert is_a_read or is_a_write
+    var named = call.arguments[0]
+    if named == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        refuse_a_named_attribute_call(callee, call, named)
+    }
+}
+
+func refuse_a_named_attribute_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    named: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression,
+) {
+    assert named.kind == 'symbol_literal'
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    var written = "{receiver_text}.{named.text}"
+    if callee.name == "set_attribute" {
+        var assigned = call.arguments[1]
+        crash assigned
+        var assigned_printer = Printers.Spite.ExpressionPrinter(assigned)
+        var assigned_text = assigned_printer.text()
+        typing.refuse_an_accessor_call(context, callee.name, "writing", named.text, "{written} = {assigned_text}")
+    }
+    typing.refuse_an_accessor_call(context, callee.name, "reading", named.text, written)
+}
+
+func refuse_an_operator_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    function: Model.FunctionModel,
+    receiver: HighIntermediaryRepresentation.Values.Value,
+) {
+    var library = Validators.LibraryFile()
+    var path = context.path()
+    assert not library.holds(path)
+    assert not context.resolver.symbols.generated_texts[path]
+    assert receiver.value_type.kind == 'object'
+    var owner = present_class_of(receiver)
+    var namespace = owner.file.namespace
+    assert namespace != "Vector" and namespace != "Items"
+    var is_a_collection = namespace == "List" or namespace == "Dictionary"
+    var name = callee.name
+    var is_an_index = name == "get_at" or name == "set_at"
+    assert not is_a_collection or not is_an_index
+    var written_count = call.arguments.count()
+    assert function.name == name and function.parameters.count() == written_count
+    var operator = operator_written(name, written_count)
+    assert not operator.is_empty()
+    var is_its_own = owner.key == context.current_class.key and context.current_function.name == name
+    assert not is_its_own
+    var first_parameter = function.parameters.first()
+    if first_parameter {
+        var parameter_kind = first_parameter.parameter_type.kind
+        assert parameter_kind != 'function'
+        assert name != "equals" or parameter_kind == 'object'
+    }
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    var written_arguments = List<String>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var argument_printer = Printers.Spite.ExpressionPrinter(argument)
+        var argument_text = argument_printer.text()
+        written_arguments.append(argument_text)
+        index = index + 1
+    }
+    typing.refuse_an_operator_call(context, name, operator, receiver_text, written_arguments)
+}
+
+func operator_written(name: String, written_count: Integer): String {
+    var binary = ["sum", "subtract", "multiply", "divide", "remainder", "equals", "less_than", "greater_than"]
+    var operators = ["+", "-", "*", "/", "%", "==", "<", ">"]
+    var position = binary.index_of(name)
+    if position and written_count == 1 {
+        var found = operators[position]
+        crash found
+        return found
+    }
+    var is_a_negation = name == "negate" and written_count == 0
+    if is_a_negation {
+        return "-"
+    }
+    var is_a_read = name == "get_at" and written_count == 1
+    if is_a_read {
+        return "[]"
+    }
+    var is_a_write = name == "set_at" and written_count == 2
+    if is_a_write {
+        return "[] ="
+    }
+    return ""
 }
 
 func refuse_a_removal_from_a_chain(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
@@ -3393,6 +3734,7 @@ func specialized_over_a_class(
     crash written
     var is_plural = match_parts.count() > 1
     if is_plural {
+        refuse_a_test_to_collect(template, element_class, name, written)
         refuse_a_singular(element_class, name, written)
     }
     var member = member_of(element_class, written, is_plural)
@@ -3408,7 +3750,13 @@ func specialized_over_a_class(
     if member.is_empty() and asks_a_question(template) {
         return specialized_over_an_enum_value(owner, template, element_class, name, written)
     }
+    if member.is_empty() and owner.bound_types["$element_type"] {
+        refuse_a_caller_function(element_class, name, written)
+    }
     assert not member.is_empty()
+    if asks_a_question(template) and owner.bound_types["$element_type"] {
+        refuse_a_member_and_a_value(element_class, name, member)
+    }
     var attribute = element_class.attribute_named(member)
     var member_type = context.boolean()
     var is_a_function = true
@@ -3431,6 +3779,51 @@ func specialized_over_a_class(
     made.bound_member_index = member_index
     owner.declared_functions.append(made)
     return made
+}
+
+func refuse_a_test_to_collect(
+    template: Model.FunctionModel,
+    element_class: Model.ClassModel,
+    name: String,
+    written: String,
+) {
+    assert template.name.starts_with("map_")
+    var singular = member_named(element_class, written)
+    assert not singular.is_empty()
+    var member_type = member_type_named(element_class, singular)
+    assert context.is_boolean(member_type)
+    typing.refuse_a_test_to_collect(context, name, written, element_class.shown)
+}
+
+func refuse_a_caller_function(element_class: Model.ClassModel, name: String, written: String) {
+    var function = context.current_class.function_named(written)
+    assert function
+    assert function.parameters.count() == 1
+    typing.refuse_a_caller_function(context, element_class.shown, written, name)
+}
+
+func refuse_a_member_and_a_value(element_class: Model.ClassModel, name: String, member: String) {
+    var candidates = enum_members_of(element_class)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var enum_type = enum_type_of_member(element_class, candidate)
+        var enumeration = enum_model_of(enum_type)
+        if enumeration.values.contains(member) {
+            typing.refuse_a_member_and_a_value(context, name, member, element_class.shown, candidate)
+        }
+        index = index + 1
+    }
+}
+
+func member_type_named(element_class: Model.ClassModel, member: String): Model.Type {
+    var attribute = element_class.attribute_named(member)
+    if attribute {
+        return attribute.attribute_type
+    }
+    var function = element_class.function_named(member)
+    crash function
+    return answer_or_nothing(function)
 }
 
 func asks_a_question(template: Model.FunctionModel): Boolean {
@@ -3507,6 +3900,9 @@ func specialized_over_an_enum_value(
             chosen = candidate
         }
         index = index + 1
+    }
+    if chosen.is_empty() and owner.bound_types["$element_type"] {
+        typing.refuse_no_member_for_a_template(context, element_class.shown, written, name)
     }
     assert not chosen.is_empty()
     var chosen_type = enum_type_of_member(element_class, chosen)
@@ -4182,6 +4578,10 @@ func member_of(element_class: Model.ClassModel, written: String, is_plural: Bool
 
 func refuse_a_singular(element_class: Model.ClassModel, name: String, written: String) {
     var inflected = member_by_plural(element_class, written)
+    var singular_member = member_named(element_class, written)
+    refuse_a_mapped_test(element_class, name, inflected)
+    refuse_a_mapped_test(element_class, name, singular_member)
+    refuse_a_shared_plural(name, written, inflected, singular_member)
     assert inflected.is_empty()
     var singular = member_named(element_class, written)
     assert not singular.is_empty()
@@ -4189,6 +4589,26 @@ func refuse_a_singular(element_class: Model.ClassModel, name: String, written: S
     assert plural != written and not written.ends_with("s")
     var called_plural = name.replace(written, plural)
     typing.refuse_singular_template(context, name, written, called_plural)
+}
+
+func refuse_a_mapped_test(element_class: Model.ClassModel, name: String, member: String) {
+    assert name.starts_with("map_") and not member.is_empty()
+    var member_type = enum_type_of_member(element_class, member)
+    assert context.is_boolean(member_type)
+    var shown_member = member
+    if member.starts_with("get_") {
+        var length = member.length()
+        shown_member = member.slice(4, length)
+    }
+    var parts = element_class.shown.split(".")
+    var element_name = parts.last()
+    crash element_name
+    typing.refuse_a_mapped_test(context, name, shown_member, element_name)
+}
+
+func refuse_a_shared_plural(name: String, written: String, inflected: String, singular_member: String) {
+    assert not inflected.is_empty() and not singular_member.is_empty() and inflected != singular_member
+    typing.refuse_a_shared_plural(context, name, inflected, singular_member, written)
 }
 
 func member_by_plural(element_class: Model.ClassModel, written: String): String {
@@ -5257,7 +5677,7 @@ func arguments_for(
         crash parameter
         var given = value_of(argument, parameter.parameter_type)
         refuse_a_nullable_answer(shown, argument, given.value_type, parameter.parameter_type)
-        refuse_another_answer(shown, argument, given.value_type, parameter.parameter_type)
+        refuse_a_passed_function(shown, argument, given.value_type, parameter.parameter_type)
         var value = fitted(given, parameter.parameter_type)
         arguments.append(value)
         index = index + 1
@@ -5293,27 +5713,64 @@ func refuse_a_nullable_answer(
     typing.refuse_a_nullable_answer(context, called_name, argument_text, given_shown, wanted_shown)
 }
 
-func refuse_another_answer(
+func refuse_a_passed_function(
     shown: String,
     argument: AbstractSyntaxTree.Shapes.Expressions.Expression?,
     given: Model.Type,
     wanted: Model.Type,
 ) {
     assert given.kind == 'function' and wanted.kind == 'function' and argument
-    assert given.answer and wanted.answer
-    var given_answer: Model.Type = given.answer
-    var wanted_answer: Model.Type = wanted.answer
-    assert not given_answer.is_nullable
-    assert not given_answer.is_the_same_as(wanted_answer)
-    assert given.parameters.count() == wanted.parameters.count()
+    assert not same_signature(given, wanted)
     var parts = shown.split(".")
     var called_name = parts.last()
     crash called_name
     var printer = Printers.Spite.ExpressionPrinter(argument)
     var argument_text = printer.text()
+    if given.parameters.count() != wanted.parameters.count() {
+        refuse_a_passed_count(called_name, argument_text, given, wanted)
+    }
+    var index = 0
+    while index < given.parameters.count() {
+        var given_parameter = given.parameters[index]
+        var wanted_parameter = wanted.parameters[index]
+        crash wanted_parameter
+        if not given_parameter.is_the_same_as(wanted_parameter) {
+            var given_shown = context.shown(given_parameter)
+            var wanted_shown = context.shown(wanted_parameter)
+            typing.refuse_a_passed_type(context, called_name, argument_text, wanted_shown, given_shown)
+        }
+        index = index + 1
+    }
+    if given.answer and wanted.answer {
+        refuse_another_answer(called_name, argument_text, given, wanted)
+    }
+    assert wanted.answer and not given.answer
+    var wanted_answer: Model.Type = wanted.answer
+    var answer_shown = context.shown(wanted_answer)
+    typing.refuse_a_passed_nothing(context, called_name, argument_text, answer_shown)
+}
+
+func refuse_another_answer(called_name: String, argument_text: String, given: Model.Type, wanted: Model.Type) {
+    crash given.answer
+    crash wanted.answer
+    var given_answer: Model.Type = given.answer
+    var wanted_answer: Model.Type = wanted.answer
+    assert not given_answer.is_the_same_as(wanted_answer)
     var given_shown = context.shown(given_answer)
     var wanted_shown = context.shown(wanted_answer)
     typing.refuse_another_answer(context, called_name, argument_text, given_shown, wanted_shown)
+}
+
+func refuse_a_passed_count(called_name: String, argument_text: String, given: Model.Type, wanted: Model.Type) {
+    var takes = given.parameters.count()
+    var gives = wanted.parameters.count()
+    if gives == 1 {
+        var only = wanted.parameters[0]
+        crash only
+        var only_shown = context.shown(only)
+        typing.refuse_a_passed_single(context, called_name, argument_text, only_shown, takes)
+    }
+    typing.refuse_a_passed_count(context, called_name, argument_text, gives, takes)
 }
 
 func gathered_list(
@@ -5418,6 +5875,7 @@ func dictionary_value(
     var value_type = dictionary_model.bound_types["$value_type"]
     crash key_type
     crash value_type
+    refuse_a_duplicate_key(literal)
     var temporary = new_list(dictionary_type)
     var index = 0
     while index < literal.pairs.count() {
@@ -5428,6 +5886,37 @@ func dictionary_value(
         index = index + 1
     }
     return temporary
+}
+
+func refuse_a_duplicate_key(literal: AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral) {
+    var written_keys = List<String>()
+    var index = 0
+    while index < literal.pairs.count() {
+        var pair = literal.pairs[index]
+        var key_text = literal_key_text(pair)
+        if not key_text.is_empty() and written_keys.contains(key_text) {
+            typing.refuse_a_duplicate_key(context, key_text)
+        }
+        written_keys.append(key_text)
+        index = index + 1
+    }
+}
+
+func literal_key_text(pair: AbstractSyntaxTree.Shapes.Expressions.Expression): String {
+    if pair == AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
+        return written_key_text(pair.key)
+    }
+    return ""
+}
+
+func written_key_text(key: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    var is_constant = key == AbstractSyntaxTree.Shapes.Expressions.TextLiteral or key == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression
+    if not is_constant {
+        return ""
+    }
+    crash key
+    var printer = Printers.Spite.ExpressionPrinter(key)
+    return printer.text()
 }
 
 func dictionary_type_by_its_keys(literal: AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral): Model.Type? {
@@ -5565,16 +6054,7 @@ func foreign_call(
     name: String,
     written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ): HighIntermediaryRepresentation.Values.Value {
-    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
-    var crossing = ForeignCrossing(context, this)
-    var index = 0
-    while index < written.count() {
-        var argument = written[index]
-        var value = value_of(argument, null)
-        crossing.check_an_argument(value)
-        arguments.append(value)
-        index = index + 1
-    }
+    refuse_a_library_parameter(library)
     var answer = context.scalar_type("Integer")
     var c_name = name
     if name.ends_with("_as_long") {
@@ -5594,7 +6074,49 @@ func foreign_call(
     }
     var constants = ForeignConstants(context, this)
     var named = constants.c_name_of(library, c_name)
+    var declared = constants.declared_parameters(library, named)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var crossing = ForeignCrossing(context, this)
+    var index = 0
+    while index < written.count() {
+        var argument = written[index]
+        var wanted = declared_scalar(declared, index)
+        var value = value_of(argument, wanted)
+        if wanted {
+            value = fitted(value, wanted)
+        }
+        crossing.check_an_argument(value)
+        arguments.append(value)
+        index = index + 1
+    }
+    note_a_foreign_name(library, named)
     return HighIntermediaryRepresentation.Values.ForeignCall(answer, library, named, arguments)
+}
+
+func declared_scalar(declared: List<String>, index: Integer): Model.Type? {
+    assert index < declared.count()
+    var scalar_name = declared[index]
+    assert not scalar_name.is_empty()
+    return context.scalar_type(scalar_name)
+}
+
+func note_a_foreign_name(library: HighIntermediaryRepresentation.Values.Value, named: String) {
+    if library == HighIntermediaryRepresentation.Values.AttributeRead {
+        var names = library.attribute.foreign_names
+        if not names.contains(named) {
+            names.append(named)
+        }
+    }
+}
+
+func refuse_a_library_parameter(library: HighIntermediaryRepresentation.Values.Value) {
+    if library == HighIntermediaryRepresentation.Values.LocalRead {
+        var parameter = context.current_function.parameters.find_by_name(library.name)
+        if parameter {
+            var foreign = Validators.HighIntermediaryRepresentation.Foreign.Validator()
+            foreign.refuse_a_call_through_a_parameter(context)
+        }
+    }
 }
 
 func index_value(
@@ -5631,7 +6153,7 @@ func index_value(
     var function = owner.function_named("get_at")
     if not function {
         var shown = context.shown(target.value_type)
-        typing.refuse_not_indexed(context, shown)
+        typing.refuse_not_indexed(context, shown, "indexing", "get_at(index)")
     }
     crash function
     need(function)
@@ -6311,6 +6833,7 @@ func bound_is(bound: Model.Type, written: String): Boolean {
         "Dictionary": return bound.name.starts_with("Dictionary_of_") and not bound.is_nullable
         "Symbol": return (bound.is_symbol or bound.kind == 'enumeration') and not bound.is_nullable
         "Enum": return bound.kind == 'enumeration' and not bound.is_nullable
+        "Nothing": return bound.kind == 'nothing'
         _: return is_the_class(bound, written)
     }
 }
@@ -6662,6 +7185,10 @@ func operator_call(
         return same
     }
     var name = operator_function_name(operator)
+    refuse_a_missing_operator(left, name, "this operator", "{name}(other)")
+    if asks_equality {
+        refuse_a_comparison_across_classes(left, right)
+    }
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
     arguments.append(right)
     var answered = method_call(left, name, arguments)
@@ -6670,6 +7197,22 @@ func operator_call(
         return HighIntermediaryRepresentation.Values.Negation(answered)
     }
     return answered
+}
+
+func refuse_a_missing_operator(
+    operand: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    operator_text: String,
+    needed: String,
+) {
+    var operand_type = operand.value_type
+    var is_a_class = operand_type.kind == 'object' and not operand_type.is_nullable
+    assert is_a_class and context.has_a_class(operand_type)
+    var owner = context.class_of(operand_type)
+    assert not owner.function_named(name)
+    assert not member_template_of(owner, name)
+    var shown = context.shown(operand_type)
+    typing.refuse_a_missing_operator(context, operator_text, shown, needed)
 }
 
 func compares_identity(left: HighIntermediaryRepresentation.Values.Value): Boolean {
@@ -6713,6 +7256,32 @@ func class_compares_identity(left_type: Model.Type): Boolean {
     return parameter.parameter_type.kind != 'object'
 }
 
+func refuse_a_comparison_across_classes(
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+) {
+    var left_type = left.value_type
+    var right_type = right.value_type
+    var both_kinds = left_type.kind == 'object' and right_type.kind == 'object'
+    var both_classes = both_kinds and context.has_a_class(left_type) and context.has_a_class(right_type)
+    var either_nullable = left_type.is_nullable or right_type.is_nullable
+    var across = both_classes and not either_nullable and left_type.name != right_type.name
+    if across and equals_takes_its_own_class(left_type) {
+        var given = context.shown(left_type)
+        var wanted = context.shown(right_type)
+        typing.refuse_mismatch(context, given, wanted)
+    }
+}
+
+func equals_takes_its_own_class(left_type: Model.Type): Boolean {
+    var owner = context.class_of(left_type)
+    var equals = owner.function_named("equals")
+    crash equals
+    var parameter = equals.parameters[0]
+    crash parameter
+    return parameter.parameter_type.name == left_type.name
+}
+
 func operator_function_name(operator: HighIntermediaryRepresentation.Values.Operator): String {
     switch operator {
         'add': return "sum"
@@ -6746,11 +7315,43 @@ func class_test_value(
     if tested.value_type.name == "Spite.Class" {
         return same_class(binary, tested, member)
     }
+    refuse_a_test_for_no_member(binary, tested, member)
     var test = HighIntermediaryRepresentation.Values.ClassTest(tested, member)
     if binary.operator == 'not_equal' {
         return HighIntermediaryRepresentation.Values.Negation(test)
     }
     return test
+}
+
+func refuse_a_test_for_no_member(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    tested: HighIntermediaryRepresentation.Values.Value,
+    member: Model.Type,
+) {
+    assert tested.value_type.kind == 'union'
+    var names_a_codegen_value = false
+    var right = binary.right
+    if right == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_a_codegen_value = right.name.starts_with("$")
+    }
+    var bound = context.current_class.bound_types.keys()
+    assert not names_a_codegen_value and bound.is_empty()
+    var united = union_model_of(tested.value_type)
+    var held_names = united.members.map_names()
+    assert not held_names.contains(member.name)
+    var names = List<String>()
+    var index = 0
+    while index < united.members.count() {
+        var held = united.members[index]
+        var shown = context.shown(held)
+        names.append(shown)
+        index = index + 1
+    }
+    var listed = names.join(", ")
+    var printer = Printers.Spite.ExpressionPrinter(binary.left)
+    var tested_text = printer.text()
+    var member_shown = context.shown(member)
+    typing.refuse_a_test_for_no_member(context, tested_text, member_shown, united.name, listed)
 }
 
 func tested_type_arguments(
@@ -7002,6 +7603,7 @@ func unary_value(
     }
     var operand = value_of(unary.operand, expected)
     if operand.value_type.kind == 'object' {
+        refuse_a_missing_operator(operand, "negate", "'-'", "negate()")
         var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
         return method_call(operand, "negate", no_arguments)
     }
@@ -7291,6 +7893,86 @@ func written_pattern_of(call: AbstractSyntaxTree.Shapes.Expressions.CallExpressi
         return plain_text_of(written)
     }
     return null
+}
+
+func folded_function_count(
+    target: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+): HighIntermediaryRepresentation.Values.Value? {
+    if target == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return folded_filtered_count(target)
+    }
+    if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return folded_listed_count(target, "", "")
+    }
+    return null
+}
+
+func folded_filtered_count(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return folded_name_filter(call, callee)
+    }
+    return null
+}
+
+func folded_name_filter(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var is_a_suffix = callee.name == "filter_name_ends_with"
+    var is_a_prefix = callee.name == "filter_name_starts_with"
+    assert is_a_suffix or is_a_prefix
+    assert call.arguments.count() == 1
+    var argument = call.arguments[0]
+    var text: String? = null
+    if argument == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        text = plain_text_of(argument)
+    }
+    assert text
+    var listing = callee.target
+    if listing == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return folded_listing_by_a_name(listing, text, is_a_suffix)
+    }
+    return null
+}
+
+func folded_listing_by_a_name(
+    listing: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    text: String,
+    is_a_suffix: Boolean,
+): HighIntermediaryRepresentation.Values.Value? {
+    if is_a_suffix {
+        return folded_listed_count(listing, "", text)
+    }
+    return folded_listed_count(listing, text, "")
+}
+
+func folded_listed_count(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    prefix: String,
+    suffix: String,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert member.name == "functions"
+    var key = constant_class_of(member.target)
+    assert key
+    var model = context.program.class_named(key)
+    assert model
+    var reflection = Reflection(context, this)
+    var count = 0
+    var index = 0
+    while index < model.declared_functions.count() {
+        var declared = model.declared_functions[index]
+        var is_named = declared.name.starts_with(prefix) and declared.name.ends_with(suffix)
+        if is_named and not declared.is_synthetic and reflection.is_listed(declared) {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    var integer = context.scalar_type("Integer")
+    var number: Long = count
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, number)
 }
 
 func plain_text_of(literal: AbstractSyntaxTree.Shapes.Expressions.TextLiteral): String? {
