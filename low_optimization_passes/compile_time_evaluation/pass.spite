@@ -13,6 +13,8 @@ var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
 var next_register = 0
 var seeded = List<Boolean>()
 var seed_values = List<Long>()
+var entries = List<Integer>()
+var followed = List<Boolean>()
 
 func Pass(starting_program: LowIntermediaryRepresentation.LowProgram) {
     program = starting_program
@@ -80,7 +82,7 @@ func touches_the_world(lowered: LowIntermediaryRepresentation.LowFunction, calle
         while index < block.instructions.count() {
             var instruction = block.instructions[index]
             if instruction == LowIntermediaryRepresentation.Instructions.Call {
-                called.append(instruction.function)
+                note_a_callee(instruction.function, called)
             }
             if is_impure(instruction) {
                 return true
@@ -90,6 +92,13 @@ func touches_the_world(lowered: LowIntermediaryRepresentation.LowFunction, calle
         block_index = block_index + 1
     }
     return false
+}
+
+func note_a_callee(key: String, called: List<String>) {
+    var lets_go = key == "_release" or key.starts_with("_free_") or key.starts_with("_destroy_")
+    if not key.contains("$cold") and not lets_go {
+        called.append(key)
+    }
 }
 
 func is_impure(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
@@ -123,15 +132,122 @@ func evaluate_the_function(lowered: LowIntermediaryRepresentation.LowFunction) {
     crash total
     next_register = total
     note_the_seeds(total)
+    count_the_entries()
+    followed = List<Boolean>()
     var block_index = 0
+    while block_index < function.blocks.count() {
+        followed.append(false)
+        block_index = block_index + 1
+    }
+    block_index = 0
     while block_index < function.blocks.count() and remaining_steps > 0 {
         var block = function.blocks[block_index]
-        evaluate_the_block(block)
+        if followed[block_index] != true {
+            followed[block_index] = true
+            evaluate_the_block(block)
+            follow_the_straight_line(block)
+        }
         block_index = block_index + 1
     }
     if next_register > function.register_count {
         function.register_count = next_register
     }
+}
+
+func count_the_entries() {
+    entries = List<Integer>()
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        entries.append(0)
+        block_index = block_index + 1
+    }
+    if not entries.is_empty() {
+        entries[0] = 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(count_the_targets)
+        block_index = block_index + 1
+    }
+}
+
+func count_the_targets(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Jump: count_an_entry(instruction.block)
+        LowIntermediaryRepresentation.Instructions.Branch: count_both_entries(instruction)
+        _: return
+    }
+}
+
+func count_both_entries(branch: LowIntermediaryRepresentation.Instructions.Branch) {
+    count_an_entry(branch.when_true)
+    count_an_entry(branch.when_false)
+}
+
+func count_an_entry(target: Integer) {
+    if target >= 0 and target < entries.count() {
+        var count = entries[target]
+        entries[target] = count + 1
+    }
+}
+
+func follow_the_straight_line(start: LowIntermediaryRepresentation.LowBlock) {
+    var next = only_successor(start)
+    while next >= 0 and remaining_steps > 0 {
+        followed[next] = true
+        var block = function.blocks[next]
+        crash block
+        evaluate_the_instructions(block)
+        next = only_successor(block)
+    }
+}
+
+func only_successor(block: LowIntermediaryRepresentation.LowBlock): Integer {
+    var last = block.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        return entered_only_from_here(last.block)
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        return decided_successor(block, last)
+    }
+    return -1
+}
+
+func decided_successor(
+    block: LowIntermediaryRepresentation.LowBlock,
+    branch: LowIntermediaryRepresentation.Instructions.Branch,
+): Integer {
+    if not frame.holds(branch.condition) or frame.tag_of(branch.condition) != -1 {
+        return -1
+    }
+    var taken = branch.when_false
+    var skipped = branch.when_true
+    if frame.value_of(branch.condition) != 0 {
+        taken = branch.when_true
+        skipped = branch.when_false
+    }
+    if taken == skipped {
+        return entered_only_from_here(taken)
+    }
+    var jumped = LowIntermediaryRepresentation.Instructions.Jump(taken)
+    var count = block.instructions.count()
+    block.instructions[count - 1] = jumped
+    if skipped >= 0 and skipped < entries.count() {
+        var left = entries[skipped]
+        entries[skipped] = left - 1
+    }
+    return entered_only_from_here(taken)
+}
+
+func entered_only_from_here(target: Integer): Integer {
+    if target < 0 or target >= entries.count() or followed[target] == true {
+        return -1
+    }
+    if entries[target] != 1 {
+        return -1
+    }
+    return target
 }
 
 func note_the_seeds(total: Integer) {
@@ -197,8 +313,12 @@ func evaluate_the_block(block: LowIntermediaryRepresentation.LowBlock) {
         }
         index = index + 1
     }
+    evaluate_the_instructions(block)
+}
+
+func evaluate_the_instructions(block: LowIntermediaryRepresentation.LowBlock) {
     kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
-    index = 0
+    var index = 0
     while index < block.instructions.count() {
         var instruction = block.instructions[index]
         evaluate_the_instruction(instruction)
@@ -248,6 +368,7 @@ func is_simulated(instruction: LowIntermediaryRepresentation.Instructions.Instru
         LowIntermediaryRepresentation.Instructions.DecimalConversion: return true
         LowIntermediaryRepresentation.Instructions.Load: return true
         LowIntermediaryRepresentation.Instructions.Store: return true
+        LowIntermediaryRepresentation.Instructions.CopyBytes: return true
         LowIntermediaryRepresentation.Instructions.DataAddress: return true
         LowIntermediaryRepresentation.Instructions.FunctionAddress: return true
         LowIntermediaryRepresentation.Instructions.Allocate: return true

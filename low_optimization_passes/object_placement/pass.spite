@@ -35,6 +35,9 @@ var placing_known = List<Boolean>()
 var placing_values = List<Long>()
 var placed = List<LowIntermediaryRepresentation.Instructions.Instruction>()
 var placing_block = 0
+var freed_children = List<Integer>()
+var held_children = List<Integer>()
+var frees_itself = false
 
 func Pass(
     starting_function: LowIntermediaryRepresentation.LowFunction,
@@ -526,34 +529,29 @@ func fits_in_registers(root: Integer): Boolean {
 }
 
 func read_the_free(root: Integer, freeing: LowIntermediaryRepresentation.LowFunction): Boolean {
-    if freeing.blocks.count() != 1 or freeing.parameter_count != 1 {
+    if freeing.parameter_count != 1 {
         return false
     }
-    var block = freeing.blocks[0]
-    var children = List<Integer>()
-    var count = block.instructions.count()
-    if count < 2 {
-        return false
-    }
-    var index = 0
-    while index + 2 < count {
-        var loaded = block.instructions[index]
-        var called = block.instructions[index + 1]
-        var offset = released_offset(loaded, called)
-        if offset < 0 {
-            return false
+    freed_children = List<Integer>()
+    held_children = List<Integer>()
+    frees_itself = false
+    var block_index = 0
+    while block_index < freeing.blocks.count() {
+        var block = freeing.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if not lets_go_of_a_child(instruction) {
+                return false
+            }
+            index = index + 1
         }
-        children.append(offset)
-        index = index + 2
+        block_index = block_index + 1
     }
-    if index + 2 != count {
+    if not frees_itself {
         return false
     }
-    var freed = block.instructions[index]
-    var returned = block.instructions[index + 1]
-    if not frees_the_object(freed) or not returns_nothing(returned) {
-        return false
-    }
+    var children = freed_children
     free_children[root] = children
     plain[root] = children.is_empty()
     if escaped[root] == true {
@@ -571,36 +569,64 @@ func read_the_free(root: Integer, freeing: LowIntermediaryRepresentation.LowFunc
     return escaped[root] != true
 }
 
-func released_offset(
-    loaded: LowIntermediaryRepresentation.Instructions.Instruction,
-    called: LowIntermediaryRepresentation.Instructions.Instruction,
-): Integer {
-    if loaded == LowIntermediaryRepresentation.Instructions.Load {
-        if loaded.address != 0 or loaded.width != 'bits_64' or loaded.is_swapped {
-            return -1
-        }
-        if called == LowIntermediaryRepresentation.Instructions.Call {
-            var releases = called.function == "_release" and called.arguments.count() == 1
-            if releases and called.arguments.contains(loaded.target) and loaded.offset >= 16 {
-                return loaded.offset
-            }
-        }
+func lets_go_of_a_child(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Load: return reads_a_child(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: return counts_a_child(instruction)
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return held_children.contains(instruction.address)
+        LowIntermediaryRepresentation.Instructions.Call: return releases_a_child(instruction)
+        LowIntermediaryRepresentation.Instructions.Free: return frees_the_object(instruction)
+        LowIntermediaryRepresentation.Instructions.Return: return returns_nothing(instruction)
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Jump: return true
+        LowIntermediaryRepresentation.Instructions.Branch: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return reads_no_object(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return reads_no_object(instruction)
+        _: return false
     }
-    return -1
 }
 
-func frees_the_object(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
-    if instruction == LowIntermediaryRepresentation.Instructions.Free {
-        return instruction.pointer == 0
+func reads_a_child(loaded: LowIntermediaryRepresentation.Instructions.Load): Boolean {
+    if loaded.is_swapped or loaded.width != 'bits_64' {
+        return false
     }
-    return false
+    if loaded.address == 0 {
+        if loaded.offset < 16 or freed_children.contains(loaded.offset) {
+            return false
+        }
+        freed_children.append(loaded.offset)
+        held_children.append(loaded.target)
+        return true
+    }
+    return loaded.offset == 8 and held_children.contains(loaded.address)
 }
 
-func returns_nothing(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
-    if instruction == LowIntermediaryRepresentation.Instructions.Return {
-        return instruction.source < 0 and instruction.presence < 0
+func counts_a_child(stored: LowIntermediaryRepresentation.Instructions.Store): Boolean {
+    var is_a_count = stored.offset == 8 and stored.width == 'bits_64' and not stored.is_swapped
+    return is_a_count and held_children.contains(stored.address)
+}
+
+func releases_a_child(call: LowIntermediaryRepresentation.Instructions.Call): Boolean {
+    if call.arguments.count() != 1 or call.target >= 0 {
+        return false
     }
-    return false
+    var argument = call.arguments[0]
+    var releases = call.function == "_release" or call.function.starts_with("_free_")
+    return releases and held_children.contains(argument)
+}
+
+func reads_no_object(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    operands.read(instruction)
+    return not operands.uses.contains(0)
+}
+
+func frees_the_object(freed: LowIntermediaryRepresentation.Instructions.Free): Boolean {
+    frees_itself = freed.pointer == 0
+    return frees_itself
+}
+
+func returns_nothing(returning: LowIntermediaryRepresentation.Instructions.Return): Boolean {
+    return returning.source < 0 and returning.presence < 0 and not returning.is_a_suspension
 }
 
 func any_mode(): Boolean {

@@ -378,6 +378,48 @@ func Lists() {
 Freeing `names` takes each text's count down in place and calls `_free_String` for the ones that reach 0. What a
 user can observe: the time.
 
+## A list item read only to test it is not counted
+
+`list[index] is present` on a library `List` or `Vector` of items that cannot be null is the test
+`index < count`, compared as unsigned so a negative index is outside too: the item is never read, so it is never
+counted and let go. `crash velocities[entity] and healths[entity]` is two such tests, and its report, made only when
+one fails, reads the items as before.
+
+What a user can observe: the time. When it does not apply: a list of nullable items (an item there can be missing
+inside the bounds), `Items`, a `Dictionary`, and any other function than `get_at`.
+
+## A count taken and given back in the same block is not taken
+
+In a program that starts no thread, a `retain` of an object followed in the same block by a release of the same
+object (the same register, or a copy of it) is dropped together with that release when nothing between them can let
+go of anything: only loads, stores, arithmetic, comparisons, constants, copies and other retains, or a release
+that is itself one of such a pair (`low_optimization_passes/balanced_counts`). Nothing between them can bring the
+object's count to zero, and the count after the pair is what it was before, so the object lives exactly as long.
+
+```spite
+func update_each(moving: Moving) {
+    moving.position.left = moving.position.left + moving.velocity.across
+}
+```
+
+Reading `moving.position` through the row's shape answers a counted object, and each use counts it once more;
+once `update_each` is inlined, every one of those counts and its release stand in one block with only the reads,
+the addition and the store between them, and none is made.
+
+When it does not apply: a program that starts a thread (another thread could let go of the same object between the
+two), a release in another block than its retain, and a pair with a call, a free or a release of another object
+between them. What a user can observe: the time.
+
+## Letting go of an object counts down in place
+
+A release of an object whose class is not known while compiling is written where it stands: the test for no
+object, the count taken down (one atomic subtraction in a program with threads) and, only when it reaches zero, a
+call of `_free_by_class`, which finds the free function from the class number. Before, every release was a call of
+`_release`, which made the same steps behind a call. The passes before it still see one `_release` call, so it is
+written last, after every other pass (`low_optimization_passes/released_in_place`).
+
+What a user can observe: the time, and a larger executable where releases are many.
+
 ## Small blocks come from the compiler's own free lists
 
 Every object, list storage, text and task frame used to be one `HeapAlloc` and one `HeapFree` (about 60 ns each on
@@ -764,6 +806,13 @@ An object of a group placed in registers that is answered by `return` is made at
 written from its registers and a count of one, so a function that builds its answer through a loop of temporary
 objects makes one object, not one per pass.
 
+The free function of the class says which attributes it lets go of: each one it reads from the object and either
+passes to `_release` or counts down in place and frees with the attribute's class's own free function (how
+[letting go of an object of a known class is direct](#letting-go-of-an-object-of-a-known-class-is-direct) writes
+it). A row of items (`{position: positions[entity], velocity: velocities[entity]}`) passed to an inlined
+`update_each` is therefore registers, with no allocation per pass
+(`a_row_of_borrowed_items_lives_in_the_frame`: 753 ms before, 530 ms after, with the next two sections).
+
 It does not apply to an object whose class has a `drop`, is held back by back references or frees its attributes
 in another way than releasing them, to an object read at an offset that overlaps another read, to one whose
 attribute is read both as signed and unsigned, to one of more than 32 attributes in registers, or to anything in a
@@ -895,14 +944,23 @@ func turn(point: Point) {
 
 `"cactus".pluralize()` is the text `cacti` made in three allocations, with none of the inflection tables built or
 searched; `0.5.cosine()` and `0.5.sine()` are the constants whose bits are `0x3f60a940` and `0x3ef57744`.
+Measured on `a_word_inflected_while_compiling`, which calls `label` a million times: 4.3 s while the inflection ran
+every time, 67 ms with it answered while compiling.
 
-How it works (`low_optimization_passes/compile_time_evaluation`): each block is followed from its start with a
-model of memory in which only the objects the block itself allocates exist. A register is known when it holds a
+How it works (`low_optimization_passes/compile_time_evaluation`): the pass runs twice, once before inlining (so a
+call like `"cactus".pluralize()` is answered while it is still one call, before its body is spread into the
+caller) and once after it (for the calls inlining leaves with known arguments); before the first run each function's
+constants are folded and its jumps threaded. Each block is followed from its start with a model of memory in which
+only the objects the block itself allocates exist, and the model carries on into the next block when that block is
+entered only from this one: through a jump, or through a branch whose condition the model knows, which is then
+written as a jump (so a text literal, whose room is chosen by a branch on its length, is known whole). A register is known when it holds a
 constant (a register written once, by a constant, anywhere in the function) or what a known instruction computed;
 an object stays known as long as everything that touches it is known. A call whose arguments are all known runs in
 the compiler's interpreter of the low representation (`machine.spite`), instruction by instruction, with the
 machine's own semantics: the same wrapping and the same checks for whole numbers, the same IEEE operations for
-decimals, the C library's own functions for the maths, every allocation zeroed as `HeapAlloc` zeroes it. Then:
+decimals, the C library's own functions for the maths, every allocation zeroed as `HeapAlloc` zeroes it, and a
+copy of bytes from a constant text or from another known object (pointers it copies stay pointers when they sit
+on whole words). Then:
 
 - when the call changed none of the objects that existed before it, its answer replaces it, and the objects it
   made are written out as allocations and stores (a pointer to another of them becomes its register, a pointer to
@@ -912,11 +970,14 @@ decimals, the C library's own functions for the maths, every allocation zeroed a
 
 When it does not apply: the call, or anything it calls, reads or writes a singleton or any memory the block did
 not make, calls the system or another library (anything but the maths functions), takes a frame's address, starts
-or joins a thread, waits, would halt (an arithmetic check, a `crash`, a division by zero), answers not-a-number,
-runs past two million instructions (twenty million for the whole program), or leaves an object it made held by
+or joins a thread, waits, would halt (an arithmetic check, a `crash`, a division by zero, a call of a crash's
+cold report), answers not-a-number,
+runs past two million instructions (twenty million for each of the two runs), or leaves an object it made held by
 nothing; and an object the block made stops being known as soon as it is passed to something that is not run, so
 nothing an unknown function could have written is ever read. The call is then left as it was. A call that failed
-once on the same numbers is not tried again.
+once on the same numbers is not tried again. A function is not ruled out ahead of time for what only its paths
+that halt or let go of an object could do (a cold crash report, `_release` and the free functions, which may close
+a handle): those are refused when a run reaches them, not because the function could reach them.
 
 What a user can observe: the time, and fewer allocations under `--debug-memory` (a folded call's own work
 allocates nothing; the objects of its answer are still allocated where it was). A program whose maths is folded
@@ -1376,8 +1437,13 @@ Four `Parallel`s running `count_up` each take `Tally`'s lock once
 the answer of a `filter_` template (or of a chain of them), the compiler writes one function on the first list's
 class, `_fused_is_lit_then_sum_brightness`, from the last template's body with its loop's step wrapped in an `if`
 per `filter_`, and calls that on the first list (`high_intermediary_representation/building/fused_chains.spite`).
-The last step may be `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_` or `find_by_`. A program sees
-only the order: each element's members run before the next element's.
+The last step may be `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_` or `find_by_`. A `map_` may
+stand in the middle too: `items.filter_is_active().map_owners().filter_is_adult().sum_age()` is one loop over
+`items`, `_fused_is_active_to_owner_is_adult_then_sum_age`, that names each item's owner in the loop
+(`var item = fused_item_0.owner`) and filters and sums it there, with no list of owners made. After a `map_` the
+last step is `count_`, `any_`, `all_`, `sum_`, `each_` or `map_` (a `filter_` or `find_by_` there answers the mapped
+class, so it runs on its own list). A program sees only the order: each element's members run before the next
+element's.
 
 ```spite
 var total = lamps.filter_is_lit().sum_brightness()
@@ -1386,5 +1452,8 @@ var total = lamps.filter_is_lit().sum_brightness()
 calls `is_lit` then `brightness` on the first lamp, then on the second (`tests/list_chain_order`), and allocates no
 list for the filtered lamps.
 
-**Not built:** a `map_` in the middle, a passed function (`filter(f)`), chains on a `Dictionary`'s values, on a
-`Vector` or on `Items`, and leaving out the unfused step's own function, which is still compiled.
+Measured on `template_chains_run_as_one_loop`: 102 ms before the `map_` joined the loop, 35 ms after.
+
+**Not built:** a `filter_` or `find_by_` after a `map_`, a passed function (`filter(f)`), chains on a
+`Dictionary`'s values, on a `Vector` or on `Items`, and leaving out the unfused step's own function, which is still
+compiled.

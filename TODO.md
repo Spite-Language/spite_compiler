@@ -67,8 +67,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `File.lock()` waits in place: inside a `Concurrent` it does not return to the scheduler while another process holds the lock
 - A header's prototype casts each foreign argument to its C type's number (D848), but a prototype written over several lines, or with a `typedef`'d parameter type, is not read, so its arguments pass as written
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
-- `--debug-memory` prints its counts (D883), but not the leaked-object summary by class name, and fresh memory is zeroed, not filled with `0xA5`; an attribute read from an object made in the same expression is let go at the end of its statement (D871) only in a declaration, an assignment or an evaluated call: in an `if`, `while` or `return` it goes after the call that reads it, and where no call reads it there it leaks; the counts a pass proves unneeded are still written
-- Chains of member templates as one loop beyond `filter_` steps on a `List` (D876: a `map_` in the middle, a passed function `filter(f)`, a chain on a `Dictionary`'s values or a `Vector`/`Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
+- `--debug-memory` prints its counts (D883), but not the leaked-object summary by class name, and fresh memory is zeroed, not filled with `0xA5`; an attribute read from an object made in the same expression is let go at the end of its statement (D871) only in a declaration, an assignment, an evaluated call and the condition of an `if` or a `while` (D946): in a `return` it goes after the call that reads it, and where no call reads it there it leaks; the counts a pass proves unneeded are still written
+- Chains of member templates as one loop beyond `filter_` and `map_` steps on a `List` (D876, D945: a `filter_` or `find_by_` after a `map_`, a passed function `filter(f)`, a chain on a `Dictionary`'s values or a `Vector`/`Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A dictionary keyed by hashing instead of a walk of its keys
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
 - `Float` and `Double`: `%`, exponent notation in literals, a `Double` too large for a `Float` halting, and `UnsignedLong` to and from a decimal past 2^63; a decimal too large for a `Long` prints a wrong number in its range-stop message
@@ -163,7 +163,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A function taking a `type` is compiled per class
 - A test against a value a list never holds is decided while compiling
 - A table filled once is read as constants
-- Maths on constants is worked out while compiling (built: whole numbers in the high representation, and every call, decimal operation and maths function on constants in the lowered program, D784; not built: the evaluator follows one block at a time and knows only the objects that block made, so a constant list filled before a loop is unknown inside the loop, and an object made in another function or held by a singleton is never known)
+- Maths on constants is worked out while compiling (built: whole numbers in the high representation, and every call, decimal operation and maths function on constants in the lowered program, D784; not built: the evaluator follows a block and the blocks only it leads to (D941) and knows only the objects they made, so a constant list filled before a loop is unknown inside the loop, and an object made in another function or held by a singleton is never known)
 - A binary schema is a constant
 - Identical functions are folded into one
 
@@ -178,7 +178,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A list held only by another list lives in its slot
 - A list of lists filled again keeps each list's room
 - Objects of one class sit together
-- A row of borrowed items lives in the frame (built when the function it is passed to is inlined, D801: the row is registers; a row passed to a call too large to inline is still made on the heap)
+- A row of borrowed items lives in the frame (built when the function it is passed to is inlined, D801, D942: the row is registers; a row passed to a call too large to inline is still made on the heap, and the items it holds are still counted when it is made and let go when it ends)
 - An `Items`' storage is chosen while compiling
 - A deep copy is written per class, with a table only where a graph needs one
 - A deep copy nothing changes is the original
@@ -195,7 +195,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A singleton's attribute that never changes is read in place
 - A list's templates read its elements without counting them: done where nothing after the read in the template can write a list of that class; a template handed a function value still counts when any function the program takes as a value could write one
 - An item written back to its own slot is not written
-- A list item read only to test it is not counted
+- A list item read only to test it is not counted (built for `is present` on a `List` or `Vector`, D947; not built: a read tested by another comparison than presence, and `Items`)
 - A write-back of what the slot already holds is not written
 - An item a name holds from its list is not counted
 - Reading through a `type` without counting

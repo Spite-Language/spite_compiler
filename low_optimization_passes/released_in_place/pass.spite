@@ -1,0 +1,135 @@
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var uses_threads = false
+var next_register = 0
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction, starting_uses_threads: Boolean) {
+    function = starting_function
+    uses_threads = starting_uses_threads
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if function.is_resumable or function.key == "_release" {
+        return function
+    }
+    next_register = operands.most_register_of(function)
+    if function.register_count > next_register {
+        next_register = function.register_count
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        split_at_a_release(block_index)
+        block_index = block_index + 1
+    }
+    function.register_count = next_register
+    return function
+}
+
+func split_at_a_release(block_index: Integer) {
+    var block = function.blocks[block_index]
+    crash block
+    var at = first_release(block)
+    assert at >= 0
+    var call = block.instructions[at]
+    crash call
+    var object = released_object(call)
+    var head = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var tail = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if index < at {
+            head.append(instruction)
+        }
+        if index > at {
+            tail.append(instruction)
+        }
+        index = index + 1
+    }
+    var counting = new_block(block.place)
+    var freeing = new_block(block.place)
+    var after = new_block(block.place)
+    var zero = new_register()
+    var made_zero = LowIntermediaryRepresentation.Instructions.Constant(zero, 0)
+    head.append(made_zero)
+    var missing = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', object, zero)
+    head.append(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, after, counting)
+    head.append(test)
+    block.instructions = head
+    count_down(object, zero, counting, freeing, after)
+    var passed = List<Integer>()
+    passed.append(object)
+    var freed = LowIntermediaryRepresentation.Instructions.Call(-1, "_free_by_class", passed)
+    var freeing_block = function.blocks[freeing]
+    crash freeing_block
+    freeing_block.instructions.append(freed)
+    var onward = LowIntermediaryRepresentation.Instructions.Jump(after)
+    freeing_block.instructions.append(onward)
+    var after_block = function.blocks[after]
+    crash after_block
+    after_block.instructions = tail
+}
+
+func count_down(object: Integer, zero: Integer, counting: Integer, freeing: Integer, after: Integer) {
+    var counting_block = function.blocks[counting]
+    crash counting_block
+    var left = new_register()
+    if uses_threads {
+        var decremented = LowIntermediaryRepresentation.Instructions.AtomicAdd(left, object, 8, -1)
+        counting_block.instructions.append(decremented)
+    } else {
+        var count = new_register()
+        var loaded = LowIntermediaryRepresentation.Instructions.Load(count, object, 8, 'bits_64')
+        counting_block.instructions.append(loaded)
+        var one = new_register()
+        var made_one = LowIntermediaryRepresentation.Instructions.Constant(one, 1)
+        counting_block.instructions.append(made_one)
+        var subtracted = LowIntermediaryRepresentation.Instructions.Arithmetic(left, 'subtract', count, one)
+        subtracted.is_checked = false
+        counting_block.instructions.append(subtracted)
+        var stored = LowIntermediaryRepresentation.Instructions.Store(object, 8, left, 'bits_64')
+        counting_block.instructions.append(stored)
+    }
+    var gone = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(gone, 'equal', left, zero)
+    counting_block.instructions.append(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(gone, freeing, after)
+    counting_block.instructions.append(test)
+}
+
+func first_release(block: LowIntermediaryRepresentation.LowBlock): Integer {
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if released_object(instruction) >= 0 {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func released_object(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Integer {
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        var releases = instruction.function == "_release" and instruction.target < 0 and instruction.presence < 0
+        if releases and instruction.arguments.count() == 1 {
+            return instruction.arguments[0]
+        }
+    }
+    return -1
+}
+
+func new_block(place: String): Integer {
+    var block = LowIntermediaryRepresentation.LowBlock()
+    block.place = place
+    function.blocks.append(block)
+    return function.blocks.count() - 1
+}
+
+func new_register(): Integer {
+    var register = next_register
+    next_register = next_register + 1
+    return register
+}

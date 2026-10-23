@@ -345,6 +345,7 @@ func executed(instruction: LowIntermediaryRepresentation.Instructions.Instructio
         LowIntermediaryRepresentation.Instructions.DecimalConversion: return decimal_conversion(instruction, frame)
         LowIntermediaryRepresentation.Instructions.Load: return read_memory(instruction, frame)
         LowIntermediaryRepresentation.Instructions.Store: return write_memory(instruction, frame)
+        LowIntermediaryRepresentation.Instructions.CopyBytes: return copy_bytes(instruction, frame)
         LowIntermediaryRepresentation.Instructions.Call: return call(instruction, frame)
         LowIntermediaryRepresentation.Instructions.CallAt: return call_at(instruction, frame)
         LowIntermediaryRepresentation.Instructions.DataAddress: return data_address(instruction, frame)
@@ -1138,6 +1139,147 @@ func write_memory(stored: LowIntermediaryRepresentation.Instructions.Store, fram
     return 0
 }
 
+func copy_bytes(copying: LowIntermediaryRepresentation.Instructions.CopyBytes, frame: Frame): Integer {
+    if frame.tag_of(copying.count) != -1 {
+        return failure()
+    }
+    var wide_count = frame.value_of(copying.count)
+    var object = frame.tag_of(copying.destination)
+    var base = frame.value_of(copying.destination)
+    if wide_count < 0 or wide_count > largest_object or not is_object(object) {
+        return failure()
+    }
+    var count = wide_count.to_integer()
+    if count == 0 {
+        return 0
+    }
+    if not reaches(object, base, count) {
+        return failure()
+    }
+    var place = base.to_integer()
+    var source = frame.tag_of(copying.source)
+    var source_base = frame.value_of(copying.source)
+    if is_object(source) and source != object and words_line_up(source_base, place) {
+        return copy_words(source, source_base, object, place, count)
+    }
+    if any_tag_in(object, place, count) {
+        return failure()
+    }
+    var bytes = source_bytes(copying, frame, count)
+    if bytes.count() != count {
+        return failure()
+    }
+    touch(object)
+    var index = 0
+    while index < count {
+        var value = bytes[index]
+        crash value
+        put_byte(object, place + index, value)
+        index = index + 1
+    }
+    return 0
+}
+
+func words_line_up(source_base: Long, place: Integer): Boolean {
+    var source_offset = source_base.bits_and(7)
+    var place_offset: Long = place % 8
+    return source_base >= 0 and source_offset == place_offset
+}
+
+func copy_words(source: Integer, source_base: Long, object: Integer, place: Integer, count: Integer): Integer {
+    if not reaches(source, source_base, count) {
+        return failure()
+    }
+    var start = source_base.to_integer()
+    var index = 0
+    while index < count {
+        var whole = (start + index) % 8 == 0 and count - index >= 8
+        if whole {
+            index = index + 8
+        } else {
+            var tagged = any_tag_in(source, start + index, 1) or any_tag_in(object, place + index, 1)
+            if tagged {
+                return failure()
+            }
+            index = index + 1
+        }
+    }
+    touch(object)
+    index = 0
+    while index < count {
+        var whole = (start + index) % 8 == 0 and count - index >= 8
+        if whole {
+            var word = word_of(source, (start + index) / 8)
+            var tag = tag_in(source, (start + index) / 8)
+            put_word(object, (place + index) / 8, word, tag)
+            index = index + 8
+        } else {
+            var read = byte_in(source, start + index)
+            put_byte(object, place + index, read)
+            index = index + 1
+        }
+    }
+    return 0
+}
+
+func source_bytes(
+    copying: LowIntermediaryRepresentation.Instructions.CopyBytes,
+    frame: Frame,
+    count: Integer,
+): List<Long> {
+    var bytes = List<Long>()
+    var tag = frame.tag_of(copying.source)
+    var base = frame.value_of(copying.source)
+    if is_object(tag) {
+        return object_bytes(tag, base, count)
+    }
+    if is_data(tag) {
+        var label = label_of(tag)
+        return data_bytes(label, base, count)
+    }
+    return bytes
+}
+
+func object_bytes(object: Integer, base: Long, count: Integer): List<Long> {
+    var bytes = List<Long>()
+    if not reaches(object, base, count) {
+        return bytes
+    }
+    var place = base.to_integer()
+    if any_tag_in(object, place, count) {
+        return bytes
+    }
+    var index = 0
+    while index < count {
+        var read = byte_in(object, place + index)
+        bytes.append(read)
+        index = index + 1
+    }
+    return bytes
+}
+
+func data_bytes(label: Integer, base: Long, count: Integer): List<Long> {
+    var bytes = List<Long>()
+    if label < 0 or label >= read_only.count() or read_only[label] != true {
+        return bytes
+    }
+    var held = program.data[label]
+    crash held
+    if base < 0 or base > held.count() - count {
+        return bytes
+    }
+    var place = base.to_integer()
+    var index = 0
+    while index < count {
+        var read = held[place + index]
+        crash read
+        var wide: Long = read
+        bytes.append(wide)
+        index = index + 1
+    }
+    return bytes
+}
+
 func data_address(address: LowIntermediaryRepresentation.Instructions.DataAddress, frame: Frame): Integer {
     var tag = data_tag(address.label)
     frame.set(address.target, 0, tag)
@@ -1241,6 +1383,9 @@ func move_the_words(object: Integer, made: Integer) {
 }
 
 func call(called: LowIntermediaryRepresentation.Instructions.Call, frame: Frame): Integer {
+    if called.function.contains("$cold") {
+        return failure()
+    }
     var values = List<Long>()
     var argument_tags = List<Integer>()
     var index = 0

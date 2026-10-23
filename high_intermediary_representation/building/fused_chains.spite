@@ -4,6 +4,10 @@ var no_table = Symbols.SymbolTable(no_folders)
 var no_resolver = NameResolution.Resolver(no_table)
 var context = Context(no_program, no_resolver)
 var values = Values(context)
+var chain_steps = List<String>()
+var chain_first: HighIntermediaryRepresentation.Values.Value? = null
+var after_a_map = ["count_member", "any_member", "all_member", "sum_member", "each_member", "map_members"]
+
 var fused_templates = [
     "filter_member"
     "count_member"
@@ -27,59 +31,102 @@ func fused_step(
 ): Model.FunctionModel? {
     var library = Validators.LibraryFile()
     assert owner.file.namespace == "List" and library.holds(owner.file.path)
-    var filters = filters_of(receiver)
-    assert not filters.is_empty()
+    chain_steps = List<String>()
+    chain_first = null
+    assert follows_a_chain(receiver)
+    var filters = chain_steps
+    var first = first_list_of(receiver)
+    var first_class = values.present_class_of(first)
+    assert first_class.file.namespace == "List" and library.holds(first_class.file.path)
     var last = owner.function_named(name)
     if not last {
         last = values.member_template_of(owner, name)
     }
     assert last
-    return fused_function(owner, filters, last)
+    return fused_function(first_class, filters, last)
 }
 
 func first_list_of(receiver: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
-    var first: HighIntermediaryRepresentation.Values.Value? = null
-    if receiver == HighIntermediaryRepresentation.Values.Call {
-        first = receiver.receiver
-    }
-    crash first
-    return first
+    crash chain_first
+    return chain_first
 }
 
-func filters_of(receiver: HighIntermediaryRepresentation.Values.Value): List<String> {
-    var filters = List<String>()
-    if receiver == HighIntermediaryRepresentation.Values.Call {
-        var is_a_step = receiver.arguments.is_empty() and is_a_filter(receiver.function)
-        if is_a_step and receiver.receiver {
-            receiver.function.fused_filters.each(filters.append)
-            var step = member_step(receiver.function)
-            filters.append(step)
+func follows_a_chain(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        var kind = step_kind(value.function)
+        var is_a_step = value.arguments.is_empty() and not kind.is_empty()
+        if is_a_step and value.receiver {
+            var inner: HighIntermediaryRepresentation.Values.Value = value.receiver
+            var steps = List<String>()
+            if value.function.is_a_fused_step {
+                value.function.fused_filters.each(steps.append)
+                chain_first = inner
+            } else {
+                steps = steps_before(inner)
+            }
+            var step = member_step(value.function, kind)
+            steps.append(step)
+            chain_steps = steps
+            return true
         }
     }
-    return filters
+    return false
 }
 
-func is_a_filter(function: Model.FunctionModel): Boolean {
-    if not function.declaration {
-        return false
+func steps_before(inner: HighIntermediaryRepresentation.Values.Value): List<String> {
+    if follows_a_chain(inner) {
+        return chain_steps
+    }
+    chain_first = inner
+    return List<String>()
+}
+
+func step_kind(function: Model.FunctionModel): String {
+    if not function.declaration or function.bound_member.is_empty() {
+        return ""
     }
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
-    return declaration.name == "filter_member" and not function.bound_member.is_empty()
+    if declaration.name == "filter_member" {
+        return "filter"
+    }
+    if declaration.name == "map_members" {
+        return "map"
+    }
+    return ""
 }
 
-func member_step(function: Model.FunctionModel): String {
+func member_step(function: Model.FunctionModel, kind: String): String {
+    var step = function.bound_member
     if function.bound_member_is_a_function {
-        return "{function.bound_member}()"
+        step = "{function.bound_member}()"
     }
-    return function.bound_member
+    if kind == "map" {
+        return "={step}"
+    }
+    return step
+}
+
+func maps_in(filters: List<String>): Boolean {
+    var index = 0
+    while index < filters.count() {
+        var filter = filters[index]
+        if filter.starts_with("=") {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func fused_function(owner: Model.ClassModel, filters: List<String>, last: Model.FunctionModel): Model.FunctionModel? {
     assert last.declaration and not last.bound_member.is_empty() and last.bound_member_type
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = last.declaration
     assert fused_templates.contains(declaration.name)
+    var maps = maps_in(filters)
+    assert not maps or after_a_map.contains(declaration.name)
     var steps = filters.join("_")
-    var plain_steps = steps.replace("()", "")
+    var unmapped_steps = steps.replace("=", "to_")
+    var plain_steps = unmapped_steps.replace("()", "")
     var fused_name = "_fused_{plain_steps}_then_{last.name}"
     var known = owner.function_named(fused_name)
     if known {
@@ -109,8 +156,9 @@ func fused_function(owner: Model.ClassModel, filters: List<String>, last: Model.
         owner,
     )
     made.bound_member_index = last.bound_member_index
-    if declaration.name == "filter_member" {
+    if declaration.name == "filter_member" or declaration.name == "map_members" {
         made.fused_filters = filters
+        made.is_a_fused_step = true
     }
     owner.declared_functions.append(made)
     return made
@@ -174,10 +222,11 @@ func filtered_loop(
         middle.append(inner)
         index = index + 1
     }
-    var guarded = guarded_by(middle, filters, loop.line)
     var steps = List<AbstractSyntaxTree.Shapes.Statements.Statement>()
-    steps.append(reading)
-    steps.append(guarded)
+    var first_reading = renamed_reading(reading, filters)
+    steps.append(first_reading)
+    var guarded = guarded_by(middle, filters, loop.line)
+    guarded.each(steps.append)
     steps.append(stepping)
     var stepped = AbstractSyntaxTree.Shapes.Statements.Block(steps)
     stepped.line = loop_body.line
@@ -185,6 +234,46 @@ func filtered_loop(
     var made = AbstractSyntaxTree.Shapes.Statements.WhileStatement(loop.condition, stepped)
     made.line = loop.line
     return made
+}
+
+func renamed_reading(
+    reading: AbstractSyntaxTree.Shapes.Statements.Statement,
+    filters: List<String>,
+): AbstractSyntaxTree.Shapes.Statements.Statement {
+    if reading == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        return renamed_variable(reading, filters)
+    }
+    return reading
+}
+
+func renamed_variable(
+    reading: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    filters: List<String>,
+): AbstractSyntaxTree.Shapes.Statements.Statement {
+    if not maps_in(filters) {
+        return reading
+    }
+    crash reading.value
+    var name = item_name(0, filters)
+    var renamed = AbstractSyntaxTree.Shapes.Statements.VariableStatement(name, reading.declared_type, reading.value)
+    renamed.line = reading.line
+    return renamed
+}
+
+func item_name(step: Integer, filters: List<String>): String {
+    var maps_before = 0
+    var index = 0
+    while index < filters.count() {
+        var filter = filters[index]
+        if filter.starts_with("=") and index >= step {
+            return "fused_item_{maps_before}"
+        }
+        if filter.starts_with("=") {
+            maps_before = maps_before + 1
+        }
+        index = index + 1
+    }
+    return "item"
 }
 
 func reads_the_item(statement: AbstractSyntaxTree.Shapes.Statements.Statement): Boolean {
@@ -198,30 +287,61 @@ func guarded_by(
     middle: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
     filters: List<String>,
     line: Integer,
-): AbstractSyntaxTree.Shapes.Statements.Statement {
-    var inside = AbstractSyntaxTree.Shapes.Statements.Block(middle)
-    inside.line = line
+): List<AbstractSyntaxTree.Shapes.Statements.Statement> {
+    var inside = middle
     var index = filters.count() - 1
-    var guarded: AbstractSyntaxTree.Shapes.Statements.IfStatement? = null
     while index >= 0 {
         var filter = filters[index]
         crash filter
-        var condition = member_read(filter)
-        var made = AbstractSyntaxTree.Shapes.Statements.IfStatement(condition, inside, null)
-        made.line = line
-        guarded = made
-        var wrapping = List<AbstractSyntaxTree.Shapes.Statements.Statement>()
-        wrapping.append(made)
-        inside = AbstractSyntaxTree.Shapes.Statements.Block(wrapping)
-        inside.line = line
+        var reading = item_name(index, filters)
+        if filter.starts_with("=") {
+            inside = mapped_into(filter, index, filters, inside, line)
+        } else {
+            inside = filtered_into(filter, reading, inside, line)
+        }
         index = index - 1
     }
-    crash guarded
-    return guarded
+    return inside
 }
 
-func member_read(filter: String): AbstractSyntaxTree.Shapes.Expressions.Expression {
-    var item = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("item")
+func mapped_into(
+    filter: String,
+    index: Integer,
+    filters: List<String>,
+    inside: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    line: Integer,
+): List<AbstractSyntaxTree.Shapes.Statements.Statement> {
+    var reading = item_name(index, filters)
+    var mapped = item_name(index + 1, filters)
+    var length = filter.length()
+    var member = filter.slice(1, length)
+    var value = member_read(member, reading)
+    var named = AbstractSyntaxTree.Shapes.Statements.VariableStatement(mapped, null, value)
+    named.line = line
+    var with_named = List<AbstractSyntaxTree.Shapes.Statements.Statement>()
+    with_named.append(named)
+    inside.each(with_named.append)
+    return with_named
+}
+
+func filtered_into(
+    filter: String,
+    reading: String,
+    inside: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    line: Integer,
+): List<AbstractSyntaxTree.Shapes.Statements.Statement> {
+    var block = AbstractSyntaxTree.Shapes.Statements.Block(inside)
+    block.line = line
+    var condition = member_read(filter, reading)
+    var made = AbstractSyntaxTree.Shapes.Statements.IfStatement(condition, block, null)
+    made.line = line
+    var wrapping = List<AbstractSyntaxTree.Shapes.Statements.Statement>()
+    wrapping.append(made)
+    return wrapping
+}
+
+func member_read(filter: String, reading: String): AbstractSyntaxTree.Shapes.Expressions.Expression {
+    var item = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression(reading)
     if filter.ends_with("()") {
         var length = filter.length()
         var name = filter.slice(0, length - 2)
