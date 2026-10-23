@@ -24,6 +24,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Mortaro confirms or drops D634 to D637 and D643 to D653; D636 (type argument given at run time) contradicts monomorphisation
 
 ## Faults found
+- An object made only to read one attribute inside an `if`, `while` or `return` condition, with no call reading it, is never released (D871): a leak no run reports until `--debug-memory` has its report (D244)
 
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D748)
 - A getter or setter called by its bare name inside its own class (`set_rotation(rotation)` in `Matrix4`) is not refused (D752 refuses `point.set_height(4)`), and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
