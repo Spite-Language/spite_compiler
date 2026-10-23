@@ -1263,12 +1263,24 @@ func lower_while(loop: HighIntermediaryRepresentation.Statements.While) {
         lower_a_plain_while(loop)
         return
     }
-    lock_a_singleton(held)
+    crash assignments
+    crash waits
+    var sharing = waits.shares_the_lock(held) and coarse.only_reads(assignments)
+    var exclusive = -1
+    if sharing {
+        exclusive = share_a_singleton(held)
+    } else {
+        lock_a_singleton(held)
+    }
     var outer = coarse_class
     coarse_class = held
     lower_a_plain_while(loop)
     coarse_class = outer
-    unlock_a_singleton(held)
+    if sharing {
+        unshare_a_singleton(held, exclusive)
+    } else {
+        unlock_a_singleton(held)
+    }
 }
 
 func lower_a_plain_while(loop: HighIntermediaryRepresentation.Statements.While) {
@@ -1846,6 +1858,9 @@ func lock_a_singleton(class_key: String) {
     emit(paused)
     jump_to(trying)
     switch_to(taken)
+    if waits and waits.shares_the_lock(class_key) {
+        wait_for_the_readers(slot)
+    }
     var depth = new_register()
     var loaded = LowIntermediaryRepresentation.Instructions.Load(depth, slot, 48, 'bits_64')
     emit(loaded)
@@ -2059,7 +2074,7 @@ func record_label_of(class_key: String): Integer {
     }
     var empty = Buffer(0)
     var index = 0
-    while index < 56 {
+    while index < 64 {
         empty.append(0)
         index = index + 1
     }
@@ -3886,4 +3901,118 @@ func unbuilt(): Lowered {
     var buildable = Validators.HighIntermediaryRepresentation.Buildable.Validator()
     buildable.refuse(path, line, function.key)
     return single(-1)
+}
+
+# ../../OPTIMIZATIONS.md#a-counted-loop-of-reads-shares-its-singletons-lock
+func share_a_singleton(class_key: String): Integer {
+    var label = slot_label_of(class_key)
+    var slot = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    emit(addressed)
+    var thread = new_register()
+    var asked = LowIntermediaryRepresentation.Instructions.ThreadIdentity(thread)
+    emit(asked)
+    var exclusive = new_register()
+    var owner = new_register()
+    var loaded_owner = LowIntermediaryRepresentation.Instructions.Load(owner, slot, 40, 'bits_64')
+    emit(loaded_owner)
+    var mine = new_register()
+    var compared_owner = LowIntermediaryRepresentation.Instructions.Compare(mine, 'equal', owner, thread)
+    emit(compared_owner)
+    var deeper = new_block()
+    var trying = new_block()
+    var backing = new_block()
+    var shared = new_block()
+    var after = new_block()
+    var owner_test = LowIntermediaryRepresentation.Instructions.Branch(mine, deeper, trying)
+    emit(owner_test)
+    switch_to(deeper)
+    var depth = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(depth, slot, 48, 'bits_64')
+    emit(loaded)
+    var one = constant(1)
+    var added_depth = new_register()
+    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(added_depth, 'add', depth, one)
+    added.is_checked = false
+    emit(added)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 48, added_depth, 'bits_64')
+    emit(stored)
+    var held_alone = LowIntermediaryRepresentation.Instructions.Constant(exclusive, 1)
+    emit(held_alone)
+    jump_to(after)
+    switch_to(trying)
+    var readers = new_register()
+    var entered = LowIntermediaryRepresentation.Instructions.AtomicAdd(readers, slot, 56, 1)
+    emit(entered)
+    var writer = new_register()
+    var loaded_writer = LowIntermediaryRepresentation.Instructions.Load(writer, slot, 40, 'bits_64')
+    emit(loaded_writer)
+    var nobody = constant(0)
+    var free = new_register()
+    var compared_writer = LowIntermediaryRepresentation.Instructions.Compare(free, 'equal', writer, nobody)
+    emit(compared_writer)
+    var free_test = LowIntermediaryRepresentation.Instructions.Branch(free, shared, backing)
+    emit(free_test)
+    switch_to(backing)
+    var left = new_register()
+    var backed = LowIntermediaryRepresentation.Instructions.AtomicAdd(left, slot, 56, -1)
+    emit(backed)
+    var no_wait = constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    emit(paused)
+    jump_to(trying)
+    switch_to(shared)
+    var held_shared = LowIntermediaryRepresentation.Instructions.Constant(exclusive, 0)
+    emit(held_shared)
+    jump_to(after)
+    switch_to(after)
+    return exclusive
+}
+
+func unshare_a_singleton(class_key: String, exclusive: Integer) {
+    var alone = new_block()
+    var shared = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(exclusive, alone, shared)
+    emit(test)
+    switch_to(alone)
+    unlock_a_singleton(class_key)
+    jump_to(after)
+    switch_to(shared)
+    var label = slot_label_of(class_key)
+    var slot = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    emit(addressed)
+    var left = new_register()
+    var leaving = LowIntermediaryRepresentation.Instructions.AtomicAdd(left, slot, 56, -1)
+    emit(leaving)
+    jump_to(after)
+    switch_to(after)
+}
+
+func wait_for_the_readers(slot: Integer) {
+    var waiting = new_block()
+    var pausing = new_block()
+    var after = new_block()
+    jump_to(waiting)
+    switch_to(waiting)
+    var readers = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(readers, slot, 56, 'bits_64')
+    emit(loaded)
+    var nobody = constant(0)
+    var none_left = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(none_left, 'equal', readers, nobody)
+    emit(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(none_left, after, pausing)
+    emit(test)
+    switch_to(pausing)
+    var no_wait = constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    emit(paused)
+    jump_to(waiting)
+    switch_to(after)
 }
