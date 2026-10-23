@@ -186,7 +186,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The counts
 
-- Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, one answered and read once is counted and let go with nothing between and both are removed, D951, and an attribute holding a quiet singleton is the singleton itself, D954; not built: kept in a local or a list it still is, and so is an attribute in a program with a `drop()`)
+- Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, a function answering a singleton (a rebuilt attribute among them) neither counts it nor has its caller let it go, D949, and an attribute holding a quiet singleton is the singleton itself, D954; not built: kept in a local or a list it still is, and so is an attribute in a program with a `drop()`; the first-use test of a singleton read in a loop is made on every pass, even where it was made before the loop)
 - Singletons that hold nothing are static objects
 - Atomic reference counts only with threads
 - Plain reference counts where no thread reaches a class

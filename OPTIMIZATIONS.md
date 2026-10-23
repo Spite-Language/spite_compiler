@@ -402,6 +402,20 @@ one fails, reads the items as before.
 What a user can observe: the time. When it does not apply: a list of nullable items (an item there can be missing
 inside the bounds), `Items`, a `Dictionary`, and any other function than `get_at`.
 
+## A singleton a function answers is not counted
+
+A singleton lives from its first use to the program's end, so its count never decides when it goes. A function
+whose declared answer is a singleton class returns it without counting it, and every call of such a function
+(a plain call, a call through a function value, a call in a function that waits, and the read of an attribute
+rebuilt where it is read) takes the answer without letting it go afterwards. In
+`thread_safety_for_singletons_the_cheapest_safe_form`, `counter.record(step)` reads `counter` through its
+rebuilt attribute; that read answered the `HitCounter` counted, so four threads took and gave back the same count
+atomically on every call (about 180 ms); now it is one load (about 135 ms).
+
+When it does not apply: a function whose declared answer is a union, a shape or a nullable of anything else, even
+when it answers a singleton: its callers count what any member of the type could be. What a user can observe: the
+time.
+
 ## Letting go of an object counts down in place
 
 A release of an object whose class is not known while compiling is written where it stands: the test for no
