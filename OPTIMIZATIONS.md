@@ -1218,6 +1218,21 @@ text answer (`_as_text`) is copied into a new `String`; a null pointer stops the
 user can observe: none of it allocates in an ordinary function, and the object C changed holds C's values after the
 call.
 
+## The scheduler is written only for a program that makes work
+
+The scheduler, the handle's functions and the table of calls in a row are low functions the compiler writes,
+only when the program makes a `Concurrent` or a `Parallel`; a program that makes neither carries none of them,
+not even an import. The table that bounds calls in a row (eight unfinished per site) is sized while compiling,
+nine slots for each site the program has plus one, so it never grows; a program without such a site has no table.
+A thread's loop is found by its id: the program's first thread compares one word, and only another thread takes
+the lock that guards the list of loops.
+
+    var first = Concurrent(slow_read)
+    var answer: Integer = first
+
+writes `_scheduler_start` and `_scheduler_wait_for` for this program, and `Spite.Work_of_Integer._settled` for the
+join; `--low-ir` shows them.
+
 ## Thread safety for singletons, the cheapest safe form
 
 In a program that makes a `Parallel`, every singleton the work a `Parallel` runs can reach (following calls from
