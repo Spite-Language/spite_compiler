@@ -1133,7 +1133,12 @@ and a branch whose two targets are the same block is a jump.
 ## A copy of a value that never changes is the value
 
 A copy `t = s`, where `t` is written only by that copy and `s` is a parameter never written or a register written
-once earlier in the same block (with no read of `t` in between), is removed by reading `s` wherever `t` is read.
+once earlier in the same block (with no read of `t` in between), is removed by reading `s` wherever `t` is read. So
+is a copy whose every read is later in its own block, with nothing writing `s` before the last of them, whatever
+writes `s` elsewhere: `r5 = angle; r9 = r5 + step` reads `angle` itself. Copy propagation runs once more after
+[attributes are put in registers](#a-loop-over-one-objects-attributes-keeps-them-in-registers), whose reads are such
+copies, and [copy coalescing](#a-value-computed-only-to-be-copied-is-computed-in-place) also moves decimal maths and
+conversions into the register they are copied to.
 
 ## A value nobody reads is not computed
 
@@ -1755,6 +1760,30 @@ it.
 halts the program with the same message, but the frames it reports are those of its band (the function the band
 runs and the library's `_each_range_` loop), and when several passes would overflow, the one reported may be another
 than the first in the list's order. Not in `--hot-reload`, `--repl` or `--development` builds.
+
+## A counted loop of one banded pass runs its count inside each band
+
+```spite
+func advance_ticks() {
+    var tick = 0
+    while tick < 10 {
+        orbits.each_advance()
+        tick = tick + 1
+    }
+}
+```
+
+A `while` whose body is only a call that [runs in bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands)
+and the step of its counter (an `Integer` counted by one up to a literal) starts the bands once: each band runs all
+ten passes of its own elements, one element after another, and the counter ends at the bound, as the loop would
+leave it. It is built as an `if tick < 10` that runs the passes `10 - tick` times and then sets `tick = 10`
+(`high_intermediary_representation/building/statements.spite`, the library's `List._each_in_bands_repeated_member`).
+Each pass writes only its own element and reads nothing another pass writes, so an element's ten passes in a row
+leave every element as ten rounds over the list would. Below the count at which bands pay, or when an element is
+held elsewhere too, the rounds run over the whole list one after another, as written.
+
+**What a program can observe:** the time; a checked operation that overflows reports its band's frames, as in any
+band.
 
 ## A chain of `filter_` steps runs as one loop
 

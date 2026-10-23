@@ -233,7 +233,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Thread safety for singletons, the rest of the plan
 - Calls in a row run at once
 - A loop over a list of different classes runs them at once
-- A loop whose passes write only their own item runs in bands (built for `each_` on a `List` of a class of the program, D975; not built: a `Vector`, a `filter_` chain before it, a pass that calls a member of another object or of a number, a pool of threads kept between loops (each band starts a thread), and running an outer counted loop inside each band, as the expert C does with its ten ticks)
+- A loop whose passes write only their own item runs in bands (built for `each_` on a `List` of a class of the program, D975; not built: a `Vector`, a `filter_` chain before it, a pass that calls a member of another object or of a number, and a pool of threads kept between loops (each band starts a thread; a counted loop of one banded pass starts them once, D978, but any other loop starts them on every pass))
 
 ### The compiler's own machinery
 
