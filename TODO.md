@@ -52,7 +52,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A `load` of a repository pinned to a commit is refused even when well formed (D839): fetching into `.spite/git/` is not built
 - The library and the compiler's generated files break three rules they are exempt from for now (D838): a case of two statements (`Duration.part`), an `if` that only holds an `if` (`ZoneRules.transition_offset_seconds_at`), and `crash` on a value that cannot be null (`internal/prompt.spite`, the generated REPL)
 - An `assert`/`crash` on a value that cannot be null is refused only on a parameter or an attribute, not on a local; a lone hole in an untyped `var` knows a text only from a local or parameter declared with text (D836); a reopening's attribute type is compared only between two written types or two literals (D840)
-- The unread-attribute check counts a read through another object (`tint.name`) by name in every class, not per class: only `this.x` reads and reads inside the class's own files are per class (D872)
+- The unread-attribute check counts a read of any attribute of the same name in any class of the program's own folder (reads by name, not per class, D878); in a folder the program loads it checks only singleton bindings, counting reads from that folder
 - The spec pages in `../SpiteLanguage/specs` still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D750 to D756
 
 - The runtime the library needs, as machine code: console, files, directories, clock, sockets, processes, dynamic library

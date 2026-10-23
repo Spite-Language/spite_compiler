@@ -1,9 +1,6 @@
 var member_reads = Dictionary<String, Integer>()
 var name_reads = Dictionary<String, Integer>()
 var built_reads = Dictionary<String, Boolean>()
-var own_reads = Dictionary<String, Boolean>()
-var reading_owner = ""
-var program = Model.ProgramModel()
 var checked_paths = List<String>()
 var found_path = ""
 var found_line = 0
@@ -11,10 +8,16 @@ var found_owner = ""
 var found_name = ""
 var found_in_the_entry = false
 var shape_members = List<String>()
+var reading_path = ""
+var path_reads = Dictionary<String, Integer>()
+var read_paths = Dictionary<String, List<String>>()
+var folders = Mapping.FolderMap()
+var program = Model.ProgramModel()
 
 func check(context: Context, built: List<HighIntermediaryRepresentation.HighFunction>) {
     assert not is_interactive(context)
     program = context.program
+    folders = context.resolver.symbols.map
     var walks = context.resolver.symbols.walks
     walks.each(count_the_reads)
     built.each(note_the_built_reads)
@@ -58,6 +61,7 @@ func is_interactive(context: Context): Boolean {
 }
 
 func count_the_reads(walk: AbstractSyntaxTree.Walk.Walk) {
+    reading_path = walk.file.path
     var namespace = walk.file.namespace
     var index = 0
     while index < walk.expressions.count() {
@@ -82,9 +86,23 @@ func uncount_a_target(namespace: String, statement: AbstractSyntaxTree.Shapes.St
 func count_a_read(namespace: String, expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, step: Integer) {
     if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
         add_to(name_reads, "{namespace}|{expression.name}", step)
+        note_a_path_read(expression.name, step)
     }
     if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
         add_to(member_reads, expression.name, step)
+        note_a_path_read(expression.name, step)
+    }
+}
+
+func note_a_path_read(name: String, step: Integer) {
+    add_to(path_reads, "{reading_path}|{name}", step)
+    if not read_paths[name] {
+        read_paths[name] = List<String>()
+    }
+    var known = read_paths[name]
+    crash known
+    if not known.contains(reading_path) {
+        known.append(reading_path)
     }
 }
 
@@ -98,7 +116,7 @@ func add_to(counts: Dictionary<String, Integer>, key: String, step: Integer) {
 }
 
 func note_the_built_reads(function: HighIntermediaryRepresentation.HighFunction) {
-    reading_owner = function.function.owner
+    reading_path = path_of(function.function)
     var printer = Printers.HighIntermediaryRepresentation.Printer(function)
     var text = printer.text()
     var lines = text.lines()
@@ -127,21 +145,30 @@ func note_a_built_piece(piece: String, before: String, is_the_first: Boolean) {
     var trimmed = before.trim()
     var is_a_write = rest.starts_with(" = ") and is_the_first and not trimmed.contains(" ")
     assert not is_a_write
-    if is_this(before) {
-        own_reads["{reading_owner}|{name}"] = true
-    } else {
-        built_reads[name] = true
-    }
+    built_reads[name] = true
+    note_a_path_read(name, 1)
 }
 
-func is_this(before: String): Boolean {
-    var length = before.length()
-    var stands_alone = length == 4
-    if length > 4 {
-        var code = before.code_at(length - 5)
-        stands_alone = not is_a_name_code(code)
+func path_of(function: Model.FunctionModel): String {
+    var path = ""
+    var owner = program.class_named(function.owner)
+    if owner {
+        path = owner.file.path
     }
-    return before.ends_with("this") and stands_alone
+    if function.declaration {
+        path = declared_path_or(function.declaration, path)
+    }
+    return path
+}
+
+func declared_path_or(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    otherwise: String,
+): String {
+    if declaration.path.is_empty() {
+        return otherwise
+    }
+    return declaration.path
 }
 
 func leading_name(piece: String): String {
@@ -170,13 +197,58 @@ func check_a_class(map: Mapping.FolderMap, model: Model.ClassModel, entry_path: 
     var library = Validators.LibraryFile()
     assert not library.holds(path)
     assert model.key != "Environment" and model.key != "Build"
-    assert is_the_programs_own(map, path)
+    var loaded_folder = loaded_folder_of(map, path)
+    assert not loaded_folder.is_empty() or is_the_programs_own(map, path)
     var index = 0
     while index < model.declared_attributes.count() {
         var attribute = model.declared_attributes[index]
-        check_an_attribute(model, attribute, entry_path)
+        check_an_attribute(model, attribute, entry_path, loaded_folder)
         index = index + 1
     }
+}
+
+func loaded_folder_of(map: Mapping.FolderMap, path: String): String {
+    var program_root = map.roots.first()
+    crash program_root
+    var index = 1
+    while index < map.roots.count() {
+        var root = map.roots[index]
+        var is_inside_the_program = map.inside(root.path, program_root.path)
+        if is_inside_the_program and map.inside(path, root.path) {
+            return root.path
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func is_read_in(folder: String, name: String): Boolean {
+    var paths = read_paths[name]
+    if not paths {
+        return false
+    }
+    var index = 0
+    while index < paths.count() {
+        var path = paths[index]
+        var count = path_reads["{path}|{name}"]
+        if count and count > 0 and folders.inside(path, folder) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func binds_a_singleton(attribute: Model.AttributeModel): Boolean {
+    var held = attribute.attribute_type
+    if held.kind != 'object' {
+        return false
+    }
+    var model = program.class_named(held.name)
+    if model {
+        return model.is_singleton
+    }
+    return false
 }
 
 func is_the_programs_own(map: Mapping.FolderMap, path: String): Boolean {
@@ -188,8 +260,7 @@ func is_the_programs_own(map: Mapping.FolderMap, path: String): Boolean {
     var index = 1
     while index < map.roots.count() {
         var root = map.roots[index]
-        var is_a_package = not map.inside(root.path, program_root.path)
-        if is_a_package and map.inside(path, root.path) {
+        if map.inside(path, root.path) {
             return false
         }
         index = index + 1
@@ -197,11 +268,19 @@ func is_the_programs_own(map: Mapping.FolderMap, path: String): Boolean {
     return true
 }
 
-func check_an_attribute(model: Model.ClassModel, attribute: Model.AttributeModel, entry_path: String) {
+func check_an_attribute(
+    model: Model.ClassModel,
+    attribute: Model.AttributeModel,
+    entry_path: String,
+    loaded_folder: String,
+) {
     assert attribute.declaration
     var name = attribute.name
-    assert not is_read(model.file.namespace, name) and not shape_members.contains(name)
-    assert not is_read_by_its_class(model, name)
+    if loaded_folder.is_empty() {
+        assert not is_read(model.file.namespace, name) and not shape_members.contains(name)
+    } else {
+        assert binds_a_singleton(attribute) and not is_read_in(loaded_folder, name)
+    }
     assert attribute.attribute_type.name != "ForeignCallback"
     var path = model.file.path
     var line = attribute.declaration.line
@@ -225,19 +304,6 @@ func is_read(namespace: String, name: String): Boolean {
     var names = name_reads["{namespace}|{name}"]
     if names {
         return names > 0
-    }
-    return false
-}
-
-func is_read_by_its_class(model: Model.ClassModel, name: String): Boolean {
-    var index = 0
-    while index < program.order.count() {
-        var other = program.order[index]
-        var is_an_instance = other.file.path == model.file.path
-        if is_an_instance and own_reads["{other.key}|{name}"] == true {
-            return true
-        }
-        index = index + 1
     }
     return false
 }
