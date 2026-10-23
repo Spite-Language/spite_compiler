@@ -1482,6 +1482,7 @@ release or a report laid out after the loop does not hold its register through t
   A checked or dividing arithmetic does not count: its crash report calls the console only on the way to stopping
   the program, and it first copies any number it shows from a scratch register to the number's frame slot. `rax`,
   `rcx`, `rdx` and `r11` stay the scratch registers instructions work in.
+- A value takes `r10` first when it is free over the value's whole life, then a kept register, then `r9` or `r8`.
 - When no register is free for the whole value, a scratch register may hold it everywhere but the blocks where one
   of its stretches holds a call ([below](#a-value-leaves-a-scratch-register-only-around-a-call)).
 - When no register is free, the value whose uses weigh least for how long it lives is spilled (of the new value
