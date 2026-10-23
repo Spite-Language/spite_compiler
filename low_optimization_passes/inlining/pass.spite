@@ -27,12 +27,14 @@ var outer_line = 0
 var callee_is_placeless = false
 var call_frames = LowIntermediaryRepresentation.CallFrames()
 var held_register = 0
+var every_function = Dictionary<String, LowIntermediaryRepresentation.LowFunction>()
 
 func Pass(starting_program: LowIntermediaryRepresentation.LowProgram) {
     program = starting_program
 }
 
 func transformed(): LowIntermediaryRepresentation.LowProgram {
+    program.lowered_functions.each(note_a_function)
     program.lowered_functions.each(note_if_inlinable)
     program.lowered_functions.each(inline_into)
     return program
@@ -199,6 +201,9 @@ func inlined_in_block(function: LowIntermediaryRepresentation.LowFunction, block
             block.instructions.remove_at(index)
             return true
         }
+        if guarded_in_place(function, block_index, index, instruction) {
+            return true
+        }
         var callee = callee_of(instruction, function)
         if callee {
             if size_of(function) > largest_caller {
@@ -212,6 +217,279 @@ func inlined_in_block(function: LowIntermediaryRepresentation.LowFunction, block
         index = index + 1
     }
     return false
+}
+
+func note_a_function(function: LowIntermediaryRepresentation.LowFunction) {
+    every_function[function.key] = function
+}
+
+func guarded_in_place(
+    function: LowIntermediaryRepresentation.LowFunction,
+    block_index: Integer,
+    index: Integer,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        return guarded_call(function, block_index, index, instruction)
+    }
+    return false
+}
+
+func guarded_call(
+    function: LowIntermediaryRepresentation.LowFunction,
+    block_index: Integer,
+    index: Integer,
+    instruction: LowIntermediaryRepresentation.Instructions.Call,
+): Boolean {
+    if instruction.is_guarded or instruction.target >= 0 or instruction.presence >= 0 {
+        return false
+    }
+    if inlinable.has(instruction.function) or instruction.function == function.key {
+        return false
+    }
+    var callee = every_function[instruction.function]
+    if not callee {
+        return false
+    }
+    if callee.place.is_empty() {
+        return false
+    }
+    if callee.is_resumable or callee.parameter_count != instruction.arguments.count() {
+        return false
+    }
+    if callee.answer_decimal_size != 0 or not callee.parameter_decimal_sizes.is_empty() {
+        return false
+    }
+    var side = returning_side(callee)
+    if side < 0 or size_of(function) > largest_caller {
+        return false
+    }
+    if not is_in_a_loop(function, block_index) {
+        return false
+    }
+    guard_the_call(function, block_index, index, instruction, callee, side)
+    return true
+}
+
+func returning_side(callee: LowIntermediaryRepresentation.LowFunction): Integer {
+    var entry = callee.blocks.first()
+    if not entry {
+        return -1
+    }
+    var last = entry.instructions.last()
+    if not last {
+        return -1
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        return side_of(callee, entry, last)
+    }
+    return -1
+}
+
+func side_of(
+    callee: LowIntermediaryRepresentation.LowFunction,
+    entry: LowIntermediaryRepresentation.LowBlock,
+    last: LowIntermediaryRepresentation.Instructions.Branch,
+): Integer {
+    var count = entry.instructions.count()
+    if count > 12 {
+        return -1
+    }
+    var index = 0
+    while index + 1 < count {
+        var instruction = entry.instructions[index]
+        if not is_a_guard_step(instruction) or writes_a_parameter(instruction, callee.parameter_count) {
+            return -1
+        }
+        index = index + 1
+    }
+    if only_returns(callee, last.when_true) {
+        return 1
+    }
+    if only_returns(callee, last.when_false) {
+        return 0
+    }
+    return -1
+}
+
+func is_a_guard_step(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return true
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return true
+        LowIntermediaryRepresentation.Instructions.Load: return not instruction.is_swapped
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return operands.is_pure(instruction)
+        _: return false
+    }
+}
+
+func writes_a_parameter(instruction: LowIntermediaryRepresentation.Instructions.Instruction, count: Integer): Boolean {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        if register < count {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func only_returns(callee: LowIntermediaryRepresentation.LowFunction, block_index: Integer): Boolean {
+    if block_index == 0 {
+        return false
+    }
+    var block = callee.blocks[block_index]
+    if not block {
+        return false
+    }
+    if block.instructions.count() != 1 {
+        return false
+    }
+    var only = block.instructions[0]
+    if only == LowIntermediaryRepresentation.Instructions.Return {
+        return only.source < 0 and only.presence < 0 and not only.is_a_suspension
+    }
+    return false
+}
+
+func guard_the_call(
+    function: LowIntermediaryRepresentation.LowFunction,
+    block_index: Integer,
+    index: Integer,
+    call: LowIntermediaryRepresentation.Instructions.Call,
+    callee: LowIntermediaryRepresentation.LowFunction,
+    side: Integer,
+) {
+    var block = function.blocks[block_index]
+    crash block
+    register_base = operands.most_register_of(function)
+    var callee_registers = operands.most_register_of(callee)
+    function.register_count = register_base + callee_registers + 1
+    var calling = LowIntermediaryRepresentation.LowBlock()
+    calling.place = block.place
+    var after = LowIntermediaryRepresentation.LowBlock()
+    after.place = block.place
+    var calling_index = function.blocks.count()
+    var after_index = calling_index + 1
+    var before = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var position = 0
+    while position < block.instructions.count() {
+        var instruction = block.instructions[position]
+        if position < index {
+            before.append(instruction)
+        }
+        if position > index {
+            after.instructions.append(instruction)
+        }
+        position = position + 1
+    }
+    var falls_through = after.instructions.is_empty() or not ends_the_block(after)
+    if falls_through and block_index + 1 < calling_index {
+        var onward = LowIntermediaryRepresentation.Instructions.Jump(block_index + 1)
+        after.instructions.append(onward)
+    }
+    passed_arguments = List<Integer>()
+    var parameter = 0
+    while parameter < callee.parameter_count {
+        var argument = call.arguments[parameter]
+        crash argument
+        passed_arguments.append(argument)
+        parameter = parameter + 1
+    }
+    var guarded = LowIntermediaryRepresentation.LowBlock()
+    var entry = callee.blocks[0]
+    crash entry
+    var last_index = entry.instructions.count() - 1
+    var copied_index = 0
+    while copied_index < last_index {
+        var instruction = entry.instructions[copied_index]
+        copy_into(guarded, instruction)
+        copied_index = copied_index + 1
+    }
+    guarded.instructions.each(before.append)
+    var condition = guard_condition(entry, last_index)
+    var branch = LowIntermediaryRepresentation.Instructions.Branch(condition, after_index, calling_index)
+    if side == 0 {
+        branch = LowIntermediaryRepresentation.Instructions.Branch(condition, calling_index, after_index)
+    }
+    before.append(branch)
+    block.instructions = before
+    call.is_guarded = true
+    calling.instructions.append(call)
+    var onward = LowIntermediaryRepresentation.Instructions.Jump(after_index)
+    calling.instructions.append(onward)
+    function.blocks.append(calling)
+    function.blocks.append(after)
+}
+
+func guard_condition(entry: LowIntermediaryRepresentation.LowBlock, last_index: Integer): Integer {
+    var test = entry.instructions[last_index]
+    crash test
+    if test == LowIntermediaryRepresentation.Instructions.Branch {
+        return moved(test.condition)
+    }
+    return -1
+}
+
+func is_in_a_loop(function: LowIntermediaryRepresentation.LowFunction, start: Integer): Boolean {
+    var seen = List<Boolean>()
+    var index = 0
+    while index < function.blocks.count() {
+        seen.append(false)
+        index = index + 1
+    }
+    var waiting = List<Integer>()
+    add_the_successors(function, start, waiting)
+    var steps = 0
+    while not waiting.is_empty() and steps < 4000 {
+        var taken = waiting.remove_last()
+        crash taken
+        if taken == start {
+            return true
+        }
+        if seen[taken] != true {
+            seen[taken] = true
+            add_the_successors(function, taken, waiting)
+        }
+        steps = steps + 1
+    }
+    return false
+}
+
+func add_the_successors(
+    function: LowIntermediaryRepresentation.LowFunction,
+    block_index: Integer,
+    waiting: List<Integer>,
+) {
+    var block = function.blocks[block_index]
+    crash block
+    var last = block.instructions.last()
+    if last {
+        if last == LowIntermediaryRepresentation.Instructions.Jump {
+            waiting.append(last.block)
+            return
+        }
+        if last == LowIntermediaryRepresentation.Instructions.Branch {
+            waiting.append(last.when_true)
+            waiting.append(last.when_false)
+            return
+        }
+        assert not ends_with_an_exit(last)
+    }
+    if block_index + 1 < function.blocks.count() {
+        waiting.append(block_index + 1)
+    }
+}
+
+func ends_with_an_exit(last: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch last {
+        LowIntermediaryRepresentation.Instructions.Return: return true
+        LowIntermediaryRepresentation.Instructions.Exit: return true
+        LowIntermediaryRepresentation.Instructions.Stop: return not last.continues
+        _: return false
+    }
 }
 
 func calls_nothing(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
