@@ -99,6 +99,20 @@ func contains(value: $element_type): Boolean {
 }
 ```
 
+## An item a call cannot let go is passed without counting
+
+`buckets[customer].append(order)`, after a `crash buckets[customer]` that proves the read, passes the bucket to
+`append` as it is in its slot, with no count taken and none let go, when nothing the call can run writes an item of a
+list of that class (`_write_value` or `_forget_value` on it, followed through every call, and every `drop()`), the
+list itself is a steady path (a name, `this`, a singleton or attributes no call assigns), and the index and the
+call's arguments are plain reads: the slot holds the item for the whole call.
+
+**When it does not apply:** to an item read without its `crash` (the read may be missing), to a call that may write
+a list of that class or reach a `drop()` that does, to arguments that are calls, and in a function that waits. The
+item is then counted for the call as before.
+
+**What a program can observe:** nothing but time.
+
 ## Storing an object into a list counts it only when it changes the slot
 
 Writing an object into a list's slot compares it with what the slot holds. When it is the same object, nothing is
@@ -750,6 +764,17 @@ func Lists() {
 
 `marks[0] = 1` is `set_at`'s bounds check and store, written in `Lists` with no call.
 
+## A call that returns at once on a test is tested in place
+
+A call inside a loop to a function too large to inline, whose first block only reads and compares (loads,
+constants, copies, comparisons, unchecked arithmetic, at most twelve instructions, none writing a parameter) and then
+returns nothing on one side of its branch, makes that test in the caller: the call runs only on the other side. A
+list's `reserve()` called by every `append` is a compare with the capacity, and the call is made only when the list
+grows. The function is called as before when it runs, and reads its test again.
+
+**When it does not apply:** to a function the compiler wrote, one that answers a value or waits, or a call outside
+any loop. **What a program can observe:** nothing but time.
+
 ## Objects that never leave their function live in registers or the frame
 
 After inlining, each function's objects are followed from where they are made: every register a copy joins to the
@@ -1124,6 +1149,14 @@ last in the layout order; a linear scan gives each interval a register.
 - A spilled value lives in its frame slot for its whole life.
 
 What a user can observe: nothing but time; a crash report reads its numbers from wherever the values live.
+
+## Loops and functions start on a 16-byte boundary
+
+The generator pads with no-operation instructions (of up to eight bytes each) so that every function and every
+block a later block jumps back to (a loop's head) starts at an address that is a multiple of 16. A loop's body is then
+fetched and decoded the same way whatever code comes before it, so a change elsewhere in a program no longer moves
+a hot loop across a fetch boundary and changes its time. The padding before a loop head runs once each time the loop
+is entered from above. **What a program can observe:** the time, and an executable a few bytes larger per loop.
 
 ## Constants are immediates, and a compare is the branch
 
