@@ -1,0 +1,560 @@
+# ../../OPTIMIZATIONS.md#an-if-that-only-adds-or-picks-a-value-has-no-branch
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var definitions = List<Integer>()
+var readings = List<Integer>()
+var compared = List<Boolean>()
+var predecessors = List<Integer>()
+var next_register = 0
+var largest_side = 12
+var inside_definitions = Dictionary<Integer, Integer>()
+var inside_readings = Dictionary<Integer, Integer>()
+var chain_ops = List<Integer>()
+var runs_on_the_left = Dictionary<Integer, Boolean>()
+var found_sides = Dictionary<Integer, Boolean>()
+var chain_copies = List<Integer>()
+var refused = false
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if function.is_resumable or holds_decimals() {
+        return function
+    }
+    var register_total = operands.most_register_of(function)
+    next_register = register_total
+    var index = 0
+    while index < register_total {
+        definitions.append(0)
+        readings.append(0)
+        compared.append(false)
+        index = index + 1
+    }
+    count_the_operands()
+    count_the_predecessors()
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        convert_after(block)
+        block_index = block_index + 1
+    }
+    if next_register > function.register_count {
+        function.register_count = next_register
+    }
+    return function
+}
+
+func holds_decimals(): Boolean {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        if block.instructions.any(is_a_decimal) {
+            return true
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func is_a_decimal(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    var is_decimal = instruction == LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic
+    is_decimal = is_decimal or instruction == LowIntermediaryRepresentation.Instructions.Decimal.Compare
+    return is_decimal or instruction == LowIntermediaryRepresentation.Instructions.Decimal.Conversion
+}
+
+func count_the_operands() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            operands.read(instruction)
+            operands.defines.each(count_a_definition)
+            operands.uses.each(count_a_reading)
+            if instruction == LowIntermediaryRepresentation.Instructions.Compare {
+                compared[instruction.target] = true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func count_a_definition(register: Integer) {
+    var count = definitions[register]
+    crash count
+    definitions[register] = count + 1
+}
+
+func count_a_reading(register: Integer) {
+    var count = readings[register]
+    crash count
+    readings[register] = count + 1
+}
+
+func count_the_predecessors() {
+    var index = 0
+    while index < function.blocks.count() {
+        predecessors.append(0)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var last = block.instructions.last()
+        if last {
+            count_the_targets(last)
+        }
+        block_index = block_index + 1
+    }
+}
+
+func count_the_targets(last: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        note_a_predecessor(last.block)
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        note_a_predecessor(last.when_true)
+        note_a_predecessor(last.when_false)
+    }
+}
+
+func note_a_predecessor(block: Integer) {
+    var count = predecessors[block]
+    crash count
+    predecessors[block] = count + 1
+}
+
+func convert_after(block: LowIntermediaryRepresentation.LowBlock) {
+    var last = block.instructions.last()
+    assert last
+    assert last == LowIntermediaryRepresentation.Instructions.Branch
+    var condition = last.condition
+    assert condition >= 0 and condition < compared.count()
+    assert compared[condition] == true and definitions[condition] == 1
+    if converts(block, last.when_true, last.when_false, condition, true) {
+        replace_the_branch(block, last.when_true)
+        return
+    }
+    if converts(block, last.when_false, last.when_true, condition, false) {
+        replace_the_branch(block, last.when_false)
+    }
+}
+
+func replace_the_branch(block: LowIntermediaryRepresentation.LowBlock, side: Integer) {
+    var at = block.instructions.count() - 1
+    var jumped = LowIntermediaryRepresentation.Instructions.Jump(side)
+    block.instructions[at] = jumped
+}
+
+func converts(
+    before: LowIntermediaryRepresentation.LowBlock,
+    side_index: Integer,
+    after_index: Integer,
+    condition: Integer,
+    runs_when_true: Boolean,
+): Boolean {
+    if side_index == after_index or predecessors[side_index] != 1 {
+        return false
+    }
+    var side = function.blocks[side_index]
+    crash side
+    var count = side.instructions.count()
+    if count < 2 or count > largest_side + 1 {
+        return false
+    }
+    var last = side.instructions.last()
+    if not jumps_to(last, after_index) {
+        return false
+    }
+    var bases = loaded_bases(before)
+    if not reads_the_side(side, bases, condition) {
+        return false
+    }
+    rewrite(side, condition, runs_when_true)
+    return true
+}
+
+func jumps_to(last: LowIntermediaryRepresentation.Instructions.Instruction?, target: Integer): Boolean {
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        return last.block == target
+    }
+    return false
+}
+
+func loaded_bases(block: LowIntermediaryRepresentation.LowBlock): List<Integer> {
+    var bases = List<Integer>()
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if instruction == LowIntermediaryRepresentation.Instructions.Load {
+            bases.append(instruction.address)
+        }
+        index = index + 1
+    }
+    return bases
+}
+
+func reads_the_side(side: LowIntermediaryRepresentation.LowBlock, bases: List<Integer>, condition: Integer): Boolean {
+    inside_definitions = Dictionary<Integer, Integer>()
+    inside_readings = Dictionary<Integer, Integer>()
+    chain_ops = List<Integer>()
+    runs_on_the_left = Dictionary<Integer, Boolean>()
+    chain_copies = List<Integer>()
+    refused = false
+    var last_index = side.instructions.count() - 1
+    var index = 0
+    while index < last_index {
+        var instruction = side.instructions[index]
+        check_an_instruction(instruction, bases)
+        operands.read(instruction)
+        operands.defines.each(note_inside_definition)
+        operands.uses.each(note_inside_reading)
+        index = index + 1
+    }
+    if refused or inside_definitions.contains(condition) {
+        return false
+    }
+    var defined = inside_definitions.keys()
+    var defined_index = 0
+    while defined_index < defined.count() {
+        var register = defined[defined_index]
+        if not is_a_temporary(register) {
+            check_a_definition(side, register)
+        }
+        defined_index = defined_index + 1
+    }
+    var temporary_index = 0
+    while temporary_index < defined.count() {
+        var register = defined[temporary_index]
+        if is_a_temporary(register) {
+            check_a_definition(side, register)
+        }
+        temporary_index = temporary_index + 1
+    }
+    return not refused
+}
+
+func check_an_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction, bases: List<Integer>) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return
+        LowIntermediaryRepresentation.Instructions.Copy: return
+        LowIntermediaryRepresentation.Instructions.Load: check_a_load(instruction, bases)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: check_an_arithmetic(instruction)
+        _: refuse()
+    }
+}
+
+func refuse() {
+    refused = true
+}
+
+func check_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load, bases: List<Integer>) {
+    var is_defined_inside = inside_definitions.contains(loaded.address)
+    if is_defined_inside or not bases.contains(loaded.address) {
+        refuse()
+    }
+}
+
+func check_an_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var operator = arithmetic.operator
+    var faults = operator == 'divide' or operator == 'remainder' or operator == 'square_root'
+    if faults {
+        refuse()
+    }
+}
+
+func note_inside_definition(register: Integer) {
+    var before = inside_definitions[register]
+    var now = 1
+    if before {
+        now = before + 1
+    }
+    inside_definitions[register] = now
+}
+
+func note_inside_reading(register: Integer) {
+    var before = inside_readings[register]
+    var now = 1
+    if before {
+        now = before + 1
+    }
+    inside_readings[register] = now
+}
+
+func check_a_definition(side: LowIntermediaryRepresentation.LowBlock, register: Integer) {
+    var inside = inside_definitions[register]
+    crash inside
+    if inside != 1 {
+        refuse()
+        return
+    }
+    var defining = defining_index(side, register)
+    var instruction = side.instructions[defining]
+    crash instruction
+    if is_a_temporary(register) {
+        check_a_temporary(instruction)
+        return
+    }
+    assert not accumulates_in(side, instruction, register, defining)
+    check_a_temporary(instruction)
+}
+
+func accumulates_in(
+    side: LowIntermediaryRepresentation.LowBlock,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    held: Integer,
+    defining: Integer,
+): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        return accumulates(side, instruction, held, defining)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        return accumulates_through(side, instruction, held, defining)
+    }
+    return false
+}
+
+func accumulates_through(
+    side: LowIntermediaryRepresentation.LowBlock,
+    copied: LowIntermediaryRepresentation.Instructions.Copy,
+    held: Integer,
+    defining: Integer,
+): Boolean {
+    var source = copied.source
+    if not inside_definitions.contains(source) or not is_a_temporary(source) {
+        return false
+    }
+    var source_index = defining_index(side, source)
+    if source_index < 0 or source_index >= defining {
+        return false
+    }
+    var instruction = side.instructions[source_index]
+    if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        var reaches = accumulates(side, instruction, held, source_index)
+        if reaches {
+            chain_copies.append(held)
+        }
+        return reaches
+    }
+    return false
+}
+
+func is_unchained_checked(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        return instruction.is_checked and not chain_ops.contains(instruction.target)
+    }
+    return false
+}
+
+func is_a_temporary(register: Integer): Boolean {
+    var read_inside = inside_readings[register]
+    var inside_count = 0
+    if read_inside {
+        inside_count = read_inside
+    }
+    return definitions[register] == 1 and readings[register] == inside_count
+}
+
+func check_a_temporary(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if is_unchained_checked(instruction) {
+        refuse()
+    }
+}
+
+func defining_index(side: LowIntermediaryRepresentation.LowBlock, register: Integer): Integer {
+    var index = 0
+    while index < side.instructions.count() {
+        var instruction = side.instructions[index]
+        operands.read(instruction)
+        if operands.defines.contains(register) {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func accumulates(
+    side: LowIntermediaryRepresentation.LowBlock,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    held: Integer,
+    defining: Integer,
+): Boolean {
+    var found = List<Integer>()
+    found_sides = Dictionary<Integer, Boolean>()
+    var reaches = runs_from(side, arithmetic, held, defining, found)
+    if reaches {
+        found.each(keep_a_chain_op)
+    }
+    return reaches
+}
+
+func keep_a_chain_op(target: Integer) {
+    chain_ops.append(target)
+    var on_the_left = found_sides[target]
+    crash on_the_left
+    runs_on_the_left[target] = on_the_left
+}
+
+func runs_from(
+    side: LowIntermediaryRepresentation.LowBlock,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    held: Integer,
+    at: Integer,
+    found: List<Integer>,
+): Boolean {
+    var operator = arithmetic.operator
+    if operator != 'add' and operator != 'subtract' {
+        return false
+    }
+    found.append(arithmetic.target)
+    found_sides[arithmetic.target] = true
+    if is_the_run(side, arithmetic.left, held, at, found) {
+        return true
+    }
+    found_sides[arithmetic.target] = false
+    return operator == 'add' and is_the_run(side, arithmetic.right, held, at, found)
+}
+
+func is_the_run(
+    side: LowIntermediaryRepresentation.LowBlock,
+    register: Integer,
+    held: Integer,
+    before: Integer,
+    found: List<Integer>,
+): Boolean {
+    if register == held {
+        return true
+    }
+    if not inside_definitions.contains(register) or not is_a_temporary(register) {
+        return false
+    }
+    var defining = defining_index(side, register)
+    if defining < 0 or defining >= before {
+        return false
+    }
+    var instruction = side.instructions[defining]
+    if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        return runs_from(side, instruction, held, defining, found)
+    }
+    return false
+}
+
+func rewrite(side: LowIntermediaryRepresentation.LowBlock, condition: Integer, runs_when_true: Boolean) {
+    var made = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var mask = new_register()
+    write_the_mask(made, mask, condition, runs_when_true)
+    var last_index = side.instructions.count() - 1
+    var index = 0
+    while index < last_index {
+        var instruction = side.instructions[index]
+        rewrite_an_instruction(made, instruction, mask)
+        index = index + 1
+    }
+    var last = side.instructions.last()
+    crash last
+    made.append(last)
+    side.instructions = made
+}
+
+func new_register(): Integer {
+    var made = next_register
+    next_register = next_register + 1
+    return made
+}
+
+func write_the_mask(
+    made: List<LowIntermediaryRepresentation.Instructions.Instruction>,
+    mask: Integer,
+    condition: Integer,
+    runs_when_true: Boolean,
+) {
+    var number = new_register()
+    if runs_when_true {
+        var zero = LowIntermediaryRepresentation.Instructions.Constant(number, 0)
+        made.append(zero)
+        var negated = LowIntermediaryRepresentation.Instructions.Arithmetic(mask, 'subtract', number, condition)
+        negated.is_checked = false
+        made.append(negated)
+        return
+    }
+    var one = LowIntermediaryRepresentation.Instructions.Constant(number, 1)
+    made.append(one)
+    var lowered = LowIntermediaryRepresentation.Instructions.Arithmetic(mask, 'subtract', condition, number)
+    lowered.is_checked = false
+    made.append(lowered)
+}
+
+func rewrite_an_instruction(
+    made: List<LowIntermediaryRepresentation.Instructions.Instruction>,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    mask: Integer,
+) {
+    operands.read(instruction)
+    if operands.defines.is_empty() {
+        made.append(instruction)
+        return
+    }
+    var defined = operands.defines[0]
+    crash defined
+    if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic and chain_ops.contains(defined) {
+        mask_the_addend(made, instruction, mask)
+        return
+    }
+    if is_a_temporary(defined) or chain_copies.contains(defined) {
+        made.append(instruction)
+        return
+    }
+    pick(made, instruction, defined, mask)
+}
+
+func mask_the_addend(
+    made: List<LowIntermediaryRepresentation.Instructions.Instruction>,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    mask: Integer,
+) {
+    var masked = new_register()
+    var run_side = runs_on_the_left[arithmetic.target]
+    crash run_side
+    var addend = arithmetic.left
+    if run_side {
+        addend = arithmetic.right
+    }
+    var cut = LowIntermediaryRepresentation.Instructions.Arithmetic(masked, 'bits_and', addend, mask)
+    cut.is_checked = false
+    made.append(cut)
+    if run_side {
+        arithmetic.right = masked
+    } else {
+        arithmetic.left = masked
+    }
+    made.append(arithmetic)
+}
+
+func pick(
+    made: List<LowIntermediaryRepresentation.Instructions.Instruction>,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    held: Integer,
+    mask: Integer,
+) {
+    var fresh = new_register()
+    var retargeting = LowOptimizationPasses.Operands()
+    var retargeted = retargeting.retarget(instruction, held, fresh)
+    crash retargeted
+    made.append(instruction)
+    var differing = new_register()
+    var apart = LowIntermediaryRepresentation.Instructions.Arithmetic(differing, 'bits_xor', fresh, held)
+    apart.is_checked = false
+    made.append(apart)
+    var kept = new_register()
+    var masked = LowIntermediaryRepresentation.Instructions.Arithmetic(kept, 'bits_and', differing, mask)
+    masked.is_checked = false
+    made.append(masked)
+    var picked = LowIntermediaryRepresentation.Instructions.Arithmetic(held, 'bits_xor', held, kept)
+    picked.is_checked = false
+    made.append(picked)
+}
