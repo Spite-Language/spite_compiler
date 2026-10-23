@@ -1,0 +1,239 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+var refusals = Validators.HighIntermediaryRepresentation.KeyMaps.Validator()
+
+func FoldedKeys(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func is_a_key_map(of_type: Model.Type): Boolean {
+    if of_type.kind != 'object' or not context.has_a_class(of_type) {
+        return false
+    }
+    var model = context.class_of(of_type)
+    var key_type = model.bound_types["$key_type"]
+    if not key_type {
+        return false
+    }
+    var is_keyed_by_attributes = key_type.name == "Spite.AttributeDeclaration"
+    var hashes = model.function_named("_key_bits")
+    if hashes {
+        return is_keyed_by_attributes
+    }
+    return false
+}
+
+func place_of(attribute: Model.AttributeModel): String {
+    return "{attribute.owner}.{attribute.name}"
+}
+
+func record(written: AbstractSyntaxTree.Shapes.Expressions.Expression?, attribute: Model.AttributeModel) {
+    var place = place_of(attribute)
+    var shown_place = shown_place_of(attribute)
+    if written == AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral {
+        record_the_literal(written, place, shown_place)
+        return
+    }
+    if written == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        assert not is_an_empty_map(written)
+    }
+    refusals.refuse_a_map_not_written_out(context, shown_place)
+}
+
+func is_an_empty_map(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Boolean {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return callee.name == "Dictionary" and call.arguments.is_empty()
+    }
+    return false
+}
+
+func shown_place_of(attribute: Model.AttributeModel): String {
+    var owner = context.program.class_named(attribute.owner)
+    crash owner
+    var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
+    var plain = typing.plain_class_name(owner.shown)
+    return "{plain}.{attribute.name}"
+}
+
+func record_the_literal(
+    literal: AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral,
+    place: String,
+    shown_place: String,
+) {
+    var names = List<String>()
+    var keys = List<String>()
+    var pieces = List<String>()
+    var index = 0
+    while index < literal.pairs.count() {
+        var pair = literal.pairs[index]
+        if pair == AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
+            var name = keyed_attribute_of(pair.key, shown_place)
+            var key = key_text_of(pair.value, shown_place)
+            names.append(name)
+            keys.append(key)
+            pieces.append("{name}\t{key}")
+        } else {
+            refusals.refuse_a_map_not_written_out(context, shown_place)
+        }
+        index = index + 1
+    }
+    var canonical = pieces.join("\n")
+    var known = context.folded_key_maps[place]
+    if known {
+        if known != canonical {
+            refusals.refuse_a_second_map(context, shown_place)
+        }
+        return
+    }
+    if context.folded_key_reads.contains(place) {
+        refusals.refuse_a_late_map(context, shown_place)
+    }
+    context.folded_key_maps[place] = canonical
+    var position = 0
+    while position < names.count() {
+        var name = names[position]
+        var key = keys[position]
+        crash key
+        context.folded_keys["{place}|{name}"] = key
+        position = position + 1
+    }
+}
+
+func keyed_attribute_of(written: AbstractSyntaxTree.Shapes.Expressions.Expression?, shown_place: String): String {
+    if written == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return attribute_named_by(written, shown_place)
+    }
+    refusals.refuse_a_map_not_written_out(context, shown_place)
+    return ""
+}
+
+func attribute_named_by(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression, shown_place: String): String {
+    var listed = index.target
+    var name = ""
+    var symbol = values.symbol_text_of(index.index)
+    if symbol {
+        name = symbol
+    }
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if listed.name == "attributes" and not name.is_empty() {
+            check_the_attribute(listed.target, name)
+            return name
+        }
+    }
+    refusals.refuse_a_map_not_written_out(context, shown_place)
+    return ""
+}
+
+func check_the_attribute(described: AbstractSyntaxTree.Shapes.Expressions.Expression?, name: String) {
+    var path = values.tested_class_path_of(described)
+    var written = path.join(".")
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described_type = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
+    var model = context.class_of(described_type)
+    var attribute = model.attribute_named(name)
+    var is_public = not name.starts_with("_")
+    if not attribute or not is_public {
+        refusals.refuse_an_unknown_attribute(context, written, name)
+    }
+    crash attribute
+    if context.has_a_class(attribute.attribute_type) {
+        var held = context.class_of(attribute.attribute_type)
+        if held.is_singleton {
+            refusals.refuse_an_unknown_attribute(context, written, name)
+        }
+    }
+}
+
+func key_text_of(written: AbstractSyntaxTree.Shapes.Expressions.Expression?, shown_place: String): String {
+    if written == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        var is_plain = written.pieces.count() == 1
+        if is_plain {
+            var piece = written.pieces[0]
+            crash piece
+            if not piece.hole {
+                return values.constant_text_of(written)
+            }
+        }
+    }
+    refusals.refuse_a_map_not_written_out(context, shown_place)
+    return ""
+}
+
+func attribute_key(
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    key_type: Model.Type,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert key_type.name == "Spite.AttributeDeclaration" and not key_type.is_nullable
+    if written == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return named_attribute_key(written, key_type)
+    }
+    return null
+}
+
+func named_attribute_key(
+    index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    key_type: Model.Type,
+): HighIntermediaryRepresentation.Values.Value? {
+    var listed = index.target
+    var symbol = values.symbol_text_of(index.index)
+    assert symbol
+    if listed == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        if listed.name == "attributes" {
+            check_the_attribute(listed.target, symbol)
+            var found = values.value_of(index, null)
+            return HighIntermediaryRepresentation.Values.Conversion(key_type, 'proven', found)
+        }
+    }
+    return null
+}
+
+func refuse_a_change(target: HighIntermediaryRepresentation.Values.Value) {
+    assert is_a_key_map(target.value_type)
+    if target == HighIntermediaryRepresentation.Values.AttributeRead {
+        var shown_place = shown_place_of(target.attribute)
+        refusals.refuse_a_changed_map(context, shown_place)
+    }
+}
+
+func folded_read(
+    index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var function = context.current_function
+    assert not function.bound_parameter.is_empty() and not function.binds_a_function_declaration
+    var asked = index.index
+    var target = index.target
+    var names_the_walked = false
+    if asked == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_the_walked = asked.name == function.bound_parameter
+    }
+    assert names_the_walked
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return folded_attribute_read(target.name, function)
+    }
+    return null
+}
+
+func folded_attribute_read(name: String, function: Model.FunctionModel): HighIntermediaryRepresentation.Values.Value? {
+    assert not context.scope.internal_name_of(name)
+    var attribute = context.current_class.attribute_named(name)
+    assert attribute
+    assert is_a_key_map(attribute.attribute_type)
+    var place = place_of(attribute)
+    if not context.folded_key_reads.contains(place) {
+        context.folded_key_reads.append(place)
+    }
+    var key_type = context.text()
+    var nullable_text = key_type.nullable()
+    var key = context.folded_keys["{place}|{function.bound_member}"]
+    if key {
+        var constant = values.described_text(key)
+        return HighIntermediaryRepresentation.Values.Conversion(nullable_text, 'nullable', constant)
+    }
+    return HighIntermediaryRepresentation.Values.NullConstant(nullable_text)
+}
