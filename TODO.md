@@ -43,7 +43,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ## The language
 - `Spite.Call` on a declaration known only at run time (D864): `call()` of a function that takes arguments halts instead of passing the ones `.arguments` holds, and an argument filled there twice or under a name the function lacks is not refused
 - A name prefix standing in for a namespace (D819) is refused in a program's sub-folders, and the compiler's own folders break it (`building/` Borrow*, `statements/` Assign*, `values/` Class* and Function*, `low_intermediary_representation/` Low*, `instructions/` Decimal*, `abstract_syntax_tree/walk/` Found*): rename them before this compiler builds itself
-- A direct call of an operator function on a number, a `Vector` or an `Items` (`first.sum(4)`) is still accepted (D820): `tests/numbers` and `tests/vector_append_copies` call them, against `conformance/functions_direct_sum`
+- A bare call of an operator function inside its own class (`negate()`, which `-this` writes) is not refused yet (D910)
+- A call of an operator function by name on a value of a `type` or a union (`item.less_than(other)`) is not refused yet (D907)
 - A function value of another object held in a local (`var hurt = troll.hurt`, then `describe(hurt)`) is still looked up by name in its class object's `.functions` (bound to the stand-in, not to `troll`), and halts for the entry class (D866)
 - `'<path>' is not a class known while compiling` is given for an attribute typed `Spite.Class` named as a type; a local or a parameter so named is still "unknown type" (D868)
 - Templates over `Spite.Attribute` and `Spite.Function`, bound to one object (D798, D815): a parameter of those types is still an ordinary parameter; and `Namespace.classes.each(walker)` unrolls only with a walker of one parameter named in the same class (D813)
