@@ -584,6 +584,14 @@ func element_type_of(call: HighIntermediaryRepresentation.Values.Call): Model.Ty
     return element
 }
 
+func slot_size_of(list_key: String, element: Model.Type): Integer {
+    var stride = lowering.layout.inline_stride_of(list_key)
+    if stride > 0 {
+        return stride
+    }
+    return item_size_of(element)
+}
+
 func item_size_of(element: Model.Type): Integer {
     if element.kind == 'enumeration' and element.is_nullable {
         return 9
@@ -601,7 +609,7 @@ func item_size_of(element: Model.Type): Integer {
 
 func item_size(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var element = element_type_of(call)
-    var size = item_size_of(element)
+    var size = slot_size_of(call.function.owner, element)
     var made = lowering.constant(size)
     return lowering.single(made)
 }
@@ -619,7 +627,7 @@ func item_address(call: HighIntermediaryRepresentation.Values.Call, element: Mod
     loaded.region = "{owner.key}._buffer"
     lowering.emit(loaded)
     var storage = lowering.storage_of(buffer)
-    var size = item_size_of(element)
+    var size = slot_size_of(owner.key, element)
     var size_register = lowering.constant(size)
     var scaled = lowering.new_register()
     var multiplied = LowIntermediaryRepresentation.Instructions.Arithmetic(scaled, 'multiply', at, size_register)
@@ -631,6 +639,10 @@ func item_address(call: HighIntermediaryRepresentation.Values.Call, element: Mod
 func read_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var element = element_type_of(call)
     var address = item_address(call, element)
+    var stride = lowering.layout.inline_stride_of(call.function.owner)
+    if stride > 0 {
+        return lowering.single(address)
+    }
     var value = lowering.new_register()
     var width = lowering.width_of(element)
     var loaded = LowIntermediaryRepresentation.Instructions.Load(value, address, 0, width)
@@ -655,6 +667,11 @@ func write_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var value = lowering.lower_value(written)
     var address = item_address(call, element)
     var width = lowering.width_of(element)
+    var stride = lowering.layout.inline_stride_of(call.function.owner)
+    if stride > 0 {
+        write_in_place(address, value, stride)
+        return lowering.single(-1)
+    }
     if lowering.is_a_pointer(element) {
         write_a_pointer(address, value)
         return lowering.single(-1)
@@ -674,6 +691,19 @@ func write_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
         lowering.emit(stored_presence)
     }
     return lowering.single(-1)
+}
+
+# ../../OPTIMIZATIONS.md#a-lists-objects-sit-inside-its-storage
+func write_in_place(address: Integer, value: Lowered, stride: Integer) {
+    var size = lowering.constant(stride)
+    var copied = LowIntermediaryRepresentation.Instructions.CopyBytes(address, value.value, size)
+    lowering.emit(copied)
+    var count = lowering.constant(lowering.layout.immortal_count)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(address, 8, count, 'bits_64')
+    lowering.emit(stored)
+    if value.owned {
+        lowering.release(value.value)
+    }
 }
 
 func write_a_pointer(address: Integer, value: Lowered) {
@@ -706,7 +736,8 @@ func write_a_pointer(address: Integer, value: Lowered) {
 
 func forget_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var element = element_type_of(call)
-    if not lowering.is_a_pointer(element) {
+    var stride = lowering.layout.inline_stride_of(call.function.owner)
+    if stride > 0 or not lowering.is_a_pointer(element) {
         return lowering.single(-1)
     }
     var address = item_address(call, element)

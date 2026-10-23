@@ -164,6 +164,11 @@ func Holder(start: Integer) {
 `Holder(start)` makes neither the default list nor the default text. Three million holders went from 3.1 s to
 1.5 s.
 
+A copy written by the compiler (`copy()` and `deep_copy()` of a class that has none of its own, without a table)
+assigns every attribute itself, so it makes its object with no defaults at all: copying an `Order` whose defaults
+make a `Customer` and a `List<Line>` makes neither
+(`a_deep_copy_is_written_per_class_with_a_table_only_where_a_graph_needs_one`: 37 ms before, 22 ms after).
+
 
 ## Arithmetic a range proves is not checked
 
@@ -893,6 +898,53 @@ A call keeps nothing of its argument at a position when, in the called function,
 are only read through, written through or compared: never stored, answered, passed on, retained or released. An
 object passed only to such calls can still live in the frame (the third placement above), since nothing can hold
 its address after the call returns.
+
+## A list's objects sit inside its storage
+
+A `List` of a class of the program whose objects are only ever put into it fresh and read back from it holds the
+objects themselves, one after another in its storage, instead of a pointer to each: `append` copies the new
+object's bytes into the next slot, `list[index]` is the slot's address, and the objects of the list sit together in
+memory, so a walk over them reads memory in order and loads no pointer. The slot keeps the object's header, with a
+count no release can bring to zero, so the code that reads an item is the code that reads any object of the class.
+
+**When it applies:** the whole program is read while compiling, and a list class is held this way when all of these
+hold:
+
+- its element is a class of the program, not a singleton, with no `drop()`, held by no back reference, whose
+  attributes are all numbers, `Boolean`s or enums;
+- every function of the list that is compiled is its making, `count()`, `is_empty()`, `append`, `get_at` (and
+  what `append` calls to grow), or a `sum_`, `count_`, `any_` or `all_` template;
+- every `append` is given a local made with the class's constructor and read nowhere else
+  (`var point = Point(x, y)` then `points.append(point)`), or an object a literal makes in place;
+- every `list[index]` is tested (`if`, `crash`), read for an attribute or a call of the class, or kept in a local
+  that is only read for attributes, written for attributes or called on, and after which nothing in its block may
+  grow or write the list (the rule of [a name holding an item](#a-name-holding-an-item-or-an-attribute-is-not-counted));
+- no function of the element class lets `this` go anywhere but its own attributes and its own functions;
+- the list is never turned into a shape, a union or a function value, and no function of the list or the class is
+  taken as a value.
+
+**What a program can observe:** only time and memory. Each object appended is still made and let go of after it is
+copied (so `--debug-memory` counts it), and the list's storage is larger by the objects it now holds.
+
+```spite
+func sum_points(): Long {
+    var total: Long = 0
+    var position = 0
+    while position < points.count() {
+        var point = points[position]
+        total = total + point.across + point.down
+        position = position + 1
+    }
+    return total
+}
+```
+
+With every `Point` made as `var point = Point(index % 1000, index % 30)` and then appended, `points[position]` is an address in
+the list's storage (`objects_of_one_class_sit_together`: 64 ms before, 39 ms after; `report_over_records`: 517 ms
+before, 433 ms after).
+
+**Not built:** one array per attribute (the layout the attributes a walk reads would want), an element holding
+text or objects, an object appended that is read again after, and the list's other functions.
 
 ## A local list of known size lives in the frame
 
