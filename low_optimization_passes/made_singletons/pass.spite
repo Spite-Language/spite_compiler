@@ -1,0 +1,402 @@
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var indexes = Dictionary<String, Integer>()
+var before = List<String>()
+var waiting = List<String>()
+var flow = LowOptimizationPasses.ObjectPlacement.Flow()
+var operands = LowOptimizationPasses.Operands()
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var definitions = List<Integer>()
+var slots = List<Boolean>()
+var pointers = List<Boolean>()
+var steady_pointers = List<Boolean>()
+
+func Pass(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
+    program = starting_program
+}
+
+func transformed() {
+    find_the_made()
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var found = program.lowered_functions[index]
+        program.lowered_functions[index] = settled(found)
+        index = index + 1
+    }
+}
+
+func settled(given: LowIntermediaryRepresentation.LowFunction): LowIntermediaryRepresentation.LowFunction {
+    function = given
+    if program.made_at_start.is_empty() or function.is_resumable {
+        return function
+    }
+    if program.runs_before_the_entry.contains(function.key) {
+        return function
+    }
+    function.blocks.each(skip_a_first_use_test)
+    mark_the_steady_loads()
+    return function
+}
+
+func find_the_made() {
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var found = program.lowered_functions[index]
+        indexes[found.key] = index
+        index = index + 1
+    }
+    assert indexes.contains("_start")
+    var starting = indexes["_start"]
+    crash starting
+    var start = program.lowered_functions[starting]
+    crash start
+    var defaults_key = defaults_called_by(start)
+    assert not defaults_key.is_empty()
+    add_a_root("_fault_handler")
+    var key_index = 0
+    while key_index < program.lowered_functions.count() {
+        var listed = program.lowered_functions[key_index]
+        if listed.key.starts_with("_destroy_") {
+            add_a_root(listed.key)
+        }
+        key_index = key_index + 1
+    }
+    follow_the_roots()
+    var defaults_index = indexes[defaults_key]
+    crash defaults_index
+    var defaults = program.lowered_functions[defaults_index]
+    crash defaults
+    program.runs_before_the_entry = before
+    program.made_at_start = made_by(defaults)
+}
+
+func defaults_called_by(start: LowIntermediaryRepresentation.LowFunction): String {
+    var block_index = 0
+    while block_index < start.blocks.count() {
+        var block = start.blocks[block_index]
+        crash block
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Call {
+                add_a_root(instruction.function)
+                if instruction.function.ends_with("._attribute_defaults") {
+                    return instruction.function
+                }
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return ""
+}
+
+func add_a_root(key: String) {
+    assert not before.contains(key) and indexes.contains(key)
+    before.append(key)
+    waiting.append(key)
+}
+
+func follow_the_roots() {
+    while not waiting.is_empty() {
+        var key = waiting.remove_last()
+        crash key
+        var found = indexes[key]
+        crash found
+        var reached = program.lowered_functions[found]
+        crash reached
+        reached.blocks.each(follow_a_block)
+    }
+}
+
+func follow_a_block(block: LowIntermediaryRepresentation.LowBlock) {
+    block.instructions.each(follow_an_instruction)
+}
+
+func follow_an_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Call: add_a_root(instruction.function)
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: add_a_root(instruction.function)
+        _: return
+    }
+}
+
+func made_by(defaults: LowIntermediaryRepresentation.LowFunction): List<Integer> {
+    var made = List<Integer>()
+    flow.find_the_edges(defaults)
+    var block_index = 0
+    while block_index < defaults.blocks.count() {
+        var block = defaults.blocks[block_index]
+        crash block
+        var label = tested_label(defaults, block)
+        if label >= 0 and not reaches_a_return_around(defaults, block_index) {
+            made.append(label)
+        }
+        block_index = block_index + 1
+    }
+    return made
+}
+
+func tested_label(of_function: LowIntermediaryRepresentation.LowFunction, block: LowIntermediaryRepresentation.LowBlock): Integer {
+    var last = block.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        return label_tested_by(of_function, block, last)
+    }
+    return -1
+}
+
+func label_tested_by(
+    of_function: LowIntermediaryRepresentation.LowFunction,
+    block: LowIntermediaryRepresentation.LowBlock,
+    last: LowIntermediaryRepresentation.Instructions.Branch,
+): Integer {
+    var making = of_function.blocks[last.when_true]
+    crash making
+    var maker = maker_called_in(making, last.when_false)
+    if maker.is_empty() {
+        return -1
+    }
+    var index = block.instructions.count() - 1
+    while index >= 0 {
+        var instruction = block.instructions[index]
+        if instruction == LowIntermediaryRepresentation.Instructions.DataAddress {
+            if maker.ends_with("${instruction.label}") {
+                return instruction.label
+            }
+            return -1
+        }
+        index = index - 1
+    }
+    return -1
+}
+
+func maker_called_in(making: LowIntermediaryRepresentation.LowBlock, after: Integer): String {
+    if making.instructions.count() != 2 {
+        return ""
+    }
+    var called = making.instructions[0]
+    var leaving = making.instructions[1]
+    crash called
+    crash leaving
+    if leaving == LowIntermediaryRepresentation.Instructions.Jump {
+        if leaving.block != after {
+            return ""
+        }
+        return maker_key_of(called)
+    }
+    return ""
+}
+
+func maker_key_of(called: LowIntermediaryRepresentation.Instructions.Instruction): String {
+    if called == LowIntermediaryRepresentation.Instructions.Call {
+        return maker_named_by(called)
+    }
+    return ""
+}
+
+func maker_named_by(called: LowIntermediaryRepresentation.Instructions.Call): String {
+    if called.function.starts_with("_make_") and called.arguments.is_empty() {
+        return called.function
+    }
+    return ""
+}
+
+func reaches_a_return_around(of_function: LowIntermediaryRepresentation.LowFunction, avoided: Integer): Boolean {
+    if avoided == 0 {
+        return false
+    }
+    var seen = List<Boolean>()
+    var index = 0
+    while index < of_function.blocks.count() {
+        seen.append(false)
+        index = index + 1
+    }
+    var pending = List<Integer>()
+    pending.append(0)
+    seen[0] = true
+    while not pending.is_empty() {
+        var taken = pending.remove_last()
+        crash taken
+        var block = of_function.blocks[taken]
+        crash block
+        if returns(block) {
+            return true
+        }
+        var leaving = flow.successors[taken]
+        crash leaving
+        var leaving_index = 0
+        while leaving_index < leaving.count() {
+            var next = leaving[leaving_index]
+            if next != avoided and seen[next] != true {
+                seen[next] = true
+                pending.append(next)
+            }
+            leaving_index = leaving_index + 1
+        }
+    }
+    return false
+}
+
+func returns(block: LowIntermediaryRepresentation.LowBlock): Boolean {
+    return block.instructions.any(is_a_return)
+}
+
+func is_a_return(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    return instruction == LowIntermediaryRepresentation.Instructions.Return
+}
+
+func skip_a_first_use_test(block: LowIntermediaryRepresentation.LowBlock) {
+    var label = tested_label(function, block)
+    assert label >= 0 and program.made_at_start.contains(label)
+    var last = block.instructions.last()
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        skip_the_branch(block, last)
+    }
+}
+
+func skip_the_branch(block: LowIntermediaryRepresentation.LowBlock, last: LowIntermediaryRepresentation.Instructions.Branch) {
+    var after = last.when_false
+    var making = function.blocks[last.when_true]
+    crash making
+    var skipped = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var gone_on = LowIntermediaryRepresentation.Instructions.Jump(after)
+    skipped.append(gone_on)
+    making.instructions = skipped
+    var count = block.instructions.count()
+    var straight = LowIntermediaryRepresentation.Instructions.Jump(after)
+    block.instructions[count - 1] = straight
+}
+
+func mark_the_steady_loads() {
+    count_the_definitions()
+    var round = 0
+    var changed = true
+    while changed and round < 4 {
+        changed = false
+        var block_index = 0
+        while block_index < function.blocks.count() {
+            var block = function.blocks[block_index]
+            crash block
+            var index = 0
+            while index < block.instructions.count() {
+                var instruction = block.instructions[index]
+                if marked(instruction) {
+                    changed = true
+                }
+                index = index + 1
+            }
+            block_index = block_index + 1
+        }
+        round = round + 1
+    }
+}
+
+func count_the_definitions() {
+    definitions.clear()
+    slots.clear()
+    pointers.clear()
+    steady_pointers.clear()
+    var register_total = operands.most_register_of(function)
+    var index = 0
+    while index < register_total {
+        var implicit = 0
+        if index < function.parameter_count {
+            implicit = 1
+        }
+        definitions.append(implicit)
+        slots.append(false)
+        pointers.append(false)
+        steady_pointers.append(false)
+        index = index + 1
+    }
+    function.blocks.each(count_in_a_block)
+}
+
+func count_in_a_block(block: LowIntermediaryRepresentation.LowBlock) {
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        operands.read(instruction)
+        operands.defines.each(count_a_definition)
+        index = index + 1
+    }
+}
+
+func count_a_definition(register: Integer) {
+    var count = definitions[register]
+    crash count
+    definitions[register] = count + 1
+}
+
+func is_written_once(register: Integer): Boolean {
+    if register < function.parameter_count or register >= definitions.count() {
+        return false
+    }
+    return definitions[register] == 1
+}
+
+func marked(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.DataAddress: return marked_a_slot(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: return marked_a_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: return marked_a_copy(instruction)
+        _: return false
+    }
+}
+
+func marked_a_slot(addressed: LowIntermediaryRepresentation.Instructions.DataAddress): Boolean {
+    if slots[addressed.target] == true or not is_written_once(addressed.target) {
+        return false
+    }
+    if not program.made_at_start.contains(addressed.label) {
+        return false
+    }
+    slots[addressed.target] = true
+    if program.steady_singletons.contains(addressed.label) {
+        steady_pointers[addressed.target] = true
+    }
+    return true
+}
+
+func marked_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load): Boolean {
+    if loaded.address < 0 or loaded.address >= slots.count() {
+        return false
+    }
+    var from_a_slot = slots[loaded.address] == true and loaded.offset == 0 and loaded.width == 'bits_64'
+    if from_a_slot {
+        loaded.is_invariant = true
+        return marked_a_pointer(loaded)
+    }
+    var through_a_steady = pointers[loaded.address] == true and steady_pointers[loaded.address] == true
+    if through_a_steady and loaded.offset >= 16 and not loaded.is_invariant {
+        loaded.is_invariant = true
+        return true
+    }
+    return false
+}
+
+func marked_a_pointer(loaded: LowIntermediaryRepresentation.Instructions.Load): Boolean {
+    if pointers[loaded.target] == true or not is_written_once(loaded.target) {
+        return false
+    }
+    pointers[loaded.target] = true
+    if steady_pointers[loaded.address] == true {
+        steady_pointers[loaded.target] = true
+    }
+    return true
+}
+
+func marked_a_copy(copied: LowIntermediaryRepresentation.Instructions.Copy): Boolean {
+    var source = copied.source
+    var target = copied.target
+    if source < 0 or source >= pointers.count() or pointers[source] != true {
+        return false
+    }
+    if pointers[target] == true or not is_written_once(target) {
+        return false
+    }
+    pointers[target] = true
+    if steady_pointers[source] == true {
+        steady_pointers[target] = true
+    }
+    return true
+}

@@ -183,7 +183,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The counts
 
-- Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, a function answering a singleton (a rebuilt attribute among them) neither counts it nor has its caller let it go, D949, and an attribute holding a quiet singleton is the singleton itself, D954; not built: kept in a local or a list it still is, and so is an attribute in a program with a `drop()`; the first-use test of a singleton read in a loop is made on every pass, even where it was made before the loop)
+- Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, a function answering a singleton (a rebuilt attribute among them) neither counts it nor has its caller let it go, D949, and an attribute holding a quiet singleton is the singleton itself, D954; not built: kept in a local or a list it still is, and so is an attribute in a program with a `drop()`; a singleton the entry class makes is never tested again outside what its defaults reach (D961), but the first-use test of any other singleton read in a loop is made on every pass, even a quiet one that could be made before the loop)
 - Singletons that hold nothing are static objects
 - Atomic reference counts only with threads
 - Plain reference counts where no thread reaches a class
@@ -247,7 +247,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The machine code (D771 to D775 are built)
 
-- Loop-invariant code motion (built, D803): a load moves before its loop only from the loop's first block and only when nothing in the loop writes memory or calls; a load in a later block, and anything in a loop that writes memory, is still made on every pass
+- Loop-invariant code motion (built, D803): a load moves before its loop only from the loop's first block and only when nothing in the loop writes memory or calls (a load known never to change moves from anywhere, D962); a load in a later block, and anything in a loop that writes memory, is still made on every pass
+- An attribute a loop updates while it holds its singleton's lock (D965) is loaded and stored on every pass, not kept in a register until the loop ends: nothing proves that the loop's other loads (`this.rounds`) do not read the same memory
 - Common subexpressions across blocks only for registers written once (D803): a computation over a register written twice (a loop counter) is still made again in a later block, and a repeated comparison is made again
 - An unsigned 64-bit division by a constant that is not a power of two keeps the `div` (D804)
 - A function inlined into a loop keeps its bounds checks (ranges are proved before inlining), and a callee of more than 40 instructions, or that waits, is called (D802); inlining is chosen by size alone, with no estimate of the registers a loop then needs (`template_chains_run_as_one_loop` is about a quarter slower than before this inlining, likely from spills)

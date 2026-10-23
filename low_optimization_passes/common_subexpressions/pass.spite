@@ -16,6 +16,7 @@ var flowing_keys = List<String>()
 var flowing_targets = List<Integer>()
 var most_flowing = 128
 var largest_function = 400
+var defining = List<LowIntermediaryRepresentation.Instructions.Instruction?>()
 
 func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
@@ -25,6 +26,7 @@ func transformed(): LowIntermediaryRepresentation.LowFunction {
     if function.is_resumable {
         return function
     }
+    count_the_definitions()
     function.blocks.each(share_in_block)
     if function.blocks.count() <= largest_function {
         share_across_blocks()
@@ -33,7 +35,6 @@ func transformed(): LowIntermediaryRepresentation.LowFunction {
 }
 
 func share_across_blocks() {
-    count_the_definitions()
     flow.find_the_edges(function)
     var count = function.blocks.count()
     var index = 0
@@ -74,6 +75,7 @@ func count_the_definitions() {
             implicit = 1
         }
         definitions.append(implicit)
+        defining.append(null)
         index = index + 1
     }
     var block_index = 0
@@ -84,6 +86,11 @@ func count_the_definitions() {
             var instruction = block.instructions[instruction_index]
             operands.read(instruction)
             operands.defines.each(count_a_definition)
+            if operands.defines.count() == 1 {
+                var defined = operands.defines[0]
+                crash defined
+                defining[defined] = instruction
+            }
             instruction_index = instruction_index + 1
         }
         block_index = block_index + 1
@@ -113,6 +120,9 @@ func flow_through(block_index: Integer, rewrites: Boolean): Boolean {
         var key = stable_key_of(instruction)
         if key.is_empty() {
             forget_the_flowing_writes(instruction)
+            if instruction == LowIntermediaryRepresentation.Instructions.Store {
+                flow_a_stored_value(instruction)
+            }
         } else {
             var shared = shared_from_before(instruction, key)
             if rewrites and shared {
@@ -147,6 +157,68 @@ func shared_from_before(
     crash earlier
     assert earlier != target
     return LowIntermediaryRepresentation.Instructions.Copy(target, earlier)
+}
+
+func flow_a_stored_value(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    assert is_stable(stored.address) and is_stable(stored.source)
+    flow_a_stored_sign(stored, true)
+    flow_a_stored_sign(stored, false)
+}
+
+func flow_a_stored_sign(stored: LowIntermediaryRepresentation.Instructions.Store, signed: Boolean) {
+    var key = forwarded_key(stored, signed)
+    if not key.is_empty() and flowing_keys.count() < most_flowing and flowing_index(key) < 0 {
+        flowing_keys.append(key)
+        flowing_targets.append(stored.source)
+    }
+}
+
+func forwarded_key(stored: LowIntermediaryRepresentation.Instructions.Store, signed: Boolean): String {
+    if not fits_as(stored, signed) {
+        return ""
+    }
+    var shape = "{stored.width} {signed} {stored.is_swapped}"
+    return "load {shape} r{stored.address} {stored.offset}"
+}
+
+func fits_as(stored: LowIntermediaryRepresentation.Instructions.Store, signed: Boolean): Boolean {
+    if stored.width == 'bits_64' {
+        return true
+    }
+    if stored.width != 'bits_32' or not is_stable(stored.source) {
+        return false
+    }
+    var source = defining[stored.source]
+    if not source {
+        return false
+    }
+    switch source {
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return fits_from_arithmetic(source, signed)
+        LowIntermediaryRepresentation.Instructions.Load: return fits_from_a_load(source, stored, signed)
+        LowIntermediaryRepresentation.Instructions.Constant: return fits_from_a_constant(source, signed)
+        _: return false
+    }
+}
+
+func fits_from_arithmetic(made: LowIntermediaryRepresentation.Instructions.Arithmetic, signed: Boolean): Boolean {
+    var adds = made.operator == 'add' or made.operator == 'subtract'
+    return adds and made.is_checked and made.width == 'bits_32' and made.is_signed == signed
+}
+
+func fits_from_a_load(
+    loaded_value: LowIntermediaryRepresentation.Instructions.Load,
+    stored: LowIntermediaryRepresentation.Instructions.Store,
+    signed: Boolean,
+): Boolean {
+    var same_shape = loaded_value.width == 'bits_32' and loaded_value.is_signed == signed
+    return same_shape and loaded_value.is_swapped == stored.is_swapped
+}
+
+func fits_from_a_constant(constant: LowIntermediaryRepresentation.Instructions.Constant, signed: Boolean): Boolean {
+    if signed {
+        return constant.number >= -2147483648 and constant.number <= 2147483647
+    }
+    return constant.number >= 0 and constant.number <= 4294967295
 }
 
 func flowing_index(key: String): Integer {
@@ -316,6 +388,9 @@ func share_in_block(block: LowIntermediaryRepresentation.LowBlock) {
             if not key.is_empty() and target >= 0 {
                 remember(instruction, key, target)
             }
+            if instruction == LowIntermediaryRepresentation.Instructions.Store {
+                remember_a_store(instruction)
+            }
         }
         index = index + 1
     }
@@ -352,13 +427,33 @@ func remember(instruction: LowIntermediaryRepresentation.Instructions.Instructio
     targets.append(target)
     lefts.append(left)
     rights.append(right)
-    var is_a_load = instruction == LowIntermediaryRepresentation.Instructions.Load
+    var is_a_load = false
+    if instruction == LowIntermediaryRepresentation.Instructions.Load {
+        is_a_load = not instruction.is_invariant
+    }
     loaded.append(is_a_load)
     var offset = -1
     if instruction == LowIntermediaryRepresentation.Instructions.Load {
         offset = instruction.offset
     }
     offsets.append(offset)
+}
+
+func remember_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    assert stored.address != stored.source
+    remember_a_stored_sign(stored, true)
+    remember_a_stored_sign(stored, false)
+}
+
+func remember_a_stored_sign(stored: LowIntermediaryRepresentation.Instructions.Store, signed: Boolean) {
+    var key = forwarded_key(stored, signed)
+    assert not key.is_empty() and keys.count() < most_kept and available(key) < 0
+    keys.append(key)
+    targets.append(stored.source)
+    lefts.append(stored.address)
+    rights.append(stored.source)
+    loaded.append(true)
+    offsets.append(stored.offset)
 }
 
 func forget_the_register(register: Integer) {
@@ -461,5 +556,8 @@ func conversion_key(conversion: LowIntermediaryRepresentation.Instructions.Decim
 
 func load_key(loaded_value: LowIntermediaryRepresentation.Instructions.Load): String {
     var shape = "{loaded_value.width} {loaded_value.is_signed} {loaded_value.is_swapped}"
+    if loaded_value.is_invariant {
+        return "invariant load {shape} r{loaded_value.address} {loaded_value.offset}"
+    }
     return "load {shape} r{loaded_value.address} {loaded_value.offset}"
 }

@@ -1,20 +1,21 @@
-var no_program = Model.ProgramModel()
-var no_layout = Layout(no_program)
-var no_low = LowIntermediaryRepresentation.LoweredProgram()
-var no_slots = Dictionary<String, Integer>()
-var lowering = FunctionLowering(no_layout, no_low, no_slots)
+var model = Model.ProgramModel()
+var waits: Waits? = null
+var owner = ""
+var resumable = false
+var takes_atomics = false
 var counter = ""
 var held = ""
 var locks_a_call = false
 var refused = false
 var steps = 0
 
-func CoarseLoops(starting_lowering: FunctionLowering) {
-    lowering = starting_lowering
+func CoarseLoops(starting_model: Model.ProgramModel, starting_waits: Waits?) {
+    model = starting_model
+    waits = starting_waits
 }
 
 func singleton_held_by(loop: HighIntermediaryRepresentation.Statements.While): String {
-    if not lowering.waits or lowering.resumable_mode {
+    if not waits or resumable {
         return ""
     }
     if not is_counted(loop) {
@@ -28,7 +29,7 @@ func singleton_held_by(loop: HighIntermediaryRepresentation.Statements.While): S
     if refused or held.is_empty() or not locks_a_call or steps != 1 {
         return ""
     }
-    if held == lowering.lowering_owner {
+    if held == owner {
         return ""
     }
     return held
@@ -207,7 +208,7 @@ func read_a_conversion(conversion: HighIntermediaryRepresentation.Values.Convers
 
 func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
     var class_key = made.value_type.name
-    var made_model = lowering.layout.program.class_named(class_key)
+    var made_model = model.class_named(class_key)
     if not made_model {
         refuse()
         return
@@ -218,18 +219,16 @@ func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
 }
 
 func read_a_call(call: HighIntermediaryRepresentation.Values.Call) {
-    crash lowering.waits
-    var waits = lowering.waits
+    crash waits
     var key = call.function.key()
     var owner_key = call.function.owner
-    var owner_model = lowering.layout.program.class_named(owner_key)
+    var owner_model = model.class_named(owner_key)
     if not owner_model {
         refuse()
         return
     }
     var answers_plainly = is_plain(call.value_type)
-    var one_singleton = held.is_empty() or held == owner_key
-    if not owner_model.is_singleton or not one_singleton or not answers_plainly {
+    if not owner_model.is_singleton or not answers_plainly {
         refuse()
         return
     }
@@ -237,11 +236,19 @@ func read_a_call(call: HighIntermediaryRepresentation.Values.Call) {
         refuse()
         return
     }
-    held = owner_key
-    if waits.is_locked(key) {
+    var guarded = waits.is_locked(key) or takes_atomics and waits.is_atomic(owner_key)
+    if guarded or waits.is_atomic(owner_key) {
+        var one_singleton = held.is_empty() or held == owner_key
+        if not one_singleton {
+            refuse()
+            return
+        }
+        held = owner_key
+    }
+    if guarded {
         locks_a_call = true
     }
-    if not waits.can_hold_for_a_loop(key, owner_key) {
+    if not waits.can_hold_for_a_loop(key, held) {
         refuse()
     }
     read_a_value(call.receiver)

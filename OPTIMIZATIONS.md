@@ -1158,7 +1158,45 @@ path leading in made, and forgetting loads at every write of memory), a repeat i
 
 It does not apply to checked arithmetic, a division or a comparison (which is better made again just before the
 branch that reads its flags), nor across blocks to a register written more than once or in a function of more than
-400 blocks.
+400 blocks. A load the compiler knows never changes (see [a singleton the entry class makes is never tested
+again](#a-singleton-the-entry-class-makes-is-never-tested-again)) is not forgotten at a write of memory or a call.
+
+## A value stored is read back from its register
+
+A store `[a + k] = v` stands, for what follows, for a load of the same width and offset from the same `a`: a load
+that repeats it, with no write of memory, call or allocation in between and neither `a` nor `v` written again, copies
+`v` instead, in a block and across blocks under the same rules as a repeated load. A 64-bit store stands for both a
+signed and an unsigned load; a 32-bit store only when `v` is known to fit what the load would give back: a checked
+32-bit addition or subtraction of that signedness, a 32-bit load of that signedness, or a constant in range.
+
+```spite
+var running = 0
+
+func add_attribute(attribute: Spite.Attribute) {
+    if attribute.class == Integer {
+        running = running + attribute.value
+    }
+}
+```
+
+Unrolled over the four attributes of a `Stats`, the sum is four additions in registers, each stored, instead of a
+chain where every addition waited for the store before it to come back from memory
+(`reflection_on_constants_folds_and_unrolls` went from 110 ms to 34 ms, with the next section).
+
+**What a program can observe:** only the time. Every store is still made, so another thread or a later read sees
+the same memory.
+
+## A block nothing reaches leads nowhere
+
+A block no path from the function's start reaches (an empty block left after a branch was decided, the making of a
+singleton proven made) has no successors for the passes that follow blocks and for the register allocator: it is
+no loop's back edge, it makes no value live, and it is not counted as a way into the block after it. Before, such a
+block falling into a loop's body hid the loop from [what a loop does not change is computed
+before it](#what-a-loop-does-not-change-is-computed-before-it), cut the values [shared across
+blocks](#the-same-computation-in-a-block-is-made-once), and, laid out after the function's end and falling back
+into the middle, made every value live into its successor live to the end of the function and counted every block
+between as one loop deeper, so values that fit in registers were spilled. **What a program can observe:** only the
+time.
 
 ## What a loop does not change is computed before it
 
@@ -1170,7 +1208,9 @@ when it is in the loop's first block (which every pass runs) and nothing in the 
 (a retain only blocks a load of the count). Each instruction moved runs once instead of once per pass.
 
 It does not apply to a function of more than 400 blocks or that waits, to checked arithmetic, divisions and
-comparisons, nor to a load past the loop's first block, since a pass that leaves early would not have made it.
+comparisons, nor to a load past the loop's first block, since a pass that leaves early would not have made it. A
+load the compiler knows never changes and can always be made (the slot of a singleton made at start, an attribute
+of a steady one) moves from any block of the loop, whatever the loop writes or calls.
 
 ## A remainder by a power of two tested against zero is a mask
 
@@ -1459,7 +1499,9 @@ functions do. A singleton no such work reaches gets none of them, and a program 
    with `this`; no other class writes its attributes. A read is one load and a write one store, which are atomic
    for an aligned slot. An update is a loop around one compare-exchange: it loads the attribute, computes the new
    value with its overflow check, and stores it only if the slot still holds what it loaded, so an addition that
-   does not fit halts before anything is written and no two threads lose an update.
+   does not fit halts before anything is written and no two threads lose an update. A singleton a counted loop in
+   the work would [hold for the whole loop](#a-counted-loop-of-calls-to-one-singleton-takes-its-lock-once) takes
+   the third form instead.
 3. **Its own lock, otherwise.** Each function of the singleton that reads `this` takes the singleton's lock for its
    whole call. The lock is a word in the singleton's slot holding the thread that owns it, with a count of how
    deep that thread holds it: a call by the owning thread only adds one to the count, a free lock is claimed with
@@ -1561,7 +1603,49 @@ func count_up(): Integer {
 Four `Parallel`s running `count_up` each take `Tally`'s lock once
 (`a_counted_loop_of_calls_to_one_singleton_takes_its_lock_once`).
 
+A call in the loop to a singleton that takes no lock (one that never changes after it is made, or that no thread
+reaches) does not count as a second singleton, so a loop may read settings from one singleton while it updates
+another. And a singleton that would be made safe with [atomics](#thread-safety-for-singletons-the-cheapest-safe-form)
+is given its lock instead when a counted loop in the work a `Parallel` runs would hold it: one lock taken per loop
+costs less than one compare-exchange per call. In `thread_safety_for_singletons_the_cheapest_safe_form` each of the
+four workers adds `settings.step_size()` into `counter.record()` a million times; `HitCounter` was updated with a
+compare-exchange on every call, four threads fighting over one cache line (144 ms); now each worker takes its lock
+once and adds with plain loads and stores (8.4 ms).
+
 **Not built:** a loop that is not counted testing the task count once before it starts.
+
+## A singleton the entry class makes is never tested again
+
+The entry class's attribute defaults run before any other code of the program: a singleton they make on every path
+(`var counter = HitCounter()` in the entry file) is made before the entry function starts. Every function that
+cannot run before those defaults end reads such a singleton's slot without testing that it is made, and the load of
+the slot is known never to change, so it moves out of loops and is shared across calls and writes. When the
+singleton never changes after it is made (no function but its constructor assigns its attributes), the loads of its
+attributes are known never to change too.
+
+The functions that may run before the defaults end are found by following calls and function addresses from what
+the program's start calls up to and including the defaults, the fault handler and every singleton's destroy at
+exit; any function one of them reaches keeps every test. A function value is called only through an address taken
+by code that ran before, so following the addresses taken is enough.
+
+```spite
+var counter = HitCounter()
+var settings = Settings()
+
+func ThreadSafetyForSingletonsTheCheapestSafeForm() {
+    var rounds = count_on_four(1000000)
+    var name = settings.name()
+    var total = counter.total()
+    console.print(name, total, "after", rounds, "rounds")
+}
+```
+
+`Worker.run`, which reads `settings` and `counter` a million times on each of four threads, tests neither: the
+loop reads the step once before it starts and finds the counter's slot once.
+
+**When it does not apply:** a singleton made only by some paths of the defaults, or not by the entry class at all
+(then [made on first use](#a-singleton-is-made-on-first-use-by-a-function-of-its-own) as before), and every function
+the defaults, the fault handler or a destroy can reach. **What a program can observe:** only the time.
 
 ## A chain of `filter_` steps runs as one loop
 
