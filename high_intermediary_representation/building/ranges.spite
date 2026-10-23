@@ -143,6 +143,8 @@ func joined(
 func prove_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
     var assigned = List<String>()
     assigned_in_block(loop.body, assigned)
+    var passes = passes_of(loop, assigned)
+    var entries = ranges.copy()
     var widened = Dictionary<String, NumberRange>()
     var index = 0
     while index < assigned.count() {
@@ -163,13 +165,272 @@ func prove_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
         }
         index = index + 1
     }
+    var inner_totals = Dictionary<String, NumberRange>()
+    if passes {
+        widen_the_totals(loop, assigned, passes, entries, inner_totals)
+    }
     var entry_reaching = is_reaching
     prove_value(loop.condition)
     var at_the_condition = ranges.copy()
     narrow(loop.condition, true)
+    narrow_the_totals(inner_totals)
     prove_block(loop.body)
     ranges = at_the_condition
     is_reaching = entry_reaching
+}
+
+func passes_of(loop: HighIntermediaryRepresentation.Statements.While, assigned: List<String>): NumberRange? {
+    var found: NumberRange? = null
+    var index = 0
+    while index < assigned.count() and not found {
+        var name = assigned[index]
+        found = passes_counted_by(loop, name)
+        index = index + 1
+    }
+    return found
+}
+
+func passes_counted_by(loop: HighIntermediaryRepresentation.Statements.While, name: String): NumberRange? {
+    var named_type = declared[name]
+    assert named_type
+    assert is_whole(named_type)
+    var entry = ranges[name]
+    assert entry
+    var step = single_step_of(loop.body, name)
+    assert step > 0
+    var bound = loop_bound_of(loop.condition, name, loop)
+    assert bound
+    var widest: Long = 4294967296
+    var low_size = magnitude(entry.lowest)
+    var high_size = magnitude(bound.highest)
+    assert low_size < widest and high_size < widest
+    var passes: Long = 0
+    var reach: Long = bound.highest - entry.lowest
+    if reach >= 0 {
+        passes = reach / step + 1
+    }
+    return NumberRange(passes, passes)
+}
+
+func single_step_of(body: HighIntermediaryRepresentation.Statements.Block, name: String): Long {
+    var step: Long = -1
+    var written = assignments_of(body, name)
+    if written == 1 {
+        step = top_level_step(body, name)
+    }
+    return step
+}
+
+func top_level_step(body: HighIntermediaryRepresentation.Statements.Block, name: String): Long {
+    var step: Long = -1
+    var index = 0
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        if statement == HighIntermediaryRepresentation.Statements.Assign {
+            step = step_of_the_assignment(statement, name, step)
+        }
+        index = index + 1
+    }
+    return step
+}
+
+func step_of_the_assignment(
+    assignment: HighIntermediaryRepresentation.Statements.Assign,
+    name: String,
+    step: Long,
+): Long {
+    var found = step
+    if assignment.name == name {
+        found = step_of(assignment.value, name)
+    }
+    return found
+}
+
+func assignments_of(block: HighIntermediaryRepresentation.Statements.Block, name: String): Integer {
+    var count = 0
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        var inside = assignments_in(statement, name)
+        count = count + inside
+        index = index + 1
+    }
+    return count
+}
+
+func assignments_in(statement: HighIntermediaryRepresentation.Statements.Statement, name: String): Integer {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return named_once(statement.name, name)
+        HighIntermediaryRepresentation.Statements.Assign: return named_once(statement.name, name)
+        HighIntermediaryRepresentation.Statements.If: return assignments_in_branches(statement, name)
+        HighIntermediaryRepresentation.Statements.While: return assignments_of(statement.body, name)
+        HighIntermediaryRepresentation.Statements.Block: return assignments_of(statement, name)
+        _: return 0
+    }
+}
+
+func named_once(written: String, name: String): Integer {
+    var count = 0
+    if written == name {
+        count = 1
+    }
+    return count
+}
+
+func assignments_in_branches(branch: HighIntermediaryRepresentation.Statements.If, name: String): Integer {
+    var then_count = assignments_in_a_branch(branch.then_branch, name)
+    var else_count = assignments_in_a_branch(branch.else_branch, name)
+    return then_count + else_count
+}
+
+func assignments_in_a_branch(block: HighIntermediaryRepresentation.Statements.Block?, name: String): Integer {
+    var count = 0
+    if block {
+        count = assignments_of(block, name)
+    }
+    return count
+}
+
+func widen_the_totals(
+    loop: HighIntermediaryRepresentation.Statements.While,
+    assigned: List<String>,
+    passes: NumberRange,
+    entries: Dictionary<String, NumberRange>,
+    inner_totals: Dictionary<String, NumberRange>,
+) {
+    var zero: Long = 0
+    var earlier: Long = passes.lowest - 1
+    var passes_before = larger(earlier, zero)
+    var index = 0
+    while index < assigned.count() {
+        var name = assigned[index]
+        var widened = total_range(loop, name, passes.lowest, entries)
+        var inner = total_range(loop, name, passes_before, entries)
+        if widened and inner {
+            ranges[name] = widened
+            inner_totals[name] = inner
+        }
+        index = index + 1
+    }
+}
+
+func narrow_the_totals(inner_totals: Dictionary<String, NumberRange>) {
+    var names = inner_totals.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var inner = inner_totals[name]
+        crash inner
+        ranges[name] = inner
+        index = index + 1
+    }
+}
+
+func total_range(
+    loop: HighIntermediaryRepresentation.Statements.While,
+    name: String,
+    passes: Long,
+    entries: Dictionary<String, NumberRange>,
+): NumberRange? {
+    var counted = ranges[name]
+    assert not counted
+    var named_type = declared[name]
+    assert named_type
+    assert is_whole(named_type)
+    var entry = entries[name]
+    assert entry
+    var written = assignments_of(loop.body, name)
+    assert written == 1
+    var operation = top_level_total(loop.body, name)
+    assert operation
+    var term = term_of(operation, name)
+    assert term
+    var term_range = range_of(term)
+    assert term_range
+    var widest_step: Long = 2147483648
+    var widest_entry: Long = 2305843009213693952
+    var step_low_size = magnitude(term_range.lowest)
+    var step_high_size = magnitude(term_range.highest)
+    var entry_low_size = magnitude(entry.lowest)
+    var entry_high_size = magnitude(entry.highest)
+    assert passes <= widest_step and step_low_size <= widest_step and step_high_size <= widest_step
+    assert entry_low_size < widest_entry and entry_high_size < widest_entry
+    var zero: Long = 0
+    var low_step = smaller(term_range.lowest, zero)
+    var high_step = larger(term_range.highest, zero)
+    if operation.operator == 'subtract' {
+        var most = larger(term_range.highest, zero)
+        var least = smaller(term_range.lowest, zero)
+        low_step = zero - most
+        high_step = zero - least
+    }
+    var lowest: Long = entry.lowest + passes * low_step
+    var highest: Long = entry.highest + passes * high_step
+    var found = within_the_limit(lowest, highest)
+    assert found
+    return cut_to(found, named_type)
+}
+
+func top_level_total(
+    body: HighIntermediaryRepresentation.Statements.Block,
+    name: String,
+): HighIntermediaryRepresentation.Values.MachineOperation? {
+    var found: HighIntermediaryRepresentation.Values.MachineOperation? = null
+    var index = 0
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        if statement == HighIntermediaryRepresentation.Statements.Assign {
+            found = total_of_the_assignment(statement, name, found)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func total_of_the_assignment(
+    assignment: HighIntermediaryRepresentation.Statements.Assign,
+    name: String,
+    found: HighIntermediaryRepresentation.Values.MachineOperation?,
+): HighIntermediaryRepresentation.Values.MachineOperation? {
+    var total = found
+    var value = assignment.value
+    var is_the_total = assignment.name == name and value == HighIntermediaryRepresentation.Values.MachineOperation
+    if is_the_total {
+        total = operation_of(value)
+    }
+    return total
+}
+
+func operation_of(
+    value: HighIntermediaryRepresentation.Values.Value?,
+): HighIntermediaryRepresentation.Values.MachineOperation? {
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        return value
+    }
+    return null
+}
+
+func term_of(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+    name: String,
+): HighIntermediaryRepresentation.Values.Value? {
+    var left_name = local_name_of(operation.left)
+    var right_name = local_name_of(operation.right)
+    var term: HighIntermediaryRepresentation.Values.Value? = null
+    var adds = operation.operator == 'add'
+    var takes_away = operation.operator == 'subtract'
+    var adds_on_the_right = adds or takes_away
+    if adds_on_the_right and left_name == name and is_a_term(operation.right, name) {
+        term = operation.right
+    } else if adds and right_name == name and is_a_term(operation.left, name) {
+        term = operation.left
+    }
+    return term
+}
+
+func is_a_term(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
+    var read_name = local_name_of(value)
+    return read_name != name
 }
 
 func assigned_in_block(block: HighIntermediaryRepresentation.Statements.Block?, assigned: List<String>) {

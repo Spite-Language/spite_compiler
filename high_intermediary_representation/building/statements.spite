@@ -16,6 +16,7 @@ var template_walks = TemplateWalks()
 var rest_is_folded_away = false
 var enclosing_blocks = List<EnclosingBlock>()
 var at_function_root = false
+var last_site_identity = ""
 
 func Statements(starting_context: Context) {
     context = starting_context
@@ -1330,9 +1331,55 @@ func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatemen
     var made = HighIntermediaryRepresentation.Statements.If(negated, failed, null)
     made.line = statement.line
     add(made)
+    var operands = operands_of(statement.condition)
     read_facts(statement.condition)
+    if noting {
+        var kind = "assert-predicate"
+        if not facts_paths.is_empty() {
+            kind = "assert-narrowing"
+        }
+        note_a_crash_site(last_site_identity, statement.line, statement.column, kind, statement.condition, operands)
+    }
     narrow_all(facts_paths, facts_types)
     note_the_checks("assert", statement.condition, statement.line)
+}
+
+func operands_of(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?): String {
+    var names = List<String>()
+    gather_the_names(condition, names)
+    var described = List<String>()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var identifier = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression(name)
+        var read = values.value_of(identifier, null)
+        var shown = context.shown(read.value_type)
+        described.append("{name}:{shown}")
+        index = index + 1
+    }
+    return described.join(" ")
+}
+
+func note_a_crash_site(
+    identity: String,
+    line: Integer,
+    column: Integer,
+    kind: String,
+    condition: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    operands: String,
+) {
+    var source = ""
+    if condition {
+        var printer = Printers.Spite.ExpressionPrinter(condition)
+        source = printer.text()
+    }
+    var owner = context.current_function.owner
+    var shown_owner = last_part_of(owner)
+    var function_name = context.current_function.name
+    var written_path = context.path()
+    var path = written_path.replace("\\", "/")
+    var site = "{identity}\t{path}\t{line}\t{column}\t{shown_owner}\t{function_name}\t{kind}\t{source}\t{operands}"
+    context.crash_sites.append(site)
 }
 
 func noted_failure(
@@ -1386,6 +1433,19 @@ func ring_object(ring: Model.ClassModel): HighIntermediaryRepresentation.Values.
 }
 
 func site_line(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, line: Integer, kind: String): String {
+    var function_name = context.current_function.name
+    var identity = identity_of_a_site(condition, "")
+    last_site_identity = identity
+    var owner = context.current_function.owner
+    var asked = context.build_flags["optimized"]
+    if asked == "true" {
+        return "{kind}\t{identity}"
+    }
+    var shown_owner = last_part_of(owner)
+    return "{kind}\t{identity}\t{context.path()}:{line}\t{shown_owner}\t{function_name}"
+}
+
+func identity_of_a_site(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, counted_as: String): String {
     var owner = context.current_function.owner
     var function_name = context.current_function.name
     var source = ""
@@ -1393,20 +1453,18 @@ func site_line(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, lin
         var printer = Printers.Spite.ExpressionPrinter(condition)
         source = printer.text()
     }
-    var place_key = "{owner}.{function_name}"
+    var place_key = "{owner}.{function_name}{counted_as}"
     var ordinal = 0
     var known = context.site_ordinals[place_key]
     if known {
         ordinal = known
     }
     context.site_ordinals[place_key] = ordinal + 1
-    var identity = site_identity("{owner}|{function_name}|{ordinal}|{source}")
-    var asked = context.build_flags["optimized"]
-    if asked == "true" {
-        return "{kind}\t{identity}"
+    var hashed = "{owner}|{function_name}|{ordinal}|{source}"
+    if not counted_as.is_empty() {
+        hashed = "{counted_as}|{hashed}"
     }
-    var shown_owner = last_part_of(owner)
-    return "{kind}\t{identity}\t{context.path()}:{line}\t{shown_owner}\t{function_name}"
+    return site_identity(hashed)
 }
 
 func last_part_of(owner: String): String {
@@ -1597,6 +1655,8 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     stopped.line = statement.line
     stopped.then = crash_report()
     if always_stops(statement.condition) {
+        var always = identity_of_a_site(null, "|crash")
+        note_a_crash_site(always, statement.line, statement.column, "crash", null, "")
         add(stopped)
         return
     }
@@ -1605,6 +1665,9 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     refuse_a_check_of_a_plain_value(statement.condition, "crash")
     refuse_a_false_build_field(statement)
     show_the_values(stopped, statement.condition)
+    var operands = operands_of(statement.condition)
+    var identity = identity_of_a_site(statement.condition, "|crash")
+    note_a_crash_site(identity, statement.line, statement.column, "crash", statement.condition, operands)
     statement.condition = values.with_its_links(statement.condition)
     var condition = values.condition_of(statement.condition)
     refuse_a_folded_crash(statement, condition)

@@ -165,7 +165,13 @@ range for each operand (`high_intermediary_representation/building/ranges.spite`
   by `bound - c` too;
 - the two branches of an `if` join, and before a `while` every local its body assigns takes its type's range, except
   a counter only ever stepped up by constants: it keeps the floor it entered with and, under `counter < bound` with
-  no step in a nested loop, at most the bound's largest value plus its steps.
+  no step in a nested loop, at most the bound's largest value plus its steps;
+- a total assigned once in a loop, at the top of its body, as `total = total + term` (or `total - term`, or
+  `term + total`), with a term that is not the total itself, holds before that assignment its range on entering
+  the loop plus between none and one fewer than the loop's passes of the term's range, and after the loop as many
+  as its passes; the passes are counted by a counter the body steps once, at its top, by a constant, under
+  `counter < bound`. So a `Long` total of `Integer` terms over a list's items keeps no check, since the count is an
+  `Integer`.
 
 ```
 func total(values: List<Integer>): Long {
@@ -180,7 +186,8 @@ func total(values: List<Integer>): Long {
 ```
 
 `index + 1` is written unchecked: `index` runs from 0 to 2147483646 under the loop's condition. `sum + values[index]`
-keeps its check, since `sum` is a `Long` that grows every pass.
+is unchecked too: the loop runs at most 2147483647 passes, so before the addition `sum` holds at most 2147483646
+items, each an `Integer`, which a `Long` always holds.
 
 When it does not apply: an operand that is an attribute, a list item or a call's answer has its type's range, so an
 operation on two of them keeps its check. A `--repl`, `--repl-port` or `--hot-reload` build proves no ranges, since
