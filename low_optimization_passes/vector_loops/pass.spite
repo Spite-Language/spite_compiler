@@ -1,0 +1,1948 @@
+# ../../OPTIMIZATIONS.md#a-counted-loop-over-numbers-runs-eight-at-a-time
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var sums = LowOptimizationPasses.VectorLoops.ExactSums(program)
+var operands = LowOptimizationPasses.Operands()
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var function_index = 0
+var register_total = 0
+var definitions = List<Integer>()
+var known = List<Boolean>()
+var values = List<Long>()
+var predecessors = List<List<Integer>>()
+var in_path = List<Boolean>()
+var path = List<Integer>()
+var stop_blocks = List<Integer>()
+var header = 0
+var counter = 0
+var stepped = false
+var failed = false
+var looping = LowIntermediaryRepresentation.Instructions.VectorLoop(0)
+var kinds = List<Integer>()
+var lanes_of = List<Integer>()
+var scales = List<Long>()
+var shifts = List<Long>()
+var bases = List<Integer>()
+var aliases = List<Integer>()
+var guard_limits = List<Integer>()
+var guard_positive = List<Boolean>()
+var decimal_sizes = List<Integer>()
+var body_defined = List<Integer>()
+var body_read = List<Integer>()
+var chain_of = List<Integer>()
+var lane_formats = List<LowIntermediaryRepresentation.Vector.Format>()
+var broadcast_keys = Dictionary<Long, Integer>()
+var widened_lanes = Dictionary<Integer, Integer>()
+var narrowed_lanes = Dictionary<Integer, Integer>()
+var stream_bases = List<Integer>()
+var stream_offsets = List<Integer>()
+var stream_sizes = List<Integer>()
+var stream_stores = List<Boolean>()
+var has_checked_sums = false
+var body_count = 0
+var made_count = 0
+var sum_terms = List<LowOptimizationPasses.VectorLoops.Exact>()
+var sum_start = LowOptimizationPasses.VectorLoops.Exact()
+var sum_size = 4
+
+func Pass(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
+    program = starting_program
+}
+
+func transformed() {
+    sums = LowOptimizationPasses.VectorLoops.ExactSums(program)
+    sums.study()
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var listed = program.lowered_functions[index]
+        function_index = index
+        vectorize_the_function(listed)
+        index = index + 1
+    }
+    program.vector_loops = made_count
+}
+
+func vectorize_the_function(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+    if not function.is_resumable {
+        register_total = operands.most_register_of(function)
+        count_the_definitions()
+        find_the_predecessors()
+        var block_count = function.blocks.count()
+        var block_index = 0
+        while block_index < block_count {
+            try_the_loop_at(block_index)
+            block_index = block_index + 1
+        }
+    }
+}
+
+func count_the_definitions() {
+    definitions = List<Integer>()
+    known = List<Boolean>()
+    values = List<Long>()
+    var register = 0
+    while register < register_total {
+        definitions.append(0)
+        known.append(false)
+        values.append(0)
+        register = register + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            operands.read(instruction)
+            operands.defines.each(count_a_definition)
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var constant_block = function.blocks[block_index]
+        constant_block.instructions.each(note_a_constant)
+        block_index = block_index + 1
+    }
+}
+
+func count_a_definition(register: Integer) {
+    var count = definitions[register]
+    crash count
+    definitions[register] = count + 1
+}
+
+func note_a_constant(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+        var target = instruction.target
+        if definitions[target] == 1 and target >= function.parameter_count {
+            known[target] = true
+            values[target] = instruction.number
+        }
+    }
+}
+
+func is_constant(register: Integer): Boolean {
+    if register < 0 or register >= known.count() {
+        return false
+    }
+    return known[register] == true
+}
+
+func constant_value(register: Integer): Long {
+    var value = values[register]
+    crash value
+    return value
+}
+
+func find_the_predecessors() {
+    predecessors = List<List<Integer>>()
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var coming = List<Integer>()
+        predecessors.append(coming)
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var last = block.instructions.last()
+        if last {
+            note_the_edges(block_index, last)
+        }
+        block_index = block_index + 1
+    }
+}
+
+func note_the_edges(from_block: Integer, last: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        note_an_edge(from_block, last.block)
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        note_an_edge(from_block, last.when_true)
+        if last.when_false != last.when_true {
+            note_an_edge(from_block, last.when_false)
+        }
+    }
+}
+
+func note_an_edge(from_block: Integer, to_block: Integer) {
+    var coming = predecessors[to_block]
+    crash coming
+    coming.append(from_block)
+}
+
+func predecessors_of(block_index: Integer): List<Integer> {
+    var coming = predecessors[block_index]
+    crash coming
+    return coming
+}
+
+func try_the_loop_at(block_index: Integer) {
+    var block = function.blocks[block_index]
+    crash block
+    var last = block.instructions.last()
+    var first = block.instructions.first()
+    var paired = block.instructions.count() == 2 and first and last
+    if paired and first == LowIntermediaryRepresentation.Instructions.Compare and last == LowIntermediaryRepresentation.Instructions.Branch {
+        var signed_below = first.comparison == 'less' and first.is_signed and first.left >= 0 and first.right >= 0
+        if signed_below and last.condition == first.target and definitions[first.target] == 1 {
+            header = block_index
+            counter = first.left
+            try_the_loop(first.right, last.when_true)
+        }
+    }
+}
+
+func try_the_loop(bound: Integer, start: Integer) {
+    failed = false
+    find_the_path(start)
+    if not failed {
+        start_the_loop(bound)
+    }
+    if not failed and body_defined[bound] == 0 {
+        translate_the_path()
+    } else {
+        failed = true
+    }
+    if not failed {
+        finish_the_loop()
+    }
+}
+
+func find_the_path(start: Integer) {
+    path = List<Integer>()
+    stop_blocks = List<Integer>()
+    in_path = List<Boolean>()
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        in_path.append(false)
+        block_index = block_index + 1
+    }
+    var current = start
+    var steps = 0
+    while current != header {
+        steps = steps + 1
+        if steps > 64 or current < 0 or current >= function.blocks.count() {
+            failed = true
+            return
+        }
+        if in_path[current] == true {
+            failed = true
+            return
+        }
+        in_path[current] = true
+        path.append(current)
+        var coming = predecessors_of(current)
+        if coming.count() != 1 {
+            failed = true
+            return
+        }
+        var block = function.blocks[current]
+        crash block
+        var last = block.instructions.last()
+        if not last {
+            failed = true
+            return
+        }
+        current = next_on_the_path(last)
+    }
+    if path.is_empty() {
+        failed = true
+    }
+}
+
+func next_on_the_path(last: LowIntermediaryRepresentation.Instructions.Instruction): Integer {
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        return last.block
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        if is_a_stop_block(last.when_true) {
+            stop_blocks.append(last.when_true)
+            return last.when_false
+        }
+        if is_a_stop_block(last.when_false) {
+            stop_blocks.append(last.when_false)
+            return last.when_true
+        }
+    }
+    failed = true
+    return -1
+}
+
+func is_a_stop_block(block_index: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var last = block.instructions.last()
+    var coming = predecessors_of(block_index)
+    if last and last == LowIntermediaryRepresentation.Instructions.Stop {
+        return not last.continues and coming.count() == 1
+    }
+    return false
+}
+
+func start_the_loop(bound: Integer) {
+    looping = LowIntermediaryRepresentation.Instructions.VectorLoop(counter)
+    looping.limits.append(bound)
+    kinds = List<Integer>()
+    lanes_of = List<Integer>()
+    scales = List<Long>()
+    shifts = List<Long>()
+    bases = List<Integer>()
+    aliases = List<Integer>()
+    guard_limits = List<Integer>()
+    guard_positive = List<Boolean>()
+    decimal_sizes = List<Integer>()
+    body_defined = List<Integer>()
+    body_read = List<Integer>()
+    chain_of = List<Integer>()
+    var register = 0
+    while register < register_total {
+        kinds.append(0)
+        lanes_of.append(-1)
+        scales.append(0)
+        shifts.append(0)
+        bases.append(-1)
+        aliases.append(-1)
+        guard_limits.append(-1)
+        guard_positive.append(true)
+        decimal_sizes.append(0)
+        body_defined.append(0)
+        body_read.append(0)
+        chain_of.append(-1)
+        register = register + 1
+    }
+    lane_formats = List<LowIntermediaryRepresentation.Vector.Format>()
+    broadcast_keys = Dictionary<Long, Integer>()
+    widened_lanes = Dictionary<Integer, Integer>()
+    narrowed_lanes = Dictionary<Integer, Integer>()
+    stream_bases = List<Integer>()
+    stream_offsets = List<Integer>()
+    stream_sizes = List<Integer>()
+    stream_stores = List<Boolean>()
+    has_checked_sums = false
+    stepped = false
+    sum_terms = List<LowOptimizationPasses.VectorLoops.Exact>()
+    sum_start = LowOptimizationPasses.VectorLoops.Exact()
+    body_count = 0
+    kinds[counter] = 6
+    scales[counter] = 1
+    study_the_body()
+}
+
+func study_the_body() {
+    var first_reads = List<Boolean>()
+    var register = 0
+    while register < register_total {
+        first_reads.append(false)
+        register = register + 1
+    }
+    var path_index = 0
+    while path_index < path.count() {
+        var block_index = path[path_index]
+        crash block_index
+        var block = function.blocks[block_index]
+        crash block
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            operands.read(instruction)
+            var used = 0
+            while used < operands.uses.count() {
+                var read = operands.uses[used]
+                crash read
+                var count = body_read[read]
+                crash count
+                body_read[read] = count + 1
+                if body_defined[read] == 0 {
+                    first_reads[read] = true
+                }
+                used = used + 1
+            }
+            var defined = 0
+            while defined < operands.defines.count() {
+                var target = operands.defines[defined]
+                crash target
+                var defined_count = body_defined[target]
+                crash defined_count
+                body_defined[target] = defined_count + 1
+                defined = defined + 1
+            }
+            note_decimal_sizes(instruction)
+            body_count = body_count + 1
+            place = place + 1
+        }
+        path_index = path_index + 1
+    }
+    if body_count > 80 {
+        failed = true
+        return
+    }
+    register = 0
+    while register < register_total and not failed {
+        var carried = first_reads[register] == true and body_defined[register] != 0
+        if carried and register != counter {
+            find_a_chain(register)
+        }
+        register = register + 1
+    }
+    check_what_leaves()
+}
+
+func note_decimal_sizes(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic {
+        var size = 4
+        if instruction.is_double {
+            size = 8
+        }
+        note_a_decimal_size(instruction.target, size)
+        note_a_decimal_size(instruction.left, size)
+        note_a_decimal_size(instruction.right, size)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Decimal.Compare {
+        var compared_size = 4
+        if instruction.is_double {
+            compared_size = 8
+        }
+        note_a_decimal_size(instruction.left, compared_size)
+        note_a_decimal_size(instruction.right, compared_size)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Decimal.Conversion {
+        note_a_decimal_size(instruction.source, instruction.from_decimal_size)
+        note_a_decimal_size(instruction.target, instruction.to_decimal_size)
+    }
+}
+
+func note_a_decimal_size(register: Integer, size: Integer) {
+    if not (register < 0 or size == 0) {
+        var held = decimal_sizes[register]
+        crash held
+        if held != 0 and held != size {
+            failed = true
+        }
+        decimal_sizes[register] = size
+    }
+}
+
+func check_what_leaves() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var outside = in_path[block_index] != true and not stop_blocks.contains(block_index)
+        if outside {
+            var block = function.blocks[block_index]
+            crash block
+            block.instructions.each(check_a_reading_outside)
+        }
+        block_index = block_index + 1
+    }
+}
+
+func check_a_reading_outside(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var used = 0
+    while used < operands.uses.count() {
+        var read = operands.uses[used]
+        crash read
+        var defined_here = body_defined[read] != 0
+        var carried = read == counter or chain_of[read] == read
+        if defined_here and not carried {
+            failed = true
+        }
+        used = used + 1
+    }
+}
+
+func body_instruction_at(position: Integer): LowIntermediaryRepresentation.Instructions.Instruction? {
+    var seen = 0
+    var path_index = 0
+    while path_index < path.count() and not failed {
+        var block_index = path[path_index]
+        crash block_index
+        var block = function.blocks[block_index]
+        crash block
+        var count = block.instructions.count()
+        if position < seen + count {
+            return block.instructions[position - seen]
+        }
+        seen = seen + count
+        path_index = path_index + 1
+    }
+    return null
+}
+
+# ../../OPTIMIZATIONS.md#a-sum-over-a-loop-is-kept-in-lanes
+func find_a_chain(accumulator: Integer) {
+    if body_defined[accumulator] != 1 or body_read[accumulator] != 1 {
+        failed = true
+        return
+    }
+    var current = accumulator
+    var position = 0
+    var links = 0
+    var first_kind = -1
+    while links < 8 {
+        var found = next_reading(current, position)
+        if found < 0 {
+            failed = true
+            return
+        }
+        var instruction = body_instruction_at(found)
+        if not instruction {
+            failed = true
+            return
+        }
+        var kind = chain_kind_of(instruction, current)
+        if kind < 0 or first_kind >= 0 and kind != first_kind {
+            failed = true
+            return
+        }
+        first_kind = kind
+        var target = target_of(instruction)
+        if target < 0 {
+            failed = true
+            return
+        }
+        chain_of[target] = accumulator
+        if target == accumulator {
+            chain_of[accumulator] = accumulator
+            return
+        }
+        if body_defined[target] != 1 or body_read[target] != 1 {
+            failed = true
+            return
+        }
+        current = target
+        position = found + 1
+        links = links + 1
+    }
+    failed = true
+}
+
+func next_reading(register: Integer, from_position: Integer): Integer {
+    var position = from_position
+    while position < body_count {
+        var instruction = body_instruction_at(position)
+        crash instruction
+        operands.read(instruction)
+        if operands.uses.contains(register) {
+            return position
+        }
+        position = position + 1
+    }
+    return -1
+}
+
+func target_of(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Integer {
+    operands.read(instruction)
+    if operands.defines.count() != 1 {
+        return -1
+    }
+    var target = operands.defines[0]
+    crash target
+    return target
+}
+
+func chain_kind_of(instruction: LowIntermediaryRepresentation.Instructions.Instruction, chained: Integer): Integer {
+    if instruction == LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic {
+        var on_the_left = instruction.left == chained and instruction.right != chained
+        var on_the_right = instruction.right == chained and instruction.left != chained
+        var adds = instruction.operator == 'add' and (on_the_left or on_the_right)
+        var subtracts = instruction.operator == 'subtract' and on_the_left
+        if not adds and not subtracts {
+            return -1
+        }
+        if instruction.is_double {
+            return 1
+        }
+        return 0
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        var whole_left = instruction.left == chained and instruction.right != chained
+        var whole_right = instruction.right == chained and instruction.left != chained
+        var whole_adds = instruction.operator == 'add' and (whole_left or whole_right)
+        var whole_subtracts = instruction.operator == 'subtract' and whole_left
+        if not whole_adds and not whole_subtracts or not instruction.is_signed {
+            return -1
+        }
+        var kind = 2
+        if instruction.width == 'bits_64' {
+            kind = 3
+        }
+        if instruction.is_checked {
+            kind = kind + 2
+        }
+        return kind
+    }
+    return -1
+}
+
+func integer_at(numbers: List<Integer>, index: Integer): Integer {
+    var held = numbers[index]
+    crash held
+    return held
+}
+
+func long_at(numbers: List<Long>, index: Integer): Long {
+    var held = numbers[index]
+    crash held
+    return held
+}
+
+func lane_format_of(lane: Integer): LowIntermediaryRepresentation.Vector.Format {
+    var format = lane_formats[lane]
+    crash format
+    return format
+}
+
+func new_lane(format: LowIntermediaryRepresentation.Vector.Format): Integer {
+    lane_formats.append(format)
+    return lane_formats.count() - 1
+}
+
+func format_code(format: LowIntermediaryRepresentation.Vector.Format): Long {
+    switch format {
+        'float': return 0
+        'double': return 1
+        'whole_32': return 2
+        'whole_64': return 3
+    }
+}
+
+func is_wide(format: LowIntermediaryRepresentation.Vector.Format): Boolean {
+    return format == 'double' or format == 'whole_64'
+}
+
+func broadcast(register: Integer, format: LowIntermediaryRepresentation.Vector.Format): Integer {
+    var code = format_code(format)
+    var source = register
+    var alias = aliases[register]
+    crash alias
+    if alias >= 0 {
+        source = alias
+    }
+    var in_loop_constant = kinds[register] == 5
+    var key: Long = source
+    key = key * 4 + code
+    if in_loop_constant {
+        key = 0 - key - 1
+    }
+    if broadcast_keys.contains(key) {
+        var held = broadcast_keys[key]
+        crash held
+        return held
+    }
+    var lane = new_lane(format)
+    var step = LowIntermediaryRepresentation.Vector.Step('broadcast', lane)
+    step.format = format
+    if in_loop_constant {
+        var number = shifts[register]
+        crash number
+        step.number = number
+    } else {
+        step.source = source
+    }
+    looping.setup.append(step)
+    broadcast_keys[key] = lane
+    return lane
+}
+
+func operand_kind(register: Integer): Integer {
+    if register < 0 {
+        return -1
+    }
+    var kind = kinds[register]
+    crash kind
+    if kind == 0 {
+        if body_defined[register] != 0 {
+            return -1
+        }
+        if is_constant(register) {
+            return 5
+        }
+        return 8
+    }
+    return kind
+}
+
+func operand_value(register: Integer): Long {
+    var kind = kinds[register]
+    crash kind
+    if kind == 5 {
+        var held = shifts[register]
+        crash held
+        return held
+    }
+    return constant_value(register)
+}
+
+func lane_in(
+    register: Integer,
+    format: LowIntermediaryRepresentation.Vector.Format,
+    keeps_low_bits: Boolean,
+): Integer {
+    var kind = operand_kind(register)
+    if kind == 5 or kind == 8 or kind == 7 {
+        return broadcast(register, format)
+    }
+    if kind != 1 {
+        failed = true
+        return 0
+    }
+    var lane = lanes_of[register]
+    crash lane
+    var held = lane_format_of(lane)
+    if held == format {
+        return lane
+    }
+    if held == 'whole_32' and format == 'whole_64' {
+        return widened(lane, true)
+    }
+    if held == 'whole_64' and format == 'whole_32' and keeps_low_bits {
+        return narrowed(lane)
+    }
+    failed = true
+    return 0
+}
+
+func widened(lane: Integer, is_signed: Boolean): Integer {
+    if is_signed and widened_lanes.contains(lane) {
+        var held = widened_lanes[lane]
+        crash held
+        return held
+    }
+    var made = new_lane('whole_64')
+    var step = LowIntermediaryRepresentation.Vector.Step('widen', made)
+    step.left = lane
+    step.format = 'whole_64'
+    step.from_format = 'whole_32'
+    step.is_signed = is_signed
+    looping.body.append(step)
+    if is_signed {
+        widened_lanes[lane] = made
+    }
+    return made
+}
+
+func narrowed(lane: Integer): Integer {
+    if narrowed_lanes.contains(lane) {
+        var held = narrowed_lanes[lane]
+        crash held
+        return held
+    }
+    var made = new_lane('whole_32')
+    var step = LowIntermediaryRepresentation.Vector.Step('narrow', made)
+    step.left = lane
+    step.format = 'whole_32'
+    step.from_format = 'whole_64'
+    looping.body.append(step)
+    narrowed_lanes[lane] = made
+    return made
+}
+
+func set_lane(register: Integer, lane: Integer) {
+    kinds[register] = 1
+    lanes_of[register] = lane
+}
+
+func translate_the_path() {
+    var path_index = 0
+    while path_index < path.count() and not failed {
+        var block_index = path[path_index]
+        crash block_index
+        var block = function.blocks[block_index]
+        crash block
+        var count = block.instructions.count()
+        var place = 0
+        while place + 1 < count and not failed {
+            var instruction = block.instructions[place]
+            crash instruction
+            translate(instruction)
+            place = place + 1
+        }
+        var last = block.instructions.last()
+        crash last
+        if last == LowIntermediaryRepresentation.Instructions.Branch and not failed {
+            translate_a_guard(last)
+        }
+        path_index = path_index + 1
+    }
+    if not stepped {
+        failed = true
+    }
+}
+
+func translate(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: translate_a_constant(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: translate_a_copy(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: translate_arithmetic(instruction)
+        LowIntermediaryRepresentation.Instructions.Compare: translate_a_compare(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: translate_decimal(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: translate_a_decimal_compare(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: translate_a_conversion(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: translate_a_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: translate_a_store(instruction)
+        LowIntermediaryRepresentation.Instructions.Select: translate_a_selection(instruction)
+        _: failed = true
+    }
+}
+
+func translate_a_selection(selecting: LowIntermediaryRepresentation.Instructions.Select) {
+    var target = selecting.target
+    if target == counter or integer_at(chain_of, target) >= 0 {
+        failed = true
+        return
+    }
+    var format: LowIntermediaryRepresentation.Vector.Format = 'whole_32'
+    var wide_true = is_a_wide_lane(selecting.when_true)
+    var wide_false = is_a_wide_lane(selecting.when_false)
+    if wide_true or wide_false {
+        format = 'whole_64'
+    }
+    var picked = lane_in(selecting.when_true, format, false)
+    var kept = lane_in(selecting.when_false, format, false)
+    var condition = lane_in(selecting.condition, format, true)
+    if not failed {
+        var zero = zero_lane(format)
+        var mask = whole_step('subtract', format, zero, condition)
+        var differing = whole_step('bits_xor', format, picked, kept)
+        var masked = whole_step('bits_and', format, differing, mask)
+        var chosen = whole_step('bits_xor', format, kept, masked)
+        set_lane(target, chosen)
+    }
+}
+
+func zero_lane(format: LowIntermediaryRepresentation.Vector.Format): Integer {
+    var code = format_code(format)
+    var key: Long = -1000000000
+    key = key - code
+    if broadcast_keys.contains(key) {
+        var held = broadcast_keys[key]
+        crash held
+        return held
+    }
+    var lane = new_lane(format)
+    var step = LowIntermediaryRepresentation.Vector.Step('broadcast', lane)
+    step.format = format
+    step.number = 0
+    looping.setup.append(step)
+    broadcast_keys[key] = lane
+    return lane
+}
+
+func whole_step(
+    operator: LowIntermediaryRepresentation.ArithmeticOperator,
+    format: LowIntermediaryRepresentation.Vector.Format,
+    left: Integer,
+    right: Integer,
+): Integer {
+    var lane = new_lane(format)
+    var step = LowIntermediaryRepresentation.Vector.Step('whole', lane)
+    step.arithmetic = operator
+    step.format = format
+    step.left = left
+    step.right = right
+    looping.body.append(step)
+    return lane
+}
+
+func translate_a_constant(constant: LowIntermediaryRepresentation.Instructions.Constant) {
+    kinds[constant.target] = 5
+    shifts[constant.target] = constant.number
+    aliases[constant.target] = -1
+}
+
+func translate_a_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
+    var kind = operand_kind(copy.source)
+    var target = copy.target
+    if target == counter or integer_at(chain_of, target) >= 0 {
+        failed = true
+        return
+    }
+    switch kind {
+        1: copy_the_lane(target, copy.source)
+        2: copy_the_affine(target, copy.source, 2)
+        3: copy_the_affine(target, copy.source, 3)
+        6: copy_the_affine(target, copy.source, 2)
+        4: copy_the_guard(target, copy.source)
+        5: copy_the_constant(target, copy.source)
+        8: alias_to(target, copy.source)
+        7: copy_the_alias(target, copy.source)
+        _: failed = true
+    }
+}
+
+func copy_the_lane(target: Integer, source: Integer) {
+    var lane = integer_at(lanes_of, source)
+    set_lane(target, lane)
+}
+
+func copy_the_alias(target: Integer, source: Integer) {
+    var alias = integer_at(aliases, source)
+    alias_to(target, alias)
+}
+
+func copy_the_affine(target: Integer, source: Integer, kind: Integer) {
+    kinds[target] = kind
+    scales[target] = long_at(scales, source)
+    shifts[target] = long_at(shifts, source)
+    bases[target] = integer_at(bases, source)
+}
+
+func copy_the_guard(target: Integer, source: Integer) {
+    kinds[target] = 4
+    guard_limits[target] = integer_at(guard_limits, source)
+    guard_positive[target] = guard_positive[source] == true
+}
+
+func copy_the_constant(target: Integer, source: Integer) {
+    kinds[target] = 5
+    shifts[target] = operand_value(source)
+    aliases[target] = -1
+}
+
+func alias_to(target: Integer, source: Integer) {
+    if source < 0 {
+        failed = true
+        return
+    }
+    kinds[target] = 7
+    aliases[target] = source
+}
+
+func is_affine(kind: Integer): Boolean {
+    return kind == 2 or kind == 6
+}
+
+func translate_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var target = arithmetic.target
+    if target == counter {
+        translate_the_step(arithmetic)
+        return
+    }
+    if integer_at(chain_of, target) >= 0 {
+        translate_a_whole_link(arithmetic)
+        return
+    }
+    var left_kind = operand_kind(arithmetic.left)
+    var right_kind = operand_kind(arithmetic.right)
+    var touches_the_counter = is_affine(left_kind) or is_affine(right_kind) or left_kind == 3 or right_kind == 3
+    if touches_the_counter {
+        translate_an_address(arithmetic, left_kind, right_kind)
+        return
+    }
+    if arithmetic.is_checked or left_kind < 0 or right_kind < 0 {
+        failed = true
+        return
+    }
+    translate_a_whole(arithmetic)
+}
+
+func translate_the_step(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var steps_by_one = arithmetic.operator == 'add' and arithmetic.left == counter and is_constant(arithmetic.right)
+    if not steps_by_one or stepped or arithmetic.is_checked {
+        failed = true
+        return
+    }
+    if constant_value(arithmetic.right) != 1 {
+        failed = true
+        return
+    }
+    stepped = true
+    kinds[counter] = 9
+}
+
+func translate_an_address(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    left_kind: Integer,
+    right_kind: Integer,
+) {
+    if arithmetic.is_checked {
+        failed = true
+        return
+    }
+    var target = arithmetic.target
+    var left = arithmetic.left
+    var right = arithmetic.right
+    switch arithmetic.operator {
+        'add': add_to_an_address(target, left, left_kind, right, right_kind)
+        'subtract': subtract_from_an_address(target, left, left_kind, right, right_kind)
+        'multiply': multiply_an_index(target, left, left_kind, right, right_kind)
+        'shift_left': shift_an_index(target, left, left_kind, right, right_kind)
+        _: failed = true
+    }
+}
+
+func add_to_an_address(target: Integer, left: Integer, left_kind: Integer, right: Integer, right_kind: Integer) {
+    if (is_affine(left_kind) or left_kind == 3) and right_kind == 5 {
+        copy_the_affine(target, left, left_kind)
+        if left_kind == 6 {
+            kinds[target] = 2
+        }
+        var moved = long_at(shifts, left)
+        shifts[target] = moved + operand_value(right)
+        return
+    }
+    if left_kind == 5 and (is_affine(right_kind) or right_kind == 3) {
+        add_to_an_address(target, right, right_kind, left, left_kind)
+        return
+    }
+    if (left_kind == 8 or left_kind == 7) and is_affine(right_kind) {
+        point_at(target, left, right)
+        return
+    }
+    if is_affine(left_kind) and (right_kind == 8 or right_kind == 7) {
+        point_at(target, right, left)
+        return
+    }
+    failed = true
+}
+
+func point_at(target: Integer, base: Integer, index: Integer) {
+    var held = base
+    var alias = integer_at(aliases, base)
+    if alias >= 0 {
+        held = alias
+    }
+    kinds[target] = 3
+    bases[target] = held
+    scales[target] = long_at(scales, index)
+    shifts[target] = long_at(shifts, index)
+}
+
+func subtract_from_an_address(target: Integer, left: Integer, left_kind: Integer, right: Integer, right_kind: Integer) {
+    if (is_affine(left_kind) or left_kind == 3) and right_kind == 5 {
+        copy_the_affine(target, left, left_kind)
+        if left_kind == 6 {
+            kinds[target] = 2
+        }
+        var moved = long_at(shifts, left)
+        shifts[target] = moved - operand_value(right)
+        return
+    }
+    failed = true
+}
+
+func multiply_an_index(target: Integer, left: Integer, left_kind: Integer, right: Integer, right_kind: Integer) {
+    if is_affine(left_kind) and right_kind == 5 {
+        var factor = operand_value(right)
+        kinds[target] = 2
+        var scale = long_at(scales, left)
+        var moved = long_at(shifts, left)
+        scales[target] = scale * factor
+        shifts[target] = moved * factor
+        return
+    }
+    if left_kind == 5 and is_affine(right_kind) {
+        multiply_an_index(target, right, right_kind, left, left_kind)
+        return
+    }
+    failed = true
+}
+
+func shift_an_index(target: Integer, left: Integer, left_kind: Integer, right: Integer, right_kind: Integer) {
+    if is_affine(left_kind) and right_kind == 5 {
+        var count = operand_value(right)
+        if count < 0 or count > 4 {
+            failed = true
+            return
+        }
+        var factor: Long = 1
+        var places = count.to_integer()
+        factor = factor.shifted_left(places)
+        kinds[target] = 2
+        var scale = long_at(scales, left)
+        var moved = long_at(shifts, left)
+        scales[target] = scale * factor
+        shifts[target] = moved * factor
+        return
+    }
+    failed = true
+}
+
+func whole_format_of(width: LowIntermediaryRepresentation.Width): LowIntermediaryRepresentation.Vector.Format {
+    if width == 'bits_64' {
+        return 'whole_64'
+    }
+    return 'whole_32'
+}
+
+func translate_a_whole(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var format = whole_format_of(arithmetic.width)
+    if arithmetic.width != 'bits_64' and arithmetic.width != 'bits_32' {
+        failed = true
+        return
+    }
+    if format == 'whole_32' and not arithmetic.is_signed {
+        failed = true
+        return
+    }
+    var operator = arithmetic.operator
+    var keeps_low_bits = operator != 'shift_right'
+    var step = LowIntermediaryRepresentation.Vector.Step('whole', 0)
+    step.arithmetic = operator
+    step.format = format
+    step.is_signed = arithmetic.is_signed
+    switch operator {
+        'add': step.right = lane_in(arithmetic.right, format, true)
+        'subtract': step.right = lane_in(arithmetic.right, format, true)
+        'multiply': step.right = lane_in(arithmetic.right, format, true)
+        'bits_and': step.right = lane_in(arithmetic.right, format, true)
+        'bits_or': step.right = lane_in(arithmetic.right, format, true)
+        'bits_xor': step.right = lane_in(arithmetic.right, format, true)
+        'shift_left': step.offset = shift_count_of(arithmetic.right, format)
+        'shift_right': step.offset = shift_count_of(arithmetic.right, format)
+        _: failed = true
+    }
+    if operator == 'multiply' and format == 'whole_64' {
+        failed = true
+    }
+    if operator == 'shift_right' and format == 'whole_64' and arithmetic.is_signed {
+        failed = true
+    }
+    if not failed {
+        step.left = lane_in(arithmetic.left, format, keeps_low_bits)
+        if not failed {
+            var lane = new_lane(format)
+            step.target = lane
+            looping.body.append(step)
+            set_lane(arithmetic.target, lane)
+        }
+    }
+}
+
+func shift_count_of(register: Integer, format: LowIntermediaryRepresentation.Vector.Format): Integer {
+    if operand_kind(register) != 5 {
+        failed = true
+        return 0
+    }
+    var count = operand_value(register)
+    var most: Long = 31
+    if format == 'whole_64' {
+        most = 63
+    }
+    if count < 0 or count > most {
+        failed = true
+        return 0
+    }
+    return count.to_integer()
+}
+
+func translate_a_whole_link(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var accumulator = integer_at(chain_of, arithmetic.target)
+    var chained = arithmetic.left
+    var term = arithmetic.right
+    if chain_of[arithmetic.right] == accumulator and arithmetic.right != arithmetic.left {
+        chained = arithmetic.right
+        term = arithmetic.left
+    }
+    if chain_of[chained] != accumulator and chained != accumulator {
+        failed = true
+        return
+    }
+    var chained_lane = accumulator_lane(accumulator, chained, arithmetic)
+    if not failed {
+        var format = lane_format_of(chained_lane)
+        var step = LowIntermediaryRepresentation.Vector.Step('whole', 0)
+        step.arithmetic = arithmetic.operator
+        step.format = format
+        step.left = chained_lane
+        if arithmetic.is_checked {
+            has_checked_sums = true
+            var narrow_term = lane_of_a_term(term, arithmetic.width)
+            if not failed {
+                step.right = widened(narrow_term, true)
+                add_to_the_check(accumulator, narrow_term)
+            }
+        } else {
+            step.right = lane_in(term, format, true)
+        }
+        if not failed {
+            var lane = 0
+            if arithmetic.target == accumulator {
+                lane = accumulator_lane_of(accumulator)
+            } else {
+                lane = new_lane(format)
+            }
+            step.target = lane
+            looping.body.append(step)
+            set_lane(arithmetic.target, lane)
+        }
+    }
+}
+
+func lane_of_a_term(term: Integer, width: LowIntermediaryRepresentation.Width): Integer {
+    var kind = operand_kind(term)
+    if kind != 1 {
+        failed = true
+        return 0
+    }
+    var lane = integer_at(lanes_of, term)
+    var format = lane_format_of(lane)
+    if format == 'whole_64' and width == 'bits_32' {
+        return narrowed(lane)
+    }
+    if format != 'whole_32' {
+        failed = true
+    }
+    return lane
+}
+
+func accumulator_lane(
+    accumulator: Integer,
+    chained: Integer,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+): Integer {
+    if chained != accumulator {
+        var lane = integer_at(lanes_of, chained)
+        if lane < 0 {
+            failed = true
+        }
+        return lane
+    }
+    var format = whole_format_of(arithmetic.width)
+    if arithmetic.is_checked {
+        format = 'whole_64'
+    }
+    return open_an_accumulator(accumulator, format, arithmetic.is_checked, arithmetic.width)
+}
+
+func accumulator_lane_of(accumulator: Integer): Integer {
+    var index = looping.accumulators.index_of(accumulator)
+    crash index
+    var step = looping.setup[setup_index_of(accumulator)]
+    crash step
+    return step.target
+}
+
+func setup_index_of(accumulator: Integer): Integer {
+    var index = 0
+    while index < looping.setup.count() {
+        var step = looping.setup[index]
+        crash step
+        if step.operation == 'zero' and step.source == accumulator {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func open_an_accumulator(
+    accumulator: Integer,
+    format: LowIntermediaryRepresentation.Vector.Format,
+    checked: Boolean,
+    width: LowIntermediaryRepresentation.Width,
+): Integer {
+    var lane = new_lane(format)
+    var step = LowIntermediaryRepresentation.Vector.Step('zero', lane)
+    step.format = format
+    step.source = accumulator
+    looping.setup.append(step)
+    looping.accumulators.append(accumulator)
+    looping.accumulator_formats.append(format)
+    if checked {
+        var check = new_lane('whole_64')
+        var zeroed = LowIntermediaryRepresentation.Vector.Step('zero', check)
+        zeroed.format = 'whole_64'
+        zeroed.source = -1
+        looping.setup.append(zeroed)
+        looping.check_lanes.append(check)
+        var most: Long = 9223372036854775807
+        if width == 'bits_32' {
+            most = 2147483647
+        }
+        looping.check_limits.append(most)
+    } else {
+        looping.check_lanes.append(-1)
+        looping.check_limits.append(-1)
+    }
+    kinds[accumulator] = 1
+    lanes_of[accumulator] = lane
+    return lane
+}
+
+func add_to_the_check(accumulator: Integer, narrow_term: Integer) {
+    var index = looping.accumulators.index_of(accumulator)
+    crash index
+    var check = looping.check_lanes[index]
+    crash check
+    var absolute = new_lane('whole_32')
+    var taken = LowIntermediaryRepresentation.Vector.Step('absolute', absolute)
+    taken.left = narrow_term
+    taken.format = 'whole_32'
+    looping.body.append(taken)
+    var wide = widened(absolute, false)
+    var added = LowIntermediaryRepresentation.Vector.Step('whole', check)
+    added.arithmetic = 'add'
+    added.format = 'whole_64'
+    added.left = check
+    added.right = wide
+    looping.body.append(added)
+}
+
+func translate_a_compare(compare: LowIntermediaryRepresentation.Instructions.Compare) {
+    var left_kind = operand_kind(compare.left)
+    var right_kind = operand_kind(compare.right)
+    var target = compare.target
+    if target == counter or integer_at(chain_of, target) >= 0 {
+        failed = true
+        return
+    }
+    if left_kind == 4 or right_kind == 4 {
+        negate_a_guard(compare, left_kind, right_kind)
+        return
+    }
+    if left_kind == 6 or right_kind == 6 {
+        make_a_guard(compare, left_kind, right_kind)
+        return
+    }
+    if left_kind < 0 or right_kind < 0 or is_affine(left_kind) or is_affine(right_kind) or not compare.is_signed {
+        failed = true
+        return
+    }
+    var format: LowIntermediaryRepresentation.Vector.Format = 'whole_32'
+    if is_a_wide_lane(compare.left) or is_a_wide_lane(compare.right) {
+        format = 'whole_64'
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('compare', 0)
+    step.comparison = compare.comparison
+    step.format = format
+    step.left = lane_in(compare.left, format, false)
+    step.right = lane_in(compare.right, format, false)
+    if not failed {
+        var lane = new_lane(format)
+        step.target = lane
+        looping.body.append(step)
+        set_lane(target, lane)
+    }
+}
+
+func is_a_wide_lane(register: Integer): Boolean {
+    if operand_kind(register) != 1 {
+        return false
+    }
+    var lane = integer_at(lanes_of, register)
+    return lane_format_of(lane) == 'whole_64'
+}
+
+func make_a_guard(compare: LowIntermediaryRepresentation.Instructions.Compare, left_kind: Integer, right_kind: Integer) {
+    var limit = -1
+    if compare.comparison == 'less' and left_kind == 6 and (right_kind == 8 or right_kind == 7) {
+        limit = compare.right
+    }
+    if compare.comparison == 'greater' and right_kind == 6 and (left_kind == 8 or left_kind == 7) {
+        limit = compare.left
+    }
+    if limit < 0 {
+        failed = true
+        return
+    }
+    if not compare.is_signed {
+        looping.counts_from_zero = true
+    }
+    var alias = integer_at(aliases, limit)
+    if alias >= 0 {
+        limit = alias
+    }
+    kinds[compare.target] = 4
+    guard_limits[compare.target] = limit
+    guard_positive[compare.target] = true
+}
+
+func negate_a_guard(compare: LowIntermediaryRepresentation.Instructions.Compare, left_kind: Integer, right_kind: Integer) {
+    var guard = compare.left
+    var other = compare.right
+    var other_kind = right_kind
+    if right_kind == 4 {
+        guard = compare.right
+        other = compare.left
+        other_kind = left_kind
+    }
+    var against_zero = other_kind == 5 and operand_value(other) == 0
+    var tests = compare.comparison == 'equal' or compare.comparison == 'not_equal'
+    if not against_zero or not tests {
+        failed = true
+        return
+    }
+    copy_the_guard(compare.target, guard)
+    if compare.comparison == 'equal' {
+        guard_positive[compare.target] = guard_positive[guard] != true
+    }
+}
+
+func translate_a_guard(branch: LowIntermediaryRepresentation.Instructions.Branch) {
+    if operand_kind(branch.condition) != 4 {
+        failed = true
+        return
+    }
+    var continues_when_true = stop_blocks.contains(branch.when_false)
+    var positive = guard_positive[branch.condition] == true
+    if continues_when_true != positive {
+        failed = true
+        return
+    }
+    var limit = integer_at(guard_limits, branch.condition)
+    if limit < 0 {
+        failed = true
+        return
+    }
+    if not looping.limits.contains(limit) {
+        looping.limits.append(limit)
+    }
+}
+
+func decimal_format_of(is_double: Boolean): LowIntermediaryRepresentation.Vector.Format {
+    if is_double {
+        return 'double'
+    }
+    return 'float'
+}
+
+func translate_decimal(arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic) {
+    var format = decimal_format_of(arithmetic.is_double)
+    var target = arithmetic.target
+    if target == counter {
+        failed = true
+        return
+    }
+    var operator = arithmetic.operator
+    var plain = operator == 'add' or operator == 'subtract' or operator == 'multiply' or operator == 'divide'
+    if not plain and operator != 'square_root' {
+        failed = true
+        return
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('decimal', 0)
+    step.arithmetic = operator
+    step.format = format
+    var accumulator = integer_at(chain_of, target)
+    if accumulator >= 0 {
+        translate_a_decimal_link(arithmetic, step, accumulator)
+        return
+    }
+    step.left = lane_in(arithmetic.left, format, false)
+    step.right = lane_in(arithmetic.right, format, false)
+    if not failed {
+        var lane = new_lane(format)
+        step.target = lane
+        looping.body.append(step)
+        set_lane(target, lane)
+    }
+}
+
+func translate_a_decimal_link(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic,
+    step: LowIntermediaryRepresentation.Vector.Step,
+    accumulator: Integer,
+) {
+    var chained = arithmetic.left
+    var term = arithmetic.right
+    if chain_of[arithmetic.right] == accumulator and arithmetic.right != arithmetic.left or arithmetic.right == accumulator {
+        chained = arithmetic.right
+        term = arithmetic.left
+    }
+    var lane = -1
+    if chained == accumulator {
+        lane = open_an_accumulator(accumulator, step.format, false, 'bits_32')
+        bound_the_sum(accumulator, arithmetic.is_double)
+    } else {
+        lane = integer_at(lanes_of, chained)
+    }
+    if lane < 0 or failed {
+        failed = true
+        return
+    }
+    step.left = lane
+    step.right = lane_in(term, step.format, false)
+    note_a_term(term)
+    if not failed {
+        var made = 0
+        if arithmetic.target == accumulator {
+            made = accumulator_lane_of(accumulator)
+        } else {
+            made = new_lane(step.format)
+        }
+        step.target = made
+        looping.body.append(step)
+        set_lane(arithmetic.target, made)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-sum-is-split-into-lanes-only-where-every-partial-sum-is-exact
+func bound_the_sum(accumulator: Integer, is_double: Boolean) {
+    if looping.most_trips >= 0 or sum_terms.count() > 0 {
+        failed = true
+        return
+    }
+    sum_size = 4
+    if is_double {
+        sum_size = 8
+    }
+    sum_terms = List<LowOptimizationPasses.VectorLoops.Exact>()
+    sum_start = entering_fact(accumulator, sum_size)
+}
+
+func note_a_term(term: Integer) {
+    var fact = term_fact(term)
+    sum_terms.append(fact)
+}
+
+func term_fact(term: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    var kind = operand_kind(term)
+    if kind == 5 {
+        var number = operand_value(term)
+        return sums.decoded(number, sum_size)
+    }
+    var source = term
+    if kind == 7 {
+        source = integer_at(aliases, term)
+    }
+    return sums.decimal_of(function_index, source, sum_size)
+}
+
+func settle_the_sum() {
+    if not sum_terms.is_empty() {
+        var start = sum_start
+        if start.is_empty or not start.is_known or start.negative_zero {
+            failed = true
+            return
+        }
+        var exponent = 100000
+        if not start.is_zero() {
+            exponent = start.exponent
+        }
+        var index = 0
+        while index < sum_terms.count() {
+            var term = sum_terms[index]
+            crash term
+            if term.is_empty or not term.is_known {
+                failed = true
+                return
+            }
+            if not term.is_zero() {
+                exponent = exponent.minimum(term.exponent)
+            }
+            index = index + 1
+        }
+        if exponent == 100000 {
+            sum_terms = List<LowOptimizationPasses.VectorLoops.Exact>()
+            return
+        }
+        var precision = sums.precision_of(sum_size)
+        var smallest = sums.smallest_exponent_of(sum_size)
+        var largest = sums.largest_exponent_of(sum_size)
+        if exponent < smallest or exponent + precision > largest {
+            failed = true
+            return
+        }
+        var each: Long = 0
+        index = 0
+        while index < sum_terms.count() {
+            var counted = sum_terms[index]
+            crash counted
+            if not sums.aligns(counted, exponent) {
+                failed = true
+                return
+            }
+            var counted_largest = counted.largest()
+            var most = sums.aligned(counted_largest, counted.exponent, exponent)
+            each = each + most
+            if each > sums.safe {
+                failed = true
+                return
+            }
+            index = index + 1
+        }
+        if not sums.aligns(start, exponent) {
+            failed = true
+            return
+        }
+        var start_largest = start.largest()
+        var first = sums.aligned(start_largest, start.exponent, exponent)
+        var room: Long = 1
+        room = room.shifted_left(precision)
+        room = room - 1 - first
+        if room < 0 or each <= 0 {
+            failed = true
+            return
+        }
+        looping.most_trips = room / each
+        sum_terms = List<LowOptimizationPasses.VectorLoops.Exact>()
+    }
+}
+
+func entering_fact(register: Integer, size: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    var result = LowOptimizationPasses.VectorLoops.Exact()
+    var visited = List<Boolean>()
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        visited.append(false)
+        block_index = block_index + 1
+    }
+    var waiting = List<Integer>()
+    var coming = predecessors_of(header)
+    var index = 0
+    while index < coming.count() {
+        var from_block = coming[index]
+        crash from_block
+        if in_path[from_block] != true {
+            waiting.append(from_block)
+        }
+        index = index + 1
+    }
+    var walked = 0
+    while not waiting.is_empty() {
+        walked = walked + 1
+        var last_index = waiting.count() - 1
+        var block_at = waiting[last_index]
+        crash block_at
+        waiting.remove_at(last_index)
+        if block_at == header or in_path[block_at] == true or walked > 400 {
+            return sums.unknown_fact()
+        }
+        if visited[block_at] != true {
+            visited[block_at] = true
+            var found = fact_defined_in(block_at, register, size)
+            if found {
+                result = sums.joined_or_taken(result, found)
+            } else if block_at == 0 {
+                if register >= function.parameter_count {
+                    return sums.unknown_fact()
+                }
+                var parameter = sums.decimal_of(function_index, register, size)
+                result = sums.joined_or_taken(result, parameter)
+            } else {
+                var earlier = predecessors_of(block_at)
+                earlier.each(waiting.append)
+            }
+        }
+    }
+    if result.is_empty {
+        return sums.unknown_fact()
+    }
+    return result
+}
+
+func fact_defined_in(block_index: Integer, register: Integer, size: Integer): LowOptimizationPasses.VectorLoops.Exact? {
+    var block = function.blocks[block_index]
+    crash block
+    var place = block.instructions.count() - 1
+    while place >= 0 {
+        var instruction = block.instructions[place]
+        crash instruction
+        operands.read(instruction)
+        if operands.defines.contains(register) {
+            return sums.definition_fact(function_index, instruction, size)
+        }
+        place = place - 1
+    }
+    return null
+}
+
+func translate_a_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
+    var format = decimal_format_of(compare.is_double)
+    var result_format: LowIntermediaryRepresentation.Vector.Format = 'whole_32'
+    if compare.is_double {
+        result_format = 'whole_64'
+    }
+    var target = compare.target
+    if target == counter or integer_at(chain_of, target) >= 0 {
+        failed = true
+        return
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('decimal_compare', 0)
+    step.comparison = compare.comparison
+    step.format = result_format
+    step.from_format = format
+    step.left = lane_in(compare.left, format, false)
+    step.right = lane_in(compare.right, format, false)
+    if not failed {
+        var lane = new_lane(result_format)
+        step.target = lane
+        looping.body.append(step)
+        set_lane(target, lane)
+    }
+}
+
+func translate_a_conversion(conversion: LowIntermediaryRepresentation.Instructions.Decimal.Conversion) {
+    var target = conversion.target
+    if target == counter or integer_at(chain_of, target) >= 0 or conversion.to_decimal_size == 0 {
+        failed = true
+        return
+    }
+    var format = decimal_format_of(conversion.to_decimal_size == 8)
+    var from_format: LowIntermediaryRepresentation.Vector.Format = 'whole_32'
+    if conversion.from_decimal_size == 4 {
+        from_format = 'float'
+    }
+    if conversion.from_decimal_size == 8 {
+        from_format = 'double'
+    }
+    if conversion.from_decimal_size == 0 and conversion.whole_width == 'bits_64' {
+        var source_kind = operand_kind(conversion.source)
+        if source_kind == 1 and is_a_wide_lane(conversion.source) {
+            failed = true
+            return
+        }
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('convert', 0)
+    step.format = format
+    step.from_format = from_format
+    step.left = lane_in(conversion.source, from_format, false)
+    if not failed {
+        var lane = new_lane(format)
+        step.target = lane
+        looping.body.append(step)
+        set_lane(target, lane)
+    }
+}
+
+func element_size_of(width: LowIntermediaryRepresentation.Width): Integer {
+    switch width {
+        'bits_8': return 1
+        'bits_16': return 2
+        'bits_32': return 4
+        'bits_64': return 8
+    }
+}
+
+func translate_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    var target = loaded.target
+    if target == counter or integer_at(chain_of, target) >= 0 or loaded.is_swapped {
+        failed = true
+        return
+    }
+    if operand_kind(loaded.address) != 3 {
+        failed = true
+        return
+    }
+    var size = element_size_of(loaded.width)
+    var scale = long_at(scales, loaded.address)
+    if scale != size {
+        failed = true
+        return
+    }
+    var decimal_size = integer_at(decimal_sizes, target)
+    var format = whole_format_of(loaded.width)
+    if decimal_size == 4 and loaded.width == 'bits_32' {
+        format = 'float'
+    } else if decimal_size == 8 and loaded.width == 'bits_64' {
+        format = 'double'
+    } else if decimal_size != 0 {
+        failed = true
+        return
+    } else if loaded.width == 'bits_32' and not loaded.is_signed {
+        format = 'whole_64'
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('load', 0)
+    step.format = format
+    step.width = loaded.width
+    step.is_signed = loaded.is_signed
+    step.base = integer_at(bases, loaded.address)
+    var moved = long_at(shifts, loaded.address)
+    var offset = moved + loaded.offset
+    if offset < -1000000 or offset > 1000000 {
+        failed = true
+        return
+    }
+    step.offset = offset.to_integer()
+    note_a_stream(step.base, step.offset, size, false)
+    var lane = new_lane(format)
+    step.target = lane
+    looping.body.append(step)
+    set_lane(target, lane)
+}
+
+func translate_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    if operand_kind(stored.address) != 3 or stored.is_swapped {
+        failed = true
+        return
+    }
+    var size = element_size_of(stored.width)
+    var scale = long_at(scales, stored.address)
+    if scale != size or size < 4 {
+        failed = true
+        return
+    }
+    var format: LowIntermediaryRepresentation.Vector.Format = 'whole_32'
+    var source_kind = operand_kind(stored.source)
+    if source_kind == 1 {
+        var source_lane = integer_at(lanes_of, stored.source)
+        format = lane_format_of(source_lane)
+        if size == 4 and is_wide(format) {
+            format = 'whole_32'
+        }
+        if size == 8 and not is_wide(format) {
+            format = 'whole_64'
+        }
+        if (format == 'double' or format == 'whole_64') and size != 8 {
+            failed = true
+        }
+    } else if size == 8 {
+        format = 'whole_64'
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('store', -1)
+    step.format = format
+    step.width = stored.width
+    step.left = lane_in(stored.source, format, true)
+    step.base = integer_at(bases, stored.address)
+    var moved = long_at(shifts, stored.address)
+    var offset = moved + stored.offset
+    if offset < -1000000 or offset > 1000000 {
+        failed = true
+        return
+    }
+    step.offset = offset.to_integer()
+    if not failed {
+        note_a_stream(step.base, step.offset, size, true)
+        looping.body.append(step)
+    }
+}
+
+func note_a_stream(base: Integer, offset: Integer, size: Integer, is_store: Boolean) {
+    stream_bases.append(base)
+    stream_offsets.append(offset)
+    stream_sizes.append(size)
+    stream_stores.append(is_store)
+}
+
+func finish_the_loop() {
+    settle_the_sum()
+    var undoes_writes = has_checked_sums and stream_stores.contains(true)
+    var does_nothing = not stream_stores.contains(true) and looping.accumulators.is_empty()
+    if not failed and not undoes_writes and not does_nothing and pairs_are_checked() {
+        var wide = false
+        var index = 0
+        while index < lane_formats.count() {
+            var format = lane_formats[index]
+            crash format
+            if is_wide(format) {
+                wide = true
+            }
+            index = index + 1
+        }
+        if wide {
+            looping.lanes = 4
+        } else {
+            looping.lanes = 8
+        }
+        place_the_loop()
+    }
+}
+
+func pairs_are_checked(): Boolean {
+    var first = 0
+    while first < stream_bases.count() {
+        if stream_stores[first] == true {
+            var second = 0
+            while second < stream_bases.count() {
+                if second != first and not pair_is_checked(first, second) {
+                    return false
+                }
+                second = second + 1
+            }
+        }
+        first = first + 1
+    }
+    return true
+}
+
+func pair_is_checked(first: Integer, second: Integer): Boolean {
+    var first_base = integer_at(stream_bases, first)
+    var second_base = integer_at(stream_bases, second)
+    var first_offset = integer_at(stream_offsets, first)
+    var second_offset = integer_at(stream_offsets, second)
+    var first_size = integer_at(stream_sizes, first)
+    var second_size = integer_at(stream_sizes, second)
+    if first_base == second_base and first_offset == second_offset {
+        return first_size == second_size
+    }
+    var index = 0
+    while index + 1 < looping.disjoint_bases.count() {
+        var known_first = integer_at(looping.disjoint_bases, index)
+        var known_second = integer_at(looping.disjoint_bases, index + 1)
+        var known_first_offset = integer_at(looping.disjoint_offsets, index)
+        var known_second_offset = integer_at(looping.disjoint_offsets, index + 1)
+        var same = known_first == first_base and known_second == second_base and known_first_offset == first_offset
+        var mirrored = known_first == second_base and known_second == first_base and known_first_offset == second_offset
+        if same and known_second_offset == second_offset or mirrored and known_second_offset == first_offset {
+            return true
+        }
+        index = index + 2
+    }
+    looping.disjoint_bases.append(first_base)
+    looping.disjoint_bases.append(second_base)
+    looping.disjoint_offsets.append(first_offset)
+    looping.disjoint_offsets.append(second_offset)
+    var larger = first_size.maximum(second_size)
+    looping.disjoint_sizes.append(larger)
+    return true
+}
+
+func place_the_loop() {
+    var made = LowIntermediaryRepresentation.LowBlock()
+    var head = function.blocks[header]
+    crash head
+    made.place = head.place
+    made.instructions.append(looping)
+    var back = LowIntermediaryRepresentation.Instructions.Jump(header)
+    made.instructions.append(back)
+    var made_index = function.blocks.count()
+    var coming = predecessors_of(header)
+    var outside = List<Integer>()
+    var index = 0
+    while index < coming.count() {
+        var from_block = coming[index]
+        crash from_block
+        if in_path[from_block] != true and not outside.contains(from_block) {
+            outside.append(from_block)
+        }
+        index = index + 1
+    }
+    if not outside.is_empty() {
+        index = 0
+        while index < outside.count() {
+            var from_block = outside[index]
+            crash from_block
+            redirect(from_block, made_index)
+            index = index + 1
+        }
+        function.blocks.append(made)
+        in_path.append(false)
+        var made_coming = List<Integer>()
+        outside.each(made_coming.append)
+        predecessors.append(made_coming)
+        var kept = List<Integer>()
+        index = 0
+        while index < coming.count() {
+            var from_block = coming[index]
+            crash from_block
+            if in_path[from_block] == true {
+                kept.append(from_block)
+            }
+            index = index + 1
+        }
+        kept.append(made_index)
+        predecessors[header] = kept
+        made_count = made_count + 1
+    }
+}
+
+func redirect(from_block: Integer, to_block: Integer) {
+    var block = function.blocks[from_block]
+    crash block
+    var last = block.instructions.last()
+    crash last
+    if last == LowIntermediaryRepresentation.Instructions.Jump and last.block == header {
+        last.block = to_block
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        if last.when_true == header {
+            last.when_true = to_block
+        }
+        if last.when_false == header {
+            last.when_false = to_block
+        }
+    }
+}
