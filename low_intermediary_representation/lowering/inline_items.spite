@@ -18,6 +18,11 @@ var allowed_this_reads = 0
 var kept_functions = ["List", "_attribute_defaults", "count", "is_empty", "append", "get_at", "make_room", "reserve"]
 var kept_templates = ["sum_member", "count_member", "any_member", "all_member"]
 var called_from_outside = ["count", "is_empty", "append", "get_at"]
+var live = List<String>()
+var uses = HighIntermediaryRepresentation.Ownership.Uses()
+var item_names = List<String>()
+var item_parts = 0
+var item_reads = 0
 
 func InlineItems(
     starting_high: HighIntermediaryRepresentation.HighProgram,
@@ -52,17 +57,26 @@ func keep_if_clean(kept: Dictionary<String, Integer>, list_key: String) {
     crash element_key
     var size = layout.made_size_of(element_key)
     var stride = (size + 7) / 8 * 8
-    kept[list_key] = stride
-    assert not not_columnar.contains(list_key)
     var element = high.model.class_named(element_key)
     crash element
-    if element.declared_attributes.all(fits_a_column) {
+    var holds_rooms = element.declared_attributes.any(is_a_room)
+    var fits = not not_columnar.contains(list_key) and element.declared_attributes.all(fits_a_column)
+    assert not holds_rooms or fits
+    kept[list_key] = stride
+    if fits {
         columnar.append(list_key)
     }
 }
 
+func is_a_room(attribute: Model.AttributeModel): Boolean {
+    return layout.is_embedded(attribute)
+}
+
 # ../../OPTIMIZATIONS.md#a-lists-objects-sit-in-one-array-per-attribute
 func fits_a_column(attribute: Model.AttributeModel): Boolean {
+    if layout.is_embedded(attribute) {
+        return a_room_fits_columns(attribute)
+    }
     var attribute_type = attribute.attribute_type
     if attribute_type.kind != 'scalar' or attribute_type.is_nullable {
         return false
@@ -77,6 +91,14 @@ func fits_a_column(attribute: Model.AttributeModel): Boolean {
     }
     var rebuilder = layout.rebuilder_of(attribute)
     return not rebuilder
+}
+
+func a_room_fits_columns(attribute: Model.AttributeModel): Boolean {
+    var held = high.model.class_named(attribute.attribute_type.name)
+    if not held {
+        return false
+    }
+    return held.declared_attributes.all(fits_a_column)
 }
 
 func keep_out_of_columns(list_key: String) {
@@ -124,7 +146,7 @@ func is_a_plain_class(model: Model.ClassModel): Boolean {
 
 func is_a_plain_attribute(attribute: Model.AttributeModel): Boolean {
     var kind = attribute.attribute_type.kind
-    return kind == 'scalar' or kind == 'enumeration'
+    return kind == 'scalar' or kind == 'enumeration' or layout.is_embedded(attribute)
 }
 
 func refuse(list_key: String) {
@@ -163,6 +185,8 @@ func list_key_of(value: HighIntermediaryRepresentation.Values.Value?): String {
 }
 
 func check_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    var function_key = function.function.key()
+    assert live.is_empty() or live.contains(function_key)
     var owner_key = function.function.owner
     if elements.contains(owner_key) {
         check_a_list_function(function, owner_key)
@@ -187,8 +211,162 @@ func check_a_list_function(function: HighIntermediaryRepresentation.HighFunction
     if function.function.bound_member_is_a_function {
         keep_out_of_columns(list_key)
     }
-    if not is_a_kept_list_function(function.function) {
+    if not is_a_kept_list_function(function.function) and not reads_only_parts_of_items(function) {
         refuse(list_key)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-lists-objects-sit-inside-its-storage
+func reads_only_parts_of_items(function: HighIntermediaryRepresentation.HighFunction): Boolean {
+    if not function.function.name.starts_with("_fused_") {
+        return false
+    }
+    item_names = List<String>()
+    item_parts = 0
+    item_reads = 0
+    if not names_only_items(function.body) {
+        return false
+    }
+    count_parts_in_a_block(function.body)
+    return item_reads < uses.many and item_reads == item_parts
+}
+
+func count_item_reads(value: HighIntermediaryRepresentation.Values.Value?) {
+    var index = 0
+    while index < item_names.count() {
+        var name = item_names[index]
+        crash name
+        item_reads = item_reads + uses.in_value(value, name)
+        index = index + 1
+    }
+}
+
+func count_item_reads_in(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    var index = 0
+    while index < item_names.count() {
+        var name = item_names[index]
+        crash name
+        item_reads = item_reads + uses.in_statement(statement, name)
+        index = index + 1
+    }
+}
+
+func names_only_items(block: HighIntermediaryRepresentation.Statements.Block?): Boolean {
+    if not block {
+        return true
+    }
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        if not names_only_items_in(statement) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func names_only_items_in(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return note_an_item_name(statement)
+        HighIntermediaryRepresentation.Statements.While: return names_only_items(statement.body)
+        HighIntermediaryRepresentation.Statements.If: return names_only_items_in_an_if(statement)
+        HighIntermediaryRepresentation.Statements.Block: return names_only_items(statement)
+        _: return true
+    }
+}
+
+func names_only_items_in_an_if(branch: HighIntermediaryRepresentation.Statements.If): Boolean {
+    if not names_only_items(branch.then_branch) {
+        return false
+    }
+    return names_only_items(branch.else_branch)
+}
+
+func note_an_item_name(declare: HighIntermediaryRepresentation.Statements.Declare): Boolean {
+    if declare.hides != "" or item_names.contains(declare.name) {
+        return false
+    }
+    var given = declare.value
+    if given == HighIntermediaryRepresentation.Values.Call {
+        note_a_read_item(declare.name, given)
+    }
+    return true
+}
+
+func note_a_read_item(name: String, read: HighIntermediaryRepresentation.Values.Call) {
+    var on_this = read.receiver == HighIntermediaryRepresentation.Values.ThisRead
+    if read.function.name == "_read_value" and on_this {
+        item_names.append(name)
+    }
+}
+
+func count_parts_in_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(count_parts_in_a_statement)
+}
+
+func count_parts_in_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: count_parts_and_reads(statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: count_parts_and_reads(statement.value)
+        HighIntermediaryRepresentation.Statements.Return: count_parts_and_reads(statement.value)
+        HighIntermediaryRepresentation.Statements.Evaluate: count_parts_and_reads(statement.value)
+        HighIntermediaryRepresentation.Statements.If: count_parts_in_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: count_parts_in_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Block: count_parts_in_a_block(statement)
+        _: count_item_reads_in(statement)
+    }
+}
+
+func count_parts_and_reads(value: HighIntermediaryRepresentation.Values.Value?) {
+    count_item_reads(value)
+    count_parts(value)
+}
+
+func count_parts_in_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    count_parts_and_reads(branch.condition)
+    count_item_reads(branch.decided_condition)
+    count_parts_in_a_block(branch.then_branch)
+    count_parts_in_a_block(branch.else_branch)
+}
+
+func count_parts_in_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    count_parts_and_reads(loop.condition)
+    count_parts_in_a_block(loop.body)
+}
+
+func count_parts_of_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    count_parts(first)
+    count_parts(second)
+}
+
+func count_parts(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.AttributeRead: count_a_part(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: count_parts_of_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.Negation: count_parts(value.negated)
+        HighIntermediaryRepresentation.Values.Conversion: count_parts(value.converted)
+        _: return
+    }
+}
+
+func count_a_part(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    var object = read.object
+    if object == HighIntermediaryRepresentation.Values.LocalRead {
+        count_a_named_part(object.name)
+        return
+    }
+    count_parts(object)
+}
+
+func count_a_named_part(name: String) {
+    if item_names.contains(name) {
+        item_parts = item_parts + 1
     }
 }
 
@@ -417,6 +595,7 @@ func walk_a_declare(
     crash assignments
     var watched = List<String>()
     watched.append("[]{list_key}")
+    watched.append("[+]{list_key}")
     var after = at + 1
     if not assignments.leaves_alone(statements, after, watched) {
         refuse(list_key)
@@ -608,7 +787,8 @@ func walk_a_list_call(call: HighIntermediaryRepresentation.Values.Call, list_key
     walk_a_value(call.receiver)
     var name = call.function.name
     var is_a_template = not call.function.bound_member.is_empty() and is_a_kept_template(call.function)
-    if not called_from_outside.contains(name) and not is_a_template {
+    var is_fused = name.starts_with("_fused_") and call.arguments.is_empty()
+    if not called_from_outside.contains(name) and not is_a_template and not is_fused {
         refuse(list_key)
     }
     if name == "get_at" {

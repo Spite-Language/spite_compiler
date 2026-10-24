@@ -86,6 +86,13 @@ itself a name that is assigned again, when anything after it in the block may wr
 the [attribute passed to a call](#an-attribute-a-call-cannot-assign-is-passed-without-counting)), or in a step of a
 `Concurrent` work. Then the name counts what it holds.
 
+An `append` (to this list or any other list of its class) is not such a write: it fills the empty slot past the
+end, so it never replaces or lets go of an item a name holds. A loop that reads `var item = items[index]` and
+appends to another list of the same class, as `deep_copy()` does when it copies a list into a new one, holds each
+item without counting it. Only where the list holds its objects inside its storage (see [a list's objects sit
+inside its storage](#a-lists-objects-sit-inside-its-storage)) does an append count as a write, since growing the
+storage moves the slot the name points into.
+
 **What a program can observe:** nothing but time.
 
 ```spite
@@ -915,9 +922,12 @@ count no release can bring to zero, so the code that reads an item is the code t
 hold:
 
 - its element is a class of the program, not a singleton, with no `drop()`, held by no back reference, whose
-  attributes are all numbers, `Boolean`s or enums;
-- every function of the list that is compiled is its making, `count()`, `is_empty()`, `append`, `get_at` (and
-  what `append` calls to grow), or a `sum_`, `count_`, `any_` or `all_` template;
+  attributes are all numbers, `Boolean`s or enums, or objects it holds inside it (see [an object only its holder
+  holds lives inside it](#an-object-only-its-holder-holds-lives-inside-it)) when the list's objects can then sit in
+  one array per attribute (below);
+- every function of the list that the program can reach is its making, `count()`, `is_empty()`, `append`,
+  `get_at` (and what `append` calls to grow), a `sum_`, `count_`, `any_` or `all_` template, or a chain of
+  templates fused into one loop (`items.map_owners().sum_age()`) that reads its items only for their attributes;
 - every `append` is given a local made with the class's constructor and read nowhere else
   (`var point = Point(x, y)` then `points.append(point)`), or an object a literal makes in place;
 - every `list[index]` is tested (`if`, `crash`), read for an attribute or a call of the class, or kept in a local
@@ -966,6 +976,14 @@ moves each array to its place in the larger room.
 items are only read and written for attributes (never the receiver of a function of the class, and never summed or
 counted through a function member such as `sum_fingerprint`). The list's `get_at` as a function is never called
 then; if it were, it would stop the program saying the item cannot be handed out whole.
+
+An object an item holds inside it is laid out the same way, one array per number it holds: an `Item` holding its
+`Owner` inside it has a `price` array and an `owner.age` array, `items[index].owner.age` is a load from the second,
+and a name given `item.owner` stands for that item's place in those arrays. A list of such items is held this way
+only in one array per attribute, never whole in its storage: whole, the items are larger than the pointers they
+replace, and a list filled once and read once spends more on growing that storage than it saves
+(`defaults_the_constructor_replaces_are_never_made`: 6.6 ms as pointers, 14.6 ms whole in the storage, 4.4 ms in
+one array per attribute).
 
 **What a program can observe:** only time and memory.
 
@@ -2584,6 +2602,82 @@ block, through another path or index, of another value, or after something that 
 is made, comparing what the slot holds as before.
 
 **What a program can observe:** only the time.
+
+## A call that writes back what the slot already holds is not made
+
+```spite
+func take(index: Integer) {
+    at = index
+    crash pages[at]
+    open = pages[at]
+}
+
+func put_back() {
+    pages[at] = open
+}
+```
+
+A call of a function whose whole body writes one attribute back into a list's slot (`pages[at] = open`, all three
+attributes of the receiver) is left out when the call before it, on the same receiver and in the same block, ended
+with `open = pages[at]` proven by its `crash`: the slot already holds that very object (or number), the index is in
+range, and nothing has changed since. `desk.take(index)`, then `desk.open.words = desk.open.words + 1`, then
+`desk.put_back()` makes the first two and not the third. The compiler reads the bodies of both functions while
+compiling and asks of everything between the two calls, followed through every call it can reach, whether it may
+assign the list, the index, the held attribute or the receiver's path, write an item of a list of that class, or
+change its length (by the rules of [an attribute a call cannot assign is passed without
+counting](#an-attribute-a-call-cannot-assign-is-passed-without-counting)).
+
+**When it applies:** to a call with no arguments of a function whose body is only `list[index] = held` (the
+library `List`'s `set_at`, with the list, the index and the value all attributes of `this`), after a call in the
+same block on the same receiver (a name not assigned again, `this`, a singleton, or attributes) of a function of
+the same class that never returns early and whose last statement is `held = list[index]`, proven, on the same three
+attributes. **When it does not:** a call in another block, on another receiver, after something that may write any
+of them, or a write-back function that does anything else; the call is then made.
+
+**What a program can observe:** only time. The write it leaves out stores the object the slot holds, which counts
+nothing and lets nothing go, and its test of the index could not fail.
+
+## An attribute that only holds an item of its holder's list is not counted
+
+```spite
+singleton
+
+var pages = List<Page>()
+var open = Page(0)
+var at = 0
+
+func take(index: Integer) {
+    at = index
+    crash pages[at]
+    open = pages[at]
+}
+```
+
+An attribute of a singleton that is only ever given an item of a list the same singleton holds (`open =
+pages[at]`, proven by its `crash`) holds that item without counting it: the list holds it already, and nothing in
+the program can make the list let it go while the attribute points at it. `take` then stores the item and
+neither counts it nor lets go of what `open` held before, and the singleton lets go of `open` when it ends.
+
+Its default is then never made either. The compiler proves that the default can never be read: every read of
+`open` in the program comes after a write of it, in its own function or in every caller of that function (a call
+of a function that always writes it, as `take` does, counts as a write), worked out over the whole program to a
+fixed point. A function that may run first (the entry function, a constructor, the defaults, a function taken as
+a value or reached through a shape) counts as having no write before it. The default `Page(0)` must be quiet (see
+[defaults the constructor replaces are never made](#defaults-the-constructor-replaces-are-never-made)), so that not
+making it cannot be seen.
+
+**When it applies:** to a non-nullable object attribute of a singleton of the program (not generic, not the entry
+class) whose class frees quietly (no `drop()` in it or in what it holds), when every write of it outside its
+default is `attribute = list[index]` in a function of the singleton, proven, all from the same list attribute of
+the singleton; that list attribute is assigned only by its default; no function the program compiles writes or
+forgets an item of a list of that class except `append` and `set_at`; every `set_at` on a list of that class is
+`list[index] = attribute` on those two attributes; no shape writes a member of either name; the program makes no
+work on other threads; and no reflection names either class. **When it does not:** the attribute is counted as
+before.
+
+**What a program can observe:** one allocation fewer under `--debug-memory` (the default), and time. Every object
+is freed at the same moment as before: the list held each item the attribute pointed at for as long as it pointed
+at it.
 
 ## An object only its holder holds lives inside it
 

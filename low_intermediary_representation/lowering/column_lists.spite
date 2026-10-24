@@ -26,6 +26,9 @@ func listed_by(call: HighIntermediaryRepresentation.Values.Call): String {
 
 func declares_an_item(declare: HighIntermediaryRepresentation.Statements.Declare): Boolean {
     var given = declare.value
+    if given == HighIntermediaryRepresentation.Values.AttributeRead {
+        return declares_a_part(declare.name, given)
+    }
     if given == HighIntermediaryRepresentation.Values.Conversion and given.kind == 'proven' {
         return declares_a_read(declare.name, given.converted, given.shown)
     }
@@ -45,6 +48,49 @@ func declares_a_read(name: String, read: HighIntermediaryRepresentation.Values.V
         return true
     }
     return false
+}
+
+# ../../OPTIMIZATIONS.md#a-lists-objects-sit-in-one-array-per-attribute
+func declares_a_part(name: String, read: HighIntermediaryRepresentation.Values.AttributeRead): Boolean {
+    var held_by = read.object
+    if held_by == HighIntermediaryRepresentation.Values.LocalRead {
+        return declares_a_part_of(name, held_by.name, read.attribute)
+    }
+    return false
+}
+
+func declares_a_part_of(name: String, item: String, room: Model.AttributeModel): Boolean {
+    if not lowering.column_items.contains(item) or not lowering.layout.is_embedded(room) {
+        return false
+    }
+    var held = lowering.layout.program.class_named(room.attribute_type.name)
+    crash held
+    var index = 0
+    while index < held.declared_attributes.count() {
+        var part = held.declared_attributes[index]
+        var key = "{item}.{room.name}.{part.name}"
+        var address = lowering.column_addresses[key]
+        crash address
+        lowering.column_addresses["{name}.{part.name}"] = address
+        var region = lowering.column_regions[key]
+        crash region
+        lowering.column_regions["{name}.{part.name}"] = region
+        index = index + 1
+    }
+    lowering.column_parts.append(name)
+    return true
+}
+
+func handed_out_whole(class_key: String): Lowered {
+    var label = lowering.text_label(
+        "spite: a '{class_key}' held in one array per attribute of its list cannot be handed out whole, in {lowering.function.key}\n",
+    )
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    var after = lowering.new_block()
+    lowering.switch_to(after)
+    var zero = lowering.constant(0)
+    return lowering.single(zero)
 }
 
 func declares_a_held(name: String, call: HighIntermediaryRepresentation.Values.Call): Boolean {
@@ -79,6 +125,7 @@ func note_an_item(name: String, call: HighIntermediaryRepresentation.Values.Call
         var attribute = ordered[attribute_index]
         var address = column_address(element_key, attribute, place)
         lowering.column_addresses["{name}.{attribute.name}"] = address
+        lowering.column_regions["{name}.{attribute.name}"] = "{element_key}.{attribute.name}"
         attribute_index = attribute_index + 1
     }
 }
@@ -92,17 +139,54 @@ func element_of(list_key: String): String {
 }
 
 func address_of(object: HighIntermediaryRepresentation.Values.Value?, attribute: Model.AttributeModel): Integer {
-    if object == HighIntermediaryRepresentation.Values.LocalRead {
-        var known = lowering.column_addresses["{object.name}.{attribute.name}"]
-        if known {
-            return known
-        }
+    var key = column_key_of(object, attribute)
+    var known = lowering.column_addresses[key]
+    if known {
+        return known
+    }
+    if is_a_room_of_an_item(object, attribute) {
+        var stopped = handed_out_whole(attribute.attribute_type.name)
+        return stopped.value
     }
     var place = place_of_the_object(object)
     if place.is_empty() {
         return -1
     }
     return column_address(attribute.owner, attribute, place)
+}
+
+func column_key_of(object: HighIntermediaryRepresentation.Values.Value?, attribute: Model.AttributeModel): String {
+    if object == HighIntermediaryRepresentation.Values.LocalRead {
+        return "{object.name}.{attribute.name}"
+    }
+    if object == HighIntermediaryRepresentation.Values.AttributeRead {
+        return column_key_of_a_part(object, attribute)
+    }
+    return ""
+}
+
+func column_key_of_a_part(room: HighIntermediaryRepresentation.Values.AttributeRead, attribute: Model.AttributeModel): String {
+    var item = room.object
+    if item == HighIntermediaryRepresentation.Values.LocalRead {
+        return "{item.name}.{room.attribute.name}.{attribute.name}"
+    }
+    return ""
+}
+
+func region_of(object: HighIntermediaryRepresentation.Values.Value?, attribute: Model.AttributeModel): String {
+    var key = column_key_of(object, attribute)
+    var known = lowering.column_regions[key]
+    if known {
+        return known
+    }
+    return "{attribute.owner}.{attribute.name}"
+}
+
+func is_a_room_of_an_item(object: HighIntermediaryRepresentation.Values.Value?, attribute: Model.AttributeModel): Boolean {
+    if object == HighIntermediaryRepresentation.Values.LocalRead {
+        return lowering.column_items.contains(object.name) and lowering.layout.is_embedded(attribute)
+    }
+    return false
 }
 
 func place_of(call: HighIntermediaryRepresentation.Values.Call, checks: Boolean, shown: String): List<Integer> {
@@ -224,21 +308,49 @@ func size_of(attribute: Model.AttributeModel): Integer {
 func ordered_attributes(element_key: String): List<Model.AttributeModel> {
     var element = lowering.layout.program.class_named(element_key)
     crash element
+    var flattened = List<Model.AttributeModel>()
+    var flattening = 0
+    while flattening < element.declared_attributes.count() {
+        var attribute = element.declared_attributes[flattening]
+        add_a_column(element_key, attribute, flattened)
+        flattening = flattening + 1
+    }
     var ordered = List<Model.AttributeModel>()
     var sizes = [8, 4, 2, 1]
     var size_index = 0
     while size_index < sizes.count() {
         var size = sizes[size_index]
-        add_the_attributes_of_size(element, size, ordered)
+        add_the_attributes_of_size(flattened, size, ordered)
         size_index = size_index + 1
     }
     return ordered
 }
 
-func add_the_attributes_of_size(element: Model.ClassModel, size: Integer, ordered: List<Model.AttributeModel>) {
+# ../../OPTIMIZATIONS.md#a-lists-objects-sit-in-one-array-per-attribute
+func add_a_column(element_key: String, attribute: Model.AttributeModel, flattened: List<Model.AttributeModel>) {
+    if not lowering.layout.is_embedded(attribute) {
+        flattened.append(attribute)
+        return
+    }
+    var held = lowering.layout.program.class_named(attribute.attribute_type.name)
+    crash held
     var index = 0
-    while index < element.declared_attributes.count() {
-        var attribute = element.declared_attributes[index]
+    while index < held.declared_attributes.count() {
+        var part = held.declared_attributes[index]
+        var column = Model.AttributeModel("{attribute.name}.{part.name}", element_key, part.attribute_type)
+        flattened.append(column)
+        index = index + 1
+    }
+}
+
+func add_the_attributes_of_size(
+    attributes: List<Model.AttributeModel>,
+    size: Integer,
+    ordered: List<Model.AttributeModel>,
+) {
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
         if size_of(attribute) == size {
             ordered.append(attribute)
         }
@@ -269,12 +381,11 @@ func item_bytes(element_key: String): Integer {
 func read_of(read: HighIntermediaryRepresentation.Values.AttributeRead): Lowered? {
     var address = address_of(read.object, read.attribute)
     assert address >= 0
-    var element_key = read.attribute.owner
     var target = lowering.new_register()
     var width = lowering.width_of(read.attribute.attribute_type)
     var loaded = LowIntermediaryRepresentation.Instructions.Load(target, address, 0, width)
     loaded.is_signed = lowering.is_signed(read.attribute.attribute_type)
-    loaded.region = "{element_key}.{read.attribute.name}"
+    loaded.region = region_of(read.object, read.attribute)
     loaded.cannot_fault = true
     lowering.emit(loaded)
     return lowering.single(target)
@@ -286,10 +397,9 @@ func writes(assign: HighIntermediaryRepresentation.Statements.Assign.Attribute):
         return false
     }
     var value = lowering.lower_value(assign.value)
-    var element_key = assign.attribute.owner
     var width = lowering.width_of(assign.attribute.attribute_type)
     var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, value.value, width)
-    stored.region = "{element_key}.{assign.attribute.name}"
+    stored.region = region_of(assign.object, assign.attribute)
     lowering.emit(stored)
     return true
 }
@@ -319,12 +429,37 @@ func write_an_item(list: Integer, list_key: String, at: Integer, object: Lowered
 }
 
 func copy_an_attribute(element_key: String, attribute: Model.AttributeModel, object: Integer, place: List<Integer>) {
-    var loaded = lowering.load_attribute_in(object, attribute, "{element_key}.{attribute.name}")
+    var loaded = load_a_column_value(element_key, attribute, object)
     var address = column_address(element_key, attribute, place)
     var width = lowering.width_of(attribute.attribute_type)
     var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, loaded.value, width)
     stored.region = "{element_key}.{attribute.name}"
     lowering.emit(stored)
+}
+
+func load_a_column_value(element_key: String, attribute: Model.AttributeModel, object: Integer): Lowered {
+    var region = "{element_key}.{attribute.name}"
+    var names = attribute.name.split(".")
+    if names.count() == 1 {
+        return lowering.load_attribute_in(object, attribute, region)
+    }
+    var element = lowering.layout.program.class_named(element_key)
+    crash element
+    var room_name = names[0]
+    var part_name = names[1]
+    crash room_name
+    crash part_name
+    var room = element.attribute_named(room_name)
+    crash room
+    var held = lowering.layout.program.class_named(room.attribute_type.name)
+    crash held
+    var part = held.attribute_named(part_name)
+    crash part
+    var room_offset = lowering.layout.offset_of(room)
+    var offset_register = lowering.constant(room_offset)
+    var inside = lowering.address_plus(object, offset_register)
+    var part_region = "{held.key}.{part.name}"
+    return lowering.load_attribute_in(inside, part, part_region)
 }
 
 func write_the_reserve(list_key: String) {
