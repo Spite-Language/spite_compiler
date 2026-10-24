@@ -1,0 +1,399 @@
+var model = Model.ProgramModel()
+var uses = Uses()
+var bodies = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var taken = Dictionary<String, List<Integer>>()
+var excluded = List<String>()
+var shape_members = List<String>()
+var quiet = Dictionary<String, Boolean>()
+var visiting = List<String>()
+
+func TakenParameters(starting_model: Model.ProgramModel, starting_excluded: List<String>) {
+    model = starting_model
+    excluded = starting_excluded
+}
+
+func study(high: HighIntermediaryRepresentation.HighProgram) {
+    assert not high.prompt
+    high.built_functions.each(note_a_function)
+    high.built_functions.each(note_the_references)
+    var changed = true
+    var round = 0
+    while changed and round < 32 {
+        changed = false
+        var index = 0
+        while index < high.built_functions.count() {
+            var function = high.built_functions[index]
+            if takes_another(function) {
+                changed = true
+            }
+            index = index + 1
+        }
+        round = round + 1
+    }
+}
+
+func note_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    var key = function.function.key()
+    bodies[key] = function
+}
+
+# ../../OPTIMIZATIONS.md#an-object-handed-to-the-place-that-keeps-it-is-not-counted
+func is_taken(key: String, index: Integer): Boolean {
+    var found = taken[key]
+    if not found {
+        return false
+    }
+    return found.contains(index)
+}
+
+func takes_any(key: String): Boolean {
+    return taken.contains(key)
+}
+
+func taken_keys(): List<String> {
+    return taken.keys()
+}
+
+func takes_another(function: HighIntermediaryRepresentation.HighFunction): Boolean {
+    if not may_take(function.function) {
+        return false
+    }
+    var key = function.function.key()
+    var grew = false
+    var index = 0
+    while index < function.function.parameters.count() {
+        var parameter = function.function.parameters[index]
+        if not is_taken(key, index) and keeps_the_parameter(function, parameter) {
+            add_taken(key, index)
+            grew = true
+        }
+        index = index + 1
+    }
+    return grew
+}
+
+func add_taken(key: String, index: Integer) {
+    if not taken.contains(key) {
+        var none_yet = List<Integer>()
+        taken[key] = none_yet
+    }
+    var known = taken[key]
+    crash known
+    known.append(index)
+}
+
+func may_take(function: Model.FunctionModel): Boolean {
+    if function.is_written_by_the_compiler or function.is_synthetic or not function.declaration {
+        return false
+    }
+    if not function.has_a_body() {
+        return false
+    }
+    if function.name == "drop" or function.name == "_attribute_defaults" or function.is_a_fused_step {
+        return false
+    }
+    var key = function.key()
+    if excluded.contains(key) or shape_members.contains(function.name) or key.starts_with("Spite.") {
+        return false
+    }
+    var owner = model.class_named(function.owner)
+    if not owner or owner.is_singleton {
+        return false
+    }
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if parameter.is_variadic {
+            return false
+        }
+        index = index + 1
+    }
+    return function.number_copy_of.is_empty()
+}
+
+func keeps_the_parameter(
+    function: HighIntermediaryRepresentation.HighFunction,
+    parameter: Model.ParameterModel,
+): Boolean {
+    if parameter.is_variadic or not is_a_quiet_object(parameter.parameter_type) {
+        return false
+    }
+    var name = parameter.name
+    if uses.in_block(function.body, name) != 1 {
+        return false
+    }
+    var statements = function.body.statements
+    var index = statements.count() - 1
+    while index >= 0 {
+        var statement = statements[index]
+        crash statement
+        var found = uses.in_statement(statement, name)
+        if found == 1 {
+            return is_a_keeping_statement(statement, name, function.function)
+        }
+        if found > 0 {
+            return false
+        }
+        index = index - 1
+    }
+    return false
+}
+
+func is_a_keeping_statement(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+    name: String,
+    function: Model.FunctionModel,
+): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return uses.is_the_local(statement.value, name)
+        HighIntermediaryRepresentation.Statements.Evaluate: return is_a_keeping_value(statement.value, name)
+        HighIntermediaryRepresentation.Statements.Declare: return is_a_keeping_value(statement.value, name)
+        HighIntermediaryRepresentation.Statements.Return: return returns_the_local(statement, name, function)
+        _: return false
+    }
+}
+
+func returns_the_local(
+    returned: HighIntermediaryRepresentation.Statements.Return,
+    name: String,
+    function: Model.FunctionModel,
+): Boolean {
+    if not function.answer {
+        return false
+    }
+    return uses.is_the_local(returned.value, name)
+}
+
+func is_a_keeping_value(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: return a_call_keeps(value, name)
+        HighIntermediaryRepresentation.Values.MakeObject: return a_making_keeps(value, name)
+        _: return false
+    }
+}
+
+func a_call_keeps(call: HighIntermediaryRepresentation.Values.Call, name: String): Boolean {
+    var position = position_of(call.arguments, name)
+    if position < 0 {
+        return false
+    }
+    if call.function.name == "_write_value" and is_an_intrinsic(call.function) {
+        return position == 1 and is_the_length(call.arguments[0])
+    }
+    if not call.number_positions.is_empty() or call.is_a_join {
+        return false
+    }
+    var key = call.function.key()
+    return is_taken(key, position)
+}
+
+func is_an_intrinsic(function: Model.FunctionModel): Boolean {
+    if function.is_written_by_the_compiler or function.is_synthetic or not function.declaration {
+        return false
+    }
+    return not function.has_a_body()
+}
+
+func is_the_length(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if value == HighIntermediaryRepresentation.Values.AttributeRead {
+        var on_this = value.object == HighIntermediaryRepresentation.Values.ThisRead
+        return on_this and value.attribute.name == "_length"
+    }
+    return false
+}
+
+func a_making_keeps(made: HighIntermediaryRepresentation.Values.MakeObject, name: String): Boolean {
+    var position = position_of(made.arguments, name)
+    if position < 0 or not made.constructor {
+        return false
+    }
+    var key = made.constructor.key()
+    return is_taken(key, position)
+}
+
+func position_of(values: List<HighIntermediaryRepresentation.Values.Value>, name: String): Integer {
+    var index = 0
+    while index < values.count() {
+        var value = values[index]
+        if uses.is_the_local(value, name) {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func is_a_quiet_object(of_type: Model.Type): Boolean {
+    if of_type.kind != 'object' or of_type.is_nullable {
+        return false
+    }
+    return frees_quietly(of_type.name)
+}
+
+func frees_quietly(class_key: String): Boolean {
+    if quiet.contains(class_key) {
+        return quiet[class_key] == true
+    }
+    if visiting.contains(class_key) {
+        return true
+    }
+    var found = model.class_named(class_key)
+    if not found or found.is_singleton or found.function_named("drop") {
+        quiet[class_key] = false
+        return false
+    }
+    visiting.append(class_key)
+    var answer = holds_only_quiet(found)
+    visiting.remove_last()
+    quiet[class_key] = answer
+    return answer
+}
+
+func holds_only_quiet(found: Model.ClassModel): Boolean {
+    var index = 0
+    while index < found.declared_attributes.count() {
+        var attribute = found.declared_attributes[index]
+        if not is_quietly_held(attribute.attribute_type) {
+            return false
+        }
+        index = index + 1
+    }
+    var bound = found.bound_types.values()
+    index = 0
+    while index < bound.count() {
+        var held = bound[index]
+        if not is_quietly_held(held) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_quietly_held(of_type: Model.Type): Boolean {
+    var kind = of_type.kind
+    if kind == 'object' {
+        return frees_quietly(of_type.name)
+    }
+    return kind != 'union' and kind != 'shape' and kind != 'function' and kind != 'handle'
+}
+
+func note_the_references(function: HighIntermediaryRepresentation.HighFunction) {
+    visit_block(function.body)
+}
+
+func visit_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(visit_statement)
+}
+
+func visit_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: visit_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: visit_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: visit_both(statement.value, statement.waited)
+        HighIntermediaryRepresentation.Statements.If: visit_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: visit_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Stop: visit_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: visit_block(statement)
+        _: visit_value(statement.value)
+    }
+}
+
+func visit_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    visit_both(written.object, written.value)
+}
+
+func visit_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    visit_both(written.object, written.value)
+}
+
+func visit_a_class_test(test: HighIntermediaryRepresentation.Values.Class.Test) {
+    visit_value(test.tested)
+}
+
+func visit_a_presence_test(test: HighIntermediaryRepresentation.Values.PresenceTest) {
+    visit_value(test.tested)
+}
+
+func visit_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    visit_both(branch.condition, branch.decided_condition)
+    visit_block(branch.then_branch)
+    visit_block(branch.else_branch)
+}
+
+func visit_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    visit_value(loop.condition)
+    visit_block(loop.body)
+}
+
+func visit_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(visit_present)
+    visit_value(stop.then)
+}
+
+func visit_both(
+    left: HighIntermediaryRepresentation.Values.Value?,
+    right: HighIntermediaryRepresentation.Values.Value?,
+) {
+    visit_value(left)
+    visit_value(right)
+}
+
+func visit_present(value: HighIntermediaryRepresentation.Values.Value) {
+    visit_value(value)
+}
+
+func visit_value(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.AttributeRead: visit_value(value.object)
+        HighIntermediaryRepresentation.Values.Call: visit_a_call(value)
+        HighIntermediaryRepresentation.Values.MakeObject: value.arguments.each(visit_present)
+        HighIntermediaryRepresentation.Values.MachineOperation: visit_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.Negation: visit_value(value.negated)
+        HighIntermediaryRepresentation.Values.ForeignCall: visit_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.Class.Test: visit_a_class_test(value)
+        HighIntermediaryRepresentation.Values.PresenceTest: visit_a_presence_test(value)
+        HighIntermediaryRepresentation.Values.Conversion: visit_value(value.converted)
+        HighIntermediaryRepresentation.Values.Function.Value: visit_a_function_value(value)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: visit_a_value_call(value)
+        HighIntermediaryRepresentation.Values.NumberRoom: visit_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.ShapeCall: visit_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.EnumText: visit_value(value.number)
+        HighIntermediaryRepresentation.Values.EnumFromText: visit_value(value.text)
+        HighIntermediaryRepresentation.Values.Class.OfValue: visit_value(value.described)
+        _: return
+    }
+}
+
+func visit_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    if not call.number_positions.is_empty() or call.is_a_join {
+        var key = call.function.key()
+        excluded.append(key)
+    }
+    visit_value(call.receiver)
+    call.arguments.each(visit_present)
+}
+
+func visit_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall) {
+    visit_value(call.library)
+    call.arguments.each(visit_present)
+}
+
+func visit_a_function_value(taken_value: HighIntermediaryRepresentation.Values.Function.Value) {
+    var key = taken_value.function.key()
+    excluded.append(key)
+    visit_value(taken_value.receiver)
+}
+
+func visit_a_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
+    visit_value(call.called)
+    call.arguments.each(visit_present)
+}
+
+func visit_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    shape_members.append(call.member.name)
+    visit_value(call.receiver)
+    call.arguments.each(visit_present)
+}

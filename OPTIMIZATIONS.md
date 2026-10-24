@@ -2272,3 +2272,114 @@ nothing but a retain, a release, a copy, a comparison, a read through it, a stor
 a call that is passed it uses it. Storing it, answering it, freeing it or touching its count any other way keeps
 every count. **What a program can observe:** only the time. The count of a singleton never reaches zero while the
 program runs, with or without these, so its `drop()` runs at the same moment.
+
+## Who holds an object is decided while compiling
+
+The compiler works out, for the whole program, who holds each object it counts, and lowers the counts from that
+instead of counting every place that names it. It is one analysis over the high intermediate representation
+(`high_intermediary_representation/ownership/`), used by the lowering:
+
+- **Uses** counts the reads of a name in a value or a statement: every kind of value is walked, and a kind it
+  cannot see into (a question about a function's parameters) counts as read many times, so it can only stop an
+  optimisation, never allow one.
+- **Taken parameters** is the summary of every function: which of its parameters it keeps. A parameter is *taken*
+  when its one read in the whole function is a top-level statement that keeps it: it is assigned to an attribute,
+  written into a list's slot past its end (`_write_value(_length, value)`, which is how `append` keeps its value),
+  returned, or handed to a parameter another function takes (followed to the end, and worked out again until
+  nothing changes). Its class must free quietly: no `drop()` in it or in anything it holds (no union, shape,
+  function value or handle among its attributes and type arguments), so that letting it go at another moment than
+  before can never be seen. A function that waits, blocks, is taken as a value, is a shape's member, is answered for
+  each kind of number, belongs to a singleton, the entry class or `Spite`, or has a variadic parameter takes nothing.
+- **The lowering** then decides each count: see [an object handed to the place that keeps it is not
+  counted](#an-object-handed-to-the-place-that-keeps-it-is-not-counted) and [an item written back to the slot it
+  came from is not written](#an-item-written-back-to-the-slot-it-came-from-is-not-written).
+
+**Nothing of it can fail silently.** After the whole program is lowered, every call of a function that takes a
+parameter is counted against the calls that handed it its count; a call written another way (one the compiler
+writes itself, outside the ordinary call) stops the compile with "a call of '...' does not hand it the count it
+keeps: this is a fault of the compiler", and a constructor that stores into slots it expects empty, called on an
+object made with its defaults, stops it too. A pass after lowering that leaves out the counts of a steady value
+keeps them for a value handed to a call that takes it.
+
+**What a program can observe:** fewer counts, the same balance of allocations and frees under `--debug-memory`, and
+time. Nothing of it runs at run time: it is all decided while compiling, and a program with no such function carries
+nothing of it.
+
+## An object handed to the place that keeps it is not counted
+
+```spite
+func one_round(round: Integer): Integer {
+    var items = List<Item>()
+    var index = 0
+    while index < 50000 {
+        var owner = Owner((index + round) % 90)
+        var item = Item(index % 1000, owner)
+        items.append(item)
+        index = index + 1
+    }
+    return items.sum_price()
+}
+```
+
+`Item(new_price, new_owner)` assigns `owner = new_owner` and reads `new_owner` nowhere else, and `append` writes its
+value into the slot past the end, so both take their parameter (see [who holds an object is decided while
+compiling](#who-holds-an-object-is-decided-while-compiling)). A call of a function that takes a parameter hands it a
+count: an argument the caller made (a new object, an answer) is handed as it is and not let go after the call, any
+other argument is counted once before it. The function holds what it is handed like a local: assigning it keeps
+that count, so the attribute or the slot takes it without counting it again, and if it is not kept, the function
+lets it go when it returns.
+
+The same holds for a local: a name whose last read in its block is a place that keeps it (an attribute, a list's
+slot, a name declared or assigned from it, the answer of the function, a parameter a call takes) hands its count to
+that place and is not let go when its block ends. Above, `owner` is handed to `Item` and `item` to `append`, so the
+loop counts neither: each object is made with its one count, the one its holder keeps.
+
+An attribute that a constructor assigns first, and whose default the constructor's copy of the defaults leaves out
+(see [defaults the constructor replaces are never made](#defaults-the-constructor-replaces-are-never-made)), holds
+nothing yet: it is stored without reading what it held and letting that go. The copy of the defaults made for such a
+constructor now makes the objects it holds with their own constructors' copies too, so a default replaced inside a
+default (the texts of each `DynamicLibrary` a `File` holds) is never made either.
+
+**When it applies:** to an object of a class that frees quietly, held by a local of its block (or a parameter, read
+in the function's own block), read exactly once in a statement that runs its value once (a `var`, an assignment, an
+attribute assignment, a call, a `return`) and nowhere after it in the block, when no uncounted name was read from
+it, outside a function that waits. **When it does not:** a name read again later, read in a loop it was not
+declared in, in a `while` condition or inside an `if`, a class with a `drop()` in what it holds, a back reference, a
+union, a shape, a nullable value. Then the place counts what it keeps, as before.
+
+**What a program can observe:** the same balance of allocations and frees under `--debug-memory`, fewer
+allocations where a default inside a default is no longer made, and time. An object is freed at the same moment or,
+when its holder lets it go before the block of the name would have ended, earlier; nothing it holds has a `drop()`,
+so that moment cannot be seen (`defaults_the_constructor_replaces_are_never_made`: 9.9 ms before, 9.1 ms after).
+
+## An item written back to the slot it came from is not written
+
+```spite
+func step() {
+    var index = 0
+    while index < particles.count() {
+        var particle = particles[index]
+        particle.left = particle.left + particle.speed
+        particles[index] = particle
+        index = index + 1
+    }
+}
+```
+
+`var particle = particles[index]` holds the item without counting it when nothing after it in its block can
+replace the slot ([a name holding an item or an attribute is not
+counted](#a-name-holding-an-item-or-an-attribute-is-not-counted)). A write `particles[index] = particle` of that
+very name back into the very slot (the same list path, the same index, which nothing between assigns) is not such a
+replacement: the slot holds that object already. So the name is not counted, and the write is left out with its
+test of the index and its comparison of what the slot held, since the read proved the index and nothing between
+changes the list's length or its items. The loop above reads two numbers, adds them and stores one
+(`an_item_written_back_to_its_own_slot_is_not_written`: 99 ms before, 29 ms after).
+
+**When it applies:** to `list[index] = name` (`set_at` of the library's `List`) after `var name = list[index]`
+proven by a `crash`, in the same block, with the list read from a name not assigned again, `this` or attributes, the
+index a name or a whole number, and nothing in the block after the read (but that write) that may write an item of
+a list of that class, its length or an attribute on the list's path. **When it does not:** a write in another
+block, through another path or index, of another value, or after something that may write the list; then the write
+is made, comparing what the slot holds as before.
+
+**What a program can observe:** only the time.

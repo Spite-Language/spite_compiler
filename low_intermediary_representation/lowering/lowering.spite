@@ -8,6 +8,9 @@ var assignments: Assignments? = null
 var trimmed_keys = List<String>()
 var library = Validators.LibraryFile()
 var counts_memory = false
+var taken: HighIntermediaryRepresentation.Ownership.TakenParameters? = null
+var fresh_by_constructor = Dictionary<String, List<String>>()
+var calls_of = Dictionary<String, Integer>()
 
 func Lowering(starting_high: HighIntermediaryRepresentation.HighProgram) {
     high = starting_high
@@ -28,6 +31,11 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
     layout.columnar = inlining.columnar
     var replacing = ReplacedDefaults(high)
     trimmed_keys = replacing.trimmed_keys
+    note_the_fresh_slots(replacing)
+    var not_taking = keys_that_take_nothing()
+    var taking = HighIntermediaryRepresentation.Ownership.TakenParameters(high.model, not_taking)
+    taking.study(high)
+    taken = taking
     if layout.program.class_named("Spite.Fault") {
         program.reports_faults = true
         var placeholder = Buffer(0)
@@ -56,6 +64,7 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
         guarding.write_the_guard()
     }
     lower_the_start()
+    check_the_handed_calls()
     var freeing = Freeing(high, layout, program, singleton_slots)
     freeing.lower_the_release()
     if program.reports_faults {
@@ -67,6 +76,124 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
     program.shared_classes = waits.shared_owners()
     high.quiet_singletons.each(note_a_quiet_singleton)
     return program
+}
+
+# ../../OPTIMIZATIONS.md#an-object-handed-to-the-place-that-keeps-it-is-not-counted
+func note_the_fresh_slots(replacing: ReplacedDefaults) {
+    var index = 0
+    while index < replacing.trimmed_keys.count() {
+        var key = replacing.trimmed_keys[index]
+        crash key
+        var skipped = replacing.skipped_attributes[key]
+        if skipped and is_made_fresh(key) {
+            fresh_by_constructor[key] = skipped
+        }
+        index = index + 1
+    }
+}
+
+func is_made_fresh(constructor_key: String): Boolean {
+    var index = 0
+    while index < high.built_functions.count() {
+        var function = high.built_functions[index]
+        if function.function.key() == constructor_key {
+            return is_an_ordinary_class(function.function.owner)
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func is_an_ordinary_class(class_key: String): Boolean {
+    var model = high.model.class_named(class_key)
+    if not model or model.is_singleton {
+        return false
+    }
+    if high.entry and high.entry.owner == class_key {
+        return false
+    }
+    if high.prompt and high.prompt.owner == class_key {
+        return false
+    }
+    return not class_key.starts_with("Spite.")
+}
+
+func keys_that_take_nothing(): List<String> {
+    var found = List<String>()
+    crash waits
+    crash assignments
+    var index = 0
+    while index < high.built_functions.count() {
+        var function = high.built_functions[index]
+        var key = function.function.key()
+        var not_ordinary = not is_an_ordinary_class(function.function.owner)
+        if not_ordinary or waits.is_resumable(key) or waits.blocks(key) or assignments.taken_as_values.contains(key) {
+            found.append(key)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func check_the_handed_calls() {
+    crash taken
+    program.lowered_functions.each(count_the_handed_calls_in)
+    var keys = taken.taken_keys()
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        crash key
+        var calls = calls_of[key]
+        var handed = program.handed_calls[key]
+        var made = 0
+        if calls {
+            made = calls
+        }
+        var given = 0
+        if handed {
+            given = handed
+        }
+        if made != given {
+            var emittable = Validators.LowIntermediaryRepresentation.Emittable.Validator()
+            emittable.refuse('unhanded_call', key)
+        }
+        index = index + 1
+    }
+}
+
+func count_the_handed_calls_in(function: LowIntermediaryRepresentation.LowFunction) {
+    crash taken
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Call {
+                instruction.hands_over = count_a_call(instruction.function)
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func count_a_call(called: String): Boolean {
+    crash taken
+    var base = called
+    if called.ends_with("$unguarded") {
+        base = called.replace("$unguarded", "")
+    }
+    if not taken.takes_any(base) {
+        return false
+    }
+    var known = calls_of[base]
+    if known {
+        calls_of[base] = known + 1
+    } else {
+        calls_of[base] = 1
+    }
+    return true
 }
 
 func note_a_quiet_singleton(class_key: String) {
@@ -217,6 +344,8 @@ func lower_function(function: HighIntermediaryRepresentation.HighFunction) {
     lowering.assignments = assignments
     lowering.trimmed_keys = trimmed_keys
     lowering.makes_work = high.makes_work
+    lowering.taken = taken
+    lowering.fresh_by_constructor = fresh_by_constructor
     var made = lowering.lowered(function, owner.file.path)
     program.lowered_functions.append(made)
     var key = function.function.key()
@@ -250,6 +379,8 @@ func lower_unguarded(function: HighIntermediaryRepresentation.HighFunction) {
     lowering.assignments = assignments
     lowering.trimmed_keys = trimmed_keys
     lowering.makes_work = high.makes_work
+    lowering.taken = taken
+    lowering.fresh_by_constructor = fresh_by_constructor
     lowering.skips_the_lock = true
     var made = lowering.lowered(function, owner.file.path)
     program.lowered_functions.append(made)
@@ -265,6 +396,9 @@ func lower_the_trimmed_defaults(replacing: ReplacedDefaults) {
         crash owner
         var lowering = FunctionLowering(layout, program, singleton_slots)
         lowering.assignments = assignments
+        lowering.taken = taken
+        lowering.trimmed_keys = trimmed_keys
+        lowering.fresh_by_constructor = fresh_by_constructor
         var made = lowering.lowered(variant, owner.file.path)
         made.key = "{constructor_key}$defaults"
         program.lowered_functions.append(made)
@@ -278,6 +412,8 @@ func lower_a_step(function: HighIntermediaryRepresentation.HighFunction, source_
     stepping.assignments = assignments
     stepping.trimmed_keys = trimmed_keys
     stepping.makes_work = true
+    stepping.taken = taken
+    stepping.fresh_by_constructor = fresh_by_constructor
     stepping.resumable_mode = true
     var step = stepping.lowered(function, source_path)
     program.lowered_functions.append(step)
@@ -289,6 +425,9 @@ func lower_a_step(function: HighIntermediaryRepresentation.HighFunction, source_
 
 func lower_the_start() {
     var lowering = FunctionLowering(layout, program, singleton_slots)
+    lowering.taken = taken
+    lowering.trimmed_keys = trimmed_keys
+    lowering.fresh_by_constructor = fresh_by_constructor
     lowering.start("_start")
     if program.reports_faults {
         listen_for_faults(lowering)

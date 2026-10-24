@@ -40,6 +40,11 @@ var column_capacities = Dictionary<String, Integer>()
 var column_indices = Dictionary<String, Integer>()
 var column_addresses = Dictionary<String, Integer>()
 var slot_lists = Dictionary<String, HighIntermediaryRepresentation.Values.Value>()
+var taken: HighIntermediaryRepresentation.Ownership.TakenParameters? = null
+var uses = HighIntermediaryRepresentation.Ownership.Uses()
+var borrowed_sources = List<HighIntermediaryRepresentation.Values.Value>()
+var fresh_by_constructor = Dictionary<String, List<String>>()
+var fresh_attributes = List<String>()
 
 func FunctionLowering(
     starting_layout: Layout,
@@ -88,6 +93,8 @@ func lowered(
     var held = List<Integer>()
     scopes.append(held)
     note_the_borrowed_parameters(high)
+    borrowed_sources = List<HighIntermediaryRepresentation.Values.Value>()
+    note_the_fresh_attributes(high.function)
     high.function.parameters.each(take_parameter)
     function.parameter_count = function.register_count
     var body = current
@@ -95,7 +102,7 @@ func lowered(
         body = new_block()
         switch_to(body)
     }
-    high.function.parameters.each(hold_a_parameter)
+    hold_the_parameters(high.function)
     var owner_key = high.function.owner
     var guarded = waits and not high.function.is_constructor and not skips_the_lock
     if guarded and is_locked_here() {
@@ -346,6 +353,8 @@ func fill_the_slot(slot: Integer, made: HighIntermediaryRepresentation.Values.Ma
         var constructor_key = made.constructor.key()
         if trimmed_keys.contains(constructor_key) {
             defaults_key = "{constructor_key}$defaults"
+        } else {
+            refuse_a_defaulted_fresh_slot(constructor_key)
         }
     }
     var arguments = List<Integer>()
@@ -582,6 +591,54 @@ func take_parameter(parameter: Model.ParameterModel) {
     }
 }
 
+# ../../OPTIMIZATIONS.md#an-object-handed-to-the-place-that-keeps-it-is-not-counted
+func hold_the_parameters(model: Model.FunctionModel) {
+    var key = model.key()
+    var index = 0
+    while index < model.parameters.count() {
+        var parameter = model.parameters[index]
+        if takes_the_argument(key, index) {
+            hold_a_taken_parameter(parameter)
+        } else {
+            hold_a_parameter(parameter)
+        }
+        index = index + 1
+    }
+}
+
+func takes_the_argument(key: String, index: Integer): Boolean {
+    if resumable_mode or not taken {
+        return false
+    }
+    return taken.is_taken(key, index)
+}
+
+func hands_the_argument(callee: String, index: Integer): Boolean {
+    if not taken {
+        return false
+    }
+    return taken.is_taken(callee, index)
+}
+
+func hold_a_taken_parameter(parameter: Model.ParameterModel) {
+    var register = locals[parameter.name]
+    crash register
+    hold(register)
+}
+
+func note_the_fresh_attributes(model: Model.FunctionModel) {
+    fresh_attributes = List<String>()
+    assert not resumable_mode and model.is_constructor
+    var found = fresh_by_constructor[model.key()]
+    assert found
+    var index = 0
+    while index < found.count() {
+        var name = found[index]
+        fresh_attributes.append(name)
+        index = index + 1
+    }
+}
+
 func hold_a_parameter(parameter: Model.ParameterModel) {
     assert is_a_pointer(parameter.parameter_type)
     assert not borrows_parameters or reassigned_names.contains(parameter.name)
@@ -642,6 +699,95 @@ func kept(value: Lowered, of_type: Model.Type) {
     if is_a_pointer(of_type) and not value.owned {
         retain(value.value)
     }
+}
+
+# ../../OPTIMIZATIONS.md#an-object-handed-to-the-place-that-keeps-it-is-not-counted
+func lower_a_kept_value(value: HighIntermediaryRepresentation.Values.Value?): Lowered {
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        var moved = moved_register(value)
+        if moved >= 0 {
+            return owned(moved)
+        }
+    }
+    return lower_value(value)
+}
+
+func moved_register(read: HighIntermediaryRepresentation.Values.LocalRead): Integer {
+    if resumable_mode or not taken or not locals.contains(read.name) {
+        return -1
+    }
+    var of_type = read.value_type
+    if of_type.kind != 'object' or of_type.is_nullable or layout.is_back_held(of_type.name) {
+        return -1
+    }
+    if not taken.frees_quietly(of_type.name) or not is_the_last_use(read.name) {
+        return -1
+    }
+    var register = locals[read.name]
+    crash register
+    var holding = holding_scope(register)
+    if holding < 0 or is_a_borrowed_source(read.name) {
+        return -1
+    }
+    var scope = scopes[holding]
+    crash scope
+    var at = scope.index_of(register)
+    crash at
+    scope.remove_at(at)
+    return register
+}
+
+func holding_scope(register: Integer): Integer {
+    var innermost = scopes.count() - 1
+    var scope = scopes[innermost]
+    crash scope
+    if scope.contains(register) {
+        return innermost
+    }
+    if innermost != 1 {
+        return -1
+    }
+    var outermost = scopes[0]
+    crash outermost
+    if outermost.contains(register) {
+        return 0
+    }
+    return -1
+}
+
+func is_the_last_use(name: String): Boolean {
+    var statement = block_statements[statement_index]
+    if not statement or not evaluates_once(statement) {
+        return false
+    }
+    if uses.in_statement(statement, name) != 1 {
+        return false
+    }
+    var after = statement_index + 1
+    return uses.in_statements_from(block_statements, after, name) == 0
+}
+
+func evaluates_once(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return true
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return true
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return true
+        HighIntermediaryRepresentation.Statements.Evaluate: return not statement.waited
+        HighIntermediaryRepresentation.Statements.Return: return true
+        _: return false
+    }
+}
+
+func is_a_borrowed_source(name: String): Boolean {
+    var index = 0
+    while index < borrowed_sources.count() {
+        var source = borrowed_sources[index]
+        if uses.in_value(source, name) > 0 {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func release_later(value: Lowered, of_type: Model.Type) {
@@ -824,6 +970,9 @@ func lower_statement(statement: HighIntermediaryRepresentation.Statements.Statem
 }
 
 func lower_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    if statement != HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        fresh_attributes = List<String>()
+    }
     switch statement {
         HighIntermediaryRepresentation.Statements.Declare: lower_declare(statement)
         HighIntermediaryRepresentation.Statements.Assign.Assign: lower_assign(statement)
@@ -858,6 +1007,9 @@ func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
     var borrowed = is_a_borrowed_local(declare, value)
     if not borrowed {
         kept(value, declare.declared_type)
+    }
+    if borrowed and declare.value {
+        borrowed_sources.append(declare.value)
     }
     var copied = LowIntermediaryRepresentation.Instructions.Copy(register, value.value)
     emit(copied)
@@ -894,7 +1046,7 @@ func lower_a_declared_value(declare: HighIntermediaryRepresentation.Statements.D
         var reads = ListReads(this)
         return reads.held_item(given)
     }
-    return lower_value(declare.value)
+    return lower_a_kept_value(declare.value)
 }
 
 func is_a_borrowed_item(
@@ -909,12 +1061,12 @@ func is_a_borrowed_item(
     }
     var read = conversion.converted
     if read == HighIntermediaryRepresentation.Values.Call {
-        return is_a_borrowed_read(read)
+        return is_a_borrowed_read(read, declare.name)
     }
     return false
 }
 
-func is_a_borrowed_read(read: HighIntermediaryRepresentation.Values.Call): Boolean {
+func is_a_borrowed_read(read: HighIntermediaryRepresentation.Values.Call, name: String): Boolean {
     var reads = ListReads(this)
     if not reads.is_a_plain_get(read) or not is_a_pointer(read.value_type) {
         return false
@@ -924,7 +1076,171 @@ func is_a_borrowed_read(read: HighIntermediaryRepresentation.Values.Call): Boole
         return false
     }
     var after = statement_index + 1
-    return assignments.leaves_alone(block_statements, after, watched)
+    if assignments.leaves_alone(block_statements, after, watched) {
+        return true
+    }
+    return leaves_alone_but_its_write_back(read, name, watched)
+}
+
+# ../../OPTIMIZATIONS.md#an-item-written-back-to-the-slot-it-came-from-is-not-written
+func leaves_alone_but_its_write_back(
+    read: HighIntermediaryRepresentation.Values.Call,
+    name: String,
+    watched: List<String>,
+): Boolean {
+    crash assignments
+    var index_value = read.arguments[0]
+    crash index_value
+    var plain_index = index_value == HighIntermediaryRepresentation.Values.LocalRead
+    plain_index = plain_index or index_value == HighIntermediaryRepresentation.Values.WholeNumber
+    if not plain_index {
+        return false
+    }
+    var after = statement_index + 1
+    var back = write_back_of(read, name, after)
+    if back < 0 or index_moves_before(index_value, after, back) {
+        return false
+    }
+    var rest = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var index = after
+    while index < block_statements.count() {
+        var statement = block_statements[index]
+        if index != back {
+            rest.append(statement)
+        }
+        index = index + 1
+    }
+    watched.append("{read.function.owner}._length")
+    if not assignments.leaves_alone(rest, 0, watched) {
+        return false
+    }
+    block_statements[back] = HighIntermediaryRepresentation.Statements.Block()
+    return true
+}
+
+func write_back_of(read: HighIntermediaryRepresentation.Values.Call, name: String, after: Integer): Integer {
+    var index = after
+    while index < block_statements.count() {
+        var statement = block_statements[index]
+        if is_a_write_back(statement, read, name) {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func is_a_write_back(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+    read: HighIntermediaryRepresentation.Values.Call,
+    name: String,
+): Boolean {
+    if statement == HighIntermediaryRepresentation.Statements.Evaluate {
+        return is_a_written_back_value(statement.value, read, name)
+    }
+    return false
+}
+
+func is_a_written_back_value(
+    value: HighIntermediaryRepresentation.Values.Value?,
+    read: HighIntermediaryRepresentation.Values.Call,
+    name: String,
+): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        return writes_back(value, read, name)
+    }
+    return false
+}
+
+func writes_back(
+    written: HighIntermediaryRepresentation.Values.Call,
+    read: HighIntermediaryRepresentation.Values.Call,
+    name: String,
+): Boolean {
+    if written.function.name != "set_at" or written.function.owner != read.function.owner {
+        return false
+    }
+    var reads = ListReads(this)
+    if not reads.is_the_library_list(written.function, "list.spite") or written.arguments.count() != 2 {
+        return false
+    }
+    if not written.number_positions.is_empty() or not is_the_same_path(written.receiver, read.receiver) {
+        return false
+    }
+    if not is_the_same_path(written.arguments[0], read.arguments[0]) {
+        return false
+    }
+    return uses.is_the_local(written.arguments[1], name)
+}
+
+func is_the_same_path(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+): Boolean {
+    if not first or not second {
+        return false
+    }
+    if first == HighIntermediaryRepresentation.Values.ThisRead {
+        return second == HighIntermediaryRepresentation.Values.ThisRead
+    }
+    if first == HighIntermediaryRepresentation.Values.LocalRead {
+        return uses.is_the_local(second, first.name)
+    }
+    if first == HighIntermediaryRepresentation.Values.WholeNumber {
+        return is_the_same_number(second, first.number)
+    }
+    if first == HighIntermediaryRepresentation.Values.AttributeRead {
+        return is_the_same_attribute_path(first, second)
+    }
+    return false
+}
+
+func is_the_same_number(value: HighIntermediaryRepresentation.Values.Value, number: Long): Boolean {
+    if value == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value.number == number
+    }
+    return false
+}
+
+func is_the_same_attribute_path(
+    first: HighIntermediaryRepresentation.Values.AttributeRead,
+    second: HighIntermediaryRepresentation.Values.Value,
+): Boolean {
+    if second == HighIntermediaryRepresentation.Values.AttributeRead {
+        return are_the_same_attributes(first, second)
+    }
+    return false
+}
+
+func are_the_same_attributes(
+    first: HighIntermediaryRepresentation.Values.AttributeRead,
+    second: HighIntermediaryRepresentation.Values.AttributeRead,
+): Boolean {
+    if first.attribute.owner != second.attribute.owner or first.attribute.name != second.attribute.name {
+        return false
+    }
+    return is_the_same_path(first.object, second.object)
+}
+
+func index_moves_before(index_value: HighIntermediaryRepresentation.Values.Value, after: Integer, back: Integer): Boolean {
+    if index_value == HighIntermediaryRepresentation.Values.LocalRead {
+        return is_assigned_between(index_value.name, after, back)
+    }
+    return false
+}
+
+func is_assigned_between(name: String, after: Integer, back: Integer): Boolean {
+    crash assignments
+    var between = HighIntermediaryRepresentation.Statements.Block()
+    var index = after
+    while index < back {
+        var statement = block_statements[index]
+        crash statement
+        between.statements.append(statement)
+        index = index + 1
+    }
+    var assigned = assignments.names_assigned_in(between)
+    return assigned.contains(name)
 }
 
 func is_a_borrowed_local(declare: HighIntermediaryRepresentation.Statements.Declare, value: Lowered): Boolean {
@@ -993,7 +1309,7 @@ func gather_through_a_slot(call: HighIntermediaryRepresentation.Values.Call, wat
 
 func lower_assign(assign: HighIntermediaryRepresentation.Statements.Assign.Assign) {
     line = assign.line
-    var value = lower_value(assign.value)
+    var value = lower_a_kept_value(assign.value)
     var register = locals[assign.name]
     crash register
     crash assign.value
@@ -1024,15 +1340,24 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
     assert not is_atomic_here or not updates.lowered_an_update(assign)
     var columns = ColumnLists(this)
     assert not columns.writes(assign)
+    var fresh = is_a_fresh_slot(assign)
     var object = lower_value(assign.object)
-    var value = lower_value(assign.value)
     crash assign.object
     var region = region_of(assign.object.value_type, assign.attribute)
     if layout.is_back(assign.attribute) {
+        var value = lower_value(assign.value)
         store_a_back_reference(object.value, assign.attribute, value)
-    } else {
-        store_an_attribute(object.value, assign.attribute, value, region)
+        bind_the_foreign_names(assign.attribute, value.value)
+        discard(object, assign.object.value_type)
+        return
     }
+    var kept_value = lower_a_kept_value(assign.value)
+    if fresh {
+        store_in_a_fresh_slot(object.value, assign.attribute, kept_value, region)
+    } else {
+        store_an_attribute(object.value, assign.attribute, kept_value, region)
+    }
+    var value = kept_value
     bind_the_foreign_names(assign.attribute, value.value)
     discard(object, assign.object.value_type)
 }
@@ -1056,6 +1381,32 @@ func bind_the_foreign_names(attribute: Model.AttributeModel, library: Integer) {
         emit(found)
         index = index + 1
     }
+}
+
+# ../../OPTIMIZATIONS.md#an-object-handed-to-the-place-that-keeps-it-is-not-counted
+func is_a_fresh_slot(assign: HighIntermediaryRepresentation.Statements.Assign.Attribute): Boolean {
+    if fresh_attributes.is_empty() {
+        return false
+    }
+    var on_this = assign.object == HighIntermediaryRepresentation.Values.ThisRead
+    if scopes.count() != 2 or not on_this or uses.names_this(assign.value) {
+        fresh_attributes = List<String>()
+        return false
+    }
+    var at = fresh_attributes.index_of(assign.attribute.name)
+    if not at {
+        return false
+    }
+    fresh_attributes.remove_at(at)
+    return is_a_pointer(assign.attribute.attribute_type) and not is_a_nullable_scalar(assign.attribute.attribute_type)
+}
+
+func store_in_a_fresh_slot(object: Integer, attribute: Model.AttributeModel, value: Lowered, region: String) {
+    var offset = layout.offset_of(attribute)
+    kept(value, attribute.attribute_type)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(object, offset, value.value, 'bits_64')
+    stored.region = region
+    emit(stored)
 }
 
 func store_an_attribute(object: Integer, attribute: Model.AttributeModel, value: Lowered, region: String) {
@@ -1308,7 +1659,7 @@ func lower_return(returned: HighIntermediaryRepresentation.Statements.Return) {
         emit(nothing)
         return
     }
-    var value = lower_value(returned.value)
+    var value = lower_returned_value(returned.value)
     var returned_type = returned.value.value_type
     if counts_the_answer {
         kept(value, returned_type)
@@ -1318,6 +1669,13 @@ func lower_return(returned: HighIntermediaryRepresentation.Statements.Return) {
     var made = LowIntermediaryRepresentation.Instructions.Return(value.value)
     made.presence = value.presence
     emit(made)
+}
+
+func lower_returned_value(value: HighIntermediaryRepresentation.Values.Value?): Lowered {
+    if counts_the_answer {
+        return lower_a_kept_value(value)
+    }
+    return lower_value(value)
 }
 
 func lower_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
@@ -1609,8 +1967,15 @@ func make_object_for(class_key: String, made: HighIntermediaryRepresentation.Val
         if trimmed_keys.contains(constructor_key) {
             return make_object_with(class_key, "{constructor_key}$defaults")
         }
+        refuse_a_defaulted_fresh_slot(constructor_key)
     }
     return make_object(class_key)
+}
+
+func refuse_a_defaulted_fresh_slot(constructor_key: String) {
+    assert fresh_by_constructor.contains(constructor_key)
+    var emittable = Validators.LowIntermediaryRepresentation.Emittable.Validator()
+    emittable.refuse('defaulted_fresh_slot', constructor_key)
 }
 
 func make_object(class_key: String): Integer {
@@ -2088,16 +2453,54 @@ func add_arguments(
     values: List<HighIntermediaryRepresentation.Values.Value>,
     called_keys: List<String>,
 ) {
+    var callee = taking_callee(called_keys)
     var index = 0
     while index < values.count() {
         var value = values[index]
-        var argument_value = lower_value(value)
-        passed_on(argument_value, value, called_keys)
-        arguments.append(argument_value.value)
-        if argument_value.presence >= 0 {
-            arguments.append(argument_value.presence)
+        if hands_the_argument(callee, index) {
+            var handed = handed_over(value)
+            arguments.append(handed)
+        } else {
+            var argument_value = lower_value(value)
+            passed_on(argument_value, value, called_keys)
+            arguments.append(argument_value.value)
+            if argument_value.presence >= 0 {
+                arguments.append(argument_value.presence)
+            }
         }
         index = index + 1
+    }
+    note_a_handed_call(callee)
+}
+
+# ../../OPTIMIZATIONS.md#an-object-handed-to-the-place-that-keeps-it-is-not-counted
+func taking_callee(called_keys: List<String>): String {
+    if not taken or called_keys.count() != 1 {
+        return ""
+    }
+    var key = called_keys[0]
+    crash key
+    if not taken.takes_any(key) {
+        return ""
+    }
+    return key
+}
+
+func handed_over(value: HighIntermediaryRepresentation.Values.Value): Integer {
+    var handed = lower_a_kept_value(value)
+    if not handed.owned {
+        retain(handed.value)
+    }
+    return handed.value
+}
+
+func note_a_handed_call(callee: String) {
+    assert not callee.is_empty()
+    var known = program.handed_calls[callee]
+    if known {
+        program.handed_calls[callee] = known + 1
+    } else {
+        program.handed_calls[callee] = 1
     }
 }
 
