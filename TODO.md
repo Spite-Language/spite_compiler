@@ -26,6 +26,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The scheduler's crash lines name the program's frames only where the walk reaches them: a halt inside a `Concurrent`'s state machine prints no `spite.frame` line, since its frame lives on the heap (`concurrent_wait_cycle_in_place`)
 
 ## Faults found
+- `String.code_at` past the end of the text answers whatever byte is in memory there instead of halting naming the index and the length (D244); `tests/short_text` passes only because that byte happens to be 0
 - `tests/memory_debug_memory_balance` prints `allocations: 24 frees: 22` under `--debug-memory` (D883): two blocks are never freed, and nothing names them until the leaked-object summary is built
 
 - A serializer's `keys` map (D893) is refused when assigned through an index, but `clear()`, `set_at`, `remove_at` called on it, or a local holding it, change a map whose folded keys stay as they were: a lost write (D244)
@@ -42,6 +43,18 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 
 ## The language
+- From the old repository's programs (SpiteSpec `CORPUS.md`), still failing:
+  - a statement after a `return` is not refused (`conformance/after_return_error`)
+  - the old `Nullable<T>` spelling is not refused with the error that names the `?` suffix (`conformance/old_nullable_spelling`)
+  - the may-be-null error leaves out "but an Anything is needed" (`conformance/maybe_null_into_type`)
+  - no bound proof for `values[base + counter]` from `base >= 0`, `base + width <= count` and `counter < width` (`tests/list_base_counter`)
+  - a `crash` bounding the offset does not prove `Buffer.read_*_at(offset)` in range (`tests/list_byte_numbers`)
+  - calling a function value read by index, `listeners[index](event)` (`tests/event_bus`)
+  - an attribute of a generic class set from a codegen value still needs its type written (`tests/fits_vector_doc`)
+  - `JsonReader.parse_object` calls `Item()` with no arguments where `Item` takes two (`tests/json_basics`)
+  - `Build().program` is not filled in (`tests/loaded_program`)
+  - the library has no `Reload` singleton for hot reload (`tests/recooking`)
+  - `Vector` has no `parallel_each_<member>` (`tests/vector_items_run`)
 - `Spite.Call` on a declaration known only at run time (D864): `call()` of a function that takes arguments halts instead of passing the ones `.arguments` holds, and an argument filled there twice or under a name the function lacks is not refused
 - A bare call of an operator function inside its own class (`negate()`, which `-this` writes) is not refused yet (D910)
 - A call of an operator function by name on a value of a `type` or a union (`item.less_than(other)`) is not refused yet (D907)
