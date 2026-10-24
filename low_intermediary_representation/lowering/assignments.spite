@@ -15,6 +15,14 @@ var reassigned = List<String>()
 var anything = "*"
 var bodies = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
 var skipping_ends = false
+var waits_write = true
+var skips_fresh_objects = false
+var makes_a_fresh_object = false
+var fresh_locals = List<String>()
+var taken_by_signature = Dictionary<String, List<String>>()
+var current_parameters = List<String>()
+var parameter_calls = List<String>()
+var calls_only_its_parameters = true
 var waiting = [
     "Program.sleep"
     "Socket.accept_handle"
@@ -26,9 +34,26 @@ var waiting = [
 ]
 
 func Assignments(high: HighIntermediaryRepresentation.HighProgram) {
+    read_the_program(high)
+}
+
+func read_the_program(high: HighIntermediaryRepresentation.HighProgram) {
     model = high.model
+    keys = List<String>()
+    indices = Dictionary<String, Integer>()
+    called = List<List<String>>()
+    resolved = List<List<Integer>>()
+    is_resolved = List<Boolean>()
+    writers = Dictionary<String, List<Integer>>()
+    reaches = Dictionary<String, List<Boolean>>()
+    taken_as_values = List<String>()
+    drops = List<String>()
+    keeps_callbacks = false
+    bodies = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+    taken_by_signature = Dictionary<String, List<String>>()
     high.built_functions.each(read_a_function)
     add_a_node("$value", taken_as_values)
+    add_the_signature_nodes()
     add_a_node("$drop", drops)
     var foreign = List<String>()
     if keeps_callbacks {
@@ -75,7 +100,17 @@ func note_a_writer(attribute_key: String, index: Integer) {
 func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
     current_calls = List<String>()
     current_writes = List<String>()
+    var makes_its_object = function.function.is_constructor or function.function.name == "_attribute_defaults"
+    makes_a_fresh_object = skips_fresh_objects and makes_its_object
+    fresh_locals = List<String>()
+    current_parameters = List<String>()
+    function.function.parameters.each(note_a_parameter)
+    parameter_calls = List<String>()
+    calls_only_its_parameters = true
     read_a_block(function.body)
+    if not calls_only_its_parameters {
+        parameter_calls.each(current_calls.append)
+    }
     var key = function.function.key()
     bodies[key] = function
     if function.function.name == "drop" {
@@ -148,6 +183,78 @@ func may_assign(called_keys: List<String>, attribute: Model.AttributeModel): Boo
         index = index + 1
     }
     return false
+}
+
+# ../../PROOFS.md#a-call-keeps-a-proof-it-cannot-change
+func read_for_narrowings(high: HighIntermediaryRepresentation.HighProgram) {
+    waits_write = high.makes_work
+    skips_fresh_objects = true
+    read_the_program(high)
+    makes_a_fresh_object = false
+}
+
+func value_may_assign(value: HighIntermediaryRepresentation.Values.Value, attribute: Model.AttributeModel): Boolean {
+    current_calls = List<String>()
+    current_writes = List<String>()
+    read_a_value(value)
+    if current_calls.is_empty() and current_writes.is_empty() {
+        return false
+    }
+    current_calls.append("$drop")
+    var attribute_key = attribute_key_of(attribute)
+    return is_touched(attribute_key)
+}
+
+func writer_reached(attribute: Model.AttributeModel): String {
+    var attribute_key = attribute_key_of(attribute)
+    var by_name = "?.{attribute.name}"
+    var index = 0
+    while index < current_calls.count() {
+        var key = current_calls[index]
+        var found = writer_reached_from(key, attribute_key, by_name)
+        if not found.is_empty() {
+            return found
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func writer_reached_from(key: String, attribute_key: String, by_name: String): String {
+    if not indices.contains(key) {
+        return ""
+    }
+    var reached = reach_of(key)
+    var written_keys = [attribute_key, by_name, anything]
+    var key_index = 0
+    while key_index < written_keys.count() {
+        var written_key = written_keys[key_index]
+        crash written_key
+        var found = writers[written_key]
+        if found {
+            var writer = first_reached(reached, found)
+            if writer >= 0 {
+                var writer_key = keys[writer]
+                crash writer_key
+                return writer_key
+            }
+        }
+        key_index = key_index + 1
+    }
+    return ""
+}
+
+func first_reached(reached: List<Boolean>, found: List<Integer>): Integer {
+    var index = 0
+    while index < found.count() {
+        var writer = found[index]
+        crash writer
+        if reached[writer] == true {
+            return writer
+        }
+        index = index + 1
+    }
+    return -1
 }
 
 func may_write_items(called_keys: List<String>, list_key: String): Boolean {
@@ -301,7 +408,7 @@ func ends_the_program(block: HighIntermediaryRepresentation.Statements.Block): B
 
 func read_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
     switch statement {
-        HighIntermediaryRepresentation.Statements.Declare: read_a_value(statement.value)
+        HighIntermediaryRepresentation.Statements.Declare: read_a_declaration(statement)
         HighIntermediaryRepresentation.Statements.Assign.Assign: read_an_assignment(statement)
         HighIntermediaryRepresentation.Statements.Assign.Attribute: read_an_attribute_write(statement)
         HighIntermediaryRepresentation.Statements.Assign.ThroughShape: read_a_shape_write(statement)
@@ -314,7 +421,27 @@ func read_a_statement(statement: HighIntermediaryRepresentation.Statements.State
     }
 }
 
+func read_a_declaration(declared: HighIntermediaryRepresentation.Statements.Declare) {
+    read_a_value(declared.value)
+    var made = declared.value
+    var is_made_here = made == HighIntermediaryRepresentation.Values.MakeObject
+    if skips_fresh_objects and is_made_here {
+        fresh_locals.append(declared.name)
+    }
+}
+
+func note_a_parameter(parameter: Model.ParameterModel) {
+    current_parameters.append(parameter.name)
+}
+
 func read_an_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign) {
+    if current_parameters.contains(assigned.name) {
+        calls_only_its_parameters = false
+    }
+    var place = fresh_locals.index_of(assigned.name)
+    if place {
+        fresh_locals.remove_at(place)
+    }
     read_a_value(assigned.value)
 }
 
@@ -329,7 +456,14 @@ func read_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
 
 func read_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
     var attribute_key = attribute_key_of(written.attribute)
-    current_writes.append(attribute_key)
+    var is_fresh = makes_a_fresh_object and written.object == HighIntermediaryRepresentation.Values.ThisRead
+    var object = written.object
+    if object == HighIntermediaryRepresentation.Values.LocalRead {
+        is_fresh = is_fresh or fresh_locals.contains(object.name)
+    }
+    if not is_fresh {
+        current_writes.append(attribute_key)
+    }
     read_a_value(written.object)
     read_a_value(written.value)
 }
@@ -400,7 +534,7 @@ func read_both(
 
 func read_a_call(call: HighIntermediaryRepresentation.Values.Call) {
     var key = call.function.key()
-    if waiting.contains(key) {
+    if waits_write and waiting.contains(key) {
         current_writes.append(anything)
     }
     var name = call.function.name
@@ -412,6 +546,9 @@ func read_a_call(call: HighIntermediaryRepresentation.Values.Call) {
     current_calls.append(key)
     read_a_value(call.receiver)
     call.arguments.each(read_a_present)
+    if skips_fresh_objects {
+        pass_the_values(call.arguments)
+    }
 }
 
 # ../../OPTIMIZATIONS.md#a-name-holding-an-item-or-an-attribute-is-not-counted
@@ -454,13 +591,105 @@ func read_a_taken_function(taken: HighIntermediaryRepresentation.Values.Function
     if not taken_as_values.contains(key) {
         taken_as_values.append(key)
     }
+    var signature = signature_of(taken.value_type)
+    if not taken_by_signature.contains(signature) {
+        var none_yet = List<String>()
+        taken_by_signature[signature] = none_yet
+    }
+    var same = taken_by_signature[signature]
+    crash same
+    if not same.contains(key) {
+        same.append(key)
+    }
     read_a_value(taken.receiver)
 }
 
 func read_a_function_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
     current_calls.append("$value")
+    crash call.called
+    var signature = signature_of(call.called.value_type)
+    if skips_fresh_objects {
+        current_calls.remove_last()
+        call_a_value(call.called, signature)
+    }
     read_a_value(call.called)
     call.arguments.each(read_a_present)
+    if skips_fresh_objects {
+        pass_the_values(call.arguments)
+    }
+}
+
+# ../../PROOFS.md#a-call-keeps-a-proof-it-cannot-change
+func call_a_value(called: HighIntermediaryRepresentation.Values.Value, signature: String) {
+    var node = "$value"
+    if taken_by_signature.contains(signature) {
+        node = "$value:{signature}"
+    }
+    if called == HighIntermediaryRepresentation.Values.LocalRead and current_parameters.contains(called.name) {
+        parameter_calls.append(node)
+        return
+    }
+    calls_only_its_parameters = false
+    current_calls.append(node)
+}
+
+func pass_the_values(arguments: List<HighIntermediaryRepresentation.Values.Value>) {
+    assert skips_fresh_objects
+    arguments.each(pass_a_value)
+}
+
+func pass_a_value(argument: HighIntermediaryRepresentation.Values.Value) {
+    if argument == HighIntermediaryRepresentation.Values.Function.Value {
+        var key = argument.function.key()
+        current_calls.append(key)
+    }
+    if argument == HighIntermediaryRepresentation.Values.LocalRead {
+        pass_a_parameter(argument)
+    }
+}
+
+func pass_a_parameter(argument: HighIntermediaryRepresentation.Values.LocalRead) {
+    if current_parameters.contains(argument.name) and argument.value_type.kind == 'function' {
+        var signature = signature_of(argument.value_type)
+        call_a_value(argument, signature)
+    }
+}
+
+func add_the_signature_nodes() {
+    var signatures = taken_by_signature.keys()
+    var index = 0
+    while index < signatures.count() {
+        var signature = signatures[index]
+        var same = taken_by_signature[signature]
+        crash same
+        add_a_node("$value:{signature}", same)
+        index = index + 1
+    }
+}
+
+func signature_of(function_type: Model.Type): String {
+    var shown = List<String>()
+    var index = 0
+    while index < function_type.parameters.count() {
+        var parameter = function_type.parameters[index]
+        var parameter_shown = type_shown(parameter)
+        shown.append(parameter_shown)
+        index = index + 1
+    }
+    var answer = "nothing"
+    if function_type.answer {
+        answer = type_shown(function_type.answer)
+    }
+    var listed = shown.join(",")
+    return "({listed})->{answer}"
+}
+
+func type_shown(shown_type: Model.Type): String {
+    var mark = ""
+    if shown_type.is_nullable {
+        mark = "?"
+    }
+    return "{shown_type.kind}:{shown_type.name}{mark}"
 }
 
 func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
@@ -474,6 +703,9 @@ func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
         current_calls.append(constructor_key)
     }
     made.arguments.each(read_a_present)
+    if skips_fresh_objects {
+        pass_the_values(made.arguments)
+    }
 }
 
 func read_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
@@ -487,6 +719,9 @@ func read_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
     }
     read_a_value(call.receiver)
     call.arguments.each(read_a_present)
+    if skips_fresh_objects {
+        pass_the_values(call.arguments)
+    }
 }
 
 # ../../OPTIMIZATIONS.md#a-counted-loop-of-reads-shares-its-singletons-lock

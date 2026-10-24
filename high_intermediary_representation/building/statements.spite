@@ -122,6 +122,7 @@ func loop_body_of(
     note_the_loop_checks(paths, notes)
     borrows.next_is_a_loop = true
     build_all(written.statements)
+    refuse_what_the_loop_left_undone()
     context.scope.leave()
     var made = HighIntermediaryRepresentation.Statements.Block()
     made.statements = built
@@ -156,7 +157,60 @@ func narrow_all(paths: List<String>, types: List<Model.Type>) {
 func add(statement: HighIntermediaryRepresentation.Statements.Statement) {
     context.pending.each(add_pending)
     context.pending = List<HighIntermediaryRepresentation.Statements.Statement>()
+    log_the_calls_of(statement)
     built.append(statement)
+}
+
+# ../../PROOFS.md#a-call-keeps-a-proof-it-cannot-change
+func log_the_calls_of(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: log_a_value(statement.value, statement.line)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: log_a_value(statement.value, statement.line)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: log_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: log_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: log_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.Return: log_a_value(statement.value, statement.line)
+        HighIntermediaryRepresentation.Statements.Stop: log_a_value(statement.then, statement.line)
+        _: return
+    }
+}
+
+func log_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    log_a_value(written.object, written.line)
+    log_a_value(written.value, written.line)
+}
+
+func log_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    log_a_value(written.object, written.line)
+    log_a_value(written.value, written.line)
+}
+
+func log_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
+    log_a_value(evaluated.value, evaluated.line)
+    log_a_value(evaluated.waited, evaluated.line)
+}
+
+func log_a_value(value: HighIntermediaryRepresentation.Values.Value?, line: Integer) {
+    assert value
+    context.logged_calls.append(value)
+    var at = line
+    if at == 0 {
+        at = context.line
+    }
+    context.logged_lines.append(at)
+    context.scope.stamp = context.logged_calls.count()
+}
+
+func extend_the_reads_over_the_loop(log_start: Integer, reads_start: Integer) {
+    var index = reads_start
+    while index < context.narrowed_reads.count() {
+        var read = context.narrowed_reads[index]
+        crash read
+        if read.start < log_start {
+            read.loop_end = context.logged_calls.count()
+        }
+        index = index + 1
+    }
 }
 
 func flush_the_pending() {
@@ -165,6 +219,7 @@ func flush_the_pending() {
 }
 
 func add_pending(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    log_the_calls_of(statement)
     built.append(statement)
 }
 
@@ -571,6 +626,10 @@ func assign_a_name(
         var declared_type = context.scope.types[internal_name]
         crash declared_type
         var value = values.fitted_value_of(statement.value, declared_type)
+        var was_narrowed = context.scope.narrowed_type_of(internal_name)
+        if was_narrowed and may_be_null(value) {
+            note_an_undone_loop_proof(statement, internal_name)
+        }
         if declared_type.is_nullable and is_present(value) {
             var present = declared_type.present()
             context.scope.keep_present(internal_name, target.name, present)
@@ -597,6 +656,7 @@ func assign_a_name(
     }
     crash attribute
     var own = values.this_value()
+    context.scope.forget(target.name)
     assign_an_attribute(statement, own, attribute, "this.{target.name}")
 }
 
@@ -620,6 +680,9 @@ func assign_a_member(
     }
     var writes_through_a_setter = is_outside or not attribute
     if writes_through_a_setter and setter {
+        var set_printer = Printers.Spite.ExpressionPrinter(target)
+        var set_path = set_printer.text()
+        context.scope.forget(set_path)
         set_through(statement, object, setter)
         return
     }
@@ -714,11 +777,19 @@ func assign_an_attribute(
         refuse_an_undone_loop_proof(statement, path)
     }
     context.scope.forget(path)
+    forget_the_printed_path(path)
     var made = HighIntermediaryRepresentation.Statements.Assign.Attribute(object, attribute, value)
     made.line = statement.line
     add(made)
     assert was_narrowed
     narrow_a_present_assignment(value, attribute, path)
+}
+
+func forget_the_printed_path(path: String) {
+    assert path.starts_with("this.")
+    var length = path.length()
+    var printed = path.slice(5, length)
+    context.scope.forget(printed)
 }
 
 func may_be_null(value: HighIntermediaryRepresentation.Values.Value): Boolean {
@@ -738,6 +809,52 @@ func refuse_an_undone_loop_proof(statement: AbstractSyntaxTree.Shapes.Statements
     crash statement.target
     var printer = Printers.Spite.ExpressionPrinter(statement.target)
     var written = printer.text()
+    typing.refuse_undone_loop_proof(context, written)
+}
+
+# ../../PROOFS.md#assigning-undoes-a-proof
+func note_an_undone_loop_proof(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement, path: String) {
+    var base = context.loop_bases.last()
+    assert base
+    var frame = context.scope.frame_of(path)
+    assert frame >= 0 and frame < base
+    assert context.loop_reads.contains(path)
+    crash statement.target
+    var printer = Printers.Spite.ExpressionPrinter(statement.target)
+    context.undone_paths.append(path)
+    context.undone_lines.append(statement.line)
+    var written = printer.text()
+    context.undone_texts.append(written)
+    var depth = context.loop_bases.count()
+    context.undone_depths.append(depth)
+}
+
+func refuse_what_the_loop_left_undone() {
+    var depth = context.loop_bases.count()
+    var index = context.undone_paths.count() - 1
+    while index >= 0 {
+        var undone_depth = context.undone_depths[index]
+        crash undone_depth
+        if undone_depth == depth {
+            refuse_an_undone_path(index)
+            context.undone_paths.remove_at(index)
+            context.undone_lines.remove_at(index)
+            context.undone_texts.remove_at(index)
+            context.undone_depths.remove_at(index)
+        }
+        index = index - 1
+    }
+}
+
+func refuse_an_undone_path(index: Integer) {
+    var path = context.undone_paths[index]
+    crash path
+    assert not context.scope.narrowed_type_of(path)
+    var line = context.undone_lines[index]
+    var written = context.undone_texts[index]
+    crash line
+    crash written
+    context.line = line
     typing.refuse_undone_loop_proof(context, written)
 }
 
@@ -864,6 +981,7 @@ func assign_an_index(
     crash value_parameter
     var position = values.fitted_value_of(target.index, index_parameter.parameter_type)
     var value = values.fitted_value_of(statement.value, value_parameter.parameter_type)
+    forget_the_stored_items(target, value)
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
     arguments.append(position)
     arguments.append(value)
@@ -871,6 +989,21 @@ func assign_an_index(
     var made = HighIntermediaryRepresentation.Statements.Evaluate(call)
     made.line = statement.line
     add(made)
+}
+
+# ../../PROOFS.md#assigning-undoes-a-proof
+func forget_the_stored_items(
+    target: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    value: HighIntermediaryRepresentation.Values.Value,
+) {
+    crash target.target
+    var printer = Printers.Spite.ExpressionPrinter(target.target)
+    var listed = printer.text()
+    if may_be_null(value) {
+        context.scope.forget_reads_of(listed)
+        return
+    }
+    context.scope.forget_below_the_items(listed)
 }
 
 func build_evaluation(statement: AbstractSyntaxTree.Shapes.Statements.ExpressionStatement) {
@@ -999,6 +1132,7 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
         build_a_decided_if(statement, condition.number != 0)
         return
     }
+    log_a_value(condition, statement.line)
     read_facts(statement.condition)
     refuse_a_terminal_if(statement)
     var paths = facts_paths
@@ -1091,7 +1225,10 @@ func read_a_negated_unary(unary: AbstractSyntaxTree.Shapes.Expressions.UnaryExpr
 func read_a_negated_binary(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
     if binary.operator == 'or' {
         read_a_negated_fact(binary.left)
+        context.scope.enter()
+        narrow_all(facts_paths, facts_types)
         read_a_negated_fact(binary.right)
+        context.scope.leave()
         return
     }
     var left = binary.left
@@ -1145,9 +1282,12 @@ func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement)
     refuse_a_maybe_boolean(statement.condition, statement.condition)
     var base = context.scope.narrowed.count()
     context.loop_bases.append(base)
+    var log_start = context.logged_calls.count()
+    var reads_start = context.narrowed_reads.count()
     var condition = values.condition_of(statement.condition)
     var condition_work = context.pending
     flush_the_pending()
+    log_a_value(condition, statement.line)
     facts_paths = List<String>()
     facts_types = List<Model.Type>()
     facts_checks = List<String>()
@@ -1158,6 +1298,7 @@ func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement)
     var notes = facts_checks
     var body = loop_body_of(statement.body, paths, types, notes)
     redo_the_condition_work(condition_work, body)
+    extend_the_reads_over_the_loop(log_start, reads_start)
     context.loop_bases.remove_last()
     if context.loop_bases.is_empty() {
         context.loop_reads = List<String>()
@@ -1693,6 +1834,13 @@ func read_a_counted_local(
     if left == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
         index_name = added_name_of(left)
         reach = added_reach_of(left)
+        if reach > 63 {
+            reach = 63
+        }
+        if index_name.is_empty() or reach == 0 {
+            index_name = whole_index_of(left)
+            reach = 0
+        }
     }
     if left == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
         var index_printer = Printers.Spite.ExpressionPrinter(left)
@@ -1764,6 +1912,13 @@ func read_a_counted_list(
     if left == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
         index_name = added_name_of(left)
         reach = added_reach_of(left)
+        if reach > 63 {
+            reach = 63
+        }
+        if index_name.is_empty() or reach == 0 {
+            index_name = whole_index_of(left)
+            reach = 0
+        }
     }
     if left == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
         var index_printer = Printers.Spite.ExpressionPrinter(left)
@@ -1791,6 +1946,15 @@ func read_a_counted_list(
         facts_types.append(present)
         offset = offset + 1
     }
+}
+
+# ../../PROOFS.md#a-proven-count-or-bound-proves-a-read
+func whole_index_of(left: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): String {
+    if holds_a_call(left) {
+        return ""
+    }
+    var printer = Printers.Spite.ExpressionPrinter(left)
+    return printer.text()
 }
 
 func added_name_of(sum: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): String {
@@ -3050,6 +3214,9 @@ func build_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatemen
     var subject = values.value_of(statement.value, null)
     var printer = Printers.Spite.ExpressionPrinter(statement.value)
     var path = printer.text()
+    if subject.value_type.is_nullable {
+        refuse_a_loop_copy(statement.value)
+    }
     check_the_case_kinds(statement, subject.value_type)
     if is_closed(subject.value_type) {
         check_the_cover(statement, subject.value_type, path)
@@ -3064,6 +3231,9 @@ func build_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatemen
     }
     var chain = switch_chain(statement, subject, narrowed_path, 0)
     crash chain
+    if subject.value_type.is_nullable {
+        check_the_nullable_cover(statement, subject.value_type, path)
+    }
     add(chain)
 }
 
@@ -3239,6 +3409,62 @@ func check_the_cover(
     cover.check_the_rest(context, shown, is_an_enum, every, written)
     context.line = statement.line
     cover.check(context, subject, is_an_enum, every, written)
+}
+
+func check_the_nullable_cover(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    subject_type: Model.Type,
+    path: String,
+) {
+    var present = subject_type.present()
+    var is_a_union = present.kind == 'union'
+    var is_an_object = present.kind == 'object'
+    assert is_a_union or is_an_object
+    var written = written_cases_of(statement)
+    var every = List<String>()
+    if is_a_union {
+        var united = values.union_model_of(present)
+        var member_index = 0
+        while member_index < united.members.count() {
+            var member = united.members[member_index]
+            var member_segments = member.name.split(".")
+            var member_name = member_segments.last()
+            crash member_name
+            every.append(member_name)
+            member_index = member_index + 1
+        }
+    } else {
+        var present_segments = present.name.split(".")
+        var present_name = present_segments.last()
+        crash present_name
+        every.append(present_name)
+    }
+    every.append("Null")
+    var cover = Validators.HighIntermediaryRepresentation.SwitchCover.Validator()
+    var shown_whole = context.shown(subject_type)
+    var shown_segments = shown_whole.split(".")
+    var shown = shown_segments.last()
+    crash shown
+    context.line = rest_line_of(statement, false)
+    cover.check_the_rest(context, shown, false, every, written)
+    context.line = statement.line
+    cover.check_the_nullable(context, path, shown, every, written)
+}
+
+func written_cases_of(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement): List<String> {
+    var written = List<String>()
+    var index = 0
+    while index < statement.cases.count() {
+        var switch_case = statement.cases[index]
+        var printer = Printers.Spite.ExpressionPrinter(switch_case.value)
+        var text = printer.text()
+        var segments = text.split(".")
+        var simple = segments.last()
+        crash simple
+        written.append(simple)
+        index = index + 1
+    }
+    return written
 }
 
 func rest_line_of(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement, is_an_enum: Boolean): Integer {
@@ -3546,10 +3772,13 @@ func read_a_counted_member(
     callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ) {
     assert counted.arguments.is_empty() and callee.name == "count"
-    var limit = binary.right
-    var known = 0
-    if limit == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
-        known = literal_reach_of(limit)
+    var known = count_limit_of(binary.right)
+    if known < 0 {
+        read_a_turned_bound(binary, counted)
+        return
+    }
+    if known > 64 {
+        known = 64
     }
     if binary.operator == 'greater' {
         known = known + 1
@@ -3577,6 +3806,24 @@ func read_a_counted_member(
         facts_types.append(present)
         index = index + 1
     }
+}
+
+# ../../PROOFS.md#a-proven-count-or-bound-proves-a-read
+func count_limit_of(limit: AbstractSyntaxTree.Shapes.Expressions.Expression?): Integer {
+    if limit == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return literal_reach_of(limit)
+    }
+    return -1
+}
+
+func read_a_turned_bound(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    counted: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    assert binary.operator == 'greater'
+    crash binary.right
+    var turned = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(binary.right, 'less', counted)
+    read_a_binary_bound(turned)
 }
 
 func path_of(written: AbstractSyntaxTree.Shapes.Expressions.Expression?, printed: String): String {

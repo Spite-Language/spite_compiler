@@ -21,6 +21,7 @@ A representation is data only: no function on it writes text or decides an error
     format                                 each file as it is parsed: printers/formatted_source, written back and read again
     name_resolution                        then validators/name_resolution
     high_intermediary_representation       then validators/high_intermediary_representation
+    proofs                                 the proofs that decide what is accepted, on the built high representation
     high_optimization_passes               unit passes, then program passes
     low_intermediary_representation        then validators/low_intermediary_representation
     low_optimization_passes                unit passes, then program passes
@@ -117,6 +118,16 @@ A text that is an identity (a type's key, an instance's name) is not printing: i
 reads one function or class and is cached by the hash of its input; a reload runs only unit passes. A program
 pass needs the whole program (tree shaking, inlining across classes, placement of objects that leave their
 function). Each optimisation and each proof is a pass of its own.
+
+## Proofs
+
+`proofs/<what_it_proves>/pass.spite` holds a class `Pass(high)` whose `check()` proves one fact over the whole
+built high representation and hands what breaks it to its validator (D1072). A proof that decides whether code is
+accepted runs here, after every function is built and before any optimisation, so what a program may say never
+depends on how well it is optimised; a proof that only makes code cheaper runs where its facts exist and records
+them. `PROOFS.md` lists every proof, where it lives, and the ones still made inside a step or a pass. In order:
+
+1. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
 
 ## Memory
 
