@@ -20,6 +20,12 @@ is decided; `../SpiteLanguage/specs` is the rule when anything disagrees.
 ## Work
 
 - Work on `master`; there is no other branch.
+  The default branch is `master`; do not rename it or suggest renaming it.
+- Shared files (`TODO.md`, the files of `../MortarosSpite`) are written by every session. Edit them with targeted
+  changes that match on surrounding text, never line numbers, and re-read immediately before writing. Never restore
+  one from a backup: a whole-file overwrite has already lost a day of decisions once.
+- Delegate to a cheaper subagent only when it is cheaper: if the round trips and the cold context cost more quota
+  than doing the work inline, do it inline.
 - Build once per batch of changes (about two minutes), then run `../SpiteSpec` (see `README.md`).
 - Every feature or fixed error gets a test in `../SpiteSpec`: `tests/<name>` must pass, `conformance/<name>`
   must fail with the old compiler's exact error text.
