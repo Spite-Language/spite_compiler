@@ -135,8 +135,11 @@ func write_the_executable(high: HighIntermediaryRepresentation.HighProgram) {
     specializing.transformed()
     place_the_objects(evaluated)
     optimize_the_low(evaluated)
+    inline_once_more(evaluated)
+    release_in_place(evaluated)
     var vectorizing = LowOptimizationPasses.VectorLoops.Pass(evaluated)
     vectorizing.transformed()
+    tidy_the_low(evaluated)
     if settings.writes_low_ir {
         write_low_ir(low)
     }
@@ -180,17 +183,63 @@ func fold_before_answering(low: LowIntermediaryRepresentation.LoweredProgram) {
     }
 }
 
+# OPTIMIZATIONS.md#a-function-called-in-a-loop-is-inlined-into-it
+func inline_once_more(low: LowIntermediaryRepresentation.LoweredProgram) {
+    var directing = LowOptimizationPasses.DirectCalls.Pass(low)
+    directing.transformed()
+    var inlining = LowOptimizationPasses.Inlining.Pass(low)
+    inlining.is_late = true
+    inlining.transformed()
+    var changed = inlining.changed_keys
+    assert not changed.is_empty()
+    var keeping = LowOptimizationPasses.ObjectPlacement.KeptParameters()
+    keeping.read_the_program(low)
+    var settling = LowOptimizationPasses.MadeSingletons.Pass(low)
+    var frees = LowOptimizationPasses.UnreadObjects.PlainFrees()
+    frees.read_the_program(low)
+    var index = 0
+    while index < low.lowered_functions.count() {
+        var function = low.lowered_functions[index]
+        if changed.contains(function.key) {
+            var known = known_headers(function, low)
+            var placing = LowOptimizationPasses.ObjectPlacement.Pass(known, low, keeping)
+            var placed = placing.transformed()
+            low.lowered_functions[index] = optimized(placed, low, settling, frees)
+        }
+        index = index + 1
+    }
+}
+
 func place_the_objects(low: LowIntermediaryRepresentation.LoweredProgram) {
     var keeping = LowOptimizationPasses.ObjectPlacement.KeptParameters()
     keeping.read_the_program(low)
     var index = 0
     while index < low.lowered_functions.count() {
         var function = low.lowered_functions[index]
-        var placing = LowOptimizationPasses.ObjectPlacement.Pass(function, low, keeping)
+        var known = known_headers(function, low)
+        var placing = LowOptimizationPasses.ObjectPlacement.Pass(known, low, keeping)
         var placed = placing.transformed()
         low.lowered_functions[index] = placed
         index = index + 1
     }
+}
+
+# OPTIMIZATIONS.md#the-class-of-an-object-made-in-the-function-is-known
+func known_headers(
+    function: LowIntermediaryRepresentation.LowFunction,
+    low: LowIntermediaryRepresentation.LoweredProgram,
+): LowIntermediaryRepresentation.LowFunction {
+    var heading = LowOptimizationPasses.KnownHeaders.Pass(function, low)
+    var headed = heading.transformed()
+    if not heading.changed {
+        return headed
+    }
+    var folding = LowOptimizationPasses.ConstantFolding.Pass(headed)
+    var folded = folding.transformed()
+    var threading = LowOptimizationPasses.JumpThreading.Pass(folded)
+    var threaded = threading.transformed()
+    var clearing = LowOptimizationPasses.UnreachedBlocks.Pass(threaded)
+    return clearing.transformed()
 }
 
 func optimize_the_low(low: LowIntermediaryRepresentation.LoweredProgram) {
@@ -200,54 +249,98 @@ func optimize_the_low(low: LowIntermediaryRepresentation.LoweredProgram) {
     var index = 0
     while index < low.lowered_functions.count() {
         var listed = low.lowered_functions[index]
-        var function = settling.settled(listed)
-        var folding = LowOptimizationPasses.ConstantFolding.Pass(function)
-        var folded = folding.transformed()
-        var threading = LowOptimizationPasses.JumpThreading.Pass(folded)
-        var threaded = threading.transformed()
-        var propagating = LowOptimizationPasses.CopyPropagation.Pass(threaded)
-        var propagated = propagating.transformed()
-        var cleaning = LowOptimizationPasses.DeadCode.Pass(propagated)
-        var cleaned = cleaning.transformed()
-        var leaving = LowOptimizationPasses.UnreadObjects.Pass(cleaned, frees)
-        var left = leaving.transformed()
-        var pairing = LowOptimizationPasses.CountedPairs.Pass(left)
-        var paired = pairing.transformed()
-        var sharing = LowOptimizationPasses.CommonSubexpressions.Pass(paired)
-        var shared = sharing.transformed()
-        var repropagating = LowOptimizationPasses.CopyPropagation.Pass(shared)
-        var repropagated = repropagating.transformed()
-        var bounding = LowOptimizationPasses.ProvenBounds.Pass(repropagated)
-        var bounded = bounding.transformed()
-        var refolding = LowOptimizationPasses.ConstantFolding.Pass(bounded)
-        var refolded = refolding.transformed()
-        var rethreading = LowOptimizationPasses.JumpThreading.Pass(refolded)
-        var rethreaded = rethreading.transformed()
-        var masking = LowOptimizationPasses.RemainderTests.Pass(rethreaded)
-        var masked = masking.transformed()
-        var hoisting = LowOptimizationPasses.LoopInvariants.Pass(masked)
-        hoisting.uses_threads = low.uses_threads
-        hoisting.locked_owners = low.locked_singletons
-        hoisting.shared_owners = low.shared_classes
-        if not low.counts_memory {
-            hoisting.quiet_labels = low.quiet_singletons
-        }
-        var hoisted = hoisting.transformed()
-        var resharing = LowOptimizationPasses.CommonSubexpressions.Pass(hoisted)
-        var reshared = resharing.transformed()
-        var copying = LowOptimizationPasses.CopyPropagation.Pass(reshared)
-        var copied = copying.transformed()
-        var trimming = LowOptimizationPasses.DeadCode.Pass(copied)
-        var trimmed = trimming.transformed()
-        var selecting = LowOptimizationPasses.Selections.Pass(trimmed)
-        var selected = selecting.transformed()
-        var coalescing = LowOptimizationPasses.CopyCoalescing.Pass(selected)
+        low.lowered_functions[index] = optimized(listed, low, settling, frees)
+        index = index + 1
+    }
+}
+
+func optimized(
+    listed: LowIntermediaryRepresentation.LowFunction,
+    low: LowIntermediaryRepresentation.LoweredProgram,
+    settling: LowOptimizationPasses.MadeSingletons.Pass,
+    frees: LowOptimizationPasses.UnreadObjects.PlainFrees,
+): LowIntermediaryRepresentation.LowFunction {
+    var function = settling.settled(listed)
+    var folding = LowOptimizationPasses.ConstantFolding.Pass(function)
+    var folded = folding.transformed()
+    var threading = LowOptimizationPasses.JumpThreading.Pass(folded)
+    var threaded = threading.transformed()
+    var propagating = LowOptimizationPasses.CopyPropagation.Pass(threaded)
+    var propagated = propagating.transformed()
+    var cleaning = LowOptimizationPasses.DeadCode.Pass(propagated)
+    var cleaned_first = cleaning.transformed()
+    var reading_through = LowOptimizationPasses.AvailableCopies.Pass(cleaned_first)
+    var read_through = reading_through.transformed()
+    var living = LowOptimizationPasses.LiveValues.Pass(read_through)
+    var cleaned = living.transformed()
+    var leaving = LowOptimizationPasses.UnreadObjects.Pass(cleaned, frees)
+    var left = leaving.transformed()
+    var pairing = LowOptimizationPasses.CountedPairs.Pass(left)
+    var paired = pairing.transformed()
+    var sharing = LowOptimizationPasses.CommonSubexpressions.Pass(paired)
+    var shared = sharing.transformed()
+    var repropagating = LowOptimizationPasses.CopyPropagation.Pass(shared)
+    var repropagated = repropagating.transformed()
+    var bounding = LowOptimizationPasses.ProvenBounds.Pass(repropagated)
+    var bounded_first = bounding.transformed()
+    var ranging = LowOptimizationPasses.CheckedRanges.Pass(bounded_first)
+    var bounded = ranging.transformed()
+    var refolding = LowOptimizationPasses.ConstantFolding.Pass(bounded)
+    var refolded = refolding.transformed()
+    var rethreading = LowOptimizationPasses.JumpThreading.Pass(refolded)
+    var rethreaded = rethreading.transformed()
+    var masking = LowOptimizationPasses.RemainderTests.Pass(rethreaded)
+    var masked = masking.transformed()
+    var hoisting = LowOptimizationPasses.LoopInvariants.Pass(masked)
+    hoisting.uses_threads = low.uses_threads
+    hoisting.locked_owners = low.locked_singletons
+    hoisting.shared_owners = low.shared_classes
+    if not low.counts_memory {
+        hoisting.quiet_labels = low.quiet_singletons
+    }
+    var hoisted = hoisting.transformed()
+    var resharing = LowOptimizationPasses.CommonSubexpressions.Pass(hoisted)
+    var reshared = resharing.transformed()
+    var copying = LowOptimizationPasses.CopyPropagation.Pass(reshared)
+    var copied = copying.transformed()
+    var trimming = LowOptimizationPasses.DeadCode.Pass(copied)
+    var trimmed = trimming.transformed()
+    var selecting = LowOptimizationPasses.Selections.Pass(trimmed)
+    var selected = selecting.transformed()
+    var coalescing = LowOptimizationPasses.CopyCoalescing.Pass(selected)
+    var coalesced = coalescing.transformed()
+    var sweeping = LowOptimizationPasses.DeadCode.Pass(coalesced)
+    var swept_first = sweeping.transformed()
+    var rereading = LowOptimizationPasses.AvailableCopies.Pass(swept_first)
+    var reread = rereading.transformed()
+    var reliving = LowOptimizationPasses.LiveValues.Pass(reread)
+    return reliving.transformed()
+}
+
+# OPTIMIZATIONS.md#straight-runs-of-blocks-are-one-block
+func tidy_the_low(low: LowIntermediaryRepresentation.LoweredProgram) {
+    var index = 0
+    while index < low.lowered_functions.count() {
+        var function = low.lowered_functions[index]
+        var shaping = LowOptimizationPasses.AvailableCopies.Pass(function)
+        shaping.shapes_the_blocks = true
+        var shaped = shaping.transformed()
+        var living = LowOptimizationPasses.LiveValues.Pass(shaped)
+        var lived = living.transformed()
+        var coalescing = LowOptimizationPasses.CopyCoalescing.Pass(lived)
         var coalesced = coalescing.transformed()
-        var sweeping = LowOptimizationPasses.DeadCode.Pass(coalesced)
-        var swept = sweeping.transformed()
-        var releasing = LowOptimizationPasses.ReleasedInPlace.Pass(swept, low.uses_threads)
-        var released = releasing.transformed()
-        low.lowered_functions[index] = released
+        var reliving = LowOptimizationPasses.LiveValues.Pass(coalesced)
+        low.lowered_functions[index] = reliving.transformed()
+        index = index + 1
+    }
+}
+
+func release_in_place(low: LowIntermediaryRepresentation.LoweredProgram) {
+    var index = 0
+    while index < low.lowered_functions.count() {
+        var function = low.lowered_functions[index]
+        var releasing = LowOptimizationPasses.ReleasedInPlace.Pass(function, low.uses_threads)
+        low.lowered_functions[index] = releasing.transformed()
         index = index + 1
     }
 }

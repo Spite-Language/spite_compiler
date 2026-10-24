@@ -1,0 +1,257 @@
+var no_program = Model.ProgramModel()
+var no_layout = Layout(no_program)
+var no_low_program = LowIntermediaryRepresentation.LoweredProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
+var no_type = Model.Type('nothing', "")
+var list_attribute = Model.AttributeModel("", "", no_type)
+var index_attribute = Model.AttributeModel("", "", no_type)
+var held_attribute = Model.AttributeModel("", "", no_type)
+var list_owner = ""
+
+func WrittenBackCalls(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+# ../../OPTIMIZATIONS.md#a-call-that-writes-back-what-the-slot-already-holds-is-not-made
+func is_a_needless_write_back(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if not lowering.borrows_parameters or lowering.resumable_mode or not lowering.assignments {
+        return false
+    }
+    if value == HighIntermediaryRepresentation.Values.Call {
+        return is_a_needless_call(value)
+    }
+    return false
+}
+
+func is_a_needless_call(write_back: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if not write_back.arguments.is_empty() or not writes_back_its_own_slot(write_back.function) {
+        return false
+    }
+    var at = lowering.statement_index - 1
+    while at >= 0 {
+        var statement = lowering.block_statements[at]
+        crash statement
+        if is_the_call_that_left_it(statement, write_back) {
+            return leaves_it_alone_until_here(write_back, at)
+        }
+        at = at - 1
+    }
+    return false
+}
+
+func writes_back_its_own_slot(function: Model.FunctionModel): Boolean {
+    var body = body_of(function)
+    if not body {
+        return false
+    }
+    if body.statements.count() != 1 {
+        return false
+    }
+    var only = body.statements[0]
+    if only == HighIntermediaryRepresentation.Statements.Evaluate {
+        return evaluates_a_write_back(only, function.owner)
+    }
+    return false
+}
+
+func evaluates_a_write_back(only: HighIntermediaryRepresentation.Statements.Evaluate, owner: String): Boolean {
+    if only.waited {
+        return false
+    }
+    var written = only.value
+    if written == HighIntermediaryRepresentation.Values.Call {
+        return is_a_write_back_of_this(written, owner)
+    }
+    return false
+}
+
+func is_a_write_back_of_this(written: HighIntermediaryRepresentation.Values.Call, owner: String): Boolean {
+    var reads = ListReads(lowering)
+    if written.function.name != "set_at" or not reads.is_the_library_list(written.function, "list.spite") {
+        return false
+    }
+    if written.arguments.count() != 2 or not written.number_positions.is_empty() {
+        return false
+    }
+    var list = attribute_of_this(written.receiver, owner)
+    var position = attribute_of_this(written.arguments[0], owner)
+    var held = attribute_of_this(written.arguments[1], owner)
+    if not list or not position or not held {
+        return false
+    }
+    list_attribute = list
+    index_attribute = position
+    held_attribute = held
+    list_owner = written.function.owner
+    return true
+}
+
+func attribute_of_this(value: HighIntermediaryRepresentation.Values.Value?, owner: String): Model.AttributeModel? {
+    if value == HighIntermediaryRepresentation.Values.AttributeRead {
+        return attribute_read_on_this(value, owner)
+    }
+    return null
+}
+
+func attribute_read_on_this(read: HighIntermediaryRepresentation.Values.AttributeRead, owner: String): Model.AttributeModel? {
+    var on_this = read.object == HighIntermediaryRepresentation.Values.ThisRead
+    assert on_this and read.attribute.owner == owner
+    return read.attribute
+}
+
+func body_of(function: Model.FunctionModel): HighIntermediaryRepresentation.Statements.Block? {
+    crash lowering.assignments
+    var key = function.key()
+    var found = lowering.assignments.bodies[key]
+    assert found
+    return found.body
+}
+
+func is_the_call_that_left_it(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+    write_back: HighIntermediaryRepresentation.Values.Call,
+): Boolean {
+    if statement == HighIntermediaryRepresentation.Statements.Evaluate {
+        return evaluates_the_call_that_left_it(statement, write_back)
+    }
+    return false
+}
+
+func evaluates_the_call_that_left_it(
+    evaluated: HighIntermediaryRepresentation.Statements.Evaluate,
+    write_back: HighIntermediaryRepresentation.Values.Call,
+): Boolean {
+    if evaluated.waited {
+        return false
+    }
+    var called = evaluated.value
+    if called == HighIntermediaryRepresentation.Values.Call {
+        return is_a_call_that_left_it(called, write_back)
+    }
+    return false
+}
+
+func is_a_call_that_left_it(
+    called: HighIntermediaryRepresentation.Values.Call,
+    write_back: HighIntermediaryRepresentation.Values.Call,
+): Boolean {
+    if called.function.owner != write_back.function.owner {
+        return false
+    }
+    if not lowering.is_the_same_path(called.receiver, write_back.receiver) {
+        return false
+    }
+    return ends_holding_the_slot(called.function)
+}
+
+func ends_holding_the_slot(function: Model.FunctionModel): Boolean {
+    var body = body_of(function)
+    if not body {
+        return false
+    }
+    if body.statements.is_empty() or returns_anywhere(body) {
+        return false
+    }
+    var last = body.statements.last()
+    if last == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        return assigns_the_slots_item(last, function.owner)
+    }
+    return false
+}
+
+func assigns_the_slots_item(last: HighIntermediaryRepresentation.Statements.Assign.Attribute, owner: String): Boolean {
+    var on_this = last.object == HighIntermediaryRepresentation.Values.ThisRead
+    if not on_this or not is_the_attribute(last.attribute, held_attribute) {
+        return false
+    }
+    var given = last.value
+    if given == HighIntermediaryRepresentation.Values.Conversion {
+        return is_the_proven_slot(given, owner)
+    }
+    return false
+}
+
+func is_the_proven_slot(given: HighIntermediaryRepresentation.Values.Conversion, owner: String): Boolean {
+    if given.kind != 'proven' {
+        return false
+    }
+    var read = given.converted
+    if read == HighIntermediaryRepresentation.Values.Call {
+        return reads_the_slot(read, owner)
+    }
+    return false
+}
+
+func reads_the_slot(read: HighIntermediaryRepresentation.Values.Call, owner: String): Boolean {
+    var reads = ListReads(lowering)
+    if not reads.is_a_plain_get(read) or read.function.owner != list_owner {
+        return false
+    }
+    var list = attribute_of_this(read.receiver, owner)
+    var position = attribute_of_this(read.arguments[0], owner)
+    if not list or not position {
+        return false
+    }
+    return is_the_attribute(list, list_attribute) and is_the_attribute(position, index_attribute)
+}
+
+func is_the_attribute(first: Model.AttributeModel?, second: Model.AttributeModel): Boolean {
+    if not first {
+        return false
+    }
+    return first.owner == second.owner and first.name == second.name
+}
+
+func returns_anywhere(block: HighIntermediaryRepresentation.Statements.Block?): Boolean {
+    if not block {
+        return false
+    }
+    return block.statements.any(returns_in)
+}
+
+func returns_in(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Return: return true
+        HighIntermediaryRepresentation.Statements.If: return returns_in_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: return returns_anywhere(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: return returns_anywhere(statement)
+        _: return false
+    }
+}
+
+func returns_in_an_if(branch: HighIntermediaryRepresentation.Statements.If): Boolean {
+    if returns_anywhere(branch.then_branch) {
+        return true
+    }
+    return returns_anywhere(branch.else_branch)
+}
+
+func leaves_it_alone_until_here(write_back: HighIntermediaryRepresentation.Values.Call, left_at: Integer): Boolean {
+    crash lowering.assignments
+    var watched = List<String>()
+    if not lowering.gather_the_sources(write_back.receiver, watched) {
+        return false
+    }
+    var list_key = key_of(list_attribute)
+    var index_key = key_of(index_attribute)
+    var held_key = key_of(held_attribute)
+    watched.append(list_key)
+    watched.append(index_key)
+    watched.append(held_key)
+    watched.append("[]{list_owner}")
+    watched.append("{list_owner}._length")
+    var between = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var index = left_at + 1
+    while index < lowering.statement_index {
+        var statement = lowering.block_statements[index]
+        crash statement
+        between.append(statement)
+        index = index + 1
+    }
+    return lowering.assignments.leaves_alone(between, 0, watched)
+}
+
+func key_of(attribute: Model.AttributeModel): String {
+    return "{attribute.owner}.{attribute.name}"
+}

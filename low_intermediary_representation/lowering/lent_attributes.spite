@@ -1,0 +1,680 @@
+var model = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(model)
+var assignments: Assignments? = null
+var replacing: ReplacedDefaults? = null
+var taken: HighIntermediaryRepresentation.Ownership.TakenParameters? = null
+var reads: ListReads? = null
+var library = Validators.LibraryFile()
+var candidates = Dictionary<String, String>()
+var lists_of = Dictionary<String, String>()
+var list_classes_of = Dictionary<String, String>()
+var refused = List<String>()
+var written_attributes = List<String>()
+var unsafe_list_classes = List<String>()
+var slot_writes = List<String>()
+var current = ""
+var current_owner = ""
+var depth = 0
+var sites_of = Dictionary<String, List<String>>()
+var roots = List<String>()
+var writes_it = Dictionary<String, Boolean>()
+var unwritten_reads = List<String>()
+var watched = ""
+var followed = ""
+var written_here = false
+var in_the_defaults = false
+var reading_intrinsics = ["_read_value", "_item_size", "_item_held_once", "_processor_count"]
+
+func LentAttributes(
+    starting_high: HighIntermediaryRepresentation.HighProgram,
+    starting_assignments: Assignments,
+    starting_replacing: ReplacedDefaults,
+    starting_taken: HighIntermediaryRepresentation.Ownership.TakenParameters,
+) {
+    high = starting_high
+    model = starting_high.model
+    assignments = starting_assignments
+    replacing = starting_replacing
+    taken = starting_taken
+}
+
+# ../../OPTIMIZATIONS.md#an-attribute-that-only-holds-an-item-of-its-holders-list-is-not-counted
+func found(): List<String> {
+    var none_found = List<String>()
+    if high.prompt or high.makes_work {
+        return none_found
+    }
+    model.order.each(note_the_candidates_of)
+    if candidates.is_empty() {
+        return none_found
+    }
+    high.built_functions.each(study_a_function)
+    var kept = List<String>()
+    var keys = candidates.keys()
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        crash key
+        if not refused.contains(key) and lists_of.contains(key) and is_lent_safely(key) {
+            kept.append(key)
+        }
+        index = index + 1
+    }
+    return kept
+}
+
+func note_the_candidates_of(holder: Model.ClassModel) {
+    assert holder.is_singleton and holder.bound_types.is_empty()
+    assert not holder.key.starts_with("Spite.") and not library.holds(holder.file.path)
+    assert not high.entry or high.entry.owner != holder.key
+    crash taken
+    var index = 0
+    while index < holder.declared_attributes.count() {
+        var attribute = holder.declared_attributes[index]
+        var held = attribute.attribute_type
+        var is_an_object = held.kind == 'object' and not held.is_nullable
+        if is_an_object and taken.frees_quietly(held.name) {
+            candidates["{holder.key}.{attribute.name}"] = held.name
+        }
+        index = index + 1
+    }
+}
+
+func study_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    current = function.function.key()
+    current_owner = function.function.owner
+    depth = 0
+    look_in_a_block(function.body)
+}
+
+func look_in_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    depth = depth + 1
+    block.statements.each(look_in_a_statement)
+    depth = depth - 1
+}
+
+func look_in_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: look_in_a_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: look_in_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: look_in_both(statement.value, statement.waited)
+        HighIntermediaryRepresentation.Statements.If: look_in_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: look_in_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Stop: look_in_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: look_in_a_block(statement)
+        _: look_in(statement.value)
+    }
+}
+
+func look_in_a_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    look_in(written.object)
+    var key = key_of(written.attribute)
+    if candidates.contains(key) {
+        judge_a_lent_write(written, key)
+    }
+    var in_the_defaults_here = current == "{current_owner}._attribute_defaults" and depth == 1
+    if not in_the_defaults_here {
+        note_a_written_attribute(key)
+    }
+    look_in(written.value)
+}
+
+func judge_a_lent_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute, key: String) {
+    crash replacing
+    var on_this = written.object == HighIntermediaryRepresentation.Values.ThisRead
+    var at_the_top = depth == 1 and current_owner == written.attribute.owner
+    if on_this and at_the_top and current == "{current_owner}._attribute_defaults" {
+        var no_bound = Dictionary<String, Long>()
+        var is_a_making = written.value == HighIntermediaryRepresentation.Values.MakeObject
+        if not is_a_making or not replacing.is_quiet(written.value, no_bound) {
+            refused.append(key)
+        }
+        return
+    }
+    if not on_this or current_owner != written.attribute.owner {
+        refused.append(key)
+        return
+    }
+    var list = list_read_of(written.value)
+    if list.is_empty() {
+        refused.append(key)
+        return
+    }
+    var known = lists_of[key]
+    if known and known != list {
+        refused.append(key)
+    }
+    lists_of[key] = list
+}
+
+func list_read_of(value: HighIntermediaryRepresentation.Values.Value?): String {
+    if value == HighIntermediaryRepresentation.Values.Conversion {
+        return list_read_of_a_conversion(value)
+    }
+    return ""
+}
+
+func list_read_of_a_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): String {
+    if conversion.kind != 'proven' {
+        return ""
+    }
+    var read = conversion.converted
+    if read == HighIntermediaryRepresentation.Values.Call {
+        return list_read_of_a_call(read)
+    }
+    return ""
+}
+
+func list_read_of_a_call(read: HighIntermediaryRepresentation.Values.Call): String {
+    crash reads
+    if not reads.is_a_plain_get(read) {
+        return ""
+    }
+    var list = read.receiver
+    if list == HighIntermediaryRepresentation.Values.AttributeRead {
+        return list_attribute_of_this(list, read.function.owner)
+    }
+    return ""
+}
+
+func list_attribute_of_this(list: HighIntermediaryRepresentation.Values.AttributeRead, list_class: String): String {
+    var on_this = list.object == HighIntermediaryRepresentation.Values.ThisRead
+    if not on_this or list.attribute.owner != current_owner {
+        return ""
+    }
+    var list_key = key_of(list.attribute)
+    var known = list_classes_of[list_key]
+    if known and known != list_class {
+        return ""
+    }
+    list_classes_of[list_key] = list_class
+    return list_key
+}
+
+func note_a_written_attribute(key: String) {
+    if not written_attributes.contains(key) {
+        written_attributes.append(key)
+    }
+}
+
+func look_in_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    note_a_written_attribute("?.{written.member}")
+    look_in(written.object)
+    look_in(written.value)
+}
+
+func look_in_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    look_in_both(branch.condition, branch.decided_condition)
+    look_in_a_block(branch.then_branch)
+    look_in_a_block(branch.else_branch)
+}
+
+func look_in_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    look_in(loop.condition)
+    look_in_a_block(loop.body)
+}
+
+func look_in_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(look_in_present)
+    look_in(stop.then)
+}
+
+func look_in_both(
+    left: HighIntermediaryRepresentation.Values.Value?,
+    right: HighIntermediaryRepresentation.Values.Value?,
+) {
+    look_in(left)
+    look_in(right)
+}
+
+func look_in_present(value: HighIntermediaryRepresentation.Values.Value) {
+    look_in(value)
+}
+
+func look_in(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.AttributeRead: look_in(value.object)
+        HighIntermediaryRepresentation.Values.Call: look_in_a_call(value)
+        HighIntermediaryRepresentation.Values.MakeObject: value.arguments.each(look_in_present)
+        HighIntermediaryRepresentation.Values.MachineOperation: look_in_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.Negation: look_in(value.negated)
+        HighIntermediaryRepresentation.Values.ForeignCall: look_in_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.Class.Test: look_in(value.tested)
+        HighIntermediaryRepresentation.Values.PresenceTest: look_in(value.tested)
+        HighIntermediaryRepresentation.Values.Conversion: look_in(value.converted)
+        HighIntermediaryRepresentation.Values.Function.Value: look_in(value.receiver)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: look_in_a_value_call(value)
+        HighIntermediaryRepresentation.Values.NumberRoom: look_in_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.ShapeCall: look_in_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.EnumText: look_in(value.number)
+        HighIntermediaryRepresentation.Values.EnumFromText: look_in(value.text)
+        HighIntermediaryRepresentation.Values.Class.OfValue: refuse_the_classes(value)
+        HighIntermediaryRepresentation.Values.Class.Object: refuse_the_class(value.described)
+        _: return
+    }
+}
+
+func look_in_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    var name = call.function.name
+    var owner = call.function.owner
+    if name == "_write_value" or name == "_forget_value" {
+        judge_an_item_write(owner)
+    } else if is_an_unread_intrinsic(call.function) {
+        unsafe_list_classes.append(owner)
+    }
+    if name == "set_at" {
+        judge_a_slot_write(call)
+    }
+    look_in(call.receiver)
+    call.arguments.each(look_in_present)
+}
+
+func is_an_unread_intrinsic(function: Model.FunctionModel): Boolean {
+    crash assignments
+    var function_key = function.key()
+    if assignments.bodies.contains(function_key) or reading_intrinsics.contains(function.name) {
+        return false
+    }
+    return not function.has_a_body()
+}
+
+func judge_an_item_write(list_class: String) {
+    var allowed = current == "{list_class}.append" or current == "{list_class}.set_at"
+    if not allowed {
+        unsafe_list_classes.append(list_class)
+    }
+}
+
+func judge_a_slot_write(call: HighIntermediaryRepresentation.Values.Call) {
+    var receiver_key = this_attribute_key(call.receiver)
+    var value = call.arguments.last()
+    var value_key = this_attribute_key(value)
+    slot_writes.append("{call.function.owner} {receiver_key} {value_key}")
+}
+
+func this_attribute_key(value: HighIntermediaryRepresentation.Values.Value?): String {
+    if value == HighIntermediaryRepresentation.Values.AttributeRead {
+        return this_attribute_key_of_a_read(value)
+    }
+    return "?"
+}
+
+func this_attribute_key_of_a_read(read: HighIntermediaryRepresentation.Values.AttributeRead): String {
+    var on_this = read.object == HighIntermediaryRepresentation.Values.ThisRead
+    if not on_this or read.attribute.owner != current_owner {
+        return "?"
+    }
+    return key_of(read.attribute)
+}
+
+func look_in_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall) {
+    look_in(call.library)
+    call.arguments.each(look_in_present)
+}
+
+func look_in_a_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
+    look_in(call.called)
+    call.arguments.each(look_in_present)
+}
+
+func look_in_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    look_in(call.receiver)
+    call.arguments.each(look_in_present)
+}
+
+func refuse_the_classes(made: HighIntermediaryRepresentation.Values.Class.OfValue) {
+    made.candidates.each(refuse_the_class)
+    look_in(made.described)
+}
+
+func refuse_the_class(class_key: String) {
+    var keys = candidates.keys()
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        crash key
+        var held = candidates[key]
+        if key.starts_with("{class_key}.") or held == class_key {
+            refused.append(key)
+        }
+        index = index + 1
+    }
+}
+
+func is_lent_safely(key: String): Boolean {
+    var list = lists_of[key]
+    crash list
+    var list_class = list_classes_of[list]
+    crash list_class
+    if written_attributes.contains(list) or not writes_only_its_own_slots(key, list, list_class) {
+        return false
+    }
+    var parts = key.split(".")
+    var name = parts.last()
+    crash name
+    var list_parts = list.split(".")
+    var list_name = list_parts.last()
+    crash list_name
+    if written_attributes.contains("?.{name}") or written_attributes.contains("?.{list_name}") {
+        return false
+    }
+    return is_never_read_unwritten(key)
+}
+
+func writes_only_its_own_slots(key: String, list: String, list_class: String): Boolean {
+    if unsafe_list_classes.contains(list_class) {
+        return false
+    }
+    var allowed = "{list_class} {list} {key}"
+    var index = 0
+    while index < slot_writes.count() {
+        var written = slot_writes[index]
+        crash written
+        if written.starts_with("{list_class} ") and written != allowed {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+# ../../OPTIMIZATIONS.md#an-attribute-that-only-holds-an-item-of-its-holders-list-is-not-counted
+func is_never_read_unwritten(key: String): Boolean {
+    watched = key
+    sites_of = Dictionary<String, List<String>>()
+    roots = List<String>()
+    unwritten_reads = List<String>()
+    find_the_writing_functions()
+    high.built_functions.each(follow_a_function)
+    crash assignments
+    assignments.taken_as_values.each(roots.append)
+    return every_unwritten_read_is_covered()
+}
+
+func find_the_writing_functions() {
+    writes_it = Dictionary<String, Boolean>()
+    var changed = true
+    while changed {
+        changed = false
+        var index = 0
+        while index < high.built_functions.count() {
+            var function = high.built_functions[index]
+            var function_key = function.function.key()
+            var known = writes_it[function_key] == true
+            if not known and always_writes(function) {
+                writes_it[function_key] = true
+                changed = true
+            }
+            index = index + 1
+        }
+    }
+}
+
+func always_writes(function: HighIntermediaryRepresentation.HighFunction): Boolean {
+    if function.function.name == "_attribute_defaults" or returns_anywhere(function.body) {
+        return false
+    }
+    return function.body.statements.any(writes_it_at_the_top)
+}
+
+func writes_it_at_the_top(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return key_of(statement.attribute) == watched
+        HighIntermediaryRepresentation.Statements.Evaluate: return calls_a_writer(statement.value)
+        HighIntermediaryRepresentation.Statements.Declare: return calls_a_writer(statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return calls_a_writer(statement.value)
+        _: return false
+    }
+}
+
+func calls_a_writer(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        var called_key = value.function.key()
+        return writes_it[called_key] == true
+    }
+    return false
+}
+
+func returns_anywhere(block: HighIntermediaryRepresentation.Statements.Block?): Boolean {
+    if not block {
+        return false
+    }
+    return block.statements.any(returns_in)
+}
+
+func returns_in(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Return: return true
+        HighIntermediaryRepresentation.Statements.If: return returns_in_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: return returns_anywhere(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: return returns_anywhere(statement)
+        _: return false
+    }
+}
+
+func returns_in_an_if(branch: HighIntermediaryRepresentation.Statements.If): Boolean {
+    if returns_anywhere(branch.then_branch) {
+        return true
+    }
+    return returns_anywhere(branch.else_branch)
+}
+
+func follow_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    followed = function.function.key()
+    if function.function.name == "_attribute_defaults" or function.function.is_constructor {
+        roots.append(followed)
+    }
+    written_here = false
+    in_the_defaults = function.function.name == "_attribute_defaults"
+    follow_a_block(function.body)
+}
+
+func follow_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    var outer = written_here
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        follow_a_statement(statement)
+        if writes_it_at_the_top(statement) and not in_the_defaults {
+            written_here = true
+        }
+        index = index + 1
+    }
+    written_here = outer
+}
+
+func follow_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: follow_both(statement.object, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: follow_both(statement.object, statement.value)
+        HighIntermediaryRepresentation.Statements.Evaluate: follow_both(statement.value, statement.waited)
+        HighIntermediaryRepresentation.Statements.If: follow_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: follow_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Stop: follow_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: follow_a_block(statement)
+        _: follow(statement.value)
+    }
+}
+
+func follow_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    follow_both(branch.condition, branch.decided_condition)
+    follow_a_block(branch.then_branch)
+    follow_a_block(branch.else_branch)
+}
+
+func follow_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    follow(loop.condition)
+    follow_a_block(loop.body)
+}
+
+func follow_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(follow_present)
+    follow(stop.then)
+}
+
+func follow_both(
+    left: HighIntermediaryRepresentation.Values.Value?,
+    right: HighIntermediaryRepresentation.Values.Value?,
+) {
+    follow(left)
+    follow(right)
+}
+
+func follow_present(value: HighIntermediaryRepresentation.Values.Value) {
+    follow(value)
+}
+
+func follow(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.AttributeRead: follow_a_read(value)
+        HighIntermediaryRepresentation.Values.Call: follow_a_call(value)
+        HighIntermediaryRepresentation.Values.MakeObject: follow_a_making(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: follow_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.Negation: follow(value.negated)
+        HighIntermediaryRepresentation.Values.ForeignCall: follow_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.Class.Test: follow(value.tested)
+        HighIntermediaryRepresentation.Values.PresenceTest: follow(value.tested)
+        HighIntermediaryRepresentation.Values.Conversion: follow(value.converted)
+        HighIntermediaryRepresentation.Values.Function.Value: follow_a_taken_function(value)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: follow_a_value_call(value)
+        HighIntermediaryRepresentation.Values.NumberRoom: follow_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.ShapeCall: follow_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.EnumText: follow(value.number)
+        HighIntermediaryRepresentation.Values.EnumFromText: follow(value.text)
+        HighIntermediaryRepresentation.Values.Class.OfValue: follow(value.described)
+        _: return
+    }
+}
+
+func follow_a_read(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    var is_watched = key_of(read.attribute) == watched
+    if is_watched and not written_here and not unwritten_reads.contains(followed) {
+        unwritten_reads.append(followed)
+    }
+    follow(read.object)
+}
+
+func follow_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    var called_key = call.function.key()
+    note_a_site(called_key)
+    follow(call.receiver)
+    call.arguments.each(follow_present)
+}
+
+func note_a_site(called_key: String) {
+    if not sites_of.contains(called_key) {
+        var none_yet = List<String>()
+        sites_of[called_key] = none_yet
+    }
+    var known = sites_of[called_key]
+    crash known
+    if written_here {
+        known.append("")
+    } else {
+        known.append(followed)
+    }
+}
+
+func follow_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var class_key = made.value_type.name
+    roots.append("{class_key}._attribute_defaults")
+    if made.constructor {
+        var constructor_key = made.constructor.key()
+        roots.append(constructor_key)
+    }
+    made.arguments.each(follow_present)
+}
+
+func follow_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall) {
+    follow(call.library)
+    call.arguments.each(follow_present)
+}
+
+func follow_a_taken_function(taken_value: HighIntermediaryRepresentation.Values.Function.Value) {
+    var taken_key = taken_value.function.key()
+    roots.append(taken_key)
+    follow(taken_value.receiver)
+}
+
+func follow_a_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
+    follow(call.called)
+    call.arguments.each(follow_present)
+}
+
+func follow_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    var name = call.member.name
+    var index = 0
+    while index < high.built_functions.count() {
+        var function = high.built_functions[index]
+        var function_name = function.function.name
+        if function_name == name or function_name == "get_{name}" {
+            var member_key = function.function.key()
+            roots.append(member_key)
+        }
+        index = index + 1
+    }
+    follow(call.receiver)
+    call.arguments.each(follow_present)
+}
+
+func every_unwritten_read_is_covered(): Boolean {
+    var covered = Dictionary<String, Boolean>()
+    var index = 0
+    while index < high.built_functions.count() {
+        var function = high.built_functions[index]
+        var function_key = function.function.key()
+        var called = sites_of.contains(function_key)
+        covered[function_key] = called and not roots.contains(function_key)
+        index = index + 1
+    }
+    var changed = true
+    while changed {
+        changed = false
+        var keys = covered.keys()
+        var at = 0
+        while at < keys.count() {
+            var function_key = keys[at]
+            crash function_key
+            if covered[function_key] == true and has_an_uncovered_site(function_key, covered) {
+                covered[function_key] = false
+                changed = true
+            }
+            at = at + 1
+        }
+    }
+    index = 0
+    while index < unwritten_reads.count() {
+        var reader = unwritten_reads[index]
+        crash reader
+        if covered[reader] != true {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func has_an_uncovered_site(function_key: String, covered: Dictionary<String, Boolean>): Boolean {
+    var sites = sites_of[function_key]
+    if not sites {
+        return true
+    }
+    var index = 0
+    while index < sites.count() {
+        var caller = sites[index]
+        crash caller
+        if not caller.is_empty() and covered[caller] != true {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func key_of(attribute: Model.AttributeModel): String {
+    return "{attribute.owner}.{attribute.name}"
+}

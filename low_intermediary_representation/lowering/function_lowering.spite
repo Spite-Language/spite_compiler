@@ -39,12 +39,15 @@ var column_storages = Dictionary<String, Integer>()
 var column_capacities = Dictionary<String, Integer>()
 var column_indices = Dictionary<String, Integer>()
 var column_addresses = Dictionary<String, Integer>()
+var column_regions = Dictionary<String, String>()
+var column_parts = List<String>()
 var slot_lists = Dictionary<String, HighIntermediaryRepresentation.Values.Value>()
 var taken: HighIntermediaryRepresentation.Ownership.TakenParameters? = null
 var uses = HighIntermediaryRepresentation.Ownership.Uses()
 var borrowed_sources = List<HighIntermediaryRepresentation.Values.Value>()
 var fresh_by_constructor = Dictionary<String, List<String>>()
 var fresh_attributes = List<String>()
+var lowering_name = ""
 
 func FunctionLowering(
     starting_layout: Layout,
@@ -69,6 +72,7 @@ func lowered(
         key = "{key}$unguarded"
     }
     lowering_owner = high.function.owner
+    lowering_name = high.function.name
     counts_the_answer = true
     if high.function.answer {
         counts_the_answer = not is_a_singleton_type(high.function.answer)
@@ -81,6 +85,8 @@ func lowered(
     column_capacities = Dictionary<String, Integer>()
     column_indices = Dictionary<String, Integer>()
     column_addresses = Dictionary<String, Integer>()
+    column_regions = Dictionary<String, String>()
+    column_parts = List<String>()
     note_the_slot_appends(high)
     if high.function.declaration {
         note_the_place(high.function, high.function.declaration.line)
@@ -1303,7 +1309,11 @@ func gather_through_a_slot(call: HighIntermediaryRepresentation.Values.Call, wat
     if not is_a_read and not reads.is_a_plain_get(call) {
         return false
     }
-    watched.append("[]{call.function.owner}")
+    var list_key = call.function.owner
+    watched.append("[]{list_key}")
+    if layout.inline_stride_of(list_key) > 0 or layout.columnar.contains(list_key) {
+        watched.append("[+]{list_key}")
+    }
     return gather_the_sources(call.receiver, watched)
 }
 
@@ -1351,6 +1361,11 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
         discard(object, assign.object.value_type)
         return
     }
+    if layout.is_lent(assign.attribute) {
+        store_a_lent_item(object.value, assign, region)
+        discard(object, assign.object.value_type)
+        return
+    }
     var kept_value = lower_a_kept_value(assign.value)
     if layout.is_embedded(assign.attribute) {
         store_the_part_inside(object.value, assign.attribute, kept_value)
@@ -1365,6 +1380,30 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
     var value = kept_value
     bind_the_foreign_names(assign.attribute, value.value)
     discard(object, assign.object.value_type)
+}
+
+# ../../OPTIMIZATIONS.md#an-attribute-that-only-holds-an-item-of-its-holders-list-is-not-counted
+func store_a_lent_item(
+    object: Integer,
+    assign: HighIntermediaryRepresentation.Statements.Assign.Attribute,
+    region: String,
+) {
+    var offset = layout.offset_of(assign.attribute)
+    var given = assign.value
+    var stored_value = 0
+    if lowering_name == "_attribute_defaults" {
+        stored_value = constant(0)
+    } else if given == HighIntermediaryRepresentation.Values.Conversion {
+        var reads = ListReads(this)
+        var item = reads.held_item(given)
+        assert not item.owned
+        stored_value = item.value
+    } else {
+        crash
+    }
+    var stored = LowIntermediaryRepresentation.Instructions.Store(object, offset, stored_value, 'bits_64')
+    stored.region = region
+    emit(stored)
 }
 
 func bind_the_foreign_names(attribute: Model.AttributeModel, library: Integer) {
@@ -1580,6 +1619,8 @@ func lower_evaluate(evaluate: HighIntermediaryRepresentation.Statements.Evaluate
     }
     assert not fills_a_frame_list(evaluate.value)
     assert not ends_a_slot_append(evaluate.value)
+    var written_back = WrittenBackCalls(this)
+    assert not written_back.is_a_needless_write_back(evaluate.value)
     var value = lower_value(evaluate.value)
     crash evaluate.value
     discard(value, evaluate.value.value_type)
@@ -1830,6 +1871,11 @@ func lower_this(): Lowered {
 }
 
 func lower_local(read: HighIntermediaryRepresentation.Values.LocalRead): Lowered {
+    var held_in_columns = column_parts.contains(read.name) or column_items.contains(read.name)
+    if held_in_columns and not locals.contains(read.name) {
+        var columns = ColumnLists(this)
+        return columns.handed_out_whole(read.value_type.name)
+    }
     var register = locals[read.name]
     crash register
     var presence = local_presences[read.name]

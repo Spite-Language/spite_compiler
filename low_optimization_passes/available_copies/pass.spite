@@ -1,0 +1,900 @@
+# ../../OPTIMIZATIONS.md#a-copy-is-read-through-wherever-it-still-holds
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var edges = LowOptimizationPasses.BlockEdges()
+var renaming = LowOptimizationPasses.Renaming()
+var register_total = 0
+var copy_targets = List<Integer>()
+var copy_sources = List<Integer>()
+var copy_numbers = Dictionary<Long, Integer>()
+var touching = List<List<Integer>>()
+var targeting = List<List<Integer>>()
+var word_count = 0
+var leaving = List<Long>()
+var current = List<Long>()
+var largest_cells = 4000000
+var definition_counts = List<Integer>()
+var constant_values = List<Long>()
+var constant_known = List<Boolean>()
+var narrow = List<Boolean>()
+var narrowing_changed = false
+var reading_counts = List<Integer>()
+var shapes_the_blocks = false
+var steady_states = List<Integer>()
+var steady_values = List<Long>()
+var reversed_sources = List<Integer>()
+var reversed_targets = List<Integer>()
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if function.is_resumable or function.blocks.is_empty() {
+        return function
+    }
+    edges.read_the_function(function)
+    if not edges.is_regular {
+        return function
+    }
+    register_total = operands.most_register_of(function)
+    drop_the_narrow_masks()
+    if shapes_the_blocks {
+        invert_the_tests()
+        fold_the_steady_constants()
+        merge_the_straight_blocks()
+    }
+    edges.read_the_function(function)
+    register_total = operands.most_register_of(function)
+    count_the_definitions()
+    number_the_copies()
+    if copy_targets.is_empty() {
+        return function
+    }
+    word_count = copy_targets.count() / 64 + 1
+    if word_count * function.blocks.count() > largest_cells {
+        return function
+    }
+    var index = 0
+    while index < register_total {
+        renaming.renames.append(-1)
+        index = index + 1
+    }
+    find_the_available()
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        read_through_in(block_index)
+        block_index = block_index + 1
+    }
+    return function
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-is-never-masked-to-its-own-width
+func drop_the_narrow_masks() {
+    var index = 0
+    while index < register_total {
+        definition_counts.append(0)
+        reading_counts.append(0)
+        constant_values.append(0)
+        constant_known.append(false)
+        narrow.append(true)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_a_definition)
+        block_index = block_index + 1
+    }
+    index = 0
+    while index < function.parameter_count and index < register_total {
+        narrow[index] = false
+        index = index + 1
+    }
+    narrowing_changed = true
+    while narrowing_changed {
+        narrowing_changed = false
+        block_index = 0
+        while block_index < function.blocks.count() {
+            var copying = function.blocks[block_index]
+            copying.instructions.each(narrow_through_a_copy)
+            block_index = block_index + 1
+        }
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var position = 0
+        while position < block.instructions.count() {
+            var instruction = block.instructions[position]
+            var replaced = unmasked(instruction)
+            if replaced {
+                block.instructions[position] = replaced
+            }
+            position = position + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-comparison-tested-against-zero-is-the-opposite-comparison
+func invert_the_tests() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var position = 1
+        while position < block.instructions.count() {
+            var earlier = block.instructions[position - 1]
+            var instruction = block.instructions[position]
+            crash earlier
+            crash instruction
+            var inverted = inverted_test(earlier, instruction)
+            if inverted {
+                block.instructions[position] = inverted
+            }
+            position = position + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func inverted_test(
+    earlier: LowIntermediaryRepresentation.Instructions.Instruction,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    if earlier == LowIntermediaryRepresentation.Instructions.Compare and instruction == LowIntermediaryRepresentation.Instructions.Compare {
+        return inverted_compare(earlier, instruction)
+    }
+    return null
+}
+
+func inverted_compare(
+    earlier: LowIntermediaryRepresentation.Instructions.Compare,
+    test: LowIntermediaryRepresentation.Instructions.Compare,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    var tested = earlier.target
+    assert test.left == tested and tested >= function.parameter_count and test.right >= 0
+    assert definition_counts[tested] == 1 and reading_counts[tested] == 1 and is_zero(test.right)
+    assert earlier.left != earlier.target and earlier.right != earlier.target
+    if test.comparison == 'not_equal' {
+        return LowIntermediaryRepresentation.Instructions.Copy(test.target, tested)
+    }
+    assert test.comparison == 'equal'
+    var opposite = opposite_of(earlier.comparison)
+    var made = LowIntermediaryRepresentation.Instructions.Compare(test.target, opposite, earlier.left, earlier.right)
+    made.is_signed = earlier.is_signed
+    return made
+}
+
+func is_zero(register: Integer): Boolean {
+    if definition_counts[register] != 1 or constant_known[register] != true {
+        return false
+    }
+    var value = constant_values[register]
+    crash value
+    return value == 0
+}
+
+func opposite_of(comparison: LowIntermediaryRepresentation.Comparison): LowIntermediaryRepresentation.Comparison {
+    switch comparison {
+        'equal': return 'not_equal'
+        'not_equal': return 'equal'
+        'less': return 'greater_or_equal'
+        'less_or_equal': return 'greater'
+        'greater': return 'less_or_equal'
+        'greater_or_equal': return 'less'
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-register-that-only-ever-holds-one-constant-is-that-constant
+func fold_the_steady_constants() {
+    var index = 0
+    while index < register_total {
+        steady_states.append(0)
+        steady_values.append(0)
+        index = index + 1
+    }
+    index = 0
+    while index < function.parameter_count and index < register_total {
+        steady_states[index] = 2
+        index = index + 1
+    }
+    var changed = true
+    var rounds = 0
+    while changed and rounds < 8 {
+        changed = false
+        var block_index = 0
+        while block_index < function.blocks.count() {
+            var block = function.blocks[block_index]
+            var position = 0
+            while position < block.instructions.count() {
+                var instruction = block.instructions[position]
+                if follow_a_steady(instruction) {
+                    changed = true
+                }
+                position = position + 1
+            }
+            block_index = block_index + 1
+        }
+        rounds = rounds + 1
+    }
+    var first_block = function.blocks[0]
+    crash first_block
+    var made = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var total = register_total
+    index = 0
+    while index < total {
+        var state = steady_states[index]
+        var count = definition_counts[index]
+        crash state
+        crash count
+        if state == 1 and count > 1 {
+            var value = steady_values[index]
+            crash value
+            var held = register_total
+            register_total = register_total + 1
+            var constant = LowIntermediaryRepresentation.Instructions.Constant(held, value)
+            made.append(constant)
+            rename_every_use(index, held)
+        }
+        index = index + 1
+    }
+    assert not made.is_empty()
+    first_block.instructions.each(made.append)
+    first_block.instructions = made
+    function.register_count = register_total
+}
+
+func rename_every_use(register: Integer, replacement: Integer) {
+    while renaming.renames.count() <= register {
+        renaming.renames.append(-1)
+    }
+    renaming.renames[register] = replacement
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(renaming.rename)
+        block_index = block_index + 1
+    }
+    renaming.renames[register] = -1
+}
+
+func follow_a_steady(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+        return meet_a_steady(instruction.target, 1, instruction.number)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        return follow_a_steady_copy(instruction.target, instruction.source)
+    }
+    operands.read(instruction)
+    var changed = false
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        if meet_a_steady(register, 2, 0) {
+            changed = true
+        }
+        index = index + 1
+    }
+    return changed
+}
+
+func follow_a_steady_copy(target: Integer, source: Integer): Boolean {
+    if source < 0 {
+        return meet_a_steady(target, 2, 0)
+    }
+    var state = steady_states[source]
+    crash state
+    if state == 0 {
+        return false
+    }
+    var value = steady_values[source]
+    crash value
+    return meet_a_steady(target, state, value)
+}
+
+func meet_a_steady(register: Integer, state: Integer, value: Long): Boolean {
+    if register < 0 {
+        return false
+    }
+    var known = steady_states[register]
+    crash known
+    if known == 2 {
+        return false
+    }
+    if known == 0 {
+        steady_states[register] = state
+        steady_values[register] = value
+        return true
+    }
+    if state == 2 {
+        steady_states[register] = 2
+        return true
+    }
+    var before = steady_values[register]
+    crash before
+    if before == value {
+        return false
+    }
+    steady_states[register] = 2
+    return true
+}
+
+# ../../OPTIMIZATIONS.md#straight-runs-of-blocks-are-one-block
+func merge_the_straight_blocks() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        if edges.is_reachable(block_index) {
+            var merging = true
+            var steps = 0
+            while merging and steps < 64 {
+                merging = merged_the_next(block_index)
+                steps = steps + 1
+            }
+        }
+        block_index = block_index + 1
+    }
+}
+
+func merged_the_next(block_index: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var last = block.instructions.last()
+    var next = block_index + 1
+    var jumps = false
+    if last {
+        if last == LowIntermediaryRepresentation.Instructions.Jump {
+            next = last.block
+            jumps = true
+        } else if edges.ends_the_block(last) {
+            return false
+        }
+    }
+    if next <= 0 or next >= function.blocks.count() or next == block_index {
+        return false
+    }
+    if edges.reachable_predecessor_count(next) != 1 {
+        return false
+    }
+    var following = function.blocks[next]
+    crash following
+    if not shares_a_place(block, following) {
+        return false
+    }
+    var falls_on = falls_through(following)
+    if falls_on and next + 1 >= function.blocks.count() {
+        return false
+    }
+    var joined = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var index = 0
+    var kept_count = block.instructions.count()
+    if jumps {
+        kept_count = kept_count - 1
+    }
+    while index < kept_count {
+        var instruction = block.instructions[index]
+        crash instruction
+        joined.append(instruction)
+        index = index + 1
+    }
+    following.instructions.each(joined.append)
+    if falls_on {
+        var onward = LowIntermediaryRepresentation.Instructions.Jump(next + 1)
+        joined.append(onward)
+    }
+    block.instructions = joined
+    following.instructions = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    move_the_edges(block_index, next)
+    return true
+}
+
+func shares_a_place(block: LowIntermediaryRepresentation.LowBlock, following: LowIntermediaryRepresentation.LowBlock): Boolean {
+    if following.place == block.place or not following.instructions.any(may_fault) {
+        return true
+    }
+    if block.instructions.any(may_fault) {
+        return false
+    }
+    block.place = following.place
+    return true
+}
+
+func may_fault(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return false
+        LowIntermediaryRepresentation.Instructions.Copy: return false
+        LowIntermediaryRepresentation.Instructions.Compare: return false
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return instruction.is_checked or not operands.is_pure(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return false
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: return false
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return false
+        LowIntermediaryRepresentation.Instructions.Select: return false
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return false
+        LowIntermediaryRepresentation.Instructions.DataAddress: return false
+        LowIntermediaryRepresentation.Instructions.Jump: return false
+        LowIntermediaryRepresentation.Instructions.Branch: return false
+        _: return true
+    }
+}
+
+func falls_through(block: LowIntermediaryRepresentation.LowBlock): Boolean {
+    var ending = block.instructions.last()
+    if not ending {
+        return true
+    }
+    if ending == LowIntermediaryRepresentation.Instructions.Branch {
+        return false
+    }
+    return not edges.ends_the_block(ending)
+}
+
+func move_the_edges(block_index: Integer, next: Integer) {
+    var leaving = edges.successors[next]
+    crash leaving
+    var index = 0
+    while index < leaving.count() {
+        var successor = leaving[index]
+        var arriving = edges.predecessors[successor]
+        crash arriving
+        var position = 0
+        while position < arriving.count() {
+            if arriving[position] == next {
+                arriving[position] = block_index
+            }
+            position = position + 1
+        }
+        index = index + 1
+    }
+    edges.successors[block_index] = leaving
+    var emptied = List<Integer>()
+    edges.successors[next] = emptied
+    edges.reachable[next] = false
+}
+
+func count_the_definitions() {
+    definition_counts = List<Integer>()
+    var index = 0
+    while index < register_total {
+        definition_counts.append(0)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(count_a_definition)
+        block_index = block_index + 1
+    }
+}
+
+func count_a_definition(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        var count = definition_counts[register]
+        crash count
+        definition_counts[register] = count + 1
+        index = index + 1
+    }
+}
+
+func note_a_definition(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var used = 0
+    while used < operands.uses.count() {
+        var reader = operands.uses[used]
+        var readings = reading_counts[reader]
+        crash readings
+        reading_counts[reader] = readings + 1
+        used = used + 1
+    }
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        var count = definition_counts[register]
+        crash count
+        definition_counts[register] = count + 1
+        if not is_narrow(instruction) {
+            narrow[register] = false
+        }
+        index = index + 1
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+        constant_known[instruction.target] = true
+        constant_values[instruction.target] = instruction.number
+    }
+}
+
+func narrow_through_a_copy(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        var narrowed = instruction.source >= 0 and narrow[instruction.source] == true
+        if not narrowed and narrow[instruction.target] == true {
+            narrow[instruction.target] = false
+            narrowing_changed = true
+        }
+    }
+}
+
+func is_narrow(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return instruction.number >= 0 and instruction.number <= 4294967295
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return not instruction.is_double
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return instruction.to_decimal_size == 4
+        LowIntermediaryRepresentation.Instructions.Load: return instruction.width == 'bits_32' and not instruction.is_signed
+        _: return false
+    }
+}
+
+func unmasked(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        return unmasked_arithmetic(instruction)
+    }
+    return null
+}
+
+func unmasked_arithmetic(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    assert arithmetic.operator == 'bits_and' and arithmetic.left >= 0 and arithmetic.right >= 0
+    if is_the_low_mask(arithmetic.right) and narrow[arithmetic.left] == true {
+        return LowIntermediaryRepresentation.Instructions.Copy(arithmetic.target, arithmetic.left)
+    }
+    assert is_the_low_mask(arithmetic.left) and narrow[arithmetic.right] == true
+    return LowIntermediaryRepresentation.Instructions.Copy(arithmetic.target, arithmetic.right)
+}
+
+func is_the_low_mask(register: Integer): Boolean {
+    if definition_counts[register] != 1 or constant_known[register] != true {
+        return false
+    }
+    var value = constant_values[register]
+    crash value
+    return value == 4294967295
+}
+
+func number_the_copies() {
+    var index = 0
+    while index < register_total {
+        var touched = List<Integer>()
+        touching.append(touched)
+        var targeted = List<Integer>()
+        targeting.append(targeted)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(number_a_copy)
+        block_index = block_index + 1
+    }
+}
+
+func number_a_copy(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        number_the_copy(instruction.target, instruction.source)
+    }
+}
+
+func is_an_alias(target: Integer): Boolean {
+    if target < function.parameter_count {
+        return false
+    }
+    return definition_counts[target] == 1
+}
+
+func number_the_copy(target: Integer, source: Integer) {
+    assert target >= 0 and source >= 0 and target != source and is_an_alias(target)
+    var key: Long = target
+    key = key * 1048576 + source
+    assert not copy_numbers.contains(key)
+    var number = copy_targets.count()
+    copy_numbers[key] = number
+    copy_targets.append(target)
+    copy_sources.append(source)
+    var by_target = touching[target]
+    crash by_target
+    by_target.append(number)
+    var by_source = touching[source]
+    crash by_source
+    by_source.append(number)
+    var targeted = targeting[target]
+    crash targeted
+    targeted.append(number)
+}
+
+# ../../OPTIMIZATIONS.md#a-copy-is-read-through-wherever-it-still-holds
+func is_reversed(target: Integer, source: Integer): Boolean {
+    if source < function.parameter_count {
+        return false
+    }
+    var target_count = definition_counts[target]
+    var source_count = definition_counts[source]
+    crash target_count
+    crash source_count
+    return target_count > 1 and source_count == 1
+}
+
+func find_the_available() {
+    leaving = List<Long>()
+    var total = word_count * function.blocks.count()
+    var full: Long = 0
+    full = full.bits_inverted()
+    var index = 0
+    while index < total {
+        leaving.append(full)
+        index = index + 1
+    }
+    current = List<Long>()
+    index = 0
+    while index < word_count {
+        current.append(0)
+        index = index + 1
+    }
+    var changed = true
+    var rounds = 0
+    while changed and rounds < 1000 {
+        changed = false
+        var block_index = 0
+        while block_index < function.blocks.count() {
+            if walk_forward(block_index) {
+                changed = true
+            }
+            block_index = block_index + 1
+        }
+        rounds = rounds + 1
+    }
+}
+
+func gather_the_entering(block_index: Integer) {
+    var word = 0
+    var arriving = edges.predecessors[block_index]
+    crash arriving
+    var start: Long = 0
+    if block_index != 0 and edges.is_reachable(block_index) {
+        start = start.bits_inverted()
+    }
+    while word < word_count {
+        current[word] = start
+        word = word + 1
+    }
+    assert block_index != 0
+    var index = 0
+    while index < arriving.count() {
+        var predecessor = arriving[index]
+        if edges.is_reachable(predecessor) {
+            meet_the_leaving(predecessor)
+        }
+        index = index + 1
+    }
+}
+
+func meet_the_leaving(predecessor: Integer) {
+    var base = predecessor * word_count
+    var word = 0
+    while word < word_count {
+        var mine = current[word]
+        var theirs = leaving[base + word]
+        crash mine
+        crash theirs
+        current[word] = mine.bits_and(theirs)
+        word = word + 1
+    }
+}
+
+func walk_forward(block_index: Integer): Boolean {
+    gather_the_entering(block_index)
+    var block = function.blocks[block_index]
+    crash block
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        pass_over(instruction)
+        index = index + 1
+    }
+    var base = block_index * word_count
+    var changed = false
+    var word = 0
+    while word < word_count {
+        var now = current[word]
+        var before = leaving[base + word]
+        crash now
+        crash before
+        if now != before {
+            leaving[base + word] = now
+            changed = true
+        }
+        word = word + 1
+    }
+    return changed
+}
+
+func pass_over(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        var touched = touching[register]
+        crash touched
+        touched.each(clear_a_copy)
+        index = index + 1
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        var target = instruction.target
+        var source = instruction.source
+        if target >= 0 and source >= 0 and target != source {
+            var key: Long = target
+            key = key * 1048576 + source
+            var number = copy_numbers[key]
+            if number {
+                set_a_copy(number)
+            }
+        }
+    }
+}
+
+func read_through_in(block_index: Integer) {
+    gather_the_entering(block_index)
+    reversed_sources = List<Integer>()
+    reversed_targets = List<Integer>()
+    var block = function.blocks[block_index]
+    crash block
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        read_through(instruction)
+        read_back(instruction)
+        pass_over(instruction)
+        pass_over_backwards(instruction)
+        index = index + 1
+    }
+}
+
+func read_back(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    assert not reversed_sources.is_empty()
+    operands.read(instruction)
+    var used = operands.uses.copy()
+    var changed = List<Integer>()
+    var index = 0
+    while index < used.count() {
+        var register = used[index]
+        var found = reversed_sources.index_of(register)
+        if found and not changed.contains(register) {
+            var target = reversed_targets[found]
+            crash target
+            renaming.renames[register] = target
+            changed.append(register)
+        }
+        index = index + 1
+    }
+    assert not changed.is_empty()
+    renaming.rename(instruction)
+    index = 0
+    while index < changed.count() {
+        var register = changed[index]
+        renaming.renames[register] = -1
+        index = index + 1
+    }
+}
+
+func pass_over_backwards(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        forget_a_reversal(register)
+        index = index + 1
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        note_a_reversal(instruction.target, instruction.source)
+    }
+}
+
+func note_a_reversal(target: Integer, source: Integer) {
+    if target >= 0 and source >= 0 and target != source and is_reversed(target, source) {
+        reversed_sources.append(source)
+        reversed_targets.append(target)
+    }
+}
+
+func forget_a_reversal(register: Integer) {
+    var index = reversed_sources.count() - 1
+    while index >= 0 {
+        var source = reversed_sources[index]
+        var target = reversed_targets[index]
+        if source == register or target == register {
+            reversed_sources.remove_at(index)
+            reversed_targets.remove_at(index)
+        }
+        index = index - 1
+    }
+}
+
+func read_through(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var used = operands.uses.copy()
+    var changed = List<Integer>()
+    var index = 0
+    while index < used.count() {
+        var register = used[index]
+        var source = held_source(register)
+        if source >= 0 and not changed.contains(register) {
+            renaming.renames[register] = source
+            changed.append(register)
+        }
+        index = index + 1
+    }
+    assert not changed.is_empty()
+    renaming.rename(instruction)
+    index = 0
+    while index < changed.count() {
+        var register = changed[index]
+        renaming.renames[register] = -1
+        index = index + 1
+    }
+}
+
+func held_source(register: Integer): Integer {
+    var found = -1
+    var looking = register
+    var steps = 0
+    while steps < 8 {
+        var source = available_source(looking)
+        if source < 0 or source == register {
+            return found
+        }
+        found = source
+        looking = source
+        steps = steps + 1
+    }
+    return found
+}
+
+func available_source(register: Integer): Integer {
+    var targeted = targeting[register]
+    crash targeted
+    var index = 0
+    while index < targeted.count() {
+        var number = targeted[index]
+        if is_set(number) {
+            var source = copy_sources[number]
+            crash source
+            return source
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func is_set(number: Integer): Boolean {
+    var word = number / 64
+    var bit = number - word * 64
+    var value = current[word]
+    crash value
+    var mask: Long = 1
+    mask = mask.shifted_left(bit)
+    return value.bits_and(mask) != 0
+}
+
+func set_a_copy(number: Integer) {
+    var word = number / 64
+    var bit = number - word * 64
+    var value = current[word]
+    crash value
+    var mask: Long = 1
+    mask = mask.shifted_left(bit)
+    current[word] = value.bits_or(mask)
+}
+
+func clear_a_copy(number: Integer) {
+    var word = number / 64
+    var bit = number - word * 64
+    var value = current[word]
+    crash value
+    var mask: Long = 1
+    mask = mask.shifted_left(bit)
+    var inverted = mask.bits_inverted()
+    current[word] = value.bits_and(inverted)
+}

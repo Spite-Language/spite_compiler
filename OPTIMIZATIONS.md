@@ -86,6 +86,13 @@ itself a name that is assigned again, when anything after it in the block may wr
 the [attribute passed to a call](#an-attribute-a-call-cannot-assign-is-passed-without-counting)), or in a step of a
 `Concurrent` work. Then the name counts what it holds.
 
+An `append` (to this list or any other list of its class) is not such a write: it fills the empty slot past the
+end, so it never replaces or lets go of an item a name holds. A loop that reads `var item = items[index]` and
+appends to another list of the same class, as `deep_copy()` does when it copies a list into a new one, holds each
+item without counting it. Only where the list holds its objects inside its storage (see [a list's objects sit
+inside its storage](#a-lists-objects-sit-inside-its-storage)) does an append count as a write, since growing the
+storage moves the slot the name points into.
+
 **What a program can observe:** nothing but time.
 
 ```spite
@@ -215,6 +222,29 @@ When it does not apply: an operand that is an attribute, a list item or a call's
 operation on two of them keeps its check. A `--repl`, `--repl-port` or `--hot-reload` build proves no ranges, since
 code may run between two steps. What a user can observe: `--optimization-report` lists every check kept, under
 "Overflow checks kept", with the ranges that did not prove it.
+
+## Arithmetic whose operands' bounds prove it fits is not checked
+
+[Ranges](#arithmetic-a-range-proves-is-not-checked) are proved on the high representation, before inlining, so
+arithmetic a function receives from an inlined callee (`value * 2 + 3` in `score`, given `index % 100`) is checked
+again in the caller. After inlining, every register written once gets the bounds its one write proves: a constant
+its value, a comparison 0 to 1, a load of a narrow width the range of that width, a remainder by a positive
+constant `k` from `-(k - 1)` to `k - 1` (from 0 when the dividend is never negative), a `bits_and` with a constant
+mask from 0 to the mask, a copy its source's bounds, and a sum, difference or product of bounded operands that fits
+its width the bounds of the result. A checked sum, difference or product whose bounds fit its width is not
+checked: it can never overflow.
+
+It does not follow a register written more than once (a loop's counter), nor bounds wider than 2^31 on either
+operand, and it never unchecks a division.
+
+```spite
+func score(value: Integer): Integer {
+    return value * 2 + bonus
+}
+```
+
+Inlined where `value` is `index % 100` and `bonus` is the constant 3, `value * 2` lies between -198 and 198 and the
+sum between -195 and 201: neither is checked.
 
 ## A proven read tests only its bounds
 
@@ -776,8 +806,10 @@ so `spite.frame` lines name the guard's function and its callers as before.
 ## Small functions are inlined
 
 A call to a function that waits for nothing and holds at most 24 instructions (an accessor, a list's `get_at` and
-`set_at`, a tiny helper, a read of a singleton), at most 24 when it calls other functions too, or at most 40 when it
-makes an object or is passed one the caller made, is replaced by a copy of the function's body. A call inside a
+`set_at`, a tiny helper, a read of a singleton), at most 24 when it calls other functions too, at most 40 when it
+makes an object or is passed one the caller made, or at most 40 when it calls nothing, makes nothing, takes no
+address and has no loop (a class's `_attribute_defaults`, which only writes each attribute's default), is replaced by a copy of
+the function's body. A call inside a
 loop that is passed an object the caller made is inlined up to 128 instructions, when the function is written in
 the program (not by the compiler) and makes no object itself: the row a walk fills (`fill_attributes(row, found,
 entity)`, unrolled into one function per attribute) then lives in the loop's registers instead of on the heap
@@ -792,9 +824,13 @@ them, and a copy otherwise; its answers are copied into the call's answer regist
 end of the caller and the call becomes a jump into them. A call to a function whose whole body is a bare `return`
 (an empty `_attribute_defaults`, a constructor's `$defaults` with nothing to set) is removed.
 
-It applies when the callee makes no foreign call, thread or library call, takes and answers no decimal in a
-register (only a function handed to foreign code does), and the caller is not resumable, is under 4000
-instructions and has inlined fewer than 64 calls. A function the compiler wrote, which has no place in the source,
+It applies when the callee makes no foreign call, starts no thread and calls no library but the system (a lock's
+wait, its atomic exchange and the thread's number are copied), takes and answers no decimal in a register (only a
+function handed to foreign code does), and the caller is not resumable, is under 4000 instructions and has inlined
+fewer than 64 calls. Inlining runs again once every function has been cleaned up, with
+[the larger budget for calls in loops](#a-function-called-in-a-loop-is-inlined-into-it), on the sizes the cleanup
+left; that round copies no function with a loop of its own, whose loop the evaluation while compiling has already
+unrolled or answered where it stands. A function the compiler wrote, which has no place in the source,
 is inlined too; its blocks report the caller's place. Inlining a callee that calls others is what lets an object
 the callee makes and answers, such as `Offset.scaled`'s result or `Point.copy()`'s copy, be
 [placed](#objects-that-never-leave-their-function-live-in-registers-or-the-frame) in the caller.
@@ -813,6 +849,109 @@ func Lists() {
 ```
 
 `marks[0] = 1` is `set_at`'s bounds check and store, written in `Lists` with no call.
+
+## A function called in a loop is inlined into it
+
+A call inside a loop is inlined when the callee is written in the program and holds at most 96 instructions,
+whatever it calls or makes, or at most 400 when that call is the only call to it in the whole program. This is
+what clang did to the C the compiler used to write: a body run millions of times pays no call, its answer lands in
+the caller's registers, and an object it makes and answers (a `Matrix4` product, a transformed `Vector3`) is
+[placed](#objects-that-never-leave-their-function-live-in-registers-or-the-frame) in the caller's loop instead of
+on the heap. A singleton's function, whose body claims and lets go of the singleton's lock and reads the thread's
+number, is copied with that lock, so a loop of calls to it (`index = tally.add(index)`) runs the lock's test in
+place of a call. A function holding either (a call through a function value, a lock) is copied only into a loop,
+whatever its size: elsewhere it stays one call, as before. A `Buffer`'s growth (`reserve`, which reallocates) is
+never copied: it is the cold path of every append, and copied into a loop it fills the loop's registers. A call that a function value makes (`change(value)`) is copied too, so a small function that only
+calls the function it is given is inlined, and once the closure it is given is known the call becomes direct. After
+[a call given a known closure gets its own copy of the callee](#a-call-given-a-known-closure-gets-its-own-copy-of-the-callee),
+inlining runs once more, so that copy is inlined into the loop that calls it and the closure, read by nothing any
+more, is never made.
+
+It does not apply to a function the compiler wrote (the scheduler's, a list's machinery) that calls others, to a
+function that has a loop of its own, other than a lock's wait that sleeps until another thread lets go (its call
+costs little beside the loop, and the loop is
+[run in lanes](#a-counted-loop-over-numbers-runs-eight-at-a-time) or [in bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands)
+where it stands), to a call outside every loop, or when the caller already holds 4000 instructions or has inlined
+64 calls.
+
+What a user can observe: nothing in the output. The executable holds the callee once per call site.
+
+```spite
+func transform_all(model: Matrix4<Float>, point: Vector3<Float>): Float {
+    var total = 0.0
+    var step = 0
+    while step < 1000000 {
+        var moved = model.transform_point(point)
+        total = total + moved.x
+        step = step + 1
+    }
+    return total
+}
+```
+
+`transform_point` is written into the loop, and the `Vector3` it answers is three registers: the loop makes no
+object.
+
+## The class of an object made in the function is known
+
+An object made in the function has its class number written into its first word once, right after it is made, and
+nothing writes that word again. A read of that word through the register that holds the object, or a copy of it,
+is that number, so a test of the object's class (a function taking a type, given a `Crate` or a number boxed for
+it, chooses what to run by its class) is decided while compiling and the other sides are gone before objects are
+[placed](#objects-that-never-leave-their-function-live-in-registers-or-the-frame). The object is then read the way
+only its own class reads it, and is placed in registers like any other. A block nothing reaches is emptied at the
+same time, so its reads (the other classes' attributes, at other widths) do not stop the object from being placed.
+
+It applies when the object is made in this function, held in a register written once (and its copies), and its
+class word is written once, in the block that makes it, before anything else reads the object. A class number read
+from an object passed in, read from memory, or of an object made in a loop's other branch is read at run time.
+
+```spite
+func measure_all(steps: Integer): Double {
+    var total: Double = 0.0
+    var crate = Crate(1.0, 2.0, 3.0)
+    var step = 0
+    while step < steps {
+        crate.width = step % 7
+        total = total + doubled(crate)
+        total = total + doubled(step % 10)
+        step = step + 1
+    }
+    return total
+}
+```
+
+Once `doubled` is inlined, its test of its argument's class is decided for `crate` and for the boxed `Integer`, so
+each call is the arithmetic of `Crate.to_double` or of a number, with no box made.
+
+## A function value whose function is known is called directly
+
+A call through a function value (`change(value)`) reads the function's address out of the value and calls that
+address. Once the value is [placed](#objects-that-never-leave-their-function-live-in-registers-or-the-frame) in
+the caller, the address it reads is the address of one function, written where the value was made
+(`scorer.score`); every write of the register the call reads is followed through copies, and when all of them name
+the same function, the call becomes a plain call to it, with the same arguments. A plain call can be
+[inlined](#a-function-called-in-a-loop-is-inlined-into-it), so a function value made and called in one loop costs
+what the function's body costs. This runs after the first cleanup of every function, before inlining runs once
+more.
+
+It does not apply when the address can come from more than one function, from a parameter or from memory the
+compiler cannot see, nor to a function that waits, or takes or answers a decimal in a register (one handed to
+foreign code).
+
+What a user can observe: nothing; the function value still describes its arguments when asked.
+
+```spite
+func apply_all(scorer: Scorer, count: Integer): Long {
+    var applied: Long = 0
+    var index = 0
+    while index < count {
+        applied = applied + apply(scorer.score, index % 100)
+        index = index + 1
+    }
+    return applied
+}
+```
 
 ## A call that returns at once on a test is tested in place
 
@@ -915,9 +1054,12 @@ count no release can bring to zero, so the code that reads an item is the code t
 hold:
 
 - its element is a class of the program, not a singleton, with no `drop()`, held by no back reference, whose
-  attributes are all numbers, `Boolean`s or enums;
-- every function of the list that is compiled is its making, `count()`, `is_empty()`, `append`, `get_at` (and
-  what `append` calls to grow), or a `sum_`, `count_`, `any_` or `all_` template;
+  attributes are all numbers, `Boolean`s or enums, or objects it holds inside it (see [an object only its holder
+  holds lives inside it](#an-object-only-its-holder-holds-lives-inside-it)) when the list's objects can then sit in
+  one array per attribute (below);
+- every function of the list that the program can reach is its making, `count()`, `is_empty()`, `append`,
+  `get_at` (and what `append` calls to grow), a `sum_`, `count_`, `any_` or `all_` template, or a chain of
+  templates fused into one loop (`items.map_owners().sum_age()`) that reads its items only for their attributes;
 - every `append` is given a local made with the class's constructor and read nowhere else
   (`var point = Point(x, y)` then `points.append(point)`), or an object a literal makes in place;
 - every `list[index]` is tested (`if`, `crash`), read for an attribute or a call of the class, or kept in a local
@@ -966,6 +1108,14 @@ moves each array to its place in the larger room.
 items are only read and written for attributes (never the receiver of a function of the class, and never summed or
 counted through a function member such as `sum_fingerprint`). The list's `get_at` as a function is never called
 then; if it were, it would stop the program saying the item cannot be handed out whole.
+
+An object an item holds inside it is laid out the same way, one array per number it holds: an `Item` holding its
+`Owner` inside it has a `price` array and an `owner.age` array, `items[index].owner.age` is a load from the second,
+and a name given `item.owner` stands for that item's place in those arrays. A list of such items is held this way
+only in one array per attribute, never whole in its storage: whole, the items are larger than the pointers they
+replace, and a list filled once and read once spends more on growing that storage than it saves
+(`defaults_the_constructor_replaces_are_never_made`: 6.6 ms as pointers, 14.6 ms whole in the storage, 4.4 ms in
+one array per attribute).
 
 **What a program can observe:** only time and memory.
 
@@ -1440,6 +1590,77 @@ removed: each of them can halt the program or change memory.
 `t = a + b` followed in the same block by `x = t`, where `t` is written and read only there and `x` is neither
 read nor written in between, becomes `x = a + b`. This is what turns `index = index + 1` into one `add`.
 
+## A copy is read through wherever it still holds
+
+Across the whole function, a register written only by a copy `t = s` reads `s` wherever that copy reached it on
+every path with `s` not written since, following chains of such copies, so `t` is gone. A register written in
+several places (a loop's variable, an object's attribute [kept in a register](#objects-that-never-leave-their-function-live-in-registers-or-the-frame))
+is not read through: its own register lives anyway, and reading its source instead would keep both alive at once
+and push decimals out of their registers. A copy into such a register from a value written once
+(`position = moved`) is read the other way inside its block: later reads of `moved` read `position`, so the sum is
+[computed in place](#a-value-computed-only-to-be-copied-is-computed-in-place) in `position`'s register. The copy itself is left for
+[the next pass](#a-value-overwritten-before-it-is-read-is-not-computed) to remove when nothing reads `t` any more.
+It runs right after the first removal of unread values, and once more at the end of the cleanup.
+
+## A comparison tested against zero is the opposite comparison
+
+`t = a > b` followed at once by `u = t == 0`, where `t` is read nowhere else, is `u = a <= b` (and `u = t != 0` is
+`t` itself), so the branch on `u` is one compare and jump instead of a compare, a byte set, a test of it and a
+jump. A list's growth test (`if not count > capacity`) is written that way. Only whole numbers are inverted: a
+decimal comparison against a value that is not a number is false both ways.
+
+## A register that only ever holds one constant is that constant
+
+A register every write of which is the same constant, or a copy of a register that only holds it (a loop's object
+header kept in a register, written once before the loop and copied back on every pass), is read as a constant
+written once at the start of the function. Its writes then have no reader and go, and the constant is an immediate
+wherever the generator can use one.
+
+## Straight runs of blocks are one block
+
+A block that jumps, or falls, into a block nothing else reaches, with the same place in the source (or where one of
+the two cannot fault, so its place is never reported), takes that block's instructions in; the block left behind
+is empty and reached by nothing. This runs once loops have been [run in lanes](#a-counted-loop-over-numbers-runs-eight-at-a-time),
+which read a loop's blocks as lowering wrote them, together with the
+[inverted comparisons](#a-comparison-tested-against-zero-is-the-opposite-comparison) and the
+[steady constants](#a-register-that-only-ever-holds-one-constant-is-that-constant), and is followed by computing
+values in place and removing what nothing reads. The passes that work inside one
+block ([computing a value in place](#a-value-computed-only-to-be-copied-is-computed-in-place),
+[the same computation made once](#the-same-computation-in-a-block-is-made-once)) then see the whole run, which
+inlining and placing objects cut into many small blocks.
+
+## A value overwritten before it is read is not computed
+
+A constant, copy, comparison, unchecked arithmetic, decimal arithmetic, address or load that cannot fault is
+removed when no path from it reads its answer before the register is written again: the function's live registers
+are worked out across every block, so `r5 = 0` followed on every path by `r5 = x` is gone, and so is a copy every
+reader of which now [reads its source](#a-copy-is-read-through-wherever-it-still-holds). Fewer values live at once,
+so more of them stay in registers.
+
+```spite
+func ended(steps: Integer): Offset {
+    var position = Offset(0.0, 0.0, 0.0)
+    var velocity = Offset(1.0, 0.5, 0.25)
+    var step = 0
+    while step < steps {
+        var moved = velocity.scaled(0.001)
+        position = position + moved
+        step = step + 1
+    }
+    return position
+}
+```
+
+The attributes of `position`, `velocity` and `moved` are decimal registers; their zero defaults and the copies
+between the three objects are gone, and the loop is three multiplications and three additions.
+
+## A decimal is never masked to its own width
+
+`t = s bits_and 4294967295`, where every write of `s` is a `Float` operation, a conversion to `Float`, a 32-bit
+unsigned load, a constant that fits in 32 bits, or a copy of such a value, is a copy: such a value already holds nothing above its low 32 bits. Placing a `Float` attribute in
+a register used to write that mask, and the mask made the value an integer, which moved it out of its decimal
+register and back on every use.
+
 ## The same computation in a block is made once
 
 Within a block, an unchecked arithmetic, a decimal arithmetic or conversion, an address of data or of a function,
@@ -1689,6 +1910,22 @@ func count_digits(text: String): Integer {
 
 What a user can observe: nothing but time. A crash report reads each number from where its value lives in the block
 the check was in, and the stack a crash report walks is the same.
+
+## A number turned into a decimal waits for nothing before it
+
+Turning a whole number into a `Float` or a `Double` (`cvtsi2ss`, `cvtsi2sd`) writes only the low part of its
+decimal register and keeps the rest, so the processor waits for whatever last wrote that register, often the
+previous conversion, before it starts. The register is cleared first (`xorps`), which the processor does at once
+and which ends that wait: a loop that turns its counter into decimals several times (`step % 4` into a `Float`)
+no longer runs its conversions one after another across passes.
+
+## A decimal constant gives up its register to a value
+
+A decimal constant (`0.001`, a `Vector3`'s `1.0`) lives in a decimal register like any decimal. When a value needs a
+decimal register and none is free, a constant whose register is held across that value's life gives it up: every
+read of the constant then writes it from an immediate into a scratch register (`mov eax, imm`, `movd`) right before
+the instruction that reads it, which costs two instructions off the value's chain, where the value would otherwise
+be moved out to a general register and back on every use.
 
 ## A decimal lives in a decimal register
 
@@ -2584,6 +2821,82 @@ block, through another path or index, of another value, or after something that 
 is made, comparing what the slot holds as before.
 
 **What a program can observe:** only the time.
+
+## A call that writes back what the slot already holds is not made
+
+```spite
+func take(index: Integer) {
+    at = index
+    crash pages[at]
+    open = pages[at]
+}
+
+func put_back() {
+    pages[at] = open
+}
+```
+
+A call of a function whose whole body writes one attribute back into a list's slot (`pages[at] = open`, all three
+attributes of the receiver) is left out when the call before it, on the same receiver and in the same block, ended
+with `open = pages[at]` proven by its `crash`: the slot already holds that very object (or number), the index is in
+range, and nothing has changed since. `desk.take(index)`, then `desk.open.words = desk.open.words + 1`, then
+`desk.put_back()` makes the first two and not the third. The compiler reads the bodies of both functions while
+compiling and asks of everything between the two calls, followed through every call it can reach, whether it may
+assign the list, the index, the held attribute or the receiver's path, write an item of a list of that class, or
+change its length (by the rules of [an attribute a call cannot assign is passed without
+counting](#an-attribute-a-call-cannot-assign-is-passed-without-counting)).
+
+**When it applies:** to a call with no arguments of a function whose body is only `list[index] = held` (the
+library `List`'s `set_at`, with the list, the index and the value all attributes of `this`), after a call in the
+same block on the same receiver (a name not assigned again, `this`, a singleton, or attributes) of a function of
+the same class that never returns early and whose last statement is `held = list[index]`, proven, on the same three
+attributes. **When it does not:** a call in another block, on another receiver, after something that may write any
+of them, or a write-back function that does anything else; the call is then made.
+
+**What a program can observe:** only time. The write it leaves out stores the object the slot holds, which counts
+nothing and lets nothing go, and its test of the index could not fail.
+
+## An attribute that only holds an item of its holder's list is not counted
+
+```spite
+singleton
+
+var pages = List<Page>()
+var open = Page(0)
+var at = 0
+
+func take(index: Integer) {
+    at = index
+    crash pages[at]
+    open = pages[at]
+}
+```
+
+An attribute of a singleton that is only ever given an item of a list the same singleton holds (`open =
+pages[at]`, proven by its `crash`) holds that item without counting it: the list holds it already, and nothing in
+the program can make the list let it go while the attribute points at it. `take` then stores the item and
+neither counts it nor lets go of what `open` held before, and the singleton lets go of `open` when it ends.
+
+Its default is then never made either. The compiler proves that the default can never be read: every read of
+`open` in the program comes after a write of it, in its own function or in every caller of that function (a call
+of a function that always writes it, as `take` does, counts as a write), worked out over the whole program to a
+fixed point. A function that may run first (the entry function, a constructor, the defaults, a function taken as
+a value or reached through a shape) counts as having no write before it. The default `Page(0)` must be quiet (see
+[defaults the constructor replaces are never made](#defaults-the-constructor-replaces-are-never-made)), so that not
+making it cannot be seen.
+
+**When it applies:** to a non-nullable object attribute of a singleton of the program (not generic, not the entry
+class) whose class frees quietly (no `drop()` in it or in what it holds), when every write of it outside its
+default is `attribute = list[index]` in a function of the singleton, proven, all from the same list attribute of
+the singleton; that list attribute is assigned only by its default; no function the program compiles writes or
+forgets an item of a list of that class except `append` and `set_at`; every `set_at` on a list of that class is
+`list[index] = attribute` on those two attributes; no shape writes a member of either name; the program makes no
+work on other threads; and no reflection names either class. **When it does not:** the attribute is counted as
+before.
+
+**What a program can observe:** one allocation fewer under `--debug-memory` (the default), and time. Every object
+is freed at the same moment as before: the list held each item the attribute pointed at for as long as it pointed
+at it.
 
 ## An object only its holder holds lives inside it
 
