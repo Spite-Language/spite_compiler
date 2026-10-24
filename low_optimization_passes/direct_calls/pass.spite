@@ -1,0 +1,194 @@
+# ../../OPTIMIZATIONS.md#a-function-value-whose-function-is-known-is-called-directly
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var operands = LowOptimizationPasses.Operands()
+var every_function = Dictionary<String, LowIntermediaryRepresentation.LowFunction>()
+var known = List<String>()
+var unknown = List<Boolean>()
+var changed_keys = List<String>()
+
+func Pass(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
+    program = starting_program
+}
+
+func transformed(): List<String> {
+    program.lowered_functions.each(note_a_function)
+    program.lowered_functions.each(call_directly_in)
+    return changed_keys
+}
+
+func note_a_function(function: LowIntermediaryRepresentation.LowFunction) {
+    every_function[function.key] = function
+}
+
+func call_directly_in(function: LowIntermediaryRepresentation.LowFunction) {
+    assert not function.is_resumable and calls_a_value(function)
+    var register_total = operands.most_register_of(function)
+    known = List<String>()
+    unknown = List<Boolean>()
+    var index = 0
+    while index < register_total {
+        known.append("")
+        unknown.append(index < function.parameter_count)
+        index = index + 1
+    }
+    var changed = true
+    var rounds = 0
+    while changed and rounds < 8 {
+        changed = follow_the_addresses(function)
+        rounds = rounds + 1
+    }
+    var replaced = false
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var position = 0
+        while position < block.instructions.count() {
+            var instruction = block.instructions[position]
+            var direct = direct_call_for(instruction)
+            if direct {
+                block.instructions[position] = direct
+                replaced = true
+            }
+            position = position + 1
+        }
+        block_index = block_index + 1
+    }
+    if replaced {
+        changed_keys.append(function.key)
+    }
+}
+
+func calls_a_value(function: LowIntermediaryRepresentation.LowFunction): Boolean {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.CallAt {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func follow_the_addresses(function: LowIntermediaryRepresentation.LowFunction): Boolean {
+    var changed = false
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if follow_one(instruction) {
+                changed = true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return changed
+}
+
+func follow_one(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.FunctionAddress {
+        return learn(instruction.target, instruction.function)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        return learn_a_copy(instruction.target, instruction.source)
+    }
+    operands.read(instruction)
+    var changed = false
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        if unknown[register] != true {
+            unknown[register] = true
+            changed = true
+        }
+        index = index + 1
+    }
+    return changed
+}
+
+func learn_a_copy(target: Integer, source: Integer): Boolean {
+    if target < 0 {
+        return false
+    }
+    if source < 0 or unknown[source] == true {
+        return forget(target)
+    }
+    var function = known[source]
+    crash function
+    if function.is_empty() {
+        return false
+    }
+    return learn(target, function)
+}
+
+func learn(target: Integer, function: String): Boolean {
+    if unknown[target] == true {
+        return false
+    }
+    var before = known[target]
+    crash before
+    if before.is_empty() {
+        known[target] = function
+        return true
+    }
+    if before == function {
+        return false
+    }
+    return forget(target)
+}
+
+func forget(target: Integer): Boolean {
+    if unknown[target] == true {
+        return false
+    }
+    unknown[target] = true
+    return true
+}
+
+func direct_call_for(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    if instruction == LowIntermediaryRepresentation.Instructions.CallAt {
+        return direct_call(instruction)
+    }
+    return null
+}
+
+func direct_call(
+    calling: LowIntermediaryRepresentation.Instructions.CallAt,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    var address = calling.address
+    assert address >= 0 and unknown[address] != true
+    var key = known[address]
+    crash key
+    assert not key.is_empty()
+    var callee = every_function[key]
+    assert callee
+    assert not callee.is_resumable and callee.parameter_count == calling.arguments.count()
+    assert callee.parameter_decimal_sizes.is_empty() and callee.answer_decimal_size == 0
+    assert not calling.answers_32_bits and calling.answer_decimal_size == 0 and no_decimals(calling.decimal_sizes)
+    var direct = LowIntermediaryRepresentation.Instructions.Call(calling.target, key, calling.arguments)
+    direct.presence = calling.presence
+    direct.line = calling.line
+    direct.frames = calling.frames
+    return direct
+}
+
+func no_decimals(sizes: List<Integer>): Boolean {
+    var index = 0
+    while index < sizes.count() {
+        if sizes[index] != 0 {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}

@@ -1,0 +1,207 @@
+# ../../OPTIMIZATIONS.md#a-value-overwritten-before-it-is-read-is-not-computed
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var edges = LowOptimizationPasses.BlockEdges()
+var register_total = 0
+var word_count = 0
+var entering = List<Long>()
+var current = List<Long>()
+var largest_cells = 4000000
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if function.is_resumable or function.blocks.is_empty() {
+        return function
+    }
+    edges.read_the_function(function)
+    if not edges.is_regular {
+        return function
+    }
+    register_total = operands.most_register_of(function)
+    word_count = register_total / 64 + 1
+    if word_count * function.blocks.count() > largest_cells {
+        return function
+    }
+    var round = 0
+    while round < 2 {
+        find_the_lives()
+        var removed = remove_the_dead()
+        if not removed {
+            return function
+        }
+        round = round + 1
+    }
+    return function
+}
+
+func find_the_lives() {
+    entering = List<Long>()
+    var total = word_count * function.blocks.count()
+    var index = 0
+    while index < total {
+        entering.append(0)
+        index = index + 1
+    }
+    current = List<Long>()
+    index = 0
+    while index < word_count {
+        current.append(0)
+        index = index + 1
+    }
+    var changed = true
+    var rounds = 0
+    while changed and rounds < 1000 {
+        changed = false
+        var block_index = function.blocks.count() - 1
+        while block_index >= 0 {
+            if walk_back(block_index, false) {
+                changed = true
+            }
+            block_index = block_index - 1
+        }
+        rounds = rounds + 1
+    }
+}
+
+func gather_the_leaving(block_index: Integer) {
+    var word = 0
+    while word < word_count {
+        current[word] = 0
+        word = word + 1
+    }
+    var leaving = edges.successors[block_index]
+    crash leaving
+    var index = 0
+    while index < leaving.count() {
+        var successor = leaving[index]
+        var base = successor * word_count
+        word = 0
+        while word < word_count {
+            var mine = current[word]
+            var theirs = entering[base + word]
+            crash mine
+            crash theirs
+            current[word] = mine.bits_or(theirs)
+            word = word + 1
+        }
+        index = index + 1
+    }
+}
+
+func walk_back(block_index: Integer, removing: Boolean): Boolean {
+    gather_the_leaving(block_index)
+    var block = function.blocks[block_index]
+    crash block
+    var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var dropped = false
+    var index = block.instructions.count() - 1
+    while index >= 0 {
+        var instruction = block.instructions[index]
+        crash instruction
+        operands.read(instruction)
+        if removing and is_removable(instruction) and none_live(operands.defines) {
+            dropped = true
+        } else {
+            if removing {
+                kept.append(instruction)
+            }
+            operands.defines.each(clear_live)
+            operands.uses.each(set_live)
+        }
+        index = index - 1
+    }
+    if removing {
+        if dropped {
+            kept.reverse()
+            block.instructions = kept
+        }
+        return dropped
+    }
+    return store_the_entering(block_index)
+}
+
+func store_the_entering(block_index: Integer): Boolean {
+    var base = block_index * word_count
+    var changed = false
+    var word = 0
+    while word < word_count {
+        var now = current[word]
+        var before = entering[base + word]
+        crash now
+        crash before
+        if now != before {
+            entering[base + word] = now
+            changed = true
+        }
+        word = word + 1
+    }
+    return changed
+}
+
+func remove_the_dead(): Boolean {
+    var removed = false
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        if walk_back(block_index, true) {
+            removed = true
+        }
+        block_index = block_index + 1
+    }
+    return removed
+}
+
+func is_removable(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if operands.defines.is_empty() {
+        return false
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Load {
+        return instruction.cannot_fault
+    }
+    return operands.is_pure(instruction)
+}
+
+func none_live(registers: List<Integer>): Boolean {
+    var index = 0
+    while index < registers.count() {
+        var register = registers[index]
+        if is_live(register) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_live(register: Integer): Boolean {
+    var word = register / 64
+    var bit = register - word * 64
+    var value = current[word]
+    crash value
+    var mask: Long = 1
+    mask = mask.shifted_left(bit)
+    return value.bits_and(mask) != 0
+}
+
+func set_live(register: Integer) {
+    var word = register / 64
+    var bit = register - word * 64
+    var value = current[word]
+    crash value
+    var mask: Long = 1
+    mask = mask.shifted_left(bit)
+    current[word] = value.bits_or(mask)
+}
+
+func clear_live(register: Integer) {
+    var word = register / 64
+    var bit = register - word * 64
+    var value = current[word]
+    crash value
+    var mask: Long = 1
+    mask = mask.shifted_left(bit)
+    var inverted = mask.bits_inverted()
+    current[word] = value.bits_and(inverted)
+}

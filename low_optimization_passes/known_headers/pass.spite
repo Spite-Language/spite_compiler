@@ -1,0 +1,245 @@
+# ../../OPTIMIZATIONS.md#the-class-of-an-object-made-in-the-function-is-known
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var operands = LowOptimizationPasses.Operands()
+var register_total = 0
+var definition_counts = List<Integer>()
+var constant_known = List<Boolean>()
+var constant_values = List<Long>()
+var roots = List<Integer>()
+var header_counts = List<Integer>()
+var header_values = List<Long>()
+var header_known = List<Boolean>()
+var changed = false
+
+func Pass(
+    starting_function: LowIntermediaryRepresentation.LowFunction,
+    starting_program: LowIntermediaryRepresentation.LoweredProgram,
+) {
+    function = starting_function
+    program = starting_program
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if function.is_resumable or function.blocks.is_empty() {
+        return function
+    }
+    register_total = operands.most_register_of(function)
+    var index = 0
+    while index < register_total {
+        definition_counts.append(0)
+        constant_known.append(false)
+        constant_values.append(0)
+        roots.append(-1)
+        header_counts.append(0)
+        header_values.append(0)
+        header_known.append(false)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_a_definition)
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_an_allocation)
+        block_index = block_index + 1
+    }
+    var round = 0
+    while round < 4 {
+        block_index = 0
+        while block_index < function.blocks.count() {
+            var block = function.blocks[block_index]
+            block.instructions.each(note_an_alias)
+            block_index = block_index + 1
+        }
+        round = round + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_a_header_store)
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        check_the_order(block_index)
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        read_the_headers(block_index)
+        block_index = block_index + 1
+    }
+    return function
+}
+
+func note_a_definition(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        var count = definition_counts[register]
+        crash count
+        definition_counts[register] = count + 1
+        index = index + 1
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+        constant_known[instruction.target] = true
+        constant_values[instruction.target] = instruction.number
+    }
+}
+
+func defined_once(register: Integer): Boolean {
+    if register < function.parameter_count or register < 0 {
+        return false
+    }
+    return definition_counts[register] == 1
+}
+
+func note_an_allocation(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Allocate and defined_once(instruction.target) {
+        roots[instruction.target] = instruction.target
+    }
+}
+
+func note_an_alias(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        note_a_copied_root(instruction.target, instruction.source)
+    }
+}
+
+func note_a_copied_root(target: Integer, source: Integer) {
+    assert source >= 0 and defined_once(target)
+    var root = roots[source]
+    crash root
+    if root >= 0 {
+        roots[target] = root
+    }
+}
+
+func root_of(register: Integer): Integer {
+    if register < 0 {
+        return -1
+    }
+    var root = roots[register]
+    crash root
+    return root
+}
+
+func note_a_header_store(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Store {
+        note_a_store(instruction)
+    }
+}
+
+func note_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    var root = root_of(stored.address)
+    assert root >= 0 and stored.offset == 0
+    var count = header_counts[root]
+    crash count
+    header_counts[root] = count + 1
+    var known = stored.width == 'bits_64' and not stored.is_swapped and defined_once(stored.source)
+    if known and constant_known[stored.source] == true {
+        var value = constant_values[stored.source]
+        crash value
+        header_values[root] = value
+        header_known[root] = is_a_class(value)
+    }
+}
+
+func is_a_class(value: Long): Boolean {
+    if value <= 0 or value > 1000000 {
+        return false
+    }
+    var number = value.to_integer()
+    return program.free_keys.contains(number)
+}
+
+func check_the_order(block_index: Integer) {
+    var block = function.blocks[block_index]
+    crash block
+    var seen = List<Integer>()
+    var stored = List<Integer>()
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if instruction == LowIntermediaryRepresentation.Instructions.Allocate {
+            if root_of(instruction.target) >= 0 {
+                seen.append(instruction.target)
+            }
+        } else {
+            check_an_early_use(instruction, seen, stored)
+        }
+        index = index + 1
+    }
+    var root = 0
+    while root < register_total {
+        if header_known[root] == true and roots[root] == root and seen.contains(root) and not stored.contains(root) {
+            header_known[root] = false
+        }
+        root = root + 1
+    }
+}
+
+func check_an_early_use(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    seen: List<Integer>,
+    stored: List<Integer>,
+) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Store {
+        var root = root_of(instruction.address)
+        if instruction.offset == 0 and seen.contains(root) and not stored.contains(root) {
+            stored.append(root)
+            return
+        }
+    }
+    operands.read(instruction)
+    var index = 0
+    while index < operands.uses.count() {
+        var used = operands.uses[index]
+        var used_root = root_of(used)
+        if used_root >= 0 and seen.contains(used_root) and not stored.contains(used_root) {
+            header_known[used_root] = false
+        }
+        index = index + 1
+    }
+}
+
+func read_the_headers(block_index: Integer) {
+    var block = function.blocks[block_index]
+    crash block
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        var known = known_header(instruction)
+        if known {
+            block.instructions[index] = known
+            changed = true
+        }
+        index = index + 1
+    }
+}
+
+func known_header(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    if instruction == LowIntermediaryRepresentation.Instructions.Load {
+        return known_load(instruction)
+    }
+    return null
+}
+
+func known_load(
+    loaded: LowIntermediaryRepresentation.Instructions.Load,
+): LowIntermediaryRepresentation.Instructions.Instruction? {
+    var root = root_of(loaded.address)
+    assert root >= 0 and loaded.offset == 0 and loaded.width == 'bits_64' and not loaded.is_swapped
+    assert header_known[root] == true and header_counts[root] == 1
+    var value = header_values[root]
+    crash value
+    return LowIntermediaryRepresentation.Instructions.Constant(loaded.target, value)
+}
