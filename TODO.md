@@ -1,13 +1,13 @@
 # TODO
 
 What is left, in order. One line each; delete a line when it is done. The old compiler's rules are in
-`../SpiteLanguage/specs`, its optimisations in `../SpiteLanguage/docs/optimizations.md`, its proofs in
-`../SpiteLanguage/docs/proofs.md`.
+[the specification](https://github.com/Spite-Language/spite_spec/blob/master/specs/README.md), its optimisations in [`optimizations.md`](https://github.com/Spite-Language/spite_documentation/blob/master/optimizations.md), its proofs in
+[`proofs.md`](https://github.com/Spite-Language/spite_documentation/blob/master/proofs.md).
 
 ## Architecture (now)
 
-- Rules that need types, after the typed high representation: template walks (built: every row of `specs/control_flow.md` with a member of the element or one of the class's own functions; not built: the `var value = item.m` then `result.append(value)` form of `map_`, a walk over a path or a computed collection, and a function of an attribute, of a local or held in a function value), a condition that is not a Boolean, a `type` holding text or objects at a foreign call (built: a class, and a list of anything but numbers, refused as crossing into C, and what crosses into a callback), codegen value questions (`argument_count`, `function_reflection`, `parameter_write_question`, `returned_text`), a `_:` that answers for nothing, and the rest of level 5 of `../SpiteLanguage/diagnostics`
-- Rules that need name resolution (level 4 of `../SpiteLanguage/diagnostics`): a class name that reaches nothing, attributes never read (built: the program's own classes, counting reads in every file's tree and in the built high representation, so walks, `to_debug()` and the JSON writers count; not built: an unread singleton binding in a loaded package, an attribute a program adds by reopening a library class, and a read counted per name rather than per class, so a read of another class's attribute of the same name hides one), reopening rules, the parameters of a function that replaces another (exempt from the unread rule)
+- Rules that need types, after the typed high representation: template walks (built: every row of `specs/control_flow.md` with a member of the element or one of the class's own functions; not built: the `var value = item.m` then `result.append(value)` form of `map_`, a walk over a path or a computed collection, and a function of an attribute, of a local or held in a function value), a condition that is not a Boolean, a `type` holding text or objects at a foreign call (built: a class, and a list of anything but numbers, refused as crossing into C, and what crosses into a callback), codegen value questions (`argument_count`, `function_reflection`, `parameter_write_question`, `returned_text`), a `_:` that answers for nothing, and the rest of level 5 of the old compiler's diagnostic programs
+- Rules that need name resolution (level 4 of the old compiler's diagnostic programs): a class name that reaches nothing, attributes never read (built: the program's own classes, counting reads in every file's tree and in the built high representation, so walks, `to_debug()` and the JSON writers count; not built: an unread singleton binding in a loaded package, an attribute a program adds by reopening a library class, and a read counted per name rather than per class, so a read of another class's attribute of the same name hides one), reopening rules, the parameters of a function that replaces another (exempt from the unread rule)
 - A member template that does not fit its member is refused only for `sum_`, `count_` and `each_` on a library collection (D714) and for `map_` of a Boolean; the other forms are not checked yet
 - A comment inside an enum, union or type body is not refused yet (only function bodies have their closing line)
 - Mapping rules across roots: a file in one root and a folder of the same dotted name in another (`specs/packages.md`), and the mapping rules for classes of a root loaded after the entry class is read
@@ -56,7 +56,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The library and the compiler's generated files break three rules they are exempt from for now (D838): a case of two statements (`Duration.part`), an `if` that only holds an `if` (`ZoneRules.transition_offset_seconds_at`), and `crash` on a value that cannot be null (`Spite.Prompt`, the generated REPL)
 - An `assert`/`crash` on a value that cannot be null is refused only on a parameter or an attribute, not on a local; a lone hole in an untyped `var` knows a text only from a local or parameter declared with text (D836); a reopening's attribute type is compared only between two written types or two literals (D840)
 - The unread-attribute check counts a read of any attribute of the same name in any class of the program's own folder (reads by name, not per class, D878); in a folder the program loads it checks only singleton bindings, counting reads from that folder
-- The spec pages in `../SpiteLanguage/specs` still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D750 to D756
+- The spec pages in [the specification](https://github.com/Spite-Language/spite_spec/blob/master/specs/README.md) still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D750 to D756
 
 - The runtime the library needs, as machine code: console, files, directories, clock, sockets, processes, dynamic library
 - A serializer's `keys` map is folded only when it is written out where it is set (D893): a map made at run time (the spec's key table filled once per attribute) is refused, not built
@@ -129,7 +129,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## The errors
 
-- Every folder of `../SpiteLanguage/diagnostics` is ported to `../SpiteSpec/conformance/<name>` with its exact text, and passes
+- Every folder of the old compiler's diagnostic programs is ported to `conformance/<name>` of [spite_spec](https://github.com/Spite-Language/spite_spec) with its exact text, and passes
 
 ## The outputs
 
@@ -143,7 +143,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## The compiler proves itself
 
-- The programs of `../SpiteLanguage` (conformance, examples, docs) are ported to `../SpiteSpec/tests` and answer the same
+- The programs of the old compiler's repository (conformance, examples, docs) are ported to `tests` of [spite_spec](https://github.com/Spite-Language/spite_spec) and answer the same
 
 ## Every optimisation the original does
 - Classes specialised by use (D758, D769): one layout per allocation site, following each object to every place it reaches and merging or specialising the code at each meeting point by measured cost (built: one layout per class from the whole program, so an attribute only some objects use is still stored in all of them); an attribute only written is still stored; a member read through a union is never folded to its classes' constants; the functions only a dropped default called are still in the executable

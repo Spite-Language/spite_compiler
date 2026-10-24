@@ -182,7 +182,7 @@ make a `Customer` and a `List<Line>` makes neither
 A `+`, `-` or `*` on whole numbers halts when its answer does not fit its type. Where the compiler proves while
 compiling that it always fits, the check is left out and the operation is one machine instruction. The proof is a
 range for each operand (`high_intermediary_representation/building/ranges.spite`), the rule of
-`../SpiteLanguage/specs/values_and_types.md#a-range-proves-a-check-unneeded`:
+[`specs/values_and_types.md#a-range-proves-a-check-unneeded`](https://github.com/Spite-Language/spite_spec/blob/master/specs/values_and_types.md#a-range-proves-a-check-unneeded):
 
 - a literal is its own range; a local or a parameter of a whole-number type of at most four bytes has its type's
   range until a `var` or an assignment gives it its value's; a `Long` has no range until one is given to it;

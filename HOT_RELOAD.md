@@ -2,7 +2,7 @@
 
 Save a file of a running program: its classes are compiled again into a small library, and the running program
 loads it and swaps the new functions in. Objects and singletons stay. What a reload may change is the language's
-rule, in `../SpiteLanguage/docs/repl.md` ("What a reload can change").
+rule, in [`repl.md`](https://github.com/Spite-Language/spite_documentation/blob/master/repl.md) ("What a reload can change").
 
 Target: a changed function reloads in well under 0.1 s (the original: 1.7 s, most of it a C compiler run).
 

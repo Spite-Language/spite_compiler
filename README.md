@@ -1,8 +1,8 @@
 # SpiteCompiler
 
 The Spite compiler, written in Spite. It writes Windows machine code directly: no C anywhere. The language is
-specified in `../SpiteLanguage`, the standard library is `../SpiteStandardLibrary`, and the tests are
-`../SpiteSpec`.
+specified in [spite_spec](https://github.com/Spite-Language/spite_spec) and [spite_documentation](https://github.com/Spite-Language/spite_documentation), the standard library is [spite_standard_library](https://github.com/Spite-Language/spite_standard_library), and the tests are
+[spite_spec](https://github.com/Spite-Language/spite_spec).
 
 ## Build it
 
@@ -14,7 +14,7 @@ From nothing, `bash scripts/bootstrap.sh --install` builds it from the old compi
 (`ARCHITECTURE.md`, "How the compiler is built").
 
 `.spite/spite_compiler` is a junction to this folder under a snake_case name. `.spite/library` is a junction to
-`../SpiteStandardLibrary`. The compiler carries every class it adds to a program inside its own executable
+[spite_standard_library](https://github.com/Spite-Language/spite_standard_library). The compiler carries every class it adds to a program inside its own executable
 (`ARCHITECTURE.md`), so a release is `spite.exe` and `library/`.
 
 ## Run it
@@ -32,7 +32,7 @@ A program names everything it loads in its first lines. There is no launcher and
 
 ## Test it
 
-From `../SpiteSpec`:
+From a checkout of [spite_spec](https://github.com/Spite-Language/spite_spec):
 
     ../SpiteCompiler/.spite/spite-0.0.6-windows/spite.exe runner
     ../SpiteCompiler/.spite/spite-0.0.6-windows/spite.exe runner tests/sum

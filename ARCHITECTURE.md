@@ -57,7 +57,7 @@ walks up through the frame pointers; without the file it prints only the fault l
 ## How the compiler is built
 
 The source is written to the language this compiler checks: its entry file loads `.spite/library/windows`, and
-every rule of `../SpiteLanguage/specs` holds in it. The old compiler (0.0.6) cannot build it, so a build from
+every rule of [the specification](https://github.com/Spite-Language/spite_spec/blob/master/specs/README.md) holds in it. The old compiler (0.0.6) cannot build it, so a build from
 nothing is a chain, and `scripts/bootstrap.sh` runs all of it:
 
 1. **The seed.** Commit `47767ec` is the last source the old compiler builds. The old compiler builds it into
@@ -65,7 +65,7 @@ nothing is a chain, and `scripts/bootstrap.sh` runs all of it:
    resolve its own source, so the script sets the seed's `SizeOfStackReserve` (offset 72 of the PE optional header)
    to 256 MB. Only the seed is ever built by the old compiler.
 2. **The seed builds the source**, about five minutes (`--check` about three). `.spite/library` must be a junction
-   to `../SpiteStandardLibrary`, since the entry file's `load` reaches it through `.spite/spite_compiler`.
+   to [spite_standard_library](https://github.com/Spite-Language/spite_standard_library), since the entry file's `load` reaches it through `.spite/spite_compiler`.
 3. **The compiler builds itself** until two builds write the same bytes, about seventy seconds each; the compiler
    the seed writes already rebuilds itself byte for byte. That fixed point is the compiler, and
    `bash scripts/bootstrap.sh --install` puts it in `.spite/spite.exe`.
@@ -93,8 +93,8 @@ needs. The folder is named after the rule, and the validator holds every word of
   its line and function, made once. A message quotes code through `printers/spite`.
 - A rule that needs the whole program runs once the program is complete; a rule about one class runs per class,
   and a reload runs only those.
-- The message says what the old compiler's message says (`../SpiteLanguage/diagnostics`), in this compiler's
-  words, and a `../SpiteSpec/conformance` test pins it.
+- The message says what the old compiler's message says (the old compiler's diagnostic programs), in this compiler's
+  words, and a `conformance` test of [spite_spec](https://github.com/Spite-Language/spite_spec) pins it.
 
 ## Printers
 
