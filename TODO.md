@@ -158,8 +158,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Template chains run as one loop
 - A function taking a `type` is compiled per class
 - A test against a value a list never holds is decided while compiling
-- A table filled once is read as constants
-- Maths on constants is worked out while compiling (built: whole numbers in the high representation, and every call, decimal operation and maths function on constants in the lowered program, D784; not built: the evaluator follows a block and the blocks only it leads to (D941) and knows only the objects they made, so a constant list filled before a loop is unknown inside the loop, and an object made in another function or held by a singleton is never known)
+- A table filled once is read as constants (built for an object its own function makes, or a call run while compiling makes, followed through every path and loop, D1041, D1042; not built: an object a singleton holds, made in another function, is never known, so a table a singleton fills once is read at run time)
+- Maths on constants is worked out while compiling (built: whole numbers in the high representation, and every call, decimal operation and maths function on constants in the lowered program, D784, followed through every path and loop of a function, D1041; not built: a call is run on at most 100 000 instructions (D1047), so a whole case over a hundred thousand points is not answered while compiling, and an object a singleton holds is never known)
+- A call is copied for its known arguments only when it passes a known closure (D1043): a callee given known numbers or a known object without a function in it is not copied, and a loop is unrolled only when no loop is nested in it
 - A binary schema is a constant
 - Identical functions are folded into one
 

@@ -1,0 +1,485 @@
+var kinds = List<Integer>()
+var values = List<Long>()
+var tags = List<Integer>()
+var shared = Registers(0)
+var words = List<List<Long>>()
+var word_tags = List<List<Integer>>()
+var sizes = List<Integer>()
+var freed = List<Boolean>()
+var poisoned = List<Boolean>()
+var owned = List<Boolean>()
+var unknown_tag = -1000001
+var plain_tag = -2999999
+var into_base = -3000000
+
+func State(local_total: Integer) {
+    var index = 0
+    while index < local_total {
+        kinds.append(0)
+        values.append(0)
+        tags.append(-1)
+        index = index + 1
+    }
+}
+
+func copied(): State {
+    var made = State(0)
+    made.shared = shared
+    made.kinds = kinds.copy()
+    made.values = values.copy()
+    made.tags = tags.copy()
+    made.words = words.copy()
+    made.word_tags = word_tags.copy()
+    made.sizes = sizes.copy()
+    made.freed = freed.copy()
+    made.poisoned = poisoned.copy()
+    var index = 0
+    while index < owned.count() {
+        owned[index] = false
+        made.owned.append(false)
+        index = index + 1
+    }
+    return made
+}
+
+func take_the_heap(other: State) {
+    words = other.words.copy()
+    word_tags = other.word_tags.copy()
+    sizes = other.sizes.copy()
+    freed = other.freed.copy()
+    poisoned = other.poisoned.copy()
+    owned = List<Boolean>()
+    var index = 0
+    while index < other.owned.count() {
+        other.owned[index] = false
+        owned.append(false)
+        index = index + 1
+    }
+}
+
+func kind_of(register: Integer): Integer {
+    var slot = shared.slot_of(register)
+    if slot == -2 {
+        return 3
+    }
+    if slot == -1 {
+        return shared.global_kind(register)
+    }
+    var kind = kinds[slot]
+    crash kind
+    return kind
+}
+
+func value_of(register: Integer): Long {
+    var slot = shared.slot_of(register)
+    if slot < 0 {
+        return shared.global_value(register)
+    }
+    var value = values[slot]
+    crash value
+    return value
+}
+
+func tag_of(register: Integer): Integer {
+    var slot = shared.slot_of(register)
+    if slot < 0 {
+        return shared.global_tag(register)
+    }
+    var tag = tags[slot]
+    crash tag
+    return tag
+}
+
+func holds(register: Integer): Boolean {
+    return kind_of(register) == 1
+}
+
+func holds_a_number(register: Integer): Boolean {
+    return kind_of(register) == 1 and tag_of(register) == -1
+}
+
+func place_register(register: Integer, kind: Integer, value: Long, tag: Integer) {
+    var slot = shared.slot_of(register)
+    assert slot != -2
+    if slot == -1 {
+        shared.put_global(register, kind, value, tag)
+        return
+    }
+    kinds[slot] = kind
+    values[slot] = value
+    tags[slot] = tag
+}
+
+func set(register: Integer, value: Long, tag: Integer) {
+    place_register(register, 1, value, tag)
+}
+
+func forget(register: Integer, pointing: Boolean) {
+    if pointing {
+        place_register(register, 3, 0, -1)
+    } else {
+        place_register(register, 2, 0, -1)
+    }
+}
+
+func point_into(register: Integer, object: Integer) {
+    place_register(register, 4, 0, object)
+}
+
+func base_of(register: Integer): Integer {
+    var kind = kind_of(register)
+    if kind == 4 {
+        return tag_of(register)
+    }
+    if kind == 1 and tag_of(register) >= 0 {
+        return tag_of(register)
+    }
+    return -1
+}
+
+func points_into_a_known_object(register: Integer): Boolean {
+    if kind_of(register) != 4 {
+        return false
+    }
+    var object = tag_of(register)
+    return is_tracked(object)
+}
+
+func is_tracked(object: Integer): Boolean {
+    if object < 0 or object >= poisoned.count() {
+        return false
+    }
+    return poisoned[object] == false
+}
+
+func may_point(register: Integer): Boolean {
+    var kind = kind_of(register)
+    if kind == 1 or kind == 4 {
+        var tag = tag_of(register)
+        return is_tracked(tag)
+    }
+    return kind != 2
+}
+
+func word_at(object: Integer, slot: Integer): Long {
+    var held = words[object]
+    crash held
+    var word = held[slot]
+    crash word
+    return word
+}
+
+func word_tag_at(object: Integer, slot: Integer): Integer {
+    var held = word_tags[object]
+    crash held
+    var tag = held[slot]
+    crash tag
+    return tag
+}
+
+func slot_count(object: Integer): Integer {
+    var held = words[object]
+    crash held
+    return held.count()
+}
+
+func own(object: Integer) {
+    assert owned[object] != true
+    var held = words[object]
+    var held_tags = word_tags[object]
+    crash held
+    crash held_tags
+    var word_copy = held.copy()
+    var tag_copy = held_tags.copy()
+    words[object] = word_copy
+    word_tags[object] = tag_copy
+    while owned.count() <= object {
+        owned.append(false)
+    }
+    owned[object] = true
+}
+
+func put(object: Integer, slot: Integer, word: Long, tag: Integer) {
+    own(object)
+    var held = words[object]
+    var held_tags = word_tags[object]
+    crash held
+    crash held_tags
+    held[slot] = word
+    held_tags[slot] = tag
+}
+
+func word_base(tag: Integer): Integer {
+    if tag >= 0 {
+        return tag
+    }
+    if tag <= into_base {
+        return into_base - tag
+    }
+    return -1
+}
+
+func is_pointer_tag(tag: Integer): Boolean {
+    return tag >= 0 or tag == unknown_tag or tag <= into_base
+}
+
+func word_tag_of(register: Integer): Integer {
+    var kind = kind_of(register)
+    if kind == 1 {
+        return tag_of(register)
+    }
+    if kind == 2 {
+        return plain_tag
+    }
+    if kind == 4 {
+        var object = tag_of(register)
+        return into_base - object
+    }
+    return unknown_tag
+}
+
+func word_value_of(register: Integer): Long {
+    if kind_of(register) == 1 {
+        return value_of(register)
+    }
+    return 0
+}
+
+func merged_tag(first: Integer, second: Integer): Integer {
+    if first == unknown_tag or second == unknown_tag {
+        return unknown_tag
+    }
+    var first_base = word_base(first)
+    var second_base = word_base(second)
+    if first_base >= 0 and second_base >= 0 {
+        if first_base == second_base {
+            return into_base - first_base
+        }
+        return unknown_tag
+    }
+    if first_base >= 0 {
+        return into_base - first_base
+    }
+    if second_base >= 0 {
+        return into_base - second_base
+    }
+    return plain_tag
+}
+
+func merge_into(object: Integer, slot: Integer, word: Long, tag: Integer): Boolean {
+    if slot < 0 or slot >= slot_count(object) {
+        return false
+    }
+    var old_tag = word_tag_at(object, slot)
+    var old_word = word_at(object, slot)
+    if old_tag == tag and old_word == word {
+        return false
+    }
+    var merged = merged_tag(old_tag, tag)
+    if merged == old_tag and old_word == 0 {
+        return false
+    }
+    put(object, slot, 0, merged)
+    return true
+}
+
+func blur(object: Integer, slot: Integer) {
+    assert slot >= 0 and slot < slot_count(object) and word_tag_at(object, slot) != unknown_tag
+    put(object, slot, 0, unknown_tag)
+}
+
+func blur_object(object: Integer, word: Long, tag: Integer) {
+    var slot = 0
+    while slot < slot_count(object) {
+        merge_into(object, slot, word, tag)
+        slot = slot + 1
+    }
+}
+
+func holds_pointers(object: Integer): Boolean {
+    var slot = 0
+    while slot < slot_count(object) {
+        var tag = word_tag_at(object, slot)
+        if is_pointer_tag(tag) {
+            return true
+        }
+        slot = slot + 1
+    }
+    return false
+}
+
+func write_unknown(object: Integer, at: Long, count: Long, word: Long, tag: Integer) {
+    var room = sizes[object]
+    crash room
+    if count == 8 and at >= 0 and at + 8 <= room and at % 8 == 0 {
+        var place = at.to_integer()
+        put(object, place / 8, word, tag)
+        return
+    }
+    var start = at
+    var end = at + count
+    if start < 0 {
+        start = 0
+    }
+    if end > room {
+        end = room
+    }
+    assert count > 0 and start < end
+    var slot = start.to_integer() / 8
+    var last = (end.to_integer() - 1) / 8
+    while slot <= last {
+        merge_into(object, slot, word, tag)
+        slot = slot + 1
+    }
+}
+
+func poison_all() {
+    var index = 0
+    while index < poisoned.count() {
+        poisoned[index] = true
+        index = index + 1
+    }
+}
+
+func poison_from(object: Integer, other: State) {
+    var waiting = List<Integer>()
+    waiting.append(object)
+    var index = 0
+    while index < waiting.count() {
+        var next = waiting[index]
+        crash next
+        add_the_pointees(next, waiting)
+        other.add_the_pointees(next, waiting)
+        if next < poisoned.count() {
+            poisoned[next] = true
+        }
+        index = index + 1
+    }
+}
+
+func add_the_pointees(object: Integer, waiting: List<Integer>) {
+    assert object >= 0 and object < poisoned.count() and poisoned[object] == false
+    var held_tags = word_tags[object]
+    crash held_tags
+    var slot = 0
+    while slot < held_tags.count() {
+        var tag = held_tags[slot]
+        crash tag
+        var pointee = word_base(tag)
+        if pointee >= 0 and not waiting.contains(pointee) {
+            waiting.append(pointee)
+        }
+        slot = slot + 1
+    }
+}
+
+func join_a_slot(slot: Integer, other: State): Boolean {
+    var kind = kinds[slot]
+    var value = values[slot]
+    var tag = tags[slot]
+    var other_kind = other.kinds[slot]
+    var other_value = other.values[slot]
+    var other_tag = other.tags[slot]
+    crash kind
+    crash value
+    crash tag
+    crash other_kind
+    crash other_value
+    crash other_tag
+    shared.merge(kind, value, tag, other_kind, other_value, other_tag)
+    var same = shared.merged_kind == kind and shared.merged_value == value and shared.merged_tag == tag
+    if same {
+        return false
+    }
+    kinds[slot] = shared.merged_kind
+    values[slot] = shared.merged_value
+    tags[slot] = shared.merged_tag
+    return true
+}
+
+func join(other: State): Boolean {
+    var changed = false
+    var slot = 0
+    var count = kinds.count()
+    var other_kinds = other.kinds
+    var other_values = other.values
+    var other_tags = other.tags
+    while slot < count and slot < other_kinds.count() {
+        var mine = kinds[slot]
+        var theirs = other_kinds[slot]
+        var differs = mine != theirs or values[slot] != other_values[slot] or tags[slot] != other_tags[slot]
+        if differs and theirs != 0 and mine != 3 {
+            var joined = join_a_slot(slot, other)
+            changed = changed or joined
+        }
+        slot = slot + 1
+    }
+    var heap_changed = join_the_heap(other)
+    return changed or heap_changed
+}
+
+func join_the_heap(other: State): Boolean {
+    var changed = false
+    while poisoned.count() < other.poisoned.count() {
+        var no_words = List<Long>()
+        var no_tags = List<Integer>()
+        words.append(no_words)
+        word_tags.append(no_tags)
+        sizes.append(0)
+        freed.append(false)
+        poisoned.append(true)
+        owned.append(true)
+    }
+    var object = 0
+    while object < poisoned.count() {
+        var joined = join_a_heap_object(object, other)
+        changed = changed or joined
+        object = object + 1
+    }
+    return changed
+}
+
+func join_a_heap_object(object: Integer, other: State): Boolean {
+    var mine = is_tracked(object)
+    var theirs = other.is_tracked(object)
+    var other_freed = other.freed
+    var both_freed = freed[object] == true and object < other_freed.count() and other_freed[object] == true
+    if both_freed or not mine and not theirs {
+        return false
+    }
+    if mine and theirs {
+        return join_an_object(object, other)
+    }
+    poison_from(object, other)
+    return mine
+}
+
+func join_an_object(object: Integer, other: State): Boolean {
+    var room = sizes[object]
+    var other_room = other.sizes[object]
+    crash room
+    crash other_room
+    if room != other_room {
+        poison_from(object, other)
+        return true
+    }
+    var changed = false
+    var other_freed = other.freed[object] == true
+    if freed[object] == true and not other_freed {
+        freed[object] = false
+        changed = true
+    }
+    var mine_held = words[object]
+    var theirs_held = other.words[object]
+    crash mine_held
+    crash theirs_held
+    var slot = 0
+    while slot < mine_held.count() {
+        var other_tag = other.word_tag_at(object, slot)
+        var other_word = other.word_at(object, slot)
+        var merged = merge_into(object, slot, other_word, other_tag)
+        changed = changed or merged
+        slot = slot + 1
+    }
+    return changed
+}

@@ -1145,6 +1145,10 @@ on whole words). Then:
 - when it changed objects the block made, and nothing else, the call stays, and the block goes on knowing what the
   call left in them, so `"cactus"` built by its `append_code` calls is known when `pluralize` is called on it.
 
+A third evaluation, after these two, follows each function over all its paths and through its loops (see [what a
+function knows is followed through all its paths](#what-a-function-knows-is-followed-through-all-its-paths)), so a
+call whose arguments become known only across blocks is run there.
+
 When it does not apply: the call, or anything it calls, reads or writes a singleton or any memory the block did
 not make, calls the system or another library (anything but the maths functions), takes a frame's address, starts
 or joins a thread, waits, would halt (an arithmetic check, a `crash`, a division by zero, a call of a crash's
@@ -1161,6 +1165,158 @@ allocates nothing; the objects of its answer are still allocated where it was). 
 gets the maths library of the machine that compiles it, which is the one it runs on when both are the same
 Windows; `sqrt`, `floor`, `ceil`, `trunc`, `round` are exact everywhere, so only the transcendental functions can
 differ, by their last bit, between two versions of the C library.
+
+## What a function knows is followed through all its paths
+
+After inlining, every function is evaluated once more, over all its paths at once: the compiler walks its blocks
+until what it knows at the start of each block stops changing, and what it knows is the value of every register
+it can tell and the contents of every object it can tell. A register is known as a number, as a pointer to a
+known object at a known offset, as "a pointer into that object, at an offset only the run knows", or not at all.
+An object is known from the moment it is allocated with a known size, or made by a call the compiler runs (see
+[calls on constants are run while compiling](#calls-on-constants-are-run-while-compiling)), and each of its words
+is known as a value, as "a number only the run knows", as "a pointer into that object", or not at all. Where two
+paths meet, what both know alike is kept and the rest is forgotten word by word; a loop is followed until its
+start knows nothing new. So a list filled before a loop is still known inside it, as long as nothing in the loop
+can write it, and every instruction left with known operands becomes its answer: a read from a known object is
+the number it holds, a test on known values is a jump, and a call on known values is run as before.
+
+```spite
+var steps = List<Step>()
+
+func Checkout() {
+    steps.append('discount')
+    steps.append('tax')
+    steps.append('discount')
+}
+
+func price(amount: Integer): Integer {
+    var total = amount
+    var index = 0
+    while index < steps.count() {
+        if steps[index] == 'discount' {
+            total = total - total / 10
+        }
+        if steps[index] == 'tax' {
+            total = total + total / 5
+        }
+        index = index + 1
+    }
+    return total
+}
+```
+
+A loop that makes a `Checkout()` and calls `price` ten million times reads, after inlining, the count of a list it
+made itself and three of its items: all known, so with the loop unrolled (next section) `price` is the three
+steps written out, `total - total / 10`, `total + total / 5`, `total - total / 10`, each a multiplication by a
+constant ([dividing by a constant is a multiplication](#dividing-by-a-constant-is-a-multiplication)).
+Measured on `a_table_filled_once_is_read_as_constants`: 90 ms before, 27 ms after; on
+`an_argument_its_caller_holds_is_passed_without_counting`, whose header list is made in the thread's function and
+whose rows list is written in its loop, 25 ms before, 8 ms after.
+
+What can change a known object is followed exactly: a store at a known place writes that word (a value only the
+run knows makes it "a number only the run knows", or "a pointer into" its object); a store through a pointer
+into an object at an unknown offset forgets every word of that object, keeping "a pointer into it" for the words
+that pointed into it; a count taken or let go changes only the count. Anything that could reach a known object
+without the compiler seeing which, so that its words could be written behind its back, makes the function forget
+every object it knows from there on: a known object passed to a call that is not run (or to a thread, or an
+atomic operation), its pointer stored into memory that is not a known object, a store or a count through a
+pointer that may point at a known object, and bytes copied out of a known object that hold pointers. A path that
+halts forgets nothing for the others.
+
+When it does not apply: a function that waits; one of more than 20 000 instructions, or whose registers times
+blocks pass 600 000; and a function whose walk passes 20 000 instructions plus 40 for each of its own is left as
+it was. A call is run on at most 100 000 instructions, with 300 000 for each function and 20 000 000 for the
+program; past them it is left as written. Nothing is guessed: what is not known is left as the program wrote it.
+
+How it works (`low_optimization_passes/compile_time_evaluation/known/`): `flow.spite` walks the blocks in reverse
+postorder, sweeping until nothing changes; a register written once in the function keeps one value for the whole
+function (its reads are walked again when it changes), and only registers written more than once, and those an
+allocation or a call writes, are kept per block (`registers.spite`); `state.spite` holds a block's registers and
+its objects, sharing each object's words with the states it was copied from until one of them writes it. The
+lowered program's interpreter (`machine.spite`) computes every instruction with the machine's own semantics.
+
+What a user can observe: the time; nothing else, since only instructions whose answer is known while compiling,
+and that could not halt, are replaced.
+
+## Short loops on known counts are unrolled
+
+A loop that is not nested around another loop, and whose number of passes the evaluation can count from what it
+knows at the loop's start, is written out as that many copies of its body when it runs at most 16 passes and the
+copies hold at most 1024 instructions. Each copy then knows the counter's value, so the reads and the tests on it
+fold: a walk over a list of three known items becomes three straight pieces of code, each with its item known.
+The count is found by following the loop pass by pass from its start; a pass must decide at least one of the
+loop's exits from known values, so a loop whose end only the run knows stops being counted at its first pass. A
+loop that ends early on a value only the run knows (`while all and index < headers.count()`) is still unrolled:
+each copy keeps that test.
+
+```spite
+func match_into(entity: Integer, found: List<Integer>): Boolean {
+    var index = 0
+    var all = true
+    while all and index < headers.count() {
+        crash headers[index]
+        var place = entity % headers[index]
+        found[index] = place
+        all = place >= 0
+        index = index + 1
+    }
+    return all
+}
+```
+
+With `headers` known to be `[1, 2, 3]`, the loop is three copies: `entity % 1` is 0, `entity % 2` and `entity % 3`
+are divisions by constants, and every bound check is gone.
+
+The unrolled function is evaluated again, and the copies are kept only when that evaluation proves the original
+loop is never reached any more; otherwise the loop is left as written. After a loop is unrolled the loops around
+it are counted again, up to 8 unrollings in a function.
+
+What a user can observe: the time, and a larger executable where a loop was written out.
+
+## A call given a known closure gets its own copy of the callee
+
+A call that passes a closure the caller knows (an object it made holding the address of a function) to a
+function that calls it is given its own copy of that function, evaluated knowing the closure: the closure's
+function is called directly, and the copy is inlined into like any function, so the function given to `each`,
+`count` or any walk runs inside the walk with no call through a pointer. The copy is kept only when knowing the
+argument let the evaluation make a call direct, decide a test or read a known value; at most 64 copies are made
+in a program, each of a function of at most 4 000 instructions.
+
+```spite
+func turn_all(points: List<Point>) {
+    var round = 0
+    while round < 200 {
+        points.each(turn)
+        round = round + 1
+    }
+}
+```
+
+`points.each(turn)` calls a copy of `List_of_Point.each` in which `turn` is inlined. Measured on
+`maths_on_constants_is_worked_out_while_compiling`: 60 ms before, 21 ms after; on `a_binary_schema_is_a_constant`,
+whose `headers.count(is_current)` gets the same treatment, 5.4 ms before, 3.5 ms after.
+
+What a user can observe: the time, and the copies, named `<function>$known<n>`, in the executable's function map.
+
+## A read from a known object cannot fault, and goes when nothing reads it
+
+A read of a word the evaluation proves lies inside a live known object is marked as one that cannot fault, and the
+dead-code pass removes it when nothing reads its answer: an unrolled walk over a known list no longer reads the
+list's storage in every copy only to throw the pointer away.
+
+## Arithmetic by 0 and 1 is no arithmetic
+
+A remainder by 1, and a product or a bitwise and with 0, are the constant 0, whatever the other side is; on 64-bit
+values a division or product by 1, and a sum, difference, or, exclusive or or shift by 0, are a copy of the other
+side. The evaluation knows the answer, so what follows folds too: `entity % 1 >= 0` is a jump. None of these can
+halt, so a check they carried has nothing to report.
+
+## An operand the evaluation knows is written as a constant
+
+When an arithmetic or a comparison is left with one operand the evaluation knows but the register holding it is
+written elsewhere too (a counter, a value that differs on another path), the known value is written into a fresh
+register just before it, so the generator sees a constant: a division by it is a multiplication, and a comparison
+with it takes an immediate.
 
 ## A number's own bits are read in place
 

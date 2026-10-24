@@ -1,0 +1,1686 @@
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var machine = LowOptimizationPasses.CompileTimeEvaluation.Machine(program)
+var never_pure = Dictionary<String, Boolean>()
+var failed_calls = Dictionary<String, Boolean>()
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var total = 0
+var entries = List<State>()
+var reached = List<Boolean>()
+var pending = List<Boolean>()
+var state = State(0)
+var scratch = LowOptimizationPasses.CompileTimeEvaluation.Frame(0)
+var successors = List<Integer>()
+var remaining_steps = 20000000
+var function_steps = 0
+var steps_per_call = 100000
+var known_answers = Dictionary<String, Long>()
+var known_presences = Dictionary<String, Long>()
+var failing_sites = Dictionary<String, Boolean>()
+var work = 0
+var most_work = 0
+var gave_up = false
+var rewriting = false
+var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+var next_register = 0
+var single_constants = List<Boolean>()
+var changes = 0
+var call_changed = false
+var call_left_objects = false
+var trip_locals = List<State>()
+var trip_reached = List<Boolean>()
+var trip_back = State(0)
+var trip_back_reached = false
+var trip_decided = false
+var walking = 0
+var strong_changes = 0
+var saved_entries = List<State>()
+var saved_reached = List<Boolean>()
+var saved_total = 0
+var has_start = false
+var start_kinds = List<Integer>()
+var start_values = List<Long>()
+var start_tags = List<Integer>()
+var start_heap = State(0)
+var registers = Registers(0)
+var order = List<Integer>()
+var use_blocks = List<List<Integer>>()
+var saved_registers = Registers(0)
+var saved_order = List<Integer>()
+var saved_uses = List<List<Integer>>()
+var trip_registers = Registers(0)
+var candidate_calls = List<LowIntermediaryRepresentation.Instructions.Call>()
+var candidate_states = List<State>()
+var candidate_callers = List<LowIntermediaryRepresentation.LowFunction>()
+var candidate_blocks = List<Integer>()
+var candidate_places = List<Integer>()
+
+func Flow(
+    starting_machine: LowOptimizationPasses.CompileTimeEvaluation.Machine,
+    impure: Dictionary<String, Boolean>,
+    calls_failed: Dictionary<String, Boolean>,
+) {
+    machine = starting_machine
+    never_pure = impure
+    failed_calls = calls_failed
+}
+
+func analysed(lowered: LowIntermediaryRepresentation.LowFunction, work_limit: Integer): Boolean {
+    function = lowered
+    total = operands.most_register_of(function)
+    next_register = total
+    entries = List<State>()
+    failing_sites = Dictionary<String, Boolean>()
+    reached = List<Boolean>()
+    pending = List<Boolean>()
+    var index = 0
+    while index < function.blocks.count() {
+        var empty = State(0)
+        entries.append(empty)
+        reached.append(false)
+        pending.append(false)
+        index = index + 1
+    }
+    if function.blocks.is_empty() {
+        return false
+    }
+    registers = registers_of_the_function()
+    var ordering = LowOptimizationPasses.CompileTimeEvaluation.Unrolling(function)
+    order = ordering.block_order()
+    note_the_uses()
+    scratch = LowOptimizationPasses.CompileTimeEvaluation.Frame(total)
+    machine.memory_words = 0
+    work = 0
+    most_work = work_limit
+    gave_up = false
+    rewriting = false
+    var start = State(registers.local_count)
+    start.shared = registers
+    index = 0
+    while index < function.parameter_count and index < total {
+        enter_a_parameter(start, index)
+        index = index + 1
+    }
+    if has_start {
+        start.take_the_heap(start_heap)
+    }
+    entries[0] = start
+    reached[0] = true
+    pending[0] = true
+    var sweeping = true
+    while sweeping and not gave_up {
+        sweeping = false
+        var position = 0
+        while position < order.count() and not gave_up {
+            var block_index = order[position]
+            crash block_index
+            if pending[block_index] == true {
+                flow_from(block_index)
+                sweeping = true
+            }
+            position = position + 1
+        }
+    }
+    return not gave_up
+}
+
+func enter_a_parameter(start: State, index: Integer) {
+    if has_start and index < start_kinds.count() {
+        var kind = start_kinds[index]
+        var value = start_values[index]
+        var tag = start_tags[index]
+        crash kind
+        crash value
+        crash tag
+        start.place_register(index, kind, value, tag)
+        return
+    }
+    start.forget(index, false)
+}
+
+func start_from(snapshot: State, arguments: List<Integer>) {
+    start_kinds = List<Integer>()
+    start_values = List<Long>()
+    start_tags = List<Integer>()
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        crash argument
+        var kind = snapshot.kind_of(argument)
+        var value: Long = 0
+        var tag = -1
+        if kind == 0 {
+            kind = 3
+        }
+        if kind == 1 or kind == 4 {
+            value = snapshot.value_of(argument)
+            tag = snapshot.tag_of(argument)
+        }
+        start_kinds.append(kind)
+        start_values.append(value)
+        start_tags.append(tag)
+        index = index + 1
+    }
+    start_heap = snapshot
+    has_start = true
+}
+
+func registers_of_the_function(): Registers {
+    var counts = List<Integer>()
+    var index = 0
+    while index < total {
+        counts.append(0)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            count_the_definitions(instruction, counts)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    var made = Registers(total)
+    index = 0
+    while index < total {
+        var count = counts[index]
+        crash count
+        if index < function.parameter_count {
+            count = count + 1
+        }
+        if count > 1 {
+            made.make_local(index)
+        }
+        index = index + 1
+    }
+    return made
+}
+
+func count_the_definitions(instruction: LowIntermediaryRepresentation.Instructions.Instruction, counts: List<Integer>) {
+    var weight = 1
+    if makes_fresh_objects(instruction) {
+        weight = 2
+    }
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        if register < counts.count() {
+            var count = counts[register]
+            crash count
+            counts[register] = count + weight
+        }
+        index = index + 1
+    }
+}
+
+func makes_fresh_objects(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Allocate: return true
+        LowIntermediaryRepresentation.Instructions.Resize: return true
+        LowIntermediaryRepresentation.Instructions.Call: return true
+        LowIntermediaryRepresentation.Instructions.CallAt: return true
+        _: return false
+    }
+}
+
+func note_the_uses() {
+    use_blocks = List<List<Integer>>()
+    var index = 0
+    while index < total {
+        var none_yet = List<Integer>()
+        use_blocks.append(none_yet)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            note_a_use(instruction, block_index)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func note_a_use(instruction: LowIntermediaryRepresentation.Instructions.Instruction, block_index: Integer) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.uses.count() {
+        var register = operands.uses[index]
+        if register < total and registers.slot_of(register) == -1 {
+            var users = use_blocks[register]
+            crash users
+            var last = users.last()
+            if not last or last != block_index {
+                users.append(block_index)
+            }
+        }
+        index = index + 1
+    }
+}
+
+func save() {
+    saved_entries = entries
+    saved_reached = reached
+    saved_total = total
+    saved_registers = registers
+    saved_order = order
+    saved_uses = use_blocks
+}
+
+func restore() {
+    entries = saved_entries
+    reached = saved_reached
+    total = saved_total
+    registers = saved_registers
+    order = saved_order
+    use_blocks = saved_uses
+    next_register = saved_total
+    scratch = LowOptimizationPasses.CompileTimeEvaluation.Frame(total)
+    gave_up = false
+}
+
+func push(block_index: Integer) {
+    pending[block_index] = true
+}
+
+func is_reached(block_index: Integer): Boolean {
+    if block_index < 0 or block_index >= reached.count() {
+        return false
+    }
+    return reached[block_index] == true
+}
+
+func swap_in() {
+    machine.words = state.words
+    machine.word_tags = state.word_tags
+    machine.sizes = state.sizes
+    machine.freed = state.freed
+    machine.poisoned = state.poisoned
+    machine.owned = state.owned
+}
+
+func begin_at(block_index: Integer) {
+    var entry = entries[block_index]
+    crash entry
+    state = entry.copied()
+    swap_in()
+}
+
+func flow_from(block_index: Integer) {
+    pending[block_index] = false
+    registers.changed.clear()
+    begin_at(block_index)
+    walk(block_index)
+    wake_the_users()
+    var leaving = successors.copy()
+    var index = 0
+    while index < leaving.count() {
+        var successor = leaving[index]
+        crash successor
+        arrive(successor)
+        index = index + 1
+    }
+}
+
+func wake_the_users() {
+    var index = 0
+    while index < registers.changed.count() {
+        var register = registers.changed[index]
+        crash register
+        var users = use_blocks[register]
+        crash users
+        var position = 0
+        while position < users.count() {
+            var user = users[position]
+            crash user
+            if reached[user] == true {
+                pending[user] = true
+            }
+            position = position + 1
+        }
+        index = index + 1
+    }
+    registers.changed.clear()
+}
+
+func arrive(successor: Integer) {
+    if successor < 0 or successor >= entries.count() {
+        gave_up = true
+        return
+    }
+    if reached[successor] != true {
+        var first = state.copied()
+        entries[successor] = first
+        reached[successor] = true
+        push(successor)
+        return
+    }
+    var entry = entries[successor]
+    crash entry
+    var changed = entry.join(state)
+    if changed and pending[successor] != true {
+        push(successor)
+    }
+}
+
+func poison() {
+    state.poison_all()
+}
+
+func walk(block_index: Integer) {
+    walking = block_index
+    successors.clear()
+    var block = function.blocks[block_index]
+    crash block
+    var ended = false
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if ended {
+            keep(instruction)
+        } else {
+            work = work + 1
+            ended = stepped(instruction)
+        }
+        index = index + 1
+    }
+    if work > most_work and not rewriting {
+        gave_up = true
+    }
+    if not ended and block_index + 1 < function.blocks.count() {
+        successors.append(block_index + 1)
+    }
+}
+
+func keep(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if rewriting {
+        kept.append(instruction)
+    }
+}
+
+func stepped(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return constant_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: return copy_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return arithmetic_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Compare: return compare_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return plain_step(instruction, instruction.target)
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: return plain_step(instruction, instruction.target)
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return plain_step(instruction, instruction.target)
+        LowIntermediaryRepresentation.Instructions.Load: return load_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: return store_step(instruction)
+        LowIntermediaryRepresentation.Instructions.CopyBytes: return copy_bytes_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Call: return call_step(instruction)
+        LowIntermediaryRepresentation.Instructions.CallAt: return call_at_step(instruction)
+        LowIntermediaryRepresentation.Instructions.ImportCall: return import_call_step(instruction)
+        LowIntermediaryRepresentation.Instructions.DataAddress: return address_step(instruction, instruction.target)
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return address_step(instruction, instruction.target)
+        LowIntermediaryRepresentation.Instructions.Allocate: return allocate_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Retain: return retain_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Free: return free_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Resize: return resize_step(instruction)
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return atomic_step(instruction, instruction.target, instruction.address, -1)
+        LowIntermediaryRepresentation.Instructions.CompareExchange: return exchange_step(instruction)
+        LowIntermediaryRepresentation.Instructions.StartThread: return thread_step(instruction, instruction.target)
+        LowIntermediaryRepresentation.Instructions.JoinThread: return thread_step(instruction, -1)
+        LowIntermediaryRepresentation.Instructions.Jump: return jump_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Branch: return branch_step(instruction)
+        LowIntermediaryRepresentation.Instructions.Return: return ending_step(instruction, true)
+        LowIntermediaryRepresentation.Instructions.Exit: return ending_step(instruction, true)
+        LowIntermediaryRepresentation.Instructions.Stop: return ending_step(instruction, not instruction.continues)
+        _: return opaque_step(instruction)
+    }
+}
+
+func opaque_step(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    operands.read(instruction)
+    var defined = operands.defines.copy()
+    var index = 0
+    while index < defined.count() {
+        var register = defined[index]
+        crash register
+        state.forget(register, false)
+        index = index + 1
+    }
+    keep(instruction)
+    return false
+}
+
+func ending_step(instruction: LowIntermediaryRepresentation.Instructions.Instruction, ends: Boolean): Boolean {
+    keep(instruction)
+    return ends
+}
+
+func uses_are_known(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    operands.read(instruction)
+    return operands.uses.all(state.holds)
+}
+
+func executed_on_scratch(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Integer {
+    operands.read(instruction)
+    var used = operands.uses.copy()
+    var index = 0
+    while index < used.count() {
+        var register = used[index]
+        crash register
+        if register >= total or not state.holds(register) {
+            return -1
+        }
+        var value = state.value_of(register)
+        var tag = state.tag_of(register)
+        scratch.set(register, value, tag)
+        index = index + 1
+    }
+    operands.read(instruction)
+    var defined = operands.defines.copy()
+    index = 0
+    while index < defined.count() {
+        var target = defined[index]
+        crash target
+        if target >= total {
+            return -1
+        }
+        index = index + 1
+    }
+    machine.failed = false
+    machine.steps = 0
+    machine.step_limit = 1
+    var outcome = machine.executed(instruction, scratch)
+    machine.failed = false
+    return outcome
+}
+
+func take_from_scratch(target: Integer): Boolean {
+    if target < 0 or target >= total or not scratch.holds(target) {
+        return false
+    }
+    var value = scratch.value_of(target)
+    var tag = scratch.tag_of(target)
+    state.set(target, value, tag)
+    return true
+}
+
+func keep_folded(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    target: Integer,
+): Boolean {
+    if rewriting and state.holds_a_number(target) {
+        var number = state.value_of(target)
+        var made = LowIntermediaryRepresentation.Instructions.Constant(target, number)
+        kept.append(made)
+        changes = changes + 1
+        return false
+    }
+    keep(instruction)
+    return false
+}
+
+func constant_step(made: LowIntermediaryRepresentation.Instructions.Constant): Boolean {
+    state.set(made.target, made.number, -1)
+    keep(made)
+    return false
+}
+
+func copy_step(copy: LowIntermediaryRepresentation.Instructions.Copy): Boolean {
+    var kind = state.kind_of(copy.source)
+    if kind == 1 {
+        var value = state.value_of(copy.source)
+        var tag = state.tag_of(copy.source)
+        state.set(copy.target, value, tag)
+        keep(copy)
+        return false
+    }
+    if kind == 4 {
+        var object = state.tag_of(copy.source)
+        state.point_into(copy.target, object)
+        keep(copy)
+        return false
+    }
+    state.forget(copy.target, kind != 2)
+    keep(copy)
+    return false
+}
+
+func plain_step(instruction: LowIntermediaryRepresentation.Instructions.Instruction, target: Integer): Boolean {
+    if uses_are_known(instruction) {
+        var outcome = executed_on_scratch(instruction)
+        if outcome >= 0 and take_from_scratch(target) {
+            return keep_folded(instruction, target)
+        }
+    }
+    state.forget(target, false)
+    keep(instruction)
+    return false
+}
+
+func arithmetic_step(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
+    if state.holds(arithmetic.left) and state.holds(arithmetic.right) {
+        var outcome = executed_on_scratch(arithmetic)
+        if outcome >= 0 and take_from_scratch(arithmetic.target) {
+            return keep_folded(arithmetic, arithmetic.target)
+        }
+    }
+    var identity = identity_of(arithmetic)
+    if identity == 1 {
+        state.set(arithmetic.target, 0, -1)
+        return keep_folded(arithmetic, arithmetic.target)
+    }
+    if identity == 2 {
+        var copied = LowIntermediaryRepresentation.Instructions.Copy(arithmetic.target, arithmetic.left)
+        if rewriting {
+            changes = changes + 1
+        }
+        return copy_step(copied)
+    }
+    var base = pointer_base(arithmetic)
+    if rewriting {
+        keep_simplified(arithmetic)
+    }
+    if base >= 0 {
+        state.point_into(arithmetic.target, base)
+    } else {
+        state.forget(arithmetic.target, base == -2)
+    }
+    return false
+}
+
+func identity_of(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Integer {
+    var operator = arithmetic.operator
+    var right_known = state.holds_a_number(arithmetic.right)
+    var left_known = state.holds_a_number(arithmetic.left)
+    var right: Long = 7
+    var left: Long = 7
+    if right_known {
+        right = state.value_of(arithmetic.right)
+    }
+    if left_known {
+        left = state.value_of(arithmetic.left)
+    }
+    var zero_side = right == 0 or left == 0
+    if zero_side and (operator == 'multiply' or operator == 'bits_and') {
+        return 1
+    }
+    if right == 1 and operator == 'remainder' {
+        return 1
+    }
+    if arithmetic.width != 'bits_64' or not right_known {
+        return 0
+    }
+    var unchanged = right == 1 and (operator == 'divide' or operator == 'multiply')
+    var shifted_nothing = operator == 'shift_left' or operator == 'shift_right'
+    var added_nothing = operator == 'add' or operator == 'subtract' or operator == 'bits_or' or operator == 'bits_xor'
+    if unchanged or right == 0 and (added_nothing or shifted_nothing) {
+        return 2
+    }
+    return 0
+}
+
+func pointer_base(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Integer {
+    var left_kind = state.kind_of(arithmetic.left)
+    var right_kind = state.kind_of(arithmetic.right)
+    var vague = left_kind == 3 or left_kind == 0 or right_kind == 3 or right_kind == 0
+    if vague {
+        return -2
+    }
+    var left_base = state.base_of(arithmetic.left)
+    var right_base = state.base_of(arithmetic.right)
+    var operator = arithmetic.operator
+    if left_base < 0 and right_base < 0 {
+        return -1
+    }
+    if left_base >= 0 and right_base >= 0 {
+        if operator == 'subtract' {
+            return -1
+        }
+        return -2
+    }
+    var moves = operator == 'add' or operator == 'subtract' and left_base >= 0
+    if moves and left_base >= 0 {
+        return left_base
+    }
+    if moves {
+        return right_base
+    }
+    return -2
+}
+
+func compare_step(compare: LowIntermediaryRepresentation.Instructions.Compare): Boolean {
+    if state.holds(compare.left) and state.holds(compare.right) {
+        var outcome = executed_on_scratch(compare)
+        if outcome >= 0 and take_from_scratch(compare.target) {
+            return keep_folded(compare, compare.target)
+        }
+    }
+    if rewriting {
+        keep_compared(compare)
+    }
+    state.forget(compare.target, false)
+    return false
+}
+
+func load_step(loaded: LowIntermediaryRepresentation.Instructions.Load): Boolean {
+    var address = loaded.address
+    var wide = loaded.width == 'bits_64'
+    var kind = state.kind_of(address)
+    if kind == 1 {
+        var tag = state.tag_of(address)
+        var inside_known = machine.is_object(tag) and state.is_tracked(tag)
+        var unfaulting = rewriting and inside_known and is_inside(loaded)
+        var readable = machine.is_data(tag) or inside_known
+        if readable {
+            var outcome = executed_on_scratch(loaded)
+            if outcome >= 0 and take_from_scratch(loaded.target) {
+                return keep_loaded(loaded, unfaulting)
+            }
+        }
+        keep_unfaulting(loaded, unfaulting)
+        forget_loaded(loaded, inside_known)
+        return false
+    }
+    if kind == 4 {
+        var object = state.tag_of(address)
+        var pointing = wide and state.is_tracked(object) and state.holds_pointers(object)
+        state.forget(loaded.target, pointing)
+        keep(loaded)
+        return false
+    }
+    state.forget(loaded.target, wide and kind != 2)
+    keep(loaded)
+    return false
+}
+
+func forget_loaded(loaded: LowIntermediaryRepresentation.Instructions.Load, inside_known: Boolean) {
+    var wide = loaded.width == 'bits_64'
+    if not wide or not inside_known or loaded.is_swapped {
+        state.forget(loaded.target, false)
+        return
+    }
+    var address = loaded.address
+    var tag = state.tag_of(address)
+    var base = state.value_of(address)
+    var at = base.wrapping_sum(loaded.offset)
+    if at < 0 or at % 8 != 0 or not machine.reaches(tag, at, 8) {
+        state.forget(loaded.target, true)
+        return
+    }
+    var place = at.to_integer()
+    var word_tag = state.word_tag_at(tag, place / 8)
+    var pointee = state.word_base(word_tag)
+    if word_tag == state.plain_tag {
+        state.forget(loaded.target, false)
+        return
+    }
+    if word_tag <= state.into_base {
+        state.point_into(loaded.target, pointee)
+        return
+    }
+    state.forget(loaded.target, true)
+}
+
+func is_inside(loaded: LowIntermediaryRepresentation.Instructions.Load): Boolean {
+    var address = loaded.address
+    var tag = state.tag_of(address)
+    var base = state.value_of(address)
+    var at = base.wrapping_sum(loaded.offset)
+    var size = size_of_width(loaded.width)
+    return machine.reaches(tag, at, size)
+}
+
+func keep_loaded(loaded: LowIntermediaryRepresentation.Instructions.Load, unfaulting: Boolean): Boolean {
+    if state.holds_a_number(loaded.target) {
+        if rewriting {
+            strong_changes = strong_changes + 1
+        }
+        return keep_folded(loaded, loaded.target)
+    }
+    keep_unfaulting(loaded, unfaulting)
+    return false
+}
+
+func keep_unfaulting(loaded: LowIntermediaryRepresentation.Instructions.Load, unfaulting: Boolean) {
+    if not unfaulting or loaded.cannot_fault {
+        keep(loaded)
+        return
+    }
+    var made = LowIntermediaryRepresentation.Instructions.Load(loaded.target, loaded.address, loaded.offset, loaded.width)
+    made.is_signed = loaded.is_signed
+    made.is_swapped = loaded.is_swapped
+    made.is_invariant = loaded.is_invariant
+    made.cannot_fault = true
+    made.region = loaded.region
+    kept.append(made)
+}
+
+func size_of_width(width: LowIntermediaryRepresentation.Width): Integer {
+    switch width {
+        'bits_8': return 1
+        'bits_16': return 2
+        'bits_32': return 4
+        'bits_64': return 8
+    }
+}
+
+func points_at_a_known_object(register: Integer): Boolean {
+    if not state.holds(register) {
+        return false
+    }
+    var tag = state.tag_of(register)
+    return machine.is_object(tag) and state.is_tracked(tag)
+}
+
+func store_step(stored: LowIntermediaryRepresentation.Instructions.Store): Boolean {
+    keep(stored)
+    var address = stored.address
+    var word = state.word_value_of(stored.source)
+    var word_tag = state.word_tag_of(stored.source)
+    if stored.is_swapped and word_tag != state.plain_tag {
+        word_tag = state.unknown_tag
+    }
+    if points_at_a_known_object(address) {
+        if state.holds(stored.source) {
+            var outcome = executed_on_scratch(stored)
+            if outcome >= 0 {
+                return false
+            }
+            word = 0
+            word_tag = state.unknown_tag
+        }
+        var object = state.tag_of(address)
+        var base = state.value_of(address)
+        var at = base.wrapping_sum(stored.offset)
+        var size = size_of_width(stored.width)
+        if machine.reaches(object, at, size) {
+            state.write_unknown(object, at, size, word, word_tag)
+            return false
+        }
+        poison()
+        return false
+    }
+    if state.points_into_a_known_object(address) {
+        var into = state.tag_of(address)
+        state.blur_object(into, word, word_tag)
+        return false
+    }
+    var kind = state.kind_of(address)
+    if kind == 1 or kind == 2 or kind == 4 {
+        if state.may_point(stored.source) {
+            poison()
+        }
+        return false
+    }
+    poison()
+    return false
+}
+
+func copy_bytes_step(copying: LowIntermediaryRepresentation.Instructions.CopyBytes): Boolean {
+    keep(copying)
+    var destination = copying.destination
+    var carried = state.plain_tag
+    if source_may_carry_pointers(copying) {
+        carried = state.unknown_tag
+    }
+    if points_at_a_known_object(destination) {
+        if uses_are_known(copying) {
+            var outcome = executed_on_scratch(copying)
+            if outcome >= 0 {
+                return false
+            }
+        }
+        var object = state.tag_of(destination)
+        var base = state.value_of(destination)
+        var room = state.sizes[object]
+        crash room
+        var count: Long = room
+        if state.holds_a_number(copying.count) {
+            count = state.value_of(copying.count)
+        }
+        if base < 0 or base > room {
+            poison()
+            return false
+        }
+        if count > 0 {
+            state.write_unknown(object, base, count, 0, carried)
+        }
+        return false
+    }
+    if state.points_into_a_known_object(destination) {
+        var into = state.tag_of(destination)
+        state.blur_object(into, 0, carried)
+        return false
+    }
+    var kind = state.kind_of(destination)
+    if kind != 1 and kind != 2 and kind != 4 {
+        poison()
+        return false
+    }
+    if carried == state.unknown_tag {
+        poison()
+    }
+    return false
+}
+
+func source_may_carry_pointers(copying: LowIntermediaryRepresentation.Instructions.CopyBytes): Boolean {
+    var source = copying.source
+    var kind = state.kind_of(source)
+    if kind == 2 {
+        return false
+    }
+    if kind != 1 and kind != 4 {
+        return true
+    }
+    var tag = state.tag_of(source)
+    if not machine.is_object(tag) or not state.is_tracked(tag) {
+        return false
+    }
+    var slot = 0
+    while slot < state.slot_count(tag) {
+        var held = state.word_tag_at(tag, slot)
+        if state.is_pointer_tag(held) {
+            return true
+        }
+        slot = slot + 1
+    }
+    return false
+}
+
+func address_step(instruction: LowIntermediaryRepresentation.Instructions.Instruction, target: Integer): Boolean {
+    keep(instruction)
+    var outcome = executed_on_scratch(instruction)
+    if outcome >= 0 and take_from_scratch(target) {
+        return false
+    }
+    state.forget(target, false)
+    return false
+}
+
+func allocate_step(made: LowIntermediaryRepresentation.Instructions.Allocate): Boolean {
+    keep(made)
+    if state.holds_a_number(made.size) {
+        var outcome = executed_on_scratch(made)
+        if outcome >= 0 and take_from_scratch(made.target) {
+            return false
+        }
+    }
+    state.forget(made.target, false)
+    return false
+}
+
+func retain_step(held: LowIntermediaryRepresentation.Instructions.Retain): Boolean {
+    keep(held)
+    var object = held.object
+    if points_at_a_known_object(object) {
+        var outcome = executed_on_scratch(held)
+        if outcome >= 0 {
+            return false
+        }
+        var tag = state.tag_of(object)
+        var base = state.value_of(object)
+        var at = base.wrapping_sum(8)
+        if machine.reaches(tag, at, 8) {
+            state.write_unknown(tag, at, 8, 0, state.plain_tag)
+            return false
+        }
+        poison()
+        return false
+    }
+    if state.points_into_a_known_object(object) {
+        var into = state.tag_of(object)
+        state.blur_object(into, 0, state.plain_tag)
+        return false
+    }
+    if state.may_point(object) {
+        poison()
+    }
+    return false
+}
+
+func free_step(freeing: LowIntermediaryRepresentation.Instructions.Free): Boolean {
+    keep(freeing)
+    if points_at_a_known_object(freeing.pointer) {
+        executed_on_scratch(freeing)
+    }
+    return false
+}
+
+func resize_step(resizing: LowIntermediaryRepresentation.Instructions.Resize): Boolean {
+    keep(resizing)
+    var pointer = resizing.pointer
+    var plain = state.holds_a_number(pointer) and state.value_of(pointer) == 0
+    var known = plain or points_at_a_known_object(pointer)
+    if known and state.holds_a_number(resizing.size) {
+        var outcome = executed_on_scratch(resizing)
+        if outcome >= 0 and take_from_scratch(resizing.target) {
+            return false
+        }
+    }
+    if state.may_point(pointer) {
+        poison()
+    }
+    state.forget(resizing.target, false)
+    return false
+}
+
+func atomic_step(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    target: Integer,
+    address: Integer,
+    stored: Integer,
+): Boolean {
+    keep(instruction)
+    if stored >= 0 and state.may_point(stored) {
+        poison()
+    }
+    blur_or_poison(address)
+    state.forget(target, false)
+    return false
+}
+
+func exchange_step(exchanging: LowIntermediaryRepresentation.Instructions.CompareExchange): Boolean {
+    return atomic_step(exchanging, exchanging.target, exchanging.address, exchanging.desired)
+}
+
+func blur_or_poison(register: Integer) {
+    var base = state.base_of(register)
+    if base >= 0 and state.is_tracked(base) {
+        state.blur_object(base, 0, state.plain_tag)
+        return
+    }
+    if state.may_point(register) {
+        poison()
+    }
+}
+
+func thread_step(instruction: LowIntermediaryRepresentation.Instructions.Instruction, target: Integer): Boolean {
+    keep(instruction)
+    poison()
+    if target >= 0 {
+        state.forget(target, false)
+    }
+    return false
+}
+
+func jump_step(jumped: LowIntermediaryRepresentation.Instructions.Jump): Boolean {
+    keep(jumped)
+    successors.append(jumped.block)
+    return true
+}
+
+func branch_step(test: LowIntermediaryRepresentation.Instructions.Branch): Boolean {
+    if state.holds_a_number(test.condition) {
+        var taken = test.when_false
+        if state.value_of(test.condition) != 0 {
+            taken = test.when_true
+        }
+        successors.append(taken)
+        if rewriting {
+            var jumped = LowIntermediaryRepresentation.Instructions.Jump(taken)
+            kept.append(jumped)
+            changes = changes + 1
+            strong_changes = strong_changes + 1
+        }
+        return true
+    }
+    keep(test)
+    successors.append(test.when_true)
+    successors.append(test.when_false)
+    return true
+}
+
+func unknown_call(arguments: List<Integer>) {
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        crash argument
+        if state.may_point(argument) {
+            poison()
+            return
+        }
+        index = index + 1
+    }
+}
+
+func arguments_are_known(arguments: List<Integer>): Boolean {
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        crash argument
+        if not state.holds(argument) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_simulable(key: String): Boolean {
+    return never_pure[key] != true and machine.known_functions.contains(key) and not key.contains("$cold")
+}
+
+func memo_key_of(key: String, arguments: List<Integer>): String {
+    var pieces = List<String>()
+    pieces.append(key)
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        crash argument
+        if state.tag_of(argument) != -1 {
+            return ""
+        }
+        var value = state.value_of(argument)
+        var written = value.to_string()
+        pieces.append(written)
+        index = index + 1
+    }
+    return pieces.join(" ")
+}
+
+func simulated(key: String, arguments: List<Integer>): Boolean {
+    var memo_key = memo_key_of(key, arguments)
+    if not memo_key.is_empty() and failed_calls.contains(memo_key) {
+        return false
+    }
+    var site = "{walking} {key}"
+    if failing_sites.contains(site) {
+        return false
+    }
+    if not memo_key.is_empty() and known_answers.contains(memo_key) {
+        return remembered(memo_key)
+    }
+    var limit = steps_per_call
+    if remaining_steps < limit {
+        limit = remaining_steps
+    }
+    if function_steps < limit {
+        limit = function_steps
+    }
+    if limit <= 0 {
+        return false
+    }
+    var values = List<Long>()
+    var argument_tags = List<Integer>()
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        crash argument
+        var value = state.value_of(argument)
+        var tag = state.tag_of(argument)
+        values.append(value)
+        argument_tags.append(tag)
+        index = index + 1
+    }
+    machine.begin_watch()
+    machine.failed = false
+    machine.steps = 0
+    machine.step_limit = limit
+    machine.depth = 0
+    var finished = machine.run(key, values, argument_tags)
+    remaining_steps = remaining_steps - machine.steps
+    function_steps = function_steps - machine.steps
+    if not finished {
+        machine.failed = false
+        machine.restore_the_watched()
+        machine.end_watch()
+        if not memo_key.is_empty() {
+            failed_calls[memo_key] = true
+        }
+        failing_sites[site] = true
+        return false
+    }
+    call_changed = machine.changed_since_watch()
+    call_left_objects = false
+    var object = machine.watermark
+    while object < machine.object_count() {
+        if machine.freed[object] != true {
+            call_left_objects = true
+        }
+        object = object + 1
+    }
+    machine.end_watch()
+    var plain = machine.answer_tag == -1 and machine.presence_tag == -1
+    if plain and not call_changed and not call_left_objects and not memo_key.is_empty() {
+        known_answers[memo_key] = machine.answer
+        known_presences[memo_key] = machine.presence
+    }
+    return true
+}
+
+func remembered(memo_key: String): Boolean {
+    var answer = known_answers[memo_key]
+    var presence = known_presences[memo_key]
+    crash answer
+    crash presence
+    machine.answer = answer
+    machine.answer_tag = -1
+    machine.presence = presence
+    machine.presence_tag = -1
+    call_changed = false
+    call_left_objects = false
+    return true
+}
+
+func set_or_forget(register: Integer, value: Long, tag: Integer) {
+    if register >= 0 {
+        state.set(register, value, tag)
+    }
+}
+
+func forget_both(target: Integer, presence: Integer) {
+    if target >= 0 {
+        state.forget(target, false)
+    }
+    if presence >= 0 {
+        state.forget(presence, false)
+    }
+}
+
+func answer_the_call(target: Integer, presence: Integer) {
+    set_or_forget(target, machine.answer, machine.answer_tag)
+    set_or_forget(presence, machine.presence, machine.presence_tag)
+}
+
+func is_foldable_answer(target: Integer, presence: Integer): Boolean {
+    var plain = machine.answer_tag == -1 and machine.presence_tag == -1
+    return plain and not call_changed and not call_left_objects and (target >= 0 or presence >= 0)
+}
+
+func keep_answer(target: Integer, presence: Integer) {
+    if target >= 0 {
+        var answered = LowIntermediaryRepresentation.Instructions.Constant(target, machine.answer)
+        kept.append(answered)
+    }
+    if presence >= 0 {
+        var present = LowIntermediaryRepresentation.Instructions.Constant(presence, machine.presence)
+        kept.append(present)
+    }
+    changes = changes + 1
+    strong_changes = strong_changes + 1
+}
+
+func call_step(called: LowIntermediaryRepresentation.Instructions.Call): Boolean {
+    var known = is_simulable(called.function) and arguments_are_known(called.arguments)
+    if known and simulated(called.function, called.arguments) {
+        var foldable = is_foldable_answer(called.target, called.presence)
+        answer_the_call(called.target, called.presence)
+        if rewriting and foldable {
+            keep_answer(called.target, called.presence)
+        } else {
+            keep(called)
+        }
+        return false
+    }
+    var known_callee = machine.known_functions.contains(called.function)
+    if rewriting and known_callee and passes_a_known_closure(called.arguments) {
+        note_a_candidate(called)
+    }
+    keep(called)
+    unknown_call(called.arguments)
+    forget_both(called.target, called.presence)
+    return false
+}
+
+func passes_a_known_closure(arguments: List<Integer>): Boolean {
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        crash argument
+        if is_a_known_closure(argument) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func is_a_known_closure(register: Integer): Boolean {
+    if not points_at_a_known_object(register) or state.value_of(register) != 0 {
+        return false
+    }
+    var object = state.tag_of(register)
+    var slot = 0
+    while slot < state.slot_count(object) {
+        var tag = state.word_tag_at(object, slot)
+        if machine.is_function(tag) {
+            return true
+        }
+        slot = slot + 1
+    }
+    return false
+}
+
+func note_a_candidate(called: LowIntermediaryRepresentation.Instructions.Call) {
+    var snapshot = state.copied()
+    candidate_calls.append(called)
+    candidate_states.append(snapshot)
+    candidate_callers.append(function)
+    candidate_blocks.append(walking)
+    var place = kept.count()
+    candidate_places.append(place)
+}
+
+func called_name(called: LowIntermediaryRepresentation.Instructions.CallAt): String {
+    if not state.holds(called.address) or state.value_of(called.address) != 0 {
+        return ""
+    }
+    var tag = state.tag_of(called.address)
+    if not machine.is_function(tag) {
+        return ""
+    }
+    var index = machine.function_of(tag)
+    var name = machine.function_names[index]
+    crash name
+    return name
+}
+
+func is_directly_callable(name: String, called: LowIntermediaryRepresentation.Instructions.CallAt): Boolean {
+    var callee = machine.known_functions[name]
+    if not callee {
+        return false
+    }
+    var plain = called.decimal_sizes.is_empty() and called.answer_decimal_size == 0
+    var plain_callee = callee.parameter_decimal_sizes.is_empty() and callee.answer_decimal_size == 0
+    var fits = callee.parameter_count == called.arguments.count() and not callee.is_resumable
+    return plain and plain_callee and fits
+}
+
+func call_at_step(called: LowIntermediaryRepresentation.Instructions.CallAt): Boolean {
+    var name = called_name(called)
+    var direct = not name.is_empty() and is_directly_callable(name, called)
+    var known = direct and is_simulable(name) and arguments_are_known(called.arguments)
+    if known and simulated(name, called.arguments) {
+        answer_the_call(called.target, called.presence)
+        keep_direct(called, name)
+        return false
+    }
+    if direct {
+        keep_direct(called, name)
+    } else {
+        keep(called)
+    }
+    unknown_call(called.arguments)
+    if state.may_point(called.address) {
+        poison()
+    }
+    forget_both(called.target, called.presence)
+    return false
+}
+
+func keep_direct(called: LowIntermediaryRepresentation.Instructions.CallAt, name: String) {
+    assert rewriting
+    var arguments = called.arguments.copy()
+    var direct = LowIntermediaryRepresentation.Instructions.Call(called.target, name, arguments)
+    direct.presence = called.presence
+    direct.line = called.line
+    direct.frames = called.frames.copy()
+    kept.append(direct)
+    changes = changes + 1
+    strong_changes = strong_changes + 1
+}
+
+func import_call_step(calling: LowIntermediaryRepresentation.Instructions.ImportCall): Boolean {
+    if calling.library == "ucrtbase.dll" and arguments_are_known(calling.arguments) {
+        var outcome = executed_on_scratch(calling)
+        if outcome >= 0 and take_from_scratch(calling.target) {
+            return keep_folded(calling, calling.target)
+        }
+    }
+    keep(calling)
+    unknown_call(calling.arguments)
+    if calling.target >= 0 {
+        state.forget(calling.target, false)
+    }
+    return false
+}
+
+func new_register(): Integer {
+    var register = next_register
+    next_register = next_register + 1
+    return register
+}
+
+func constantized(register: Integer): Integer {
+    if not state.holds_a_number(register) {
+        return register
+    }
+    if register >= 0 and register < single_constants.count() and single_constants[register] == true {
+        return register
+    }
+    var number = state.value_of(register)
+    var made = new_register()
+    var constant = LowIntermediaryRepresentation.Instructions.Constant(made, number)
+    kept.append(constant)
+    changes = changes + 1
+    return made
+}
+
+func keep_simplified(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var operator = arithmetic.operator
+    var left = constantized(arithmetic.left)
+    var right_register = constantized(arithmetic.right)
+    if left == arithmetic.left and right_register == arithmetic.right {
+        kept.append(arithmetic)
+        return
+    }
+    var made = LowIntermediaryRepresentation.Instructions.Arithmetic(arithmetic.target, operator, left, right_register)
+    made.width = arithmetic.width
+    made.is_signed = arithmetic.is_signed
+    made.is_checked = arithmetic.is_checked
+    made.wraps = arithmetic.wraps
+    made.line = arithmetic.line
+    made.shown = arithmetic.shown
+    made.type_name = arithmetic.type_name
+    made.path = arithmetic.path
+    made.owner = arithmetic.owner
+    kept.append(made)
+}
+
+func keep_compared(compare: LowIntermediaryRepresentation.Instructions.Compare) {
+    var left = constantized(compare.left)
+    var right = constantized(compare.right)
+    if left == compare.left and right == compare.right {
+        kept.append(compare)
+        return
+    }
+    var made = LowIntermediaryRepresentation.Instructions.Compare(compare.target, compare.comparison, left, right)
+    made.is_signed = compare.is_signed
+    kept.append(made)
+}
+
+func note_the_single_constants() {
+    var counts = List<Integer>()
+    single_constants = List<Boolean>()
+    var index = 0
+    while index < total {
+        counts.append(0)
+        single_constants.append(false)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            note_a_definition(instruction, counts)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    index = 0
+    while index < total {
+        var count = counts[index]
+        crash count
+        if count != 1 or index < function.parameter_count {
+            single_constants[index] = false
+        }
+        index = index + 1
+    }
+}
+
+func note_a_definition(instruction: LowIntermediaryRepresentation.Instructions.Instruction, counts: List<Integer>) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        if register < counts.count() {
+            var count = counts[register]
+            crash count
+            counts[register] = count + 1
+        }
+        index = index + 1
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant and instruction.target < single_constants.count() {
+        single_constants[instruction.target] = true
+    }
+}
+
+func rewrite(): Integer {
+    note_the_single_constants()
+    rewriting = true
+    changes = 0
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        if reached[block_index] == true {
+            begin_at(block_index)
+            kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+            walk(block_index)
+            var block = function.blocks[block_index]
+            crash block
+            block.instructions = kept
+        }
+        block_index = block_index + 1
+    }
+    rewriting = false
+    if next_register > function.register_count {
+        function.register_count = next_register
+    }
+    return changes
+}
+
+func state_after(block_index: Integer, target: Integer): State? {
+    assert is_reached(block_index)
+    begin_at(block_index)
+    walk(block_index)
+    assert successors.contains(target)
+    return state
+}
+
+func full_state(source: State, listed: List<Integer>): State {
+    trip_registers = registers.copied()
+    var index = 0
+    while index < listed.count() {
+        var block_index = listed[index]
+        crash block_index
+        var block = function.blocks[block_index]
+        crash block
+        block.instructions.each(make_its_definitions_local)
+        index = index + 1
+    }
+    var made = State(trip_registers.local_count)
+    made.shared = trip_registers
+    var register = 0
+    while register < total {
+        if trip_registers.slot_of(register) >= 0 {
+            var kind = source.kind_of(register)
+            var value = source.value_of(register)
+            var tag = source.tag_of(register)
+            made.place_register(register, kind, value, tag)
+        }
+        register = register + 1
+    }
+    made.take_the_heap(source)
+    return made
+}
+
+func make_its_definitions_local(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        if trip_registers.slot_of(register) == -1 {
+            trip_registers.make_local(register)
+        }
+        index = index + 1
+    }
+}
+
+func entry_state(header: Integer, outside: List<Integer>): State? {
+    var joined = State(0)
+    var any = false
+    var index = 0
+    while index < outside.count() {
+        var predecessor = outside[index]
+        crash predecessor
+        var after = state_after(predecessor, header)
+        if after {
+            if any {
+                joined.join(after)
+            } else {
+                joined = after.copied()
+                any = true
+            }
+        }
+        index = index + 1
+    }
+    assert any
+    return joined
+}
+
+func trip_count(
+    header: Integer,
+    outside: List<Integer>,
+    listed: List<Integer>,
+    places: List<Integer>,
+    most_trips: Integer,
+): Integer {
+    var found = entry_state(header, outside)
+    if not found {
+        return -1
+    }
+    var current = full_state(found, listed)
+    var trips = 0
+    while trips <= most_trips and not gave_up {
+        var outcome = one_trip(header, current, listed, places)
+        if outcome == 0 {
+            return trips
+        }
+        if outcome < 0 {
+            return -1
+        }
+        current = trip_back
+        trips = trips + 1
+    }
+    return -1
+}
+
+func one_trip(header: Integer, current: State, listed: List<Integer>, places: List<Integer>): Integer {
+    trip_locals = List<State>()
+    trip_reached = List<Boolean>()
+    var index = 0
+    while index < listed.count() {
+        var empty = State(0)
+        trip_locals.append(empty)
+        trip_reached.append(false)
+        index = index + 1
+    }
+    trip_locals[0] = current
+    trip_reached[0] = true
+    trip_back = State(0)
+    trip_back_reached = false
+    trip_decided = false
+    var position = 0
+    while position < listed.count() {
+        if trip_reached[position] == true {
+            var block_index = listed[position]
+            crash block_index
+            var went = walked_in_trip(block_index, position, header, places)
+            if not went {
+                return -1
+            }
+        }
+        position = position + 1
+    }
+    if not trip_back_reached {
+        return 0
+    }
+    if not trip_decided {
+        return -1
+    }
+    return 1
+}
+
+func walked_in_trip(block_index: Integer, position: Integer, header: Integer, places: List<Integer>): Boolean {
+    var local = trip_locals[position]
+    crash local
+    state = local.copied()
+    swap_in()
+    walk(block_index)
+    if decides_an_exit(block_index, places) {
+        trip_decided = true
+    }
+    var leaving = successors.copy()
+    var index = 0
+    while index < leaving.count() {
+        var successor = leaving[index]
+        crash successor
+        var went = arrived_in_trip(successor, position, header, places)
+        if not went {
+            return false
+        }
+        index = index + 1
+    }
+    return not gave_up
+}
+
+func arrived_in_trip(successor: Integer, position: Integer, header: Integer, places: List<Integer>): Boolean {
+    if successor == header {
+        join_the_way_back()
+        return true
+    }
+    if is_outside(successor, places) {
+        return true
+    }
+    var place = places[successor]
+    crash place
+    if place <= position {
+        return false
+    }
+    if trip_reached[place] == true {
+        var there = trip_locals[place]
+        crash there
+        there.join(state)
+        return true
+    }
+    var first = state.copied()
+    trip_locals[place] = first
+    trip_reached[place] = true
+    return true
+}
+
+func join_the_way_back() {
+    if trip_back_reached {
+        trip_back.join(state)
+    } else {
+        trip_back = state.copied()
+        trip_back_reached = true
+    }
+}
+
+func decides_an_exit(block_index: Integer, places: List<Integer>): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    if block.instructions.is_empty() {
+        return false
+    }
+    var last = block.instructions.last()
+    crash last
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        var leaves = is_outside(last.when_true, places) or is_outside(last.when_false, places)
+        return leaves and state.holds_a_number(last.condition)
+    }
+    return false
+}
+
+func is_outside(block_index: Integer, places: List<Integer>): Boolean {
+    if block_index < 0 or block_index >= places.count() {
+        return true
+    }
+    var place = places[block_index]
+    crash place
+    return place < 0
+}
+
+func holds_at_entry(header: Integer, register: Integer): Boolean {
+    if not is_reached(header) {
+        return false
+    }
+    var entry = entries[header]
+    crash entry
+    return entry.holds(register)
+}

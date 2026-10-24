@@ -1,0 +1,353 @@
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var machine = Machine(program)
+var operands = LowOptimizationPasses.Operands()
+var never_pure = Dictionary<String, Boolean>()
+var failed_calls = Dictionary<String, Boolean>()
+var flow = LowOptimizationPasses.CompileTimeEvaluation.Known.Flow(machine, never_pure, failed_calls)
+var most_trips = 16
+var most_unrolled_instructions = 1024
+var most_unrolls = 8
+var most_instructions = 20000
+var most_cells = 600000
+var most_clones = 64
+var most_clone_size = 4000
+var clone_keys = List<String>()
+var clones = List<LowIntermediaryRepresentation.LowFunction>()
+var clone_states = List<LowOptimizationPasses.CompileTimeEvaluation.Known.State>()
+var clone_arguments = List<List<Integer>>()
+
+func PartialEvaluation(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
+    program = starting_program
+    machine = Machine(starting_program)
+}
+
+func transformed(): LowIntermediaryRepresentation.LoweredProgram {
+    program.lowered_functions.each(register_the_function)
+    find_the_impure()
+    flow = LowOptimizationPasses.CompileTimeEvaluation.Known.Flow(machine, never_pure, failed_calls)
+    program.lowered_functions.each(evaluate_the_function)
+    specialize_the_calls()
+    return program
+}
+
+func register_the_function(lowered: LowIntermediaryRepresentation.LowFunction) {
+    var total = operands.most_register_of(lowered)
+    machine.add_function(lowered, total)
+}
+
+func find_the_impure() {
+    var callees = Dictionary<String, List<String>>()
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var lowered = program.lowered_functions[index]
+        var called = List<String>()
+        if lowered.is_resumable or touches_the_world(lowered, called) {
+            never_pure[lowered.key] = true
+        }
+        callees[lowered.key] = called
+        index = index + 1
+    }
+    var changed = true
+    while changed {
+        changed = false
+        index = 0
+        while index < program.lowered_functions.count() {
+            var lowered = program.lowered_functions[index]
+            var called = callees[lowered.key]
+            crash called
+            if never_pure[lowered.key] != true and calls_the_impure(called) {
+                never_pure[lowered.key] = true
+                changed = true
+            }
+            index = index + 1
+        }
+    }
+}
+
+func calls_the_impure(called: List<String>): Boolean {
+    var index = 0
+    while index < called.count() {
+        var key = called[index]
+        if never_pure[key] == true or not machine.known_functions.contains(key) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func touches_the_world(lowered: LowIntermediaryRepresentation.LowFunction, called: List<String>): Boolean {
+    var block_index = 0
+    while block_index < lowered.blocks.count() {
+        var block = lowered.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Call {
+                note_a_callee(instruction.function, called)
+            }
+            if is_impure(instruction) {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func note_a_callee(key: String, called: List<String>) {
+    var lets_go = key == "_release" or key.starts_with("_free_") or key.starts_with("_destroy_")
+    if not key.contains("$cold") and not lets_go {
+        called.append(key)
+    }
+}
+
+func is_impure(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.ForeignAddress: return true
+        LowIntermediaryRepresentation.Instructions.OpenLibrary: return true
+        LowIntermediaryRepresentation.Instructions.FrameAddress: return true
+        LowIntermediaryRepresentation.Instructions.StartThread: return true
+        LowIntermediaryRepresentation.Instructions.JoinThread: return true
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return true
+        LowIntermediaryRepresentation.Instructions.CompareExchange: return true
+        LowIntermediaryRepresentation.Instructions.Exit: return true
+        LowIntermediaryRepresentation.Instructions.ImportCall: return instruction.library != "ucrtbase.dll"
+        LowIntermediaryRepresentation.Instructions.DataAddress: return not is_constant_data(instruction.label)
+        LowIntermediaryRepresentation.Instructions.Return: return instruction.is_a_suspension
+        _: return false
+    }
+}
+
+func is_constant_data(label: Integer): Boolean {
+    if label < 0 or label >= machine.read_only.count() {
+        return false
+    }
+    return machine.read_only[label] == true
+}
+
+func instruction_count(lowered: LowIntermediaryRepresentation.LowFunction): Integer {
+    var count = 0
+    var block_index = 0
+    while block_index < lowered.blocks.count() {
+        var block = lowered.blocks[block_index]
+        count = count + block.instructions.count()
+        block_index = block_index + 1
+    }
+    return count
+}
+
+func fits(lowered: LowIntermediaryRepresentation.LowFunction): Boolean {
+    var count = instruction_count(lowered)
+    var total = operands.most_register_of(lowered)
+    var cells = total * lowered.blocks.count()
+    return count <= most_instructions and cells <= most_cells and not lowered.blocks.is_empty()
+}
+
+func evaluate_the_function(lowered: LowIntermediaryRepresentation.LowFunction) {
+    assert not lowered.is_resumable and fits(lowered)
+    flow.has_start = false
+    evaluate(lowered)
+}
+
+func evaluate(lowered: LowIntermediaryRepresentation.LowFunction): Boolean {
+    var count = instruction_count(lowered)
+    var limit = 20000 + count * 40
+    flow.function_steps = 300000
+    var analysed = flow.analysed(lowered, limit)
+    if not analysed {
+        return false
+    }
+    unroll_the_loops(lowered, limit)
+    if flow.gave_up {
+        return false
+    }
+    flow.rewrite()
+    var total = operands.most_register_of(lowered)
+    machine.register_totals[lowered.key] = total
+    return true
+}
+
+func specialize_the_calls() {
+    var index = 0
+    while index < flow.candidate_calls.count() and clone_keys.count() < most_clones {
+        specialize(index)
+        index = index + 1
+    }
+    assert not clone_keys.is_empty()
+    var inlining = LowOptimizationPasses.Inlining.Pass(program)
+    inlining.inline_only(clone_keys)
+    index = 0
+    while index < clones.count() {
+        var clone = clones[index]
+        crash clone
+        reevaluate(index, clone)
+        index = index + 1
+    }
+}
+
+func reevaluate(index: Integer, clone: LowIntermediaryRepresentation.LowFunction) {
+    var snapshot = clone_states[index]
+    var arguments = clone_arguments[index]
+    crash snapshot
+    crash arguments
+    var total = operands.most_register_of(clone)
+    machine.register_totals[clone.key] = total
+    flow.start_from(snapshot, arguments)
+    evaluate(clone)
+    flow.has_start = false
+}
+
+func specialize(index: Integer) {
+    var called = flow.candidate_calls[index]
+    var snapshot = flow.candidate_states[index]
+    var caller = flow.candidate_callers[index]
+    var block_index = flow.candidate_blocks[index]
+    var place = flow.candidate_places[index]
+    crash called
+    crash snapshot
+    crash caller
+    crash block_index
+    crash place
+    var callee = machine.known_functions[called.function]
+    crash callee
+    var plain = not callee.is_resumable and callee.key != caller.key and not callee.key.contains("$cold")
+    var fitting = callee.parameter_count == called.arguments.count() and instruction_count(callee) <= most_clone_size
+    assert plain and fitting and fits(callee)
+    var key = "{callee.key}$known{clone_keys.count()}"
+    var clone = cloned_function(callee, key)
+    flow.start_from(snapshot, called.arguments)
+    flow.strong_changes = 0
+    var candidates_before = flow.candidate_calls.count()
+    var evaluated = evaluate(clone)
+    flow.has_start = false
+    var gained = evaluated and flow.strong_changes > 0
+    if not gained {
+        forget_candidates_from(candidates_before)
+    }
+    assert gained
+    program.lowered_functions.append(clone)
+    var clone_total = operands.most_register_of(clone)
+    machine.add_function(clone, clone_total)
+    if never_pure[callee.key] == true {
+        never_pure[key] = true
+    }
+    clone_keys.append(key)
+    clones.append(clone)
+    clone_states.append(snapshot)
+    var arguments = called.arguments.copy()
+    clone_arguments.append(arguments)
+    redirect(caller, block_index, place, called, key)
+}
+
+func forget_candidates_from(count: Integer) {
+    while flow.candidate_calls.count() > count {
+        flow.candidate_calls.remove_last()
+        flow.candidate_states.remove_last()
+        flow.candidate_callers.remove_last()
+        flow.candidate_blocks.remove_last()
+        flow.candidate_places.remove_last()
+    }
+}
+
+func redirect(
+    caller: LowIntermediaryRepresentation.LowFunction,
+    block_index: Integer,
+    place: Integer,
+    called: LowIntermediaryRepresentation.Instructions.Call,
+    key: String,
+) {
+    var block = caller.blocks[block_index]
+    crash block
+    var found = block.instructions[place]
+    crash found
+    assert found == LowIntermediaryRepresentation.Instructions.Call and found.function == called.function
+    var arguments = called.arguments.copy()
+    var direct = LowIntermediaryRepresentation.Instructions.Call(called.target, key, arguments)
+    direct.presence = called.presence
+    direct.line = called.line
+    direct.frames = called.frames.copy()
+    direct.is_guarded = called.is_guarded
+    block.instructions[place] = direct
+}
+
+func cloned_function(
+    callee: LowIntermediaryRepresentation.LowFunction,
+    key: String,
+): LowIntermediaryRepresentation.LowFunction {
+    var made = LowIntermediaryRepresentation.LowFunction(key, callee.parameter_count)
+    made.register_count = callee.register_count
+    made.place = callee.place
+    made.ends_a_thread = callee.ends_a_thread
+    made.parameter_decimal_sizes = callee.parameter_decimal_sizes.copy()
+    made.answer_decimal_size = callee.answer_decimal_size
+    var unrolling = Unrolling(callee)
+    var nowhere = List<Boolean>()
+    var no_places = List<Integer>()
+    var ending = callee.blocks.count()
+    var mapping = Mapping(-1, nowhere, no_places, ending, 0, 0)
+    var block_index = 0
+    while block_index < callee.blocks.count() {
+        var copied = unrolling.cloned_block(block_index, mapping)
+        made.blocks.append(copied)
+        block_index = block_index + 1
+    }
+    return made
+}
+
+func unroll_the_loops(lowered: LowIntermediaryRepresentation.LowFunction, limit: Integer) {
+    var refused = List<Integer>()
+    var unrolled = 0
+    while unrolled < most_unrolls {
+        var unrolling = Unrolling(lowered)
+        unrolling.find_the_loops(flow.reached)
+        var chosen = -1
+        var trips = -1
+        var loop = 0
+        while loop < unrolling.loop_count() and chosen < 0 {
+            var header = unrolling.header_of(loop)
+            var worth_trying = header != 0 and not refused.contains(header) and flow.is_reached(header)
+            if worth_trying and unrolling.is_innermost(loop) {
+                var found = counted_trips(unrolling, loop)
+                if found >= 0 {
+                    chosen = loop
+                    trips = found
+                } else {
+                    refused.append(header)
+                }
+            }
+            loop = loop + 1
+        }
+        assert chosen >= 0
+        var chosen_header = unrolling.header_of(chosen)
+        flow.save()
+        unrolling.unroll(chosen, trips + 1)
+        var analysed = flow.analysed(lowered, limit)
+        if not analysed or flow.is_reached(chosen_header) {
+            unrolling.undo()
+            refused.append(chosen_header)
+            flow.restore()
+        } else {
+            refused.clear()
+        }
+        unrolled = unrolled + 1
+    }
+}
+
+func counted_trips(unrolling: Unrolling, loop: Integer): Integer {
+    var listed = unrolling.ordered_body(loop)
+    var size = unrolling.size_of(listed)
+    if size * 2 > most_unrolled_instructions or not unrolling.is_clonable(listed) {
+        return -1
+    }
+    var header = unrolling.header_of(loop)
+    var places = unrolling.places_of(listed)
+    var outside = unrolling.outside_predecessors(loop)
+    var found = flow.trip_count(header, outside, listed, places, most_trips)
+    flow.gave_up = false
+    if found < 0 or (found + 1) * size > most_unrolled_instructions {
+        return -1
+    }
+    return found
+}
