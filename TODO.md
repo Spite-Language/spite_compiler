@@ -107,14 +107,11 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `items_columns`, `sparse_rows` and `plain_items` stop reading a column after `Items.remove_swapping`
 
 - Class objects are filled from a worklist once compiling ends, but every read of a constant one still reads the run-time object: fold the constant ones while compiling (the 64 MB main stack reserve raised for the nested fills can come back down)
-- The study behind `function_waits` (D673) follows a call through a function value only when the compiler knows its function, so a function that waits only behind a function value it is handed answers `false` (a silent wrong answer under D244: answer `true` where it cannot tell, as `docs/proofs.md` says)
 
 - A program can still name a `Spite.Internal` class, or one of the classes the compiler adds (`Spite.Fault`, `Spite.Asserts`, `Spite.CopyTable`, `Spite.Prompt`, `Spite.PromptPath`), in a text, or in a `type` member's or union's written type: only expressions and written types are refused
 - The fault and crash reports and the assert ring are Spite source the compiler holds as text (D936): they become low functions writing the site texts from one table of data labels, with `cut` and the value texts as synthetic high functions
 - The library breaks three rules it is exempt from for now (D680): singletons bound as locals (`Arguments`, `Environment._setting`, `Spite.Internal.Fault.report`), locals that only copy a path to narrow it (`BinaryCursor._buffer`, `BinaryWriterCursor`, `JsonReader`, `JsonWriter`), and a terminal `if` (`Dictionary.remove_at`)
-- The `if` that narrows a path does not record which check narrowed it, so a second check inside its branch is "a condition is a Boolean" instead of "already narrowed by"; `while value` does not narrow its body
 
-- Proofs undone by calls: only a call to the class's own function (the attributes it assigns itself, not through what it calls) and a call on a receiver reached through `[ ]` or a call (what it shrinks through `[ ]`) undo proofs; a call that shrinks a list parameter, a function value, and an undone proof read inside a loop (named by the call) are not followed. Undoing a narrowing made before a loop is refused only for an attribute path, not a name; a check of a `[ ]` read proven by a count or an earlier check is not refused (D695)
 - Lost writes: a local holding an item that a program function answers (`lookup.of(0)`, "'found' holds 'values[row]' of 'Column'") and an assignment in the branches of a last `if` or `switch` are not judged; a write is judged only to a local the block made with a constructor, `copy()` or an own function that always answers one
 - A decimal `%` is computed as `x - trunc(x / y) * y`, which loses digits once the quotient passes 2^53: compute it exactly, as `fmod` does
 
@@ -274,108 +271,89 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Every proof the original makes
 
+What each proof still lacks; `PROOFS.md` has the whole of each. A line marked "fails silently" lets a wrong program
+through (D244) and comes first. Every proof still made inside a step or another pass moves into its own pass in
+`proofs/` (D1086): narrowing, the bounds and counts, the ranges, the folded conditions and the borrows are embedded
+in the high representation's builder.
+
 ### Presence and control flow
 
-- Narrowing a `T?`
-- Every side of an `and` narrows
-- An `if` that leaves proves the rest
-- Assigning undoes a proof
-- A call keeps a proof it cannot change
-- Proving what is proven is an error
-- A copy made to narrow is an error
-- A class test narrows its block
-- Every path ends in a `return`
-- A guard `assert` answers only "nothing"
-- A switch covers every case
+- A switch covers every case (fails silently): the cover of a switch over a `T?` is not checked, so one with no `Null:` (or no `T:`) case compiles
+- Assigning undoes a proof (fails silently): the loop refusal for a local or a parameter, assigning the start of a narrowed path (`target = Monster()` after `assert target.weapon`), `list[i] = x` and a store through a setter undo nothing
+- A call keeps a proof it cannot change (fails silently): only a bare call of the class's own function, a direct shrinking call and a call on a `[]` receiver undo anything; calls inside an assignment, argument or condition, calls on other objects, what a callee calls, a list passed to a function that shrinks it and function values are not followed; the loop error naming the call is not built
+- An `if` that leaves proves the rest: later `or` sides do not see earlier ones narrowed (`if not a or not a.b { return }` is refused at `a.b`), and a count side after `not found` proves no read
+- Proving what is proven is an error: a re-check inside the `if`/`while`/`switch` that narrowed gets the Boolean text; not refused: a `[]` read proven by a count or an earlier check, a divisor re-proven, a class test already answered, the same condition on the next line, an `assert` that folds true, and a check of a plain local
+- A copy made to narrow is an error: a copy narrowed by a `switch`, or by an `if not copy` that does not leave
 
 ### Indices and numbers
 
-- A proven count or bound proves a read
-- A proven read halts outside its list
-- A proven count or bound proves a read of a width
-- An index built from loop counters is proven by one guard
-- A counted loop reads its items unchecked
-- A divisor written as zero is an error
-- Arithmetic that does not fit halts
-- A range proves arithmetic fits (built, D768; not built: the totals, the counters stepped down, and the loop locals other than counters, see the optimisation's line)
-- A wider operand is written first
-- A dictionary only read by literal keys is never made
+- A proven count or bound proves a read: a left side other than a name, `name + literal` or a member; `<=` bounds; count facts in a `while`; the 63 and 64 caps; wrong proofs that halt at run time (`count() > index` and `count() != n` with a non-literal side, `count() > -1`, a leaving `if count() <= index`, `while base + counter < count()` prove only `list[0]` or `list[base]`); undoing a proof inside the loop that read it is not refused; a shrinking call inside an assignment or argument does not undo it
+- A proven count or bound proves a read of a width (`read_<number>_at`), and a position known not to be negative drops the low test
+- An index built from loop counters is proven by one guard (`rows * stride <= list.count()`)
+- An index offset by a base is proven by one guard (`base + bound <= list.count()`)
+- A counted loop reads its items unchecked: a second list indexed by the counter keeps its test on every pass outside the vector loop, and a window read loses its test only when the registers line up
+- A proven divisor is not checked: `!= 0`, an attribute or member path as the divisor, and `--repl`/`--hot-reload` builds
+- Arithmetic that does not fit halts: a `Long` counter whose bound has no range keeps its check, interactive builds keep every check, and constant overflow is refused only in `Integer` arithmetic
+- A range proves arithmetic fits (built, D768; not built: `absolute`, the counters stepped down, the loop locals other than counters, see the optimisation's line)
 
 ### Compile-time questions
 
-- Conditions decided while compiling
-- Whether a function waits
-- How many arguments a function takes
-- Whether a class fits a `Vector`
-- Whether a function writes a parameter
-- Whether a class keeps state
-- The one class a `type` admits
-- A `crash` that folds false is a compile error
-- Tree shaking: what `main` can reach
-- A reload compiles only the changed classes
-- A reload reaches every object whose attributes it changes
+- Whether a function waits (fails silently): letting go of a `Concurrent` is not counted, and a call through an unknown function value adds nothing instead of spreading or answering true
+- How many arguments a function takes (fails silently): the functions a pattern matches are not checked to agree, and `argument.argument_count()` outside a walk over functions has no error
+- Whether a class fits a `Vector` (fails silently): the answer does not test "no function uses `this` as a value" nor "not a generic template", so an `Items<T>` of such a class stores and lends its items inline
+- Whether a class keeps state (fails silently): a function that cannot be built is left out instead of answering true, writing a singleton is not counted, and the answer is a filled value, not a folded constant
+- Conditions decided while compiling: `function_waits` and `function_writes_parameter` are late (D673), a codegen number against a literal, a function taking a `type` copied per class, `x and false` and `x or true`
+- Tree shaking: nothing is shaken after lowering, inlining or late folding; a function nobody calls is not type-checked; no inspectable build keeps everything
+- A reload compiles only the changed classes, and reaches every object whose attributes it changes (no reload yet)
 
 ### Memory
 
-- A buffer freed in its block lives in the frame
-- Objects that never leave their function live in the frame
-- Local and variadic lists in the frame (built: a literal of whole numbers only counted and read by index, D991)
-- A function value its callee only calls lives in the frame
+- A buffer freed in its block lives in the frame (waits for `Memory.Heap` in the library)
+- Objects that never leave their function live in the frame: the fresh result of a function not inlined, an object whose class lets go of attributes in the frame, `.memory.section` answering `'stack'`
+- Local and variadic lists in the frame (built: a literal of whole numbers only counted and read by index, D991; not built: variadic lists, other items, other reads, constant data)
+- A function value its callee only calls lives in the frame: the "only calls it" proof for a callee that is not inlined
 
 ### Borrowing and lending
 
-- Borrowed items of a `Vector` or `Items` (built as refusals, D729, in `building/borrows.spite`: kept in an attribute, put in a list, returned, made a function value, given a second name, assigned again, borrowed from a collection nothing keeps; not built: the reads stay counted references, so nothing is uncounted yet, a member template's `get_at(...)` on its own collection is not seen as borrowed, and nothing is checked inside a walk copy)
-- No borrowed read past a resize (built as a refusal, D730, followed through the program's calls, a `type`'s fillers, `print`'s `to_string`s and text holes; not built: the library's own functions are not followed, so a library function handed a function value that it calls (`each`) is followed only when the value names a function, and a value of unknown type fans out to every function of the name)
-- Rows of borrowed items (built: a literal row and a walked row are refused when a call they are passed to may resize what they borrow from, and are never kept, returned, listed, aliased or assigned; not built: the row in the frame, the `___lent_<positions>` copy that compiles the callee under the rules, the error for a non-plain attribute of a literal row, and the arguments a plural fills)
-- An item lent to the caller (built: a `return` of a singleton's `Vector` or fitting `Items` item lends, with `fits_vector()` and `$T == X` folded, and the caller's name is borrowed; not built: the uncounted return, the refusal of a lending function used as a value or through a `type`, of a non-item return beside a lent one, and of a reused name)
-- An item lent to a call (built: a call lent a borrowed item is refused when it may resize its collection; not built: the `___lent_` copy that compiles the callee under the rules, so a callee keeping a lent item is not refused, and the errors for lending to a library function, a union parameter or an unnamed expression)
+- No borrowed read past a resize (fails silently, memory stays safe): assigning a local `Vector` again or an attribute along the path is not a resize; the library's own functions are not followed; a value of unknown type fans out to every function of the name; effects computed under the recursion guard are cached short
+- An item lent to the caller (fails silently): returning a lent result through a name is accepted; not built: the uncounted return, `is_fixed_size` and `functions[...]` folded in its conditions
+- An item lent to a call (fails silently): a lent parameter the callee passes on to a function that keeps it, a row's attribute, the unnamed expression refusal, lending to a local function value, variadic positions; not built: the uncounted argument
+- Borrowed items of a `Vector` or `Items`: the reads stay counted references, walk copies and library member templates are not checked, `InlineMemory` is not a borrowing collection
+- Rows of borrowed items: the row in the frame and uncounted for a callee not inlined, a walked template's `var stored_row = rows[...]`, the arguments a plural fills, `row.describe` as a function value, a row passed to a library function
 - A list element lent to a row
-- An argument its caller holds is passed uncounted
-- An attribute a call cannot assign is passed uncounted
-- A singleton attribute that never changes is read in place
-- A list's templates read their elements uncounted
-- An item written back to its own slot is the slot
+- A singleton attribute that never changes is read in place: the per-attribute fact (a singleton is steady only when all its attributes are plain)
+- An item written back to its own slot is the slot: a write-back nested in a block, and lists other than a library `List`
 - A value followed through calls is the slot it was read from
 - An item a name holds from its list is not counted (built for `var item = list[index]` with a proven read when nothing after it in its block can write the slot, D992; not built: a name kept across a call that may write any list of the item's class, even another one)
-- A list item read only to test it is not counted
-- An item used at once is not counted
+- A list item read only to test it is not counted: lists of nullable items, `Items`, a path through the item
+- An item used at once is not counted: the item passed as an argument, indices and arguments that are not plain reads
 - A list held only in a slot of another list
 - A list only its class fills holds only what it fills
-- A table filled once holds what its setup put in
+- A table filled once holds what its setup put in: a table held by a singleton or made in another function
 
 ### Threads and locks
 
+- No attribute is read past the lock (fails silently): a locked singleton's attribute read or written directly from another class runs unlocked
+- What a `Parallel` may reach (fails silently): `Parallel(holder.work)` with a holder not handed over whose work writes a number attribute; reach followed only through the work's own class
+- Which singletons a `Parallel` reaches (fails silently): a `ForeignCallback`'s function is not a root (D725 to D728)
 - Calls that share nothing written
 - Classes in a list that share nothing written
-- Passes that write only their own item
+- Passes that write only their own item: `Vector`, writes other than number and enum attributes, other calls, a kept thread pool
 - An object made for its owner is told apart
 - No other thread counts a class
 - What one of the calls run at once counts
 - Objects of a class made on one thread
 - A copy nothing changes is the original
-- Which singletons a `Parallel` reaches
-- No other thread touches a singleton
-- A function that touches no changing state takes no lock
-- Reading functions share the lock
+- No other thread touches a singleton (the second walk over the tree-shaken program)
+- Read-only and atomic singletons: one lone atomic attribute inside a locked singleton
+- A function that touches no changing state takes no lock: "touches no changing attribute" rather than "never reads `this`", and a call between two locked functions going to the unlocked body
+- Reading functions share the lock: outside a counted loop that holds it (D988)
 - A loop that starts no task tests for tasks once
-- No attribute is read past the lock
-- A lock that would wait forever is an error
-- A loop that can never end is an error
-- A poll that nothing steps is an error
-- A write to an object only this function holds must be read
-- A name read from a list, assigned and never read, is an error
-- What a `Parallel` may reach
-- Which calls suspend a `Concurrent`
+- A loop that can never end is an error: in `Parallel` work "waits" is "calls nothing but the console", not the waits fact
+- Reads in a row are independent
 
 ### Other refusals built on an analysis
 
-- Unused is an error: a name, parameter or attribute that is only written and never read
-- A constructed object must be kept and used
-- Singletons that make each other in a circle are an error
-- Build settings are constants
-- A value fits a `type`
-- A member template fits
-- A value can be written
-- What crosses into C
-- Reads in a row are independent
-- The short form is proven the same, and the long form refused
+- A value fits a `type` (fails silently): an attribute's type and a function's parameter and return types are not compared with the type's; a missing attribute is worded as a missing function
+- Singletons that make each other in a circle are an error: the "makes" links (a circle through an ordinary object made in an attribute default halts at run time instead)
+- A member template fits: the specific errors for `map_` of a member answering nothing, `sort_by_` of a Boolean, a non-Boolean `filter_`/`any_`/`all_`, `each` given something that is not a function
