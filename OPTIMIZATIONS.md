@@ -2283,7 +2283,8 @@ instead of counting every place that names it. It is one analysis over the high 
   cannot see into (a question about a function's parameters) counts as read many times, so it can only stop an
   optimisation, never allow one.
 - **Taken parameters** is the summary of every function: which of its parameters it keeps. A parameter is *taken*
-  when its one read in the whole function is a top-level statement that keeps it: it is assigned to an attribute,
+  when nothing assigns it and its last read in the function is a top-level statement that reads it once and keeps
+  it: it is assigned to an attribute,
   written into a list's slot past its end (`_write_value(_length, value)`, which is how `append` keeps its value),
   returned, or handed to a parameter another function takes (followed to the end, and worked out again until
   nothing changes). Its class must free quietly: no `drop()` in it or in anything it holds (no union, shape,
@@ -2321,8 +2322,8 @@ func one_round(round: Integer): Integer {
 }
 ```
 
-`Item(new_price, new_owner)` assigns `owner = new_owner` and reads `new_owner` nowhere else, and `append` writes its
-value into the slot past the end, so both take their parameter (see [who holds an object is decided while
+`Item(new_price, new_owner)` assigns `owner = new_owner` as the last thing it does with `new_owner`, and `append`
+writes its value into the slot past the end, so both take their parameter (see [who holds an object is decided while
 compiling](#who-holds-an-object-is-decided-while-compiling)). A call of a function that takes a parameter hands it a
 count: an argument the caller made (a new object, an answer) is handed as it is and not let go after the call, any
 other argument is counted once before it. The function holds what it is handed like a local: assigning it keeps
@@ -2336,7 +2337,9 @@ loop counts neither: each object is made with its one count, the one its holder 
 
 An attribute that a constructor assigns first, and whose default the constructor's copy of the defaults leaves out
 (see [defaults the constructor replaces are never made](#defaults-the-constructor-replaces-are-never-made)), holds
-nothing yet: it is stored without reading what it held and letting that go. The copy of the defaults made for such a
+nothing yet: it is stored without reading what it held and letting that go. So does the slot past a `List`'s end
+that `append` writes: a list lets go of every slot it shrinks past and grows with empty bytes, so that slot is empty,
+and the write is a store, with no load of what it held, no comparison and no release. The copy of the defaults made for such a
 constructor now makes the objects it holds with their own constructors' copies too, so a default replaced inside a
 default (the texts of each `DynamicLibrary` a `File` holds) is never made either.
 
