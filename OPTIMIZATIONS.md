@@ -2760,6 +2760,28 @@ func step() {
         var particle = particles[index]
         particle.left = particle.left + particle.speed
         particles[index] = particle
+        index = index + 1
+    }
+}
+```
+
+`var particle = particles[index]` holds the item without counting it when nothing after it in its block can
+replace the slot ([a name holding an item or an attribute is not
+counted](#a-name-holding-an-item-or-an-attribute-is-not-counted)). A write `particles[index] = particle` of that
+very name back into the very slot (the same list path, the same index, which nothing between assigns) is not such a
+replacement: the slot holds that object already. So the name is not counted, and the write is left out with its
+test of the index and its comparison of what the slot held, since the read proved the index and nothing between
+changes the list's length or its items. The loop above reads two numbers, adds them and stores one
+(`an_item_written_back_to_its_own_slot_is_not_written`: 99 ms before, 29 ms after).
+
+**When it applies:** to `list[index] = name` (`set_at` of the library's `List`) after `var name = list[index]`
+proven by a `crash`, in the same block, with the list read from a name not assigned again, `this` or attributes, the
+index a name or a whole number, and nothing in the block after the read (but that write) that may write an item of
+a list of that class, its length or an attribute on the list's path. **When it does not:** a write in another
+block, through another path or index, of another value, or after something that may write the list; then the write
+is made, comparing what the slot holds as before.
+
+**What a program can observe:** only the time.
 
 ## A counted loop over numbers runs eight at a time
 
@@ -2803,24 +2825,6 @@ func scale_list(from: List<Float>, into: List<Float>, offset: Float) {
     }
 }
 ```
-
-`var particle = particles[index]` holds the item without counting it when nothing after it in its block can
-replace the slot ([a name holding an item or an attribute is not
-counted](#a-name-holding-an-item-or-an-attribute-is-not-counted)). A write `particles[index] = particle` of that
-very name back into the very slot (the same list path, the same index, which nothing between assigns) is not such a
-replacement: the slot holds that object already. So the name is not counted, and the write is left out with its
-test of the index and its comparison of what the slot held, since the read proved the index and nothing between
-changes the list's length or its items. The loop above reads two numbers, adds them and stores one
-(`an_item_written_back_to_its_own_slot_is_not_written`: 99 ms before, 29 ms after).
-
-**When it applies:** to `list[index] = name` (`set_at` of the library's `List`) after `var name = list[index]`
-proven by a `crash`, in the same block, with the list read from a name not assigned again, `this` or attributes, the
-index a name or a whole number, and nothing in the block after the read (but that write) that may write an item of
-a list of that class, its length or an attribute on the list's path. **When it does not:** a write in another
-block, through another path or index, of another value, or after something that may write the list; then the write
-is made, comparing what the slot holds as before.
-
-**What a program can observe:** only the time.
 
 ## A call that writes back what the slot already holds is not made
 
