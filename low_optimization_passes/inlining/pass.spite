@@ -30,6 +30,15 @@ var callee_is_placeless = false
 var call_frames = LowIntermediaryRepresentation.CallFrames()
 var held_register = 0
 var every_function = Dictionary<String, LowIntermediaryRepresentation.LowFunction>()
+var wanting_a_loop = Dictionary<String, Boolean>()
+var call_counts = Dictionary<String, Integer>()
+var largest_looped_callee = 96
+var largest_lone_callee = 400
+var largest_quiet_callee = 40
+var changed_keys = List<String>()
+var is_late = false
+var widened_on = false
+var only_in_loops = Dictionary<String, Boolean>()
 
 func Pass(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
     program = starting_program
@@ -37,6 +46,7 @@ func Pass(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
 
 func transformed(): LowIntermediaryRepresentation.LoweredProgram {
     program.lowered_functions.each(note_a_function)
+    program.lowered_functions.each(count_the_calls)
     program.lowered_functions.each(note_if_inlinable)
     program.lowered_functions.each(inline_into)
     return program
@@ -44,6 +54,7 @@ func transformed(): LowIntermediaryRepresentation.LoweredProgram {
 
 func inline_only(keys: List<String>) {
     program.lowered_functions.each(note_a_function)
+    program.lowered_functions.each(count_the_calls)
     program.lowered_functions.each(note_if_inlinable)
     var index = 0
     while index < program.lowered_functions.count() {
@@ -67,6 +78,7 @@ func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
     makes_on = false
     addresses_on = false
     calls_others_on = false
+    widened_on = false
     var block_index = 0
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
@@ -98,6 +110,10 @@ func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
     if makes_on {
         largest = largest_calling_callee
     }
+    if not calls_on and not makes_on and not addresses_on and not has_a_loop(function) {
+        largest = largest_quiet_callee
+    }
+    var looped = (count > largest or widened_on) and fits_a_loop(function, count)
     if calls_on and not makes_on and count > largest and count <= largest_calling_callee {
         largest = largest_calling_callee
         wanting_a_made_argument.append(function.key)
@@ -107,9 +123,82 @@ func note_if_inlinable(function: LowIntermediaryRepresentation.LowFunction) {
         largest = largest_looping_callee
         wanting_a_made_argument_in_a_loop.append(function.key)
     }
-    assert copyable and count <= largest
+    assert copyable and (not is_late or not has_a_loop(function))
     assert not function.place.is_empty() or not addresses_on or not calls_others_on
+    assert (count <= largest and not widened_on) or looped
+    if looped {
+        wanting_a_loop[function.key] = true
+    }
+    if widened_on {
+        only_in_loops[function.key] = true
+    }
     inlinable[function.key] = function
+}
+
+# ../../OPTIMIZATIONS.md#a-function-called-in-a-loop-is-inlined-into-it
+func fits_a_loop(function: LowIntermediaryRepresentation.LowFunction, count: Integer): Boolean {
+    if function.place.is_empty() and calls_on {
+        return false
+    }
+    if has_a_loop(function) {
+        return false
+    }
+    if count <= largest_looped_callee {
+        return true
+    }
+    var calls = call_counts[function.key]
+    if not calls {
+        return false
+    }
+    return calls == 1 and count <= largest_lone_callee
+}
+
+func has_a_loop(function: LowIntermediaryRepresentation.LowFunction): Boolean {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var last = block.instructions.last()
+        var waits = block.instructions.any(calls_the_system)
+        if last and jumps_back(last, block_index) and not waits and is_in_a_loop(function, block_index) {
+            return true
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func calls_the_system(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    return instruction == LowIntermediaryRepresentation.Instructions.ImportCall
+}
+
+func jumps_back(last: LowIntermediaryRepresentation.Instructions.Instruction, block_index: Integer): Boolean {
+    if last == LowIntermediaryRepresentation.Instructions.Jump {
+        return last.block <= block_index
+    }
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        return last.when_true <= block_index or last.when_false <= block_index
+    }
+    return false
+}
+
+func count_the_calls(function: LowIntermediaryRepresentation.LowFunction) {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(count_a_call)
+        block_index = block_index + 1
+    }
+}
+
+func count_a_call(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        var known = call_counts[instruction.function]
+        if known {
+            call_counts[instruction.function] = known + 1
+        } else {
+            call_counts[instruction.function] = 1
+        }
+    }
 }
 
 func only_halts(block: LowIntermediaryRepresentation.LowBlock): Boolean {
@@ -157,10 +246,20 @@ func is_copyable(instruction: LowIntermediaryRepresentation.Instructions.Instruc
         LowIntermediaryRepresentation.Instructions.FunctionAddress: return takes_an_address()
         LowIntermediaryRepresentation.Instructions.Retain: return true
         LowIntermediaryRepresentation.Instructions.Call: return calls_a_function_named(instruction.function)
+        LowIntermediaryRepresentation.Instructions.CallAt: return widens() and calls_a_function_named("")
+        LowIntermediaryRepresentation.Instructions.ThreadIdentity: return widens()
+        LowIntermediaryRepresentation.Instructions.CompareExchange: return widens()
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return widens()
+        LowIntermediaryRepresentation.Instructions.ImportCall: return instruction.library.is_empty() and widens() and calls_a_function()
         LowIntermediaryRepresentation.Instructions.Allocate: return makes_an_object()
         LowIntermediaryRepresentation.Instructions.Free: return calls_a_function()
         _: return false
     }
+}
+
+func widens(): Boolean {
+    widened_on = true
+    return true
 }
 
 func takes_an_address(): Boolean {
@@ -195,6 +294,9 @@ func inline_into(function: LowIntermediaryRepresentation.LowFunction) {
         } else {
             block_index = block_index + 1
         }
+    }
+    if inlined > 0 {
+        changed_keys.append(function.key)
     }
 }
 
@@ -540,13 +642,20 @@ func is_worth_it(
     caller: LowIntermediaryRepresentation.LowFunction,
     block_index: Integer,
 ): Boolean {
+    var looped = wanting_a_loop[callee.key] == true
+    if looped and is_in_a_loop(caller, block_index) {
+        return true
+    }
+    if only_in_loops[callee.key] == true {
+        return false
+    }
     if wanting_a_made_argument_in_a_loop.contains(callee.key) {
         return is_in_a_loop(caller, block_index) and passes_a_made_object(call, caller)
     }
-    if not wanting_a_made_argument.contains(callee.key) {
-        return true
+    if wanting_a_made_argument.contains(callee.key) {
+        return passes_a_made_object(call, caller)
     }
-    return passes_a_made_object(call, caller)
+    return not looped
 }
 
 func passes_a_made_object(
@@ -784,6 +893,11 @@ func copy_into(
         LowIntermediaryRepresentation.Instructions.FunctionAddress: copy_function_address(made, instruction)
         LowIntermediaryRepresentation.Instructions.Retain: copy_retain(made, instruction)
         LowIntermediaryRepresentation.Instructions.Call: copy_call(made, instruction)
+        LowIntermediaryRepresentation.Instructions.CallAt: copy_call_at(made, instruction)
+        LowIntermediaryRepresentation.Instructions.ThreadIdentity: copy_thread_identity(made, instruction)
+        LowIntermediaryRepresentation.Instructions.CompareExchange: copy_compare_exchange(made, instruction)
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: copy_atomic_add(made, instruction)
+        LowIntermediaryRepresentation.Instructions.ImportCall: copy_import_call(made, instruction)
         LowIntermediaryRepresentation.Instructions.Allocate: copy_allocate(made, instruction)
         LowIntermediaryRepresentation.Instructions.Free: copy_free(made, instruction)
         _: crash
@@ -886,6 +1000,81 @@ func copy_call(made: LowIntermediaryRepresentation.LowBlock, call: LowIntermedia
     } else {
         call_frames.add_every(copied.frames, inlined_frames)
     }
+    made.instructions.append(copied)
+}
+
+func copy_call_at(made: LowIntermediaryRepresentation.LowBlock, call: LowIntermediaryRepresentation.Instructions.CallAt) {
+    var target = moved(call.target)
+    var address = moved(call.address)
+    var arguments = List<Integer>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var placed = moved(argument)
+        arguments.append(placed)
+        index = index + 1
+    }
+    var copied = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments)
+    copied.presence = moved(call.presence)
+    copied.answers_32_bits = call.answers_32_bits
+    copied.decimal_sizes = call.decimal_sizes.copy()
+    copied.answer_decimal_size = call.answer_decimal_size
+    copied.line = call.line
+    call_frames.add_every(copied.frames, call.frames)
+    call_frames.add_every(copied.frames, inlined_frames)
+    made.instructions.append(copied)
+}
+
+func copy_thread_identity(
+    made: LowIntermediaryRepresentation.LowBlock,
+    identity: LowIntermediaryRepresentation.Instructions.ThreadIdentity,
+) {
+    var target = moved(identity.target)
+    var copied = LowIntermediaryRepresentation.Instructions.ThreadIdentity(target)
+    made.instructions.append(copied)
+}
+
+func copy_compare_exchange(
+    made: LowIntermediaryRepresentation.LowBlock,
+    exchanging: LowIntermediaryRepresentation.Instructions.CompareExchange,
+) {
+    var target = moved(exchanging.target)
+    var address = moved(exchanging.address)
+    var expected = moved(exchanging.expected)
+    var desired = moved(exchanging.desired)
+    var copied = LowIntermediaryRepresentation.Instructions.CompareExchange(target, address, exchanging.offset, expected, desired)
+    copied.width = exchanging.width
+    copied.is_signed = exchanging.is_signed
+    made.instructions.append(copied)
+}
+
+func copy_atomic_add(
+    made: LowIntermediaryRepresentation.LowBlock,
+    adding: LowIntermediaryRepresentation.Instructions.AtomicAdd,
+) {
+    var target = moved(adding.target)
+    var address = moved(adding.address)
+    var copied = LowIntermediaryRepresentation.Instructions.AtomicAdd(target, address, adding.offset, adding.amount)
+    made.instructions.append(copied)
+}
+
+func copy_import_call(
+    made: LowIntermediaryRepresentation.LowBlock,
+    calling: LowIntermediaryRepresentation.Instructions.ImportCall,
+) {
+    var target = moved(calling.target)
+    var arguments = List<Integer>()
+    var index = 0
+    while index < calling.arguments.count() {
+        var argument = calling.arguments[index]
+        var placed = moved(argument)
+        arguments.append(placed)
+        index = index + 1
+    }
+    var copied = LowIntermediaryRepresentation.Instructions.ImportCall(target, calling.name, arguments)
+    copied.library = calling.library
+    copied.decimal_sizes = calling.decimal_sizes.copy()
+    copied.answer_decimal_size = calling.answer_decimal_size
     made.instructions.append(copied)
 }
 
