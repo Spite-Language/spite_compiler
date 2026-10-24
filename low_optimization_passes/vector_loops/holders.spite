@@ -1,0 +1,522 @@
+# ../../OPTIMIZATIONS.md#a-decimal-sum-is-split-into-lanes-only-where-every-partial-sum-is-exact
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var operands = LowOptimizationPasses.Operands()
+var indexes = Dictionary<String, Integer>()
+var sites = Dictionary<Long, Integer>()
+var site_count = 0
+var holding = List<List<List<Integer>>>()
+var answers = List<List<Integer>>()
+var heap = Dictionary<String, List<Integer>>()
+var opened = List<Boolean>()
+var alive = List<Boolean>()
+var changed = false
+var current = 0
+var is_settled = false
+var definition_lists = List<List<Integer>>()
+var defined_function = -1
+var links = Dictionary<String, List<String>>()
+var wild_regions = Dictionary<String, Boolean>()
+
+func Holders(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
+    program = starting_program
+}
+
+func study(starting_indexes: Dictionary<String, Integer>, starting_opened: List<Boolean>, starting_alive: List<Boolean>) {
+    indexes = starting_indexes
+    opened = starting_opened
+    alive = starting_alive
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var function = program.lowered_functions[index]
+        make_the_sets(function, index)
+        index = index + 1
+    }
+    var round = 0
+    changed = true
+    while changed and round < 40 {
+        changed = false
+        index = 0
+        while index < program.lowered_functions.count() {
+            var spreading = program.lowered_functions[index]
+            current = index
+            if alive[index] == true {
+                spread_through(spreading)
+            }
+            index = index + 1
+        }
+        round = round + 1
+    }
+    is_settled = not changed
+    index = 0
+    while index < program.lowered_functions.count() {
+        var linking = program.lowered_functions[index]
+        current = index
+        if alive[index] == true {
+            link_the_buffers(linking)
+        }
+        index = index + 1
+    }
+}
+
+func make_the_sets(function: LowIntermediaryRepresentation.LowFunction, function_index: Integer) {
+    var register_total = operands.most_register_of(function)
+    var sets = List<List<Integer>>()
+    var register = 0
+    while register < register_total {
+        var held = List<Integer>()
+        sets.append(held)
+        register = register + 1
+    }
+    var is_open = opened[function_index] == true
+    if is_open {
+        var parameter = 0
+        while parameter < function.parameter_count {
+            var unknown = sets[parameter]
+            crash unknown
+            unknown.append(-1)
+            parameter = parameter + 1
+        }
+    }
+    holding.append(sets)
+    var answered = List<Integer>()
+    answers.append(answered)
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            var allocates = instruction == LowIntermediaryRepresentation.Instructions.Allocate
+            var rooms = instruction == LowIntermediaryRepresentation.Instructions.FrameRoom
+            if allocates or rooms {
+                var key = place_key(function_index, block_index, place)
+                sites[key] = site_count
+                site_count = site_count + 1
+            }
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func place_key(function_index: Integer, block_index: Integer, place: Integer): Long {
+    var key: Long = function_index
+    key = key * 65536 + block_index
+    key = key * 65536 + place
+    return key
+}
+
+func set_of(function_index: Integer, register: Integer): List<Integer> {
+    var sets = holding[function_index]
+    crash sets
+    if register < 0 or register >= sets.count() {
+        var unknown = List<Integer>()
+        unknown.append(-1)
+        return unknown
+    }
+    var held = sets[register]
+    crash held
+    return held
+}
+
+func is_unknown(held: List<Integer>): Boolean {
+    return held.contains(-1)
+}
+
+func add_into(held: List<Integer>, adding: List<Integer>) {
+    if not (is_unknown(held) or adding.is_empty()) {
+        if is_unknown(adding) {
+            held.clear()
+            held.append(-1)
+            changed = true
+            return
+        }
+        var index = 0
+        while index < adding.count() {
+            var site = adding[index]
+            crash site
+            if not held.contains(site) {
+                held.append(site)
+                changed = true
+            }
+            index = index + 1
+        }
+        if held.count() > 8 {
+            held.clear()
+            held.append(-1)
+        }
+    }
+}
+
+func add_unknown(held: List<Integer>) {
+    if not is_unknown(held) {
+        held.clear()
+        held.append(-1)
+        changed = true
+    }
+}
+
+func spread_through(function: LowIntermediaryRepresentation.LowFunction) {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            spread_one(instruction, block_index, place)
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func spread_one(instruction: LowIntermediaryRepresentation.Instructions.Instruction, block_index: Integer, place: Integer) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Allocate: hold_a_site(instruction.target, block_index, place)
+        LowIntermediaryRepresentation.Instructions.FrameRoom: hold_a_site(instruction.target, block_index, place)
+        LowIntermediaryRepresentation.Instructions.Copy: hold_a_copy(instruction.target, instruction.source)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: hold_a_sum(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: hold_a_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: hold_a_store(instruction)
+        LowIntermediaryRepresentation.Instructions.Call: hold_a_call(instruction)
+        LowIntermediaryRepresentation.Instructions.Return: hold_an_answer(instruction.source)
+        LowIntermediaryRepresentation.Instructions.Select: hold_a_selection(instruction)
+        LowIntermediaryRepresentation.Instructions.Constant: return
+        LowIntermediaryRepresentation.Instructions.Compare: return
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: return
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return
+        _: hold_unknowns(instruction)
+    }
+}
+
+func hold_unknowns(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var target = operands.defines[index]
+        crash target
+        var held = set_of(current, target)
+        add_unknown(held)
+        index = index + 1
+    }
+}
+
+func hold_a_site(target: Integer, block_index: Integer, place: Integer) {
+    var key = place_key(current, block_index, place)
+    var site = sites[key]
+    crash site
+    var held = set_of(current, target)
+    var adding = List<Integer>()
+    adding.append(site)
+    add_into(held, adding)
+}
+
+func hold_a_copy(target: Integer, source: Integer) {
+    var held = set_of(current, target)
+    var adding = set_of(current, source)
+    add_into(held, adding)
+}
+
+func hold_a_selection(selecting: LowIntermediaryRepresentation.Instructions.Select) {
+    hold_a_copy(selecting.target, selecting.when_true)
+    hold_a_copy(selecting.target, selecting.when_false)
+}
+
+func hold_a_sum(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    if arithmetic.operator == 'add' or arithmetic.operator == 'subtract' {
+        hold_a_copy(arithmetic.target, arithmetic.left)
+    }
+    if arithmetic.operator == 'add' {
+        hold_a_copy(arithmetic.target, arithmetic.right)
+    }
+}
+
+func hold_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    var held = set_of(current, loaded.target)
+    if loaded.region.is_empty() or loaded.width != 'bits_64' {
+        if loaded.width == 'bits_64' {
+            add_unknown(held)
+        }
+        return
+    }
+    var objects = set_of(current, loaded.address)
+    if is_unknown(objects) {
+        add_unknown(held)
+        return
+    }
+    var index = 0
+    while index < objects.count() {
+        var site = objects[index]
+        crash site
+        var cell = cell_of("{site}|{loaded.region}")
+        add_into(held, cell)
+        index = index + 1
+    }
+    var any = cell_of("*|{loaded.region}")
+    add_into(held, any)
+}
+
+func cell_of(key: String): List<Integer> {
+    if not heap.contains(key) {
+        var made = List<Integer>()
+        heap[key] = made
+    }
+    var cell = heap[key]
+    crash cell
+    return cell
+}
+
+func hold_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    if not (stored.width != 'bits_64' or stored.region.is_empty()) {
+        var objects = set_of(current, stored.address)
+        var adding = set_of(current, stored.source)
+        if is_unknown(objects) {
+            var any = cell_of("*|{stored.region}")
+            add_into(any, adding)
+            return
+        }
+        var index = 0
+        while index < objects.count() {
+            var site = objects[index]
+            crash site
+            var cell = cell_of("{site}|{stored.region}")
+            add_into(cell, adding)
+            index = index + 1
+        }
+    }
+}
+
+func hold_a_call(call: LowIntermediaryRepresentation.Instructions.Call) {
+    var target = set_of(current, call.target)
+    if not indexes.contains(call.function) {
+        add_unknown(target)
+        return
+    }
+    var called = indexes[call.function]
+    crash called
+    var callee = program.lowered_functions[called]
+    crash callee
+    if callee.parameter_count != call.arguments.count() {
+        add_unknown(target)
+        return
+    }
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        crash argument
+        var passed = set_of(current, argument)
+        var parameter = set_of(called, index)
+        add_into(parameter, passed)
+        index = index + 1
+    }
+    var answered = answers[called]
+    crash answered
+    add_into(target, answered)
+}
+
+func hold_an_answer(source: Integer) {
+    if not (source < 0) {
+        var answered = answers[current]
+        crash answered
+        var adding = set_of(current, source)
+        add_into(answered, adding)
+    }
+}
+
+func link_the_buffers(function: LowIntermediaryRepresentation.LowFunction) {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            if instruction == LowIntermediaryRepresentation.Instructions.Store and instruction.region.ends_with("._buffer") {
+                link_a_buffer(instruction)
+            }
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func link_a_buffer(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    var length = stored.region.length()
+    var owner = stored.region.slice(0, length - 8)
+    var region = "{owner}.[]"
+    var buffers = set_of(current, stored.source)
+    var lists = set_of(current, stored.address)
+    if is_unknown(buffers) or is_unknown(lists) {
+        wild_regions[region] = true
+        return
+    }
+    var first = 0
+    while first < buffers.count() {
+        var buffer = buffers[first]
+        crash buffer
+        var second = 0
+        while second < lists.count() {
+            var list = lists[second]
+            crash list
+            unite("{region}@buffer:{buffer}", "{region}@list:{list}")
+            second = second + 1
+        }
+        first = first + 1
+    }
+}
+
+func link(first: String, second: String) {
+    if not links.contains(first) {
+        var made = List<String>()
+        links[first] = made
+    }
+    var linked = links[first]
+    crash linked
+    if not linked.contains(second) {
+        linked.append(second)
+    }
+}
+
+func unite(first: String, second: String) {
+    link(first, second)
+    link(second, first)
+}
+
+func keys_of(
+    function: LowIntermediaryRepresentation.LowFunction,
+    function_index: Integer,
+    address: Integer,
+    region: String,
+    reading: Boolean,
+): List<String> {
+    var keys = List<String>()
+    if not is_settled or wild_regions.contains(region) or not region.ends_with(".[]") {
+        return keys
+    }
+    if defined_function != function_index {
+        read_the_definitions(function)
+        defined_function = function_index
+    }
+    var storage = storage_load_of(function, address, 0)
+    if storage < 0 {
+        return keys
+    }
+    var buffer = buffer_of(function, storage)
+    var kind = "buffer"
+    var holder = buffer
+    var list = list_of(function, buffer)
+    if list >= 0 {
+        kind = "list"
+        holder = list
+    }
+    var held = set_of(function_index, holder)
+    if is_unknown(held) or held.is_empty() {
+        return keys
+    }
+    var index = 0
+    while index < held.count() {
+        var site = held[index]
+        crash site
+        var key = "{region}@{kind}:{site}"
+        keys.append(key)
+        if reading and links.contains(key) {
+            var linked = links[key]
+            crash linked
+            linked.each(keys.append)
+        }
+        index = index + 1
+    }
+    return keys
+}
+
+func read_the_definitions(function: LowIntermediaryRepresentation.LowFunction) {
+    var register_total = operands.most_register_of(function)
+    definition_lists = List<List<Integer>>()
+    var register = 0
+    while register < register_total {
+        var places = List<Integer>()
+        definition_lists.append(places)
+        register = register + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            operands.read(instruction)
+            var defined = 0
+            while defined < operands.defines.count() {
+                var target = operands.defines[defined]
+                crash target
+                var places_of = definition_lists[target]
+                crash places_of
+                places_of.append(block_index * 65536 + place)
+                defined = defined + 1
+            }
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func single_definition(function: LowIntermediaryRepresentation.LowFunction, register: Integer): LowIntermediaryRepresentation.Instructions.Instruction? {
+    var found: LowIntermediaryRepresentation.Instructions.Instruction? = null
+    var places = List<Integer>()
+    if register >= 0 and register < definition_lists.count() {
+        var listed = definition_lists[register]
+        crash listed
+        places = listed
+    }
+    if places.count() == 1 {
+        var encoded = places[0]
+        crash encoded
+        var block_index = encoded / 65536
+        var block = function.blocks[block_index]
+        crash block
+        found = block.instructions[encoded % 65536]
+    }
+    return found
+}
+
+func storage_load_of(function: LowIntermediaryRepresentation.LowFunction, address: Integer, depth: Integer): Integer {
+    var found = single_definition(function, address)
+    if not found or depth > 8 {
+        return -1
+    }
+    if found == LowIntermediaryRepresentation.Instructions.Load and found.region == "Buffer.$storage" {
+        return found.address
+    }
+    if found == LowIntermediaryRepresentation.Instructions.Copy {
+        return storage_load_of(function, found.source, depth + 1)
+    }
+    if found == LowIntermediaryRepresentation.Instructions.Arithmetic and found.operator == 'add' {
+        var left = storage_load_of(function, found.left, depth + 1)
+        if left >= 0 {
+            return left
+        }
+        return storage_load_of(function, found.right, depth + 1)
+    }
+    return -1
+}
+
+func buffer_of(function: LowIntermediaryRepresentation.LowFunction, buffer: Integer): Integer {
+    var held = buffer
+    var steps = 0
+    while steps < 8 {
+        var found = single_definition(function, held)
+        if found and found == LowIntermediaryRepresentation.Instructions.Copy {
+            held = found.source
+        }
+        steps = steps + 1
+    }
+    return held
+}
+
+func list_of(function: LowIntermediaryRepresentation.LowFunction, buffer: Integer): Integer {
+    var found = single_definition(function, buffer)
+    if found and found == LowIntermediaryRepresentation.Instructions.Load and found.region.ends_with("._buffer") {
+        return found.address
+    }
+    return -1
+}

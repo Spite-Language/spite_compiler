@@ -1430,9 +1430,12 @@ divisible by `2^k` exactly when those bits are zero. `if index % 2 == 0` is a `t
 ## An if that only adds or picks a value has no branch
 
 An `if` with no `else` whose body only adds to (or takes from) a running number, or sets a variable to a value,
-is run without a jump: the test becomes a mask of all ones or all zeros, the amount added is cut by the mask, and a
-value picked is mixed in through it (`kept xor ((picked xor kept) and mask)`). A test the processor cannot guess
-(`if point.down >= round` over points in no order) then costs nothing when it is wrong.
+is run without a jump: the test becomes a mask of all ones or all zeros and the amount added is cut by the mask, and
+a value picked is one conditional move (`test` and `cmovnz`, from a `Select` in the low representation that names the
+test and both values). A test the processor cannot guess (`if point.down >= round` over points in no order) then
+costs nothing when it is wrong. In a [loop that runs eight at a time](#a-counted-loop-over-numbers-runs-eight-at-a-time)
+the pick is mixed in through the mask in every lane (`kept xor ((picked xor kept) and mask)`); a body that rewrites its
+own test before the pick keeps that form too.
 
 **When it applies:** to a body of at most twelve instructions reached only from its test, that only computes
 (numbers, copies, loads through an object or address the code before the test already read), whose every checked
@@ -2364,6 +2367,45 @@ func step() {
         var particle = particles[index]
         particle.left = particle.left + particle.speed
         particles[index] = particle
+
+## A counted loop over numbers runs eight at a time
+
+A `while` loop that steps a counter by one up to a bound, and whose passes only read and write numbers at the
+counter's place in lists of numbers (a `List<Float>`, a `List<Integer>`, a list of objects kept as one array per
+attribute, any storage a pass reaches as `storage + counter * size`), runs most of its passes in the processor's
+vector registers: eight 32-bit numbers (or four 64-bit ones) per instruction, with two or four such groups in flight
+at once. The pass that finds them is `low_optimization_passes/vector_loops/pass.spite`; it puts a vector loop in front of the
+loop, and the loop itself is left as it was to run whatever passes remain (fewer than one group, or all of them when
+the vector loop cannot run). The generator writes the vector loop with AVX2 instructions
+(`generators/windows_x64/vector_kernels.spite`).
+
+**When it applies:** the loop's test is `counter < bound`, signed, with a bound the loop does not change; its body is
+one straight run of blocks whose only branches are the tests that halt the program (a list's bounds check), each a
+test `counter < limit` on a limit the loop does not change; every value the body computes is a sum, difference,
+product, quotient or square root of decimals, a sum, difference, product, `and`, `or`, `xor` or shift by a constant of
+whole numbers that cannot overflow, a comparison, or a conversion of a whole number or a decimal to a decimal; it reads
+and writes memory only at `counter * size` past a place the loop does not change, `size` being the width of what is
+read; and no value it computes is read after the loop, except the counter and the sums of the next section.
+
+**What runs at run time, and why:** a few tests each time the loop is entered, before any vector instruction. The
+first takes the smallest of the bounds and halt tests, so the vector loop runs only passes that cannot halt, and goes
+straight on to the loop as written when fewer than one group of passes is left (a list of six items costs four
+instructions); the pass that would halt runs in the loop as written and halts there, naming what it names today. The
+second reads one byte the program's start set from `cpuid`, whether the processor has AVX2 and the system saves its
+registers; a processor without it runs the loop as written. The third, when the loop writes one list and reads
+another, tests that the two do not overlap over the passes about to run, since only the run knows which lists the loop
+was given: a loop that writes the list it reads at the same place needs no test, and one that does overlap runs as
+written.
+
+**What a program can observe:** only time. Every number is computed by the same operation in the same order as in the
+loop as written, so it is the same to the last bit; a halt happens at the same pass with the same report. A program
+that has no such loop carries nothing of this, not even the `cpuid` test.
+
+```spite
+func scale_list(from: List<Float>, into: List<Float>, offset: Float) {
+    var index = 0
+    while index < from.count() {
+        into[index] = from[index] * 1.5 + offset
         index = index + 1
     }
 }
@@ -2434,3 +2476,58 @@ and time. Nothing can tell the room from a separate object: nothing else ever ho
 its holder or be shared. If a write into the room is ever given an object that is not new, the compile stops with
 "'...' holds its object inside it, but a value written into it is held elsewhere too: this is a fault of the
 compiler".
+
+The vector loop runs while `index` is below both `from.count()` and `into.count()` (the bound of the write's check),
+sixteen items per pass; the loop as written finishes the last fifteen or fewer.
+
+## A sum over a loop is kept in lanes
+
+A loop of the last section that keeps a running total (`total = total + term`, or a chain of such additions and
+subtractions into one variable read nowhere else in the loop) keeps one partial total per lane, starting at zero, and
+adds the lanes and the total the loop started with once at its end. For whole numbers this is the same answer in any
+order. A sum whose additions cannot overflow (the ranges of the first section prove it, such as a `Long` total of
+`Integer` items) is added in lanes of its own width. A sum that keeps its overflow check is added in 64-bit lanes,
+which cannot overflow, beside the sum of the terms' sizes; at the end, if the total it started with plus that sum of
+sizes fits the total's type, no partial total along the way could have overflowed, and the sum is kept. Otherwise the
+vector loop's work is thrown away and the loop as written runs every pass, halting where it would have halted. Such a
+loop must not write memory, so throwing its work away loses nothing.
+
+**What a program can observe:** only time.
+
+## A decimal sum is split into lanes only where every partial sum is exact
+
+Adding decimals in another order can change the answer, since each addition rounds. A decimal total is kept in lanes
+only where the compiler proves, while compiling, that no addition rounds: every term is a multiple of one power of
+two, `2^e`, no larger than a bound `B`, and the total the loop starts with is such a multiple too; then every partial
+total, in any order, is a multiple of `2^e` no larger than the starting total plus `B` per pass, and while that is
+below `2^24` multiples (`2^53` for a `Double`) every partial total is exact, so every order gives the same bits. The
+bound becomes the most passes the vector loop may run; the loop as written runs the rest in order from the exact total
+the vector loop reached, which is the total it would have reached itself.
+
+The proof (`low_optimization_passes/vector_loops/exact_sums.spite`) follows every decimal through the whole program:
+a literal is its own multiple and size; a whole number of a known range made a decimal is a multiple of one; a sum,
+difference or product of two exact decimals is exact while it fits, with the multiple and size that follow; a
+parameter holds what every call passes it; and a decimal read from a list holds what every write to a list of that
+type, anywhere in the program, stored (and zero). A list filled from bytes, or written through anything the proof
+cannot follow, proves nothing, and neither does a decimal a call answers.
+
+**When it does not apply:** a term that may round (a division, a square root, a product too large to be exact, a
+decimal read from a file), a starting total that may be `-0.0`, or a total the proof cannot follow keeps the loop's
+order: the loop still runs in lanes if it has no such total, and runs as written if it has.
+
+**What a program can observe:** only time; the answer is the same to the last bit.
+
+```spite
+func scaled_sum(values: List<Float>, shift: Float): Float {
+    var total: Float = 0.0
+    var index = 0
+    while index < values.count() {
+        total = total + (values[index] + shift) * 1.5 + 0.25
+        index = index + 1
+    }
+    return total
+}
+```
+
+With `values` filled by `(index % 64) * 0.25` and `shift` a whole number below 8, every term is a multiple of `0.125`
+no larger than `34.375`, so up to 61007 passes run in lanes and every partial total is exact.

@@ -1,0 +1,1042 @@
+# ../../OPTIMIZATIONS.md#a-counted-loop-over-numbers-runs-eight-at-a-time
+var encoder = Encoder()
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var data_fixups = List<Fixup>()
+var no_function = LowIntermediaryRepresentation.LowFunction("", 0)
+var allocation = Allocation(no_function)
+var detection = -1
+var flag_label = -1
+var lanes = 8
+var unroll = 1
+var scratch = 0
+var lane_total = 0
+var formats = List<LowIntermediaryRepresentation.Vector.Format>()
+var is_shared = List<Boolean>()
+var physicals = List<Integer>()
+var base_registers = List<Integer>()
+var base_homes = List<Integer>()
+var used = List<Boolean>()
+
+func VectorKernels(
+    starting_encoder: Encoder,
+    starting_program: LowIntermediaryRepresentation.LoweredProgram,
+    starting_data_fixups: List<Fixup>,
+) {
+    encoder = starting_encoder
+    program = starting_program
+    data_fixups = starting_data_fixups
+}
+
+func emit_the_detection() {
+    var room = Buffer(0)
+    var index = 0
+    while index < 8 {
+        room.append(0)
+        index = index + 1
+    }
+    program.data.append(room)
+    flag_label = program.data.count() - 1
+    encoder.align_to(16)
+    detection = encoder.position()
+    code("50 53 51 52 41 53")
+    code("B8 01 00 00 00 0F A2 41 89 CB 41 81 E3 00 00 00 18 41 81 FB 00 00 00 18 75 1F")
+    code("31 C9 0F 01 D0 83 E0 06 83 F8 06 75 12 B8 07 00 00 00 31 C9 0F A2 F6 C3 20 74 04 B0 02 EB 02")
+    code("B0 01 88 05")
+    at_the_flag()
+    code("41 5B 5A 59 5B 58 C3")
+}
+
+func call_the_detection() {
+    if detection >= 0 {
+        var at = encoder.call_relative()
+        encoder.patch_dword(at, detection - (at + 4))
+    }
+}
+
+func code(text: String) {
+    var index = 0
+    var count = text.length()
+    while index + 1 < count {
+        var high_code = text.code_at(index)
+        var low_code = text.code_at(index + 1)
+        var high = digit_of(high_code)
+        var low = digit_of(low_code)
+        encoder.byte(high * 16 + low)
+        index = index + 3
+    }
+}
+
+func digit_of(character: Integer): Integer {
+    var value = character - 48
+    if character >= 65 {
+        value = character - 55
+    }
+    return value
+}
+
+func at_the_flag() {
+    var at = encoder.position()
+    encoder.dword(0)
+    var fixup = Fixup(at, "", flag_label)
+    data_fixups.append(fixup)
+}
+
+func plan_the_saved(function: LowIntermediaryRepresentation.LowFunction, starting_allocation: Allocation) {
+    allocation = starting_allocation
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.VectorLoop and plan(instruction) {
+                save_what_the_plan_uses()
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func save_what_the_plan_uses() {
+    var physical = 6
+    while physical < 16 {
+        if used[physical] == true and not allocation.saved_decimals.contains(physical) {
+            allocation.saved_decimals.append(physical)
+        }
+        physical = physical + 1
+    }
+}
+
+func size_of(format: LowIntermediaryRepresentation.Vector.Format): Integer {
+    if format == 'double' or format == 'whole_64' {
+        return 8
+    }
+    return 4
+}
+
+func is_long(lane: Integer): Boolean {
+    var format = formats[lane]
+    crash format
+    return lanes * size_of(format) == 32
+}
+
+func format_of(lane: Integer): LowIntermediaryRepresentation.Vector.Format {
+    var format = formats[lane]
+    crash format
+    return format
+}
+
+func note_a_lane(lane: Integer) {
+    while lane_total <= lane {
+        formats.append('whole_32')
+        is_shared.append(false)
+        lane_total = lane_total + 1
+    }
+}
+
+func plan(looping: LowIntermediaryRepresentation.Instructions.VectorLoop): Boolean {
+    lanes = looping.lanes
+    lane_total = 0
+    formats = List<LowIntermediaryRepresentation.Vector.Format>()
+    is_shared = List<Boolean>()
+    var index = 0
+    while index < looping.setup.count() {
+        var step = looping.setup[index]
+        crash step
+        note_a_lane(step.target)
+        formats[step.target] = step.format
+        is_shared[step.target] = step.operation == 'broadcast'
+        index = index + 1
+    }
+    index = 0
+    while index < looping.body.count() {
+        var body_step = looping.body[index]
+        crash body_step
+        if body_step.target >= 0 {
+            note_a_lane(body_step.target)
+            formats[body_step.target] = body_step.format
+        }
+        note_a_lane(body_step.left)
+        note_a_lane(body_step.right)
+        index = index + 1
+    }
+    var reserved = List<Boolean>()
+    used = List<Boolean>()
+    var physical = 0
+    while physical < 16 {
+        reserved.append(false)
+        used.append(false)
+        physical = physical + 1
+    }
+    var operands = LowOptimizationPasses.Operands()
+    operands.read(looping)
+    var operand_index = 0
+    while operand_index < operands.uses.count() {
+        var register = operands.uses[operand_index]
+        crash register
+        var home = allocation.decimal_home_of(register)
+        if home >= 0 {
+            reserved[home] = true
+        }
+        operand_index = operand_index + 1
+    }
+    if not plan_the_bases(looping) {
+        return false
+    }
+    var free = List<Integer>()
+    physical = 0
+    while physical < 16 {
+        if reserved[physical] != true {
+            free.append(physical)
+        }
+        physical = physical + 1
+    }
+    var last_uses = List<Integer>()
+    var lane = 0
+    while lane < lane_total {
+        last_uses.append(-1)
+        lane = lane + 1
+    }
+    index = 0
+    while index < looping.body.count() {
+        var reading_step = looping.body[index]
+        crash reading_step
+        note_a_use(last_uses, reading_step.left, index)
+        note_a_use(last_uses, reading_step.right, index)
+        index = index + 1
+    }
+    var slots = List<Integer>()
+    var slot_ends = List<Integer>()
+    lane = 0
+    while lane < lane_total {
+        slots.append(-1)
+        lane = lane + 1
+    }
+    var carried = 0
+    var shared = 0
+    index = 0
+    while index < looping.setup.count() {
+        var setup_step = looping.setup[index]
+        crash setup_step
+        if setup_step.operation == 'broadcast' {
+            shared = shared + 1
+        } else {
+            carried = carried + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < looping.body.count() {
+        var placing = looping.body[index]
+        crash placing
+        free_the_slots(slot_ends, index)
+        var target = placing.target
+        if (target >= 0 and is_shared[target] != true and not is_set_up(looping, target)) and (slots[target] == -1) {
+            var slot = free_slot(slot_ends)
+            slots[target] = slot
+            var end = last_uses[target]
+            crash end
+            if end < index {
+                end = index
+            }
+            slot_ends[slot] = end
+        }
+        index = index + 1
+    }
+    var temporaries = slot_ends.count()
+    unroll = 4
+    if looping.accumulators.is_empty() {
+        unroll = 2
+    }
+    while unroll > 1 and shared + 1 + unroll * (carried + temporaries) > free.count() {
+        unroll = unroll / 2
+    }
+    if shared + 1 + unroll * (carried + temporaries) > free.count() {
+        return false
+    }
+    physicals = List<Integer>()
+    lane = 0
+    while lane < lane_total * 4 {
+        physicals.append(-1)
+        lane = lane + 1
+    }
+    var next = 0
+    scratch = take(free, next)
+    next = next + 1
+    lane = 0
+    while lane < lane_total {
+        if is_shared[lane] == true {
+            var given = take(free, next)
+            next = next + 1
+            var copy = 0
+            while copy < 4 {
+                physicals[lane * 4 + copy] = given
+                copy = copy + 1
+            }
+        }
+        lane = lane + 1
+    }
+    var copy_index = 0
+    while copy_index < unroll {
+        index = 0
+        while index < looping.setup.count() {
+            var carried_step = looping.setup[index]
+            crash carried_step
+            if carried_step.operation == 'zero' {
+                physicals[carried_step.target * 4 + copy_index] = take(free, next)
+                next = next + 1
+            }
+            index = index + 1
+        }
+        var base_of_slots = next
+        lane = 0
+        while lane < lane_total {
+            var slot = slots[lane]
+            crash slot
+            if slot >= 0 {
+                physicals[lane * 4 + copy_index] = take(free, base_of_slots + slot)
+            }
+            lane = lane + 1
+        }
+        next = next + temporaries
+        copy_index = copy_index + 1
+    }
+    return true
+}
+
+func is_set_up(looping: LowIntermediaryRepresentation.Instructions.VectorLoop, lane: Integer): Boolean {
+    var index = 0
+    while index < looping.setup.count() {
+        var step = looping.setup[index]
+        crash step
+        if step.target == lane {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func take(free: List<Integer>, at: Integer): Integer {
+    var physical = free[at]
+    crash physical
+    used[physical] = true
+    return physical
+}
+
+func note_a_use(last_uses: List<Integer>, lane: Integer, index: Integer) {
+    if lane >= 0 {
+        last_uses[lane] = index
+    }
+}
+
+func free_the_slots(slot_ends: List<Integer>, index: Integer) {
+    var slot = 0
+    while slot < slot_ends.count() {
+        var end = slot_ends[slot]
+        crash end
+        if end >= 0 and end < index {
+            slot_ends[slot] = -1
+        }
+        slot = slot + 1
+    }
+}
+
+func free_slot(slot_ends: List<Integer>): Integer {
+    var slot = 0
+    while slot < slot_ends.count() {
+        var end = slot_ends[slot]
+        crash end
+        if end == -1 {
+            return slot
+        }
+        slot = slot + 1
+    }
+    slot_ends.append(-1)
+    return slot_ends.count() - 1
+}
+
+func plan_the_bases(looping: LowIntermediaryRepresentation.Instructions.VectorLoop): Boolean {
+    base_registers = List<Integer>()
+    base_homes = List<Integer>()
+    var spare = 0
+    var index = 0
+    while index < looping.body.count() {
+        var step = looping.body[index]
+        crash step
+        var touches = step.operation == 'load' or step.operation == 'store'
+        if touches and not base_registers.contains(step.base) {
+            var home = allocation.home_of(step.base)
+            if home < 0 or allocation.constant_of(step.base) {
+                if spare == 0 {
+                    home = encoder.rdx
+                } else if spare == 1 {
+                    home = encoder.r11
+                } else {
+                    return false
+                }
+                spare = spare + 1
+            }
+            base_registers.append(step.base)
+            base_homes.append(home)
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func base_home_of(register: Integer): Integer {
+    var at = base_registers.index_of(register)
+    crash at
+    var home = base_homes[at]
+    crash home
+    return home
+}
+
+func physical_of(lane: Integer, copy: Integer): Integer {
+    var physical = physicals[lane * 4 + copy]
+    crash physical
+    return physical
+}
+
+func read_into(register: Integer, virtual: Integer) {
+    if allocation.constant_of(virtual) {
+        var value = allocation.value_of(virtual)
+        encoder.move_small_immediate(register, value)
+        return
+    }
+    var decimal = allocation.decimal_home_of(virtual)
+    if decimal >= 0 {
+        var size = allocation.decimal_size_of(virtual)
+        encoder.register_from_xmm(register, decimal, size == 8)
+        return
+    }
+    var home = allocation.home_of(virtual)
+    if home >= 0 {
+        if home != register {
+            encoder.move_register(register, home)
+        }
+        return
+    }
+    encoder.load_virtual(register, virtual)
+}
+
+func write_from(virtual: Integer, register: Integer) {
+    var decimal = allocation.decimal_home_of(virtual)
+    if decimal >= 0 {
+        var size = allocation.decimal_size_of(virtual)
+        encoder.xmm_from_register(decimal, register, size == 8)
+        return
+    }
+    var home = allocation.home_of(virtual)
+    if home >= 0 {
+        if home != register {
+            encoder.move_register(home, register)
+        }
+        return
+    }
+    encoder.store_virtual(virtual, register)
+}
+
+func land(at: Integer) {
+    var here = encoder.position()
+    encoder.patch_dword(at, here - (at + 4))
+}
+
+func jump_if(condition: Integer): Integer {
+    return encoder.jump_if(condition)
+}
+
+func emit(looping: LowIntermediaryRepresentation.Instructions.VectorLoop, starting_allocation: Allocation) {
+    allocation = starting_allocation
+    if flag_label >= 0 and plan(looping) {
+        emit_the_kernel(looping)
+    }
+}
+
+func emit_the_kernel(looping: LowIntermediaryRepresentation.Instructions.VectorLoop) {
+    var chunk = lanes * unroll
+    var skips = List<Integer>()
+    read_into(encoder.rax, looping.counter)
+    if looping.counts_from_zero {
+        code("48 85 C0")
+        var below_zero = jump_if(136)
+        skips.append(below_zero)
+    }
+    var first_limit = looping.limits[0]
+    crash first_limit
+    read_into(encoder.rcx, first_limit)
+    var limit_index = 1
+    while limit_index < looping.limits.count() {
+        var limit = looping.limits[limit_index]
+        crash limit
+        read_into(encoder.rdx, limit)
+        code("48 39 D1 48 0F 4F CA")
+        limit_index = limit_index + 1
+    }
+    code("48 29 C1 48 83 F9")
+    encoder.byte(chunk)
+    var too_few = jump_if(140)
+    skips.append(too_few)
+    code("0F B6 15")
+    at_the_flag()
+    code("83 FA 02")
+    var no_vectors = jump_if(133)
+    skips.append(no_vectors)
+    if looping.most_trips >= 0 {
+        var most = looping.most_trips / chunk * chunk
+        encoder.move_immediate(encoder.rdx, most)
+        code("48 39 D1 48 0F 4F CA")
+    }
+    code("48 83 E1")
+    encoder.byte(256 - chunk)
+    code("48 85 C9")
+    var capped = jump_if(142)
+    skips.append(capped)
+    var pair = 0
+    while pair < looping.disjoint_sizes.count() {
+        check_a_pair(looping, pair, skips)
+        pair = pair + 1
+    }
+    code("48 01 C1")
+    looping.setup.each(emit_a_setup_step)
+    var base_index = 0
+    while base_index < base_registers.count() {
+        var base = base_registers[base_index]
+        var home = base_homes[base_index]
+        crash base
+        crash home
+        if home == encoder.rdx or home == encoder.r11 {
+            read_into(home, base)
+        }
+        base_index = base_index + 1
+    }
+    encoder.align_to(16)
+    var top = encoder.position()
+    var step_index = 0
+    while step_index < looping.body.count() {
+        var step = looping.body[step_index]
+        crash step
+        var copy = 0
+        while copy < unroll {
+            emit_a_step(step, copy)
+            copy = copy + 1
+        }
+        step_index = step_index + 1
+    }
+    code("48 83 C0")
+    encoder.byte(chunk)
+    code("48 39 C8")
+    var back = encoder.jump_if(140)
+    encoder.patch_dword(back, top - (back + 4))
+    var index = 0
+    while index < looping.accumulators.count() {
+        var format = looping.accumulator_formats[index]
+        crash format
+        var lane = accumulator_lane(looping, index)
+        reduce_the_lanes(lane, format)
+        var check = looping.check_lanes[index]
+        crash check
+        if check >= 0 {
+            reduce_the_lanes(check, 'whole_64')
+        }
+        index = index + 1
+    }
+    encoder.clear_the_upper_halves()
+    var rollbacks = List<Integer>()
+    index = 0
+    while index < looping.accumulators.count() {
+        var check_lane = looping.check_lanes[index]
+        crash check_lane
+        if check_lane >= 0 {
+            check_the_sum(looping, index, check_lane, rollbacks)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < looping.accumulators.count() {
+        write_the_sum(looping, index)
+        index = index + 1
+    }
+    write_from(looping.counter, encoder.rcx)
+    skips.each(land)
+    rollbacks.each(land)
+}
+
+func accumulator_lane(looping: LowIntermediaryRepresentation.Instructions.VectorLoop, index: Integer): Integer {
+    var accumulator = looping.accumulators[index]
+    crash accumulator
+    var step_index = 0
+    while step_index < looping.setup.count() {
+        var step = looping.setup[step_index]
+        crash step
+        if step.operation == 'zero' and step.source == accumulator {
+            return step.target
+        }
+        step_index = step_index + 1
+    }
+    return -1
+}
+
+func check_a_pair(looping: LowIntermediaryRepresentation.Instructions.VectorLoop, pair: Integer, overlaps: List<Integer>) {
+    var first = looping.disjoint_bases[2 * pair]
+    var second = looping.disjoint_bases[2 * pair + 1]
+    var first_offset = looping.disjoint_offsets[2 * pair]
+    var second_offset = looping.disjoint_offsets[2 * pair + 1]
+    var size = looping.disjoint_sizes[pair]
+    crash first
+    crash second
+    crash first_offset
+    crash second_offset
+    crash size
+    read_into(encoder.rdx, first)
+    read_into(encoder.r11, second)
+    code("4C 29 DA 48 81 C2")
+    encoder.dword(first_offset - second_offset)
+    code("49 89 D3 49 C1 FB 3F 4C 31 DA 4C 29 DA 49 89 CB 49 C1 E3")
+    var shift = shift_of(size)
+    encoder.byte(shift)
+    code("4C 39 DA")
+    var overlapping = jump_if(130)
+    overlaps.append(overlapping)
+}
+
+func shift_of(size: Integer): Integer {
+    switch size {
+        1: return 0
+        2: return 1
+        4: return 2
+        _: return 3
+    }
+}
+
+func emit_a_setup_step(step: LowIntermediaryRepresentation.Vector.Step) {
+    if step.operation == 'zero' {
+        var copy = 0
+        while copy < unroll {
+            var physical = physical_of(step.target, copy)
+            var long_zero = is_long(step.target)
+            encoder.vector_registers(1, 1, false, long_zero, 239, physical, physical, physical)
+            copy = copy + 1
+        }
+        return
+    }
+    var target = physical_of(step.target, 0)
+    var long = is_long(step.target)
+    var source_xmm = -1
+    if step.source >= 0 {
+        var home = allocation.decimal_home_of(step.source)
+        var size = allocation.decimal_size_of(step.source)
+        if home >= 0 and size == size_of(step.format) {
+            source_xmm = home
+        }
+    }
+    if source_xmm < 0 {
+        if step.source >= 0 {
+            read_into(encoder.rdx, step.source)
+        } else {
+            encoder.move_immediate(encoder.rdx, step.number)
+        }
+        encoder.vector_registers(1, 1, true, false, 110, target, 0, encoder.rdx)
+        source_xmm = target
+    }
+    var opcode = 88
+    switch step.format {
+        'float': opcode = 24
+        'double': opcode = 25
+        'whole_32': opcode = 88
+        'whole_64': opcode = 89
+    }
+    encoder.vector_registers(2, 1, false, long, opcode, target, 0, source_xmm)
+}
+
+func memory_of(step: LowIntermediaryRepresentation.Vector.Step, size: Integer): Integer {
+    var base = base_home_of(step.base)
+    encoder.index_by(encoder.rax, size)
+    return base
+}
+
+func element_size(width: LowIntermediaryRepresentation.Width): Integer {
+    switch width {
+        'bits_8': return 1
+        'bits_16': return 2
+        'bits_32': return 4
+        'bits_64': return 8
+    }
+}
+
+func emit_a_step(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    switch step.operation {
+        'load': emit_a_load(step, copy)
+        'store': emit_a_store(step, copy)
+        'decimal': emit_a_decimal(step, copy)
+        'whole': emit_a_whole(step, copy)
+        'compare': emit_a_compare(step, copy)
+        'decimal_compare': emit_a_decimal_compare(step, copy)
+        'convert': emit_a_conversion(step, copy)
+        'widen': emit_a_widening(step, copy)
+        'narrow': emit_a_narrowing(step, copy)
+        'absolute': emit_an_absolute(step, copy)
+        'copy': emit_a_copy(step, copy)
+        _: return
+    }
+}
+
+func emit_a_load(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var size = element_size(step.width)
+    var target = physical_of(step.target, copy)
+    var displacement = step.offset + copy * lanes * size
+    var base = memory_of(step, size)
+    var long = is_long(step.target)
+    var wide_target = step.format == 'whole_64' and size == 4
+    if size == 1 or size == 2 or wide_target {
+        var opcode = extending_code(size, step.is_signed)
+        encoder.vector_memory(2, 1, false, long, opcode, target, 0, base, displacement)
+    } else {
+        encoder.vector_memory(1, 0, false, long, 16, target, 0, base, displacement)
+    }
+    encoder.stop_indexing()
+}
+
+func extending_code(size: Integer, is_signed: Boolean): Integer {
+    var opcode = 37
+    switch size {
+        1: opcode = 33
+        2: opcode = 35
+        _: opcode = 37
+    }
+    if not is_signed {
+        opcode = opcode + 16
+    }
+    return opcode
+}
+
+func emit_a_store(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var size = element_size(step.width)
+    var source = physical_of(step.left, copy)
+    var displacement = step.offset + copy * lanes * size
+    var base = memory_of(step, size)
+    var long = lanes * size == 32
+    encoder.vector_memory(1, 0, false, long, 17, source, 0, base, displacement)
+    encoder.stop_indexing()
+}
+
+func decimal_prefix(format: LowIntermediaryRepresentation.Vector.Format): Integer {
+    if format == 'double' {
+        return 1
+    }
+    return 0
+}
+
+func emit_a_decimal(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var target = physical_of(step.target, copy)
+    var left = physical_of(step.left, copy)
+    var right = physical_of(step.right, copy)
+    var long = is_long(step.target)
+    var prefix = decimal_prefix(step.format)
+    switch step.arithmetic {
+        'add': encoder.vector_registers(1, prefix, false, long, 88, target, left, right)
+        'subtract': encoder.vector_registers(1, prefix, false, long, 92, target, left, right)
+        'multiply': encoder.vector_registers(1, prefix, false, long, 89, target, left, right)
+        'divide': encoder.vector_registers(1, prefix, false, long, 94, target, left, right)
+        _: encoder.vector_registers(1, prefix, false, long, 81, target, 0, right)
+    }
+}
+
+func emit_a_whole(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var target = physical_of(step.target, copy)
+    var left = physical_of(step.left, copy)
+    var long = is_long(step.target)
+    var wide = step.format == 'whole_64'
+    if step.arithmetic == 'shift_left' or step.arithmetic == 'shift_right' {
+        var opcode = 114
+        if wide {
+            opcode = 115
+        }
+        var extension = 6
+        if step.arithmetic == 'shift_right' and step.is_signed {
+            extension = 4
+        } else if step.arithmetic == 'shift_right' {
+            extension = 2
+        }
+        encoder.vector_registers(1, 1, false, long, opcode, extension, target, left)
+        encoder.byte(step.offset)
+        return
+    }
+    var right = physical_of(step.right, copy)
+    var adding = added_code(wide)
+    var subtracting = subtracted_code(wide)
+    switch step.arithmetic {
+        'add': encoder.vector_registers(1, 1, false, long, adding, target, left, right)
+        'subtract': encoder.vector_registers(1, 1, false, long, subtracting, target, left, right)
+        'multiply': encoder.vector_registers(2, 1, false, long, 64, target, left, right)
+        'bits_and': encoder.vector_registers(1, 1, false, long, 219, target, left, right)
+        'bits_or': encoder.vector_registers(1, 1, false, long, 235, target, left, right)
+        _: encoder.vector_registers(1, 1, false, long, 239, target, left, right)
+    }
+}
+
+func added_code(wide: Boolean): Integer {
+    if wide {
+        return 212
+    }
+    return 254
+}
+
+func subtracted_code(wide: Boolean): Integer {
+    if wide {
+        return 251
+    }
+    return 250
+}
+
+func greater_than(target: Integer, left: Integer, right: Integer, wide: Boolean, long: Boolean) {
+    if wide {
+        encoder.vector_registers(2, 1, false, long, 55, target, left, right)
+    } else {
+        encoder.vector_registers(1, 1, false, long, 102, target, left, right)
+    }
+}
+
+func equal_to(target: Integer, left: Integer, right: Integer, wide: Boolean, long: Boolean) {
+    if wide {
+        encoder.vector_registers(2, 1, false, long, 41, target, left, right)
+    } else {
+        encoder.vector_registers(1, 1, false, long, 118, target, left, right)
+    }
+}
+
+func emit_a_compare(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var target = physical_of(step.target, copy)
+    var left = physical_of(step.left, copy)
+    var right = physical_of(step.right, copy)
+    var long = is_long(step.target)
+    var wide = step.format == 'whole_64'
+    var swapped = step.comparison == 'less' or step.comparison == 'greater_or_equal'
+    var equality = step.comparison == 'equal' or step.comparison == 'not_equal'
+    if equality {
+        equal_to(target, left, right, wide, long)
+    } else if swapped {
+        greater_than(target, right, left, wide, long)
+    } else {
+        greater_than(target, left, right, wide, long)
+    }
+    var turned = step.comparison == 'not_equal' or step.comparison == 'less_or_equal'
+    var negated = turned or step.comparison == 'greater_or_equal'
+    one_for_each_mask(target, wide, long, negated)
+}
+
+func one_for_each_mask(target: Integer, wide: Boolean, long: Boolean, negated: Boolean) {
+    if negated {
+        encoder.vector_registers(1, 1, false, long, 118, scratch, scratch, scratch)
+        var subtracting = subtracted_code(wide)
+        encoder.vector_registers(1, 1, false, long, subtracting, target, target, scratch)
+        return
+    }
+    var opcode = 114
+    var count = 31
+    if wide {
+        opcode = 115
+        count = 63
+    }
+    encoder.vector_registers(1, 1, false, long, opcode, 2, target, target)
+    encoder.byte(count)
+}
+
+func emit_a_decimal_compare(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var target = physical_of(step.target, copy)
+    var left = physical_of(step.left, copy)
+    var right = physical_of(step.right, copy)
+    var long = is_long(step.target)
+    var prefix = decimal_prefix(step.from_format)
+    var first = left
+    var second = right
+    var predicate = 17
+    switch step.comparison {
+        'less_or_equal': predicate = 18
+        'greater_or_equal': predicate = 18
+        'equal': predicate = 0
+        'not_equal': predicate = 4
+        _: predicate = 17
+    }
+    if step.comparison == 'greater' or step.comparison == 'greater_or_equal' {
+        first = right
+        second = left
+    }
+    encoder.vector_registers(1, prefix, false, long, 194, target, first, second)
+    encoder.byte(predicate)
+    one_for_each_mask(target, step.format == 'whole_64', long, false)
+}
+
+func emit_a_conversion(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var target = physical_of(step.target, copy)
+    var source = physical_of(step.left, copy)
+    var long = is_long(step.target)
+    if step.from_format == 'whole_32' and step.format == 'float' {
+        encoder.vector_registers(1, 0, false, long, 91, target, 0, source)
+    } else if step.from_format == 'whole_32' and step.format == 'double' {
+        encoder.vector_registers(1, 2, false, true, 230, target, 0, source)
+    } else if step.from_format == 'float' and step.format == 'double' {
+        encoder.vector_registers(1, 0, false, true, 90, target, 0, source)
+    } else if step.from_format == 'double' and step.format == 'float' {
+        encoder.vector_registers(1, 1, false, true, 90, target, 0, source)
+    }
+}
+
+func emit_a_widening(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var target = physical_of(step.target, copy)
+    var source = physical_of(step.left, copy)
+    var opcode = 37
+    if not step.is_signed {
+        opcode = 53
+    }
+    encoder.vector_registers(2, 1, false, true, opcode, target, 0, source)
+}
+
+func emit_a_narrowing(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var target = physical_of(step.target, copy)
+    var source = physical_of(step.left, copy)
+    encoder.vector_registers(1, 1, false, true, 112, target, 0, source)
+    encoder.byte(8)
+    encoder.vector_registers(3, 1, true, true, 0, target, 0, target)
+    encoder.byte(8)
+}
+
+func emit_an_absolute(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var target = physical_of(step.target, copy)
+    var source = physical_of(step.left, copy)
+    var long = is_long(step.target)
+    encoder.vector_registers(2, 1, false, long, 30, target, 0, source)
+}
+
+func emit_a_copy(step: LowIntermediaryRepresentation.Vector.Step, copy: Integer) {
+    var target = physical_of(step.target, copy)
+    var source = physical_of(step.left, copy)
+    var long = is_long(step.target)
+    if target != source {
+        encoder.vector_registers(1, 0, false, long, 40, target, 0, source)
+    }
+}
+
+func add_lanes(
+    format: LowIntermediaryRepresentation.Vector.Format,
+    long: Boolean,
+    target: Integer,
+    left: Integer,
+    right: Integer,
+) {
+    switch format {
+        'float': encoder.vector_registers(1, 0, false, long, 88, target, left, right)
+        'double': encoder.vector_registers(1, 1, false, long, 88, target, left, right)
+        'whole_32': encoder.vector_registers(1, 1, false, long, 254, target, left, right)
+        'whole_64': encoder.vector_registers(1, 1, false, long, 212, target, left, right)
+    }
+}
+
+func reduce_the_lanes(lane: Integer, format: LowIntermediaryRepresentation.Vector.Format) {
+    var total = physical_of(lane, 0)
+    var long = is_long(lane)
+    var copy = 1
+    while copy < unroll {
+        var other = physical_of(lane, copy)
+        add_lanes(format, long, total, total, other)
+        copy = copy + 1
+    }
+    if long {
+        encoder.vector_registers(3, 1, false, true, 25, total, 0, scratch)
+        encoder.byte(1)
+        add_lanes(format, false, total, total, scratch)
+    }
+    switch format {
+        'float': reduce_four_floats(total)
+        'double': reduce_two(total, false)
+        'whole_64': reduce_two(total, true)
+        'whole_32': reduce_four_wholes(total)
+    }
+}
+
+func reduce_four_floats(total: Integer) {
+    encoder.vector_registers(1, 0, false, false, 18, scratch, total, total)
+    add_lanes('float', false, total, total, scratch)
+    encoder.vector_registers(1, 1, false, false, 112, scratch, 0, total)
+    encoder.byte(1)
+    encoder.vector_registers(1, 2, false, false, 88, total, total, scratch)
+}
+
+func reduce_two(total: Integer, whole: Boolean) {
+    if whole {
+        encoder.vector_registers(1, 1, false, false, 109, scratch, total, total)
+        add_lanes('whole_64', false, total, total, scratch)
+    } else {
+        encoder.vector_registers(1, 1, false, false, 21, scratch, total, total)
+        encoder.vector_registers(1, 3, false, false, 88, total, total, scratch)
+    }
+}
+
+func reduce_four_wholes(total: Integer) {
+    encoder.vector_registers(1, 1, false, false, 112, scratch, 0, total)
+    encoder.byte(78)
+    add_lanes('whole_32', false, total, total, scratch)
+    encoder.vector_registers(1, 1, false, false, 112, scratch, 0, total)
+    encoder.byte(1)
+    add_lanes('whole_32', false, total, total, scratch)
+}
+
+func check_the_sum(
+    looping: LowIntermediaryRepresentation.Instructions.VectorLoop,
+    index: Integer,
+    check_lane: Integer,
+    rollbacks: List<Integer>,
+) {
+    var accumulator = looping.accumulators[index]
+    var most = looping.check_limits[index]
+    crash accumulator
+    crash most
+    var checked = physical_of(check_lane, 0)
+    encoder.vector_registers(1, 1, true, false, 126, checked, 0, encoder.rdx)
+    read_into(encoder.r11, accumulator)
+    code("4C 89 D8 48 C1 F8 3F 49 31 C3 49 29 C3 49 01 D3")
+    encoder.move_immediate(encoder.rax, most)
+    code("49 39 C3")
+    var too_big = jump_if(135)
+    rollbacks.append(too_big)
+}
+
+func write_the_sum(looping: LowIntermediaryRepresentation.Instructions.VectorLoop, index: Integer) {
+    var accumulator = looping.accumulators[index]
+    var format = looping.accumulator_formats[index]
+    crash accumulator
+    crash format
+    var lane = accumulator_lane(looping, index)
+    var total = physical_of(lane, 0)
+    if format == 'float' or format == 'double' {
+        var prefix = 2
+        var is_double = format == 'double'
+        if is_double {
+            prefix = 3
+        }
+        var home = allocation.decimal_home_of(accumulator)
+        if home >= 0 {
+            encoder.vector_registers(1, prefix, false, false, 88, home, home, total)
+            return
+        }
+        read_into(encoder.rdx, accumulator)
+        encoder.vector_registers(1, 1, is_double, false, 110, scratch, 0, encoder.rdx)
+        encoder.vector_registers(1, prefix, false, false, 88, scratch, scratch, total)
+        encoder.vector_registers(1, 1, is_double, false, 126, scratch, 0, encoder.rdx)
+        write_from(accumulator, encoder.rdx)
+        return
+    }
+    if format == 'whole_32' {
+        encoder.vector_registers(1, 1, false, false, 126, total, 0, encoder.rdx)
+        read_into(encoder.r11, accumulator)
+        code("41 01 D3 4D 63 DB")
+        write_from(accumulator, encoder.r11)
+        return
+    }
+    encoder.vector_registers(1, 1, true, false, 126, total, 0, encoder.rdx)
+    read_into(encoder.r11, accumulator)
+    code("49 01 D3")
+    write_from(accumulator, encoder.r11)
+}

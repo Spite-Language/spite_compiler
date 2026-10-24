@@ -1,0 +1,1311 @@
+# ../../OPTIMIZATIONS.md#a-decimal-sum-is-split-into-lanes-only-where-every-partial-sum-is-exact
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var operands = LowOptimizationPasses.Operands()
+var indexes = Dictionary<String, Integer>()
+var wholes = List<List<LowOptimizationPasses.VectorLoops.Exact>>()
+var floats = List<List<LowOptimizationPasses.VectorLoops.Exact>>()
+var doubles = List<List<LowOptimizationPasses.VectorLoops.Exact>>()
+var constant_flags = List<List<Boolean>>()
+var constant_values = List<List<Long>>()
+var narrows = List<List<Boolean>>()
+var definition_lists = List<List<Integer>>()
+var killing_parameters = Dictionary<Long, Boolean>()
+var region_floats = Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>()
+var keyed_floats = Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>()
+var keyed_doubles = Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>()
+var wild_floats = Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>()
+var wild_doubles = Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>()
+var holders = LowOptimizationPasses.VectorLoops.Holders(program)
+var region_doubles = Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>()
+var killed = Dictionary<String, Boolean>()
+var regions_unknown = false
+var is_settled = false
+var callers = List<Integer>()
+var opened = List<Boolean>()
+var taken = List<Boolean>()
+var alive = List<Boolean>()
+var local_wholes = Dictionary<Integer, LowOptimizationPasses.VectorLoops.Exact>()
+var local_floats = Dictionary<Integer, LowOptimizationPasses.VectorLoops.Exact>()
+var local_doubles = Dictionary<Integer, LowOptimizationPasses.VectorLoops.Exact>()
+var is_local = false
+var changed = false
+var current = 0
+var safe: Long = 2305843009213693952
+
+func ExactSums(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
+    program = starting_program
+}
+
+func study() {
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var function = program.lowered_functions[index]
+        indexes[function.key] = index
+        callers.append(0)
+        opened.append(false)
+        taken.append(false)
+        alive.append(true)
+        index = index + 1
+    }
+    index = 0
+    while index < program.lowered_functions.count() {
+        var function = program.lowered_functions[index]
+        make_the_facts(function)
+        note_the_callers(function)
+        index = index + 1
+    }
+    index = 0
+    while index < program.lowered_functions.count() {
+        var opening = program.lowered_functions[index]
+        open_when_uncalled(opening, index)
+        index = index + 1
+    }
+    holders = LowOptimizationPasses.VectorLoops.Holders(program)
+    holders.study(indexes, opened, alive)
+    index = 0
+    while index < program.lowered_functions.count() {
+        var function = program.lowered_functions[index]
+        current = index
+        if alive[index] == true {
+            find_the_kills(function)
+        }
+        index = index + 1
+    }
+    var round = 0
+    changed = true
+    while changed and round < 100 {
+        changed = false
+        index = 0
+        while index < program.lowered_functions.count() {
+            var function = program.lowered_functions[index]
+            current = index
+            if alive[index] == true {
+                spread_through(function)
+            }
+            index = index + 1
+        }
+        round = round + 1
+    }
+    is_settled = not changed
+}
+
+func make_the_facts(function: LowIntermediaryRepresentation.LowFunction) {
+    var register_total = operands.most_register_of(function)
+    var made_wholes = List<LowOptimizationPasses.VectorLoops.Exact>()
+    var made_floats = List<LowOptimizationPasses.VectorLoops.Exact>()
+    var made_doubles = List<LowOptimizationPasses.VectorLoops.Exact>()
+    var flags = List<Boolean>()
+    var values = List<Long>()
+    var counts = List<Integer>()
+    var register = 0
+    while register < register_total {
+        var whole = LowOptimizationPasses.VectorLoops.Exact()
+        made_wholes.append(whole)
+        var single = LowOptimizationPasses.VectorLoops.Exact()
+        made_floats.append(single)
+        var double = LowOptimizationPasses.VectorLoops.Exact()
+        made_doubles.append(double)
+        flags.append(false)
+        values.append(0)
+        counts.append(0)
+        register = register + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            operands.read(instruction)
+            var defined = 0
+            while defined < operands.defines.count() {
+                var target = operands.defines[defined]
+                crash target
+                var count = counts[target]
+                crash count
+                counts[target] = count + 1
+                defined = defined + 1
+            }
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var constant_block = function.blocks[block_index]
+        var at = 0
+        while at < constant_block.instructions.count() {
+            var instruction = constant_block.instructions[at]
+            if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+                var defined_count = counts[instruction.target]
+                crash defined_count
+                if defined_count == 1 and instruction.target >= function.parameter_count {
+                    flags[instruction.target] = true
+                    values[instruction.target] = instruction.number
+                }
+            }
+            at = at + 1
+        }
+        block_index = block_index + 1
+    }
+    var narrow_flags = List<Boolean>()
+    register = 0
+    while register < register_total {
+        var defined_count = counts[register]
+        crash defined_count
+        narrow_flags.append(defined_count > 0 and register >= function.parameter_count)
+        register = register + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var narrowing_block = function.blocks[block_index]
+        var narrow_at = 0
+        while narrow_at < narrowing_block.instructions.count() {
+            var narrowing = narrowing_block.instructions[narrow_at]
+            note_a_narrow_definition(narrowing, narrow_flags)
+            narrow_at = narrow_at + 1
+        }
+        block_index = block_index + 1
+    }
+    narrows.append(narrow_flags)
+    wholes.append(made_wholes)
+    floats.append(made_floats)
+    doubles.append(made_doubles)
+    constant_flags.append(flags)
+    constant_values.append(values)
+}
+
+func note_a_narrow_definition(instruction: LowIntermediaryRepresentation.Instructions.Instruction, narrow_flags: List<Boolean>) {
+    var stays = false
+    var smallest: Long = -2147483648
+    var largest: Long = 2147483647
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: stays = instruction.number >= smallest and instruction.number <= largest
+        LowIntermediaryRepresentation.Instructions.Arithmetic: stays = instruction.width == 'bits_32' and instruction.is_signed
+        LowIntermediaryRepresentation.Instructions.Compare: stays = true
+        _: stays = false
+    }
+    if not (stays) {
+        operands.read(instruction)
+        var index = 0
+        while index < operands.defines.count() {
+            var target = operands.defines[index]
+            crash target
+            narrow_flags[target] = false
+            index = index + 1
+        }
+    }
+}
+
+func note_the_callers(function: LowIntermediaryRepresentation.LowFunction) {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_a_caller)
+        block_index = block_index + 1
+    }
+}
+
+func note_a_caller(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if (instruction == LowIntermediaryRepresentation.Instructions.Call) and (indexes.contains(instruction.function)) {
+        var called = indexes[instruction.function]
+        crash called
+        var count = callers[called]
+        crash count
+        callers[called] = count + 1
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.FunctionAddress {
+        open_the_function(instruction.function)
+        take_the_function(instruction.function)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.StartThread {
+        open_the_function(instruction.entry)
+        take_the_function(instruction.entry)
+    }
+}
+
+func take_the_function(key: String) {
+    if indexes.contains(key) {
+        var called = indexes[key]
+        crash called
+        taken[called] = true
+    }
+}
+
+func open_the_function(key: String) {
+    if indexes.contains(key) {
+        var called = indexes[key]
+        crash called
+        opened[called] = true
+    }
+}
+
+func open_when_uncalled(function: LowIntermediaryRepresentation.LowFunction, index: Integer) {
+    var count = callers[index]
+    crash count
+    var is_entry = function.key == program.entry
+    var is_open = opened[index] == true or count == 0 or is_entry
+    var is_dead = count == 0 and taken[index] != true and not is_entry
+    alive[index] = not is_dead
+    if is_open {
+        var parameter = 0
+        while parameter < function.parameter_count {
+            var whole = fact_in(wholes, index, parameter)
+            whole.forget()
+            var single = fact_in(floats, index, parameter)
+            single.forget()
+            var double = fact_in(doubles, index, parameter)
+            double.forget()
+            parameter = parameter + 1
+        }
+    }
+}
+
+func fact_in(
+    lists: List<List<LowOptimizationPasses.VectorLoops.Exact>>,
+    function_index: Integer,
+    register: Integer,
+): LowOptimizationPasses.VectorLoops.Exact {
+    var facts = lists[function_index]
+    crash facts
+    if register < 0 or register >= facts.count() {
+        var unknown = LowOptimizationPasses.VectorLoops.Exact()
+        unknown.forget()
+        return unknown
+    }
+    var fact = facts[register]
+    crash fact
+    return fact
+}
+
+func float_of(function_index: Integer, register: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    if not is_settled {
+        return unknown_fact()
+    }
+    return fact_in(floats, function_index, register)
+}
+
+func double_of(function_index: Integer, register: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    if not is_settled {
+        return unknown_fact()
+    }
+    return fact_in(doubles, function_index, register)
+}
+
+func decimal_of(function_index: Integer, register: Integer, size: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    if size == 8 {
+        return double_of(function_index, register)
+    }
+    return float_of(function_index, register)
+}
+
+func joined_or_taken(
+    known: LowOptimizationPasses.VectorLoops.Exact,
+    adding: LowOptimizationPasses.VectorLoops.Exact,
+): LowOptimizationPasses.VectorLoops.Exact {
+    if adding.is_empty {
+        return known
+    }
+    if known.is_empty {
+        var made = LowOptimizationPasses.VectorLoops.Exact()
+        made.take(adding)
+        return made
+    }
+    return joined(known, adding)
+}
+
+func definition_fact(
+    function_index: Integer,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    size: Integer,
+): LowOptimizationPasses.VectorLoops.Exact {
+    if not is_settled {
+        return unknown_fact()
+    }
+    current = function_index
+    return defined_decimal(instruction, size)
+}
+
+func unknown_fact(): LowOptimizationPasses.VectorLoops.Exact {
+    var unknown = LowOptimizationPasses.VectorLoops.Exact()
+    unknown.forget()
+    return unknown
+}
+
+func is_constant(register: Integer): Boolean {
+    var flags = constant_flags[current]
+    crash flags
+    if register < 0 or register >= flags.count() {
+        return false
+    }
+    return flags[register] == true
+}
+
+func constant_value(register: Integer): Long {
+    var values = constant_values[current]
+    crash values
+    var value = values[register]
+    crash value
+    return value
+}
+
+func join_into(known: LowOptimizationPasses.VectorLoops.Exact, adding: LowOptimizationPasses.VectorLoops.Exact) {
+    if not (adding.is_empty or not known.is_known) {
+        if not adding.is_known {
+            known.forget()
+            changed = true
+            return
+        }
+        if known.is_empty {
+            known.take(adding)
+            changed = true
+            return
+        }
+        var merged = joined(known, adding)
+        if not merged.same_as(known) {
+            changed = true
+            known.changes = known.changes + 1
+            if known.changes > 20 {
+                known.forget()
+                return
+            }
+            known.take(merged)
+        }
+    }
+}
+
+func join_whole_into(
+    known: LowOptimizationPasses.VectorLoops.Exact,
+    adding: LowOptimizationPasses.VectorLoops.Exact,
+    target: Integer,
+) {
+    var narrow_flags = narrows[current]
+    crash narrow_flags
+    var only_narrow = narrow_flags[target] == true
+    var was_known = known.is_known and not known.is_empty
+    var lowest = known.low
+    var highest = known.high
+    join_into(known, adding)
+    var widens = only_narrow and was_known and not known.is_known and adding.is_known and not adding.is_empty
+    var smallest: Long = -2147483648
+    var largest: Long = 2147483647
+    if widens and lowest >= smallest and highest <= largest and adding.low >= smallest and adding.high <= largest {
+        known.hold(0, smallest, largest)
+        known.changes = 100
+    }
+}
+
+func joined(
+    first: LowOptimizationPasses.VectorLoops.Exact,
+    second: LowOptimizationPasses.VectorLoops.Exact,
+): LowOptimizationPasses.VectorLoops.Exact {
+    var made = LowOptimizationPasses.VectorLoops.Exact()
+    if not first.is_known or not second.is_known {
+        made.forget()
+        return made
+    }
+    var exponent = first.exponent.minimum(second.exponent)
+    if first.is_zero() {
+        exponent = second.exponent
+    } else if second.is_zero() {
+        exponent = first.exponent
+    }
+    if not aligns(first, exponent) or not aligns(second, exponent) {
+        made.forget()
+        return made
+    }
+    var first_low = aligned(first.low, first.exponent, exponent)
+    var first_high = aligned(first.high, first.exponent, exponent)
+    var second_low = aligned(second.low, second.exponent, exponent)
+    var second_high = aligned(second.high, second.exponent, exponent)
+    var lowest = first_low.minimum(second_low)
+    var highest = first_high.maximum(second_high)
+    made.hold(exponent, lowest, highest)
+    made.negative_zero = first.negative_zero or second.negative_zero
+    return made
+}
+
+func aligns(fact: LowOptimizationPasses.VectorLoops.Exact, exponent: Integer): Boolean {
+    if fact.is_zero() {
+        return true
+    }
+    var shift = fact.exponent - exponent
+    if shift < 0 or shift > 60 {
+        return false
+    }
+    var room: Long = 1
+    room = room.shifted_left(60 - shift)
+    return fact.largest() < room
+}
+
+func aligned(value: Long, from_exponent: Integer, to_exponent: Integer): Long {
+    if value == 0 {
+        return 0
+    }
+    var shift = from_exponent - to_exponent
+    return value.shifted_left(shift)
+}
+
+func precision_of(size: Integer): Integer {
+    if size == 8 {
+        return 53
+    }
+    return 24
+}
+
+func smallest_exponent_of(size: Integer): Integer {
+    if size == 8 {
+        return -1074
+    }
+    return -149
+}
+
+func largest_exponent_of(size: Integer): Integer {
+    if size == 8 {
+        return 1023
+    }
+    return 127
+}
+
+func checked_exact(made: LowOptimizationPasses.VectorLoops.Exact, size: Integer) {
+    if not (made.is_empty or not made.is_known or made.is_zero()) {
+        var precision = precision_of(size)
+        var room: Long = 1
+        room = room.shifted_left(precision)
+        var fits = made.largest() < room
+        var deep_enough = made.exponent >= smallest_exponent_of(size)
+        var low_enough = made.exponent + precision <= largest_exponent_of(size)
+        if not fits or not deep_enough or not low_enough {
+            made.forget()
+        }
+    }
+}
+
+func sum_of(
+    left: LowOptimizationPasses.VectorLoops.Exact,
+    right: LowOptimizationPasses.VectorLoops.Exact,
+    subtracting: Boolean,
+    size: Integer,
+): LowOptimizationPasses.VectorLoops.Exact {
+    var made = LowOptimizationPasses.VectorLoops.Exact()
+    if left.is_empty or right.is_empty {
+        return made
+    }
+    if not left.is_known or not right.is_known {
+        made.forget()
+        return made
+    }
+    var exponent = left.exponent.minimum(right.exponent)
+    if left.is_zero() {
+        exponent = right.exponent
+    } else if right.is_zero() {
+        exponent = left.exponent
+    }
+    if not aligns(left, exponent) or not aligns(right, exponent) {
+        made.forget()
+        return made
+    }
+    var left_low = aligned(left.low, left.exponent, exponent)
+    var left_high = aligned(left.high, left.exponent, exponent)
+    var right_low = aligned(right.low, right.exponent, exponent)
+    var right_high = aligned(right.high, right.exponent, exponent)
+    if subtracting {
+        made.hold(exponent, left_low - right_high, left_high - right_low)
+        made.negative_zero = left.negative_zero
+    } else {
+        made.hold(exponent, left_low + right_low, left_high + right_high)
+        made.negative_zero = left.negative_zero and right.negative_zero
+    }
+    checked_exact(made, size)
+    return made
+}
+
+func bit_length(value: Long): Integer {
+    if value <= 0 {
+        return 0
+    }
+    return 64 - value.leading_zero_count()
+}
+
+func product_of(
+    left: LowOptimizationPasses.VectorLoops.Exact,
+    right: LowOptimizationPasses.VectorLoops.Exact,
+    size: Integer,
+): LowOptimizationPasses.VectorLoops.Exact {
+    var made = LowOptimizationPasses.VectorLoops.Exact()
+    if left.is_empty or right.is_empty {
+        return made
+    }
+    if not left.is_known or not right.is_known {
+        made.forget()
+        return made
+    }
+    if left.is_zero() or right.is_zero() {
+        made.hold(0, 0, 0)
+        made.negative_zero = true
+        return made
+    }
+    var left_largest = left.largest()
+    var right_largest = right.largest()
+    var left_bits = bit_length(left_largest)
+    var right_bits = bit_length(right_largest)
+    if left_bits + right_bits > 61 {
+        made.forget()
+        return made
+    }
+    var first = left.low * right.low
+    var second = left.low * right.high
+    var third = left.high * right.low
+    var fourth = left.high * right.high
+    var lowest = first.minimum(second)
+    lowest = lowest.minimum(third)
+    lowest = lowest.minimum(fourth)
+    var highest = first.maximum(second)
+    highest = highest.maximum(third)
+    highest = highest.maximum(fourth)
+    made.hold(left.exponent + right.exponent, lowest, highest)
+    var both_plain = left.low >= 0 and right.low >= 0 and not left.negative_zero and not right.negative_zero
+    made.negative_zero = not both_plain
+    checked_exact(made, size)
+    return made
+}
+
+func decoded(number: Long, size: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    var made = LowOptimizationPasses.VectorLoops.Exact()
+    var bits = number
+    var is_negative = number < 0
+    var stored_exponent: Long = 0
+    var fraction: Long = 0
+    var top: Long = 2047
+    var hidden: Long = 4503599627370496
+    var bias = 1075
+    if size == 4 {
+        bits = number.bits_and(4294967295)
+        is_negative = bits >= 2147483648
+        var shifted = bits.shifted_right(23)
+        stored_exponent = shifted.bits_and(255)
+        fraction = bits.bits_and(8388607)
+        top = 255
+        hidden = 8388608
+        bias = 150
+    } else {
+        var shifted_wide = bits.shifted_right(52)
+        stored_exponent = shifted_wide.bits_and(2047)
+        fraction = bits.bits_and(4503599627370495)
+    }
+    if stored_exponent == top {
+        made.forget()
+        return made
+    }
+    var mantissa = fraction
+    var exponent = smallest_exponent_of(size)
+    if stored_exponent > 0 {
+        mantissa = fraction + hidden
+        exponent = stored_exponent.to_integer() - bias
+    }
+    if mantissa == 0 {
+        made.hold(0, 0, 0)
+        made.negative_zero = is_negative
+        return made
+    }
+    var trailing = mantissa.trailing_zero_count()
+    mantissa = mantissa.shifted_right(trailing)
+    exponent = exponent + trailing
+    if is_negative {
+        mantissa = 0 - mantissa
+    }
+    made.hold(exponent, mantissa, mantissa)
+    return made
+}
+
+func whole_range(lowest: Long, highest: Long): LowOptimizationPasses.VectorLoops.Exact {
+    var made = LowOptimizationPasses.VectorLoops.Exact()
+    made.hold(0, lowest, highest)
+    return made
+}
+
+func range_of_width(width: LowIntermediaryRepresentation.Width, is_signed: Boolean): LowOptimizationPasses.VectorLoops.Exact {
+    switch width {
+        'bits_8': return byte_range(is_signed)
+        'bits_16': return short_range(is_signed)
+        'bits_32': return integer_range(is_signed)
+        _: return unknown_fact()
+    }
+}
+
+func byte_range(is_signed: Boolean): LowOptimizationPasses.VectorLoops.Exact {
+    if is_signed {
+        return whole_range(-128, 127)
+    }
+    return whole_range(0, 255)
+}
+
+func short_range(is_signed: Boolean): LowOptimizationPasses.VectorLoops.Exact {
+    if is_signed {
+        return whole_range(-32768, 32767)
+    }
+    return whole_range(0, 65535)
+}
+
+func integer_range(is_signed: Boolean): LowOptimizationPasses.VectorLoops.Exact {
+    if is_signed {
+        return whole_range(-2147483648, 2147483647)
+    }
+    return whole_range(0, 4294967295)
+}
+
+func spread_through(function: LowIntermediaryRepresentation.LowFunction) {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        local_wholes.clear()
+        local_floats.clear()
+        local_doubles.clear()
+        is_local = true
+        block.instructions.each(spread_one)
+        is_local = false
+        block_index = block_index + 1
+    }
+}
+
+func read_fact(
+    lists: List<List<LowOptimizationPasses.VectorLoops.Exact>>,
+    local: Dictionary<Integer, LowOptimizationPasses.VectorLoops.Exact>,
+    register: Integer,
+): LowOptimizationPasses.VectorLoops.Exact {
+    if is_local and local.contains(register) {
+        var held = local[register]
+        crash held
+        return held
+    }
+    return fact_in(lists, current, register)
+}
+
+func spread_one(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Store {
+        spread_a_store(instruction)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        spread_a_call(instruction)
+    }
+    operands.read(instruction)
+    var targets = List<Integer>()
+    operands.defines.each(targets.append)
+    var index = 0
+    while index < targets.count() {
+        var target = targets[index]
+        crash target
+        var whole = defined_whole(instruction)
+        var whole_known = fact_in(wholes, current, target)
+        join_whole_into(whole_known, whole, target)
+        var single = defined_decimal(instruction, 4)
+        var single_known = fact_in(floats, current, target)
+        join_into(single_known, single)
+        var double = defined_decimal(instruction, 8)
+        var double_known = fact_in(doubles, current, target)
+        join_into(double_known, double)
+        local_wholes[target] = whole
+        local_floats[target] = single
+        local_doubles[target] = double
+        index = index + 1
+    }
+}
+
+func spread_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    if not stored.region.is_empty() {
+        if stored.width == 'bits_32' {
+            var single = read_fact(floats, local_floats, stored.source)
+            join_into_region(region_floats, stored.region, single)
+            join_into_keys(keyed_floats, wild_floats, stored, single)
+        }
+        if stored.width == 'bits_64' {
+            var double = read_fact(doubles, local_doubles, stored.source)
+            join_into_region(region_doubles, stored.region, double)
+            join_into_keys(keyed_doubles, wild_doubles, stored, double)
+        }
+    }
+}
+
+func join_into_keys(
+    keyed: Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>,
+    wild: Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>,
+    stored: LowIntermediaryRepresentation.Instructions.Store,
+    adding: LowOptimizationPasses.VectorLoops.Exact,
+) {
+    if not (not stored.region.ends_with(".[]")) {
+        var function = program.lowered_functions[current]
+        crash function
+        var keys = holders.keys_of(function, current, stored.address, stored.region, false)
+        if keys.is_empty() {
+            join_into_region(wild, stored.region, adding)
+            return
+        }
+        var index = 0
+        while index < keys.count() {
+            var key = keys[index]
+            crash key
+            join_into_region(keyed, key, adding)
+            index = index + 1
+        }
+    }
+}
+
+func keyed_fact(
+    keyed: Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>,
+    wild: Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>,
+    every: Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>,
+    loaded: LowIntermediaryRepresentation.Instructions.Load,
+): LowOptimizationPasses.VectorLoops.Exact {
+    var region = loaded.region
+    if not region.ends_with(".[]") or regions_unknown or killed.contains(region) {
+        return region_fact(every, region)
+    }
+    var function = program.lowered_functions[current]
+    crash function
+    var keys = holders.keys_of(function, current, loaded.address, region, true)
+    if keys.is_empty() {
+        return region_fact(every, region)
+    }
+    var made = LowOptimizationPasses.VectorLoops.Exact()
+    if wild.contains(region) {
+        var wild_fact = wild[region]
+        crash wild_fact
+        made = joined_or_taken(made, wild_fact)
+    }
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        crash key
+        if keyed.contains(key) {
+            var held = keyed[key]
+            crash held
+            made = joined_or_taken(made, held)
+        }
+        index = index + 1
+    }
+    if made.is_empty {
+        return unknown_fact()
+    }
+    return made
+}
+
+func join_into_region(
+    regions: Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>,
+    region: String,
+    adding: LowOptimizationPasses.VectorLoops.Exact,
+) {
+    if not regions.contains(region) {
+        var zero = LowOptimizationPasses.VectorLoops.Exact()
+        zero.hold(0, 0, 0)
+        regions[region] = zero
+        changed = true
+    }
+    var known = regions[region]
+    crash known
+    join_into(known, adding)
+}
+
+func region_fact(
+    regions: Dictionary<String, LowOptimizationPasses.VectorLoops.Exact>,
+    region: String,
+): LowOptimizationPasses.VectorLoops.Exact {
+    if region.is_empty() or regions_unknown or killed.contains(region) {
+        return unknown_fact()
+    }
+    if not regions.contains(region) {
+        return unknown_fact()
+    }
+    var known = regions[region]
+    crash known
+    return known
+}
+
+func spread_a_call(call: LowIntermediaryRepresentation.Instructions.Call) {
+    if indexes.contains(call.function) {
+        var called = indexes[call.function]
+        crash called
+        var callee = program.lowered_functions[called]
+        crash callee
+        if callee.parameter_count != call.arguments.count() {
+            open_the_function(call.function)
+            return
+        }
+        var index = 0
+        while index < call.arguments.count() {
+            var argument = call.arguments[index]
+            crash argument
+            var whole = read_fact(wholes, local_wholes, argument)
+            var whole_parameter = fact_in(wholes, called, index)
+            join_into(whole_parameter, whole)
+            var single = read_fact(floats, local_floats, argument)
+            var single_parameter = fact_in(floats, called, index)
+            join_into(single_parameter, single)
+            var double = read_fact(doubles, local_doubles, argument)
+            var double_parameter = fact_in(doubles, called, index)
+            join_into(double_parameter, double)
+            index = index + 1
+        }
+    }
+}
+
+func defined_whole(instruction: LowIntermediaryRepresentation.Instructions.Instruction): LowOptimizationPasses.VectorLoops.Exact {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return whole_range(instruction.number, instruction.number)
+        LowIntermediaryRepresentation.Instructions.Copy: return read_fact(wholes, local_wholes, instruction.source)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return whole_arithmetic(instruction)
+        LowIntermediaryRepresentation.Instructions.Compare: return whole_range(0, 1)
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: return whole_range(0, 1)
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return converted_whole(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: return range_of_width(instruction.width, instruction.is_signed)
+        LowIntermediaryRepresentation.Instructions.Select: return selected_whole(instruction)
+        _: return unknown_fact()
+    }
+}
+
+func selected_whole(selecting: LowIntermediaryRepresentation.Instructions.Select): LowOptimizationPasses.VectorLoops.Exact {
+    var chosen = read_fact(wholes, local_wholes, selecting.when_true)
+    var kept = read_fact(wholes, local_wholes, selecting.when_false)
+    return joined_or_taken(chosen, kept)
+}
+
+func selected_decimal(selecting: LowIntermediaryRepresentation.Instructions.Select, size: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    var chosen = decimal_in(selecting.when_true, size)
+    var kept = decimal_in(selecting.when_false, size)
+    return joined_or_taken(chosen, kept)
+}
+
+func converted_whole(conversion: LowIntermediaryRepresentation.Instructions.Decimal.Conversion): LowOptimizationPasses.VectorLoops.Exact {
+    if conversion.to_decimal_size != 0 {
+        return unknown_fact()
+    }
+    return range_of_width(conversion.whole_width, conversion.whole_is_signed)
+}
+
+func whole_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): LowOptimizationPasses.VectorLoops.Exact {
+    var left = read_fact(wholes, local_wholes, arithmetic.left)
+    var by_constant = is_constant(arithmetic.right)
+    if arithmetic.operator == 'remainder' and by_constant {
+        var divisor = constant_value(arithmetic.right)
+        if divisor != 0 and divisor > -1000000000 and divisor < 1000000000 {
+            var most = divisor.absolute() - 1
+            if left.is_known and not left.is_empty and left.low >= 0 {
+                return whole_range(0, most)
+            }
+            return whole_range(0 - most, most)
+        }
+    }
+    if arithmetic.operator == 'bits_and' and by_constant {
+        var mask = constant_value(arithmetic.right)
+        if mask >= 0 {
+            return whole_range(0, mask)
+        }
+    }
+    var right = read_fact(wholes, local_wholes, arithmetic.right)
+    if left.is_empty or right.is_empty {
+        return LowOptimizationPasses.VectorLoops.Exact()
+    }
+    var limit: Long = 2147483648
+    var small = left.is_known and right.is_known and left.largest() < limit and right.largest() < limit
+    if small {
+        switch arithmetic.operator {
+            'add': return whole_range(left.low + right.low, left.high + right.high)
+            'subtract': return whole_range(left.low - right.high, left.high - right.low)
+            'multiply': return multiplied_range(left, right)
+            _: return wide_range(arithmetic)
+        }
+    }
+    return wide_range(arithmetic)
+}
+
+func multiplied_range(
+    left: LowOptimizationPasses.VectorLoops.Exact,
+    right: LowOptimizationPasses.VectorLoops.Exact,
+): LowOptimizationPasses.VectorLoops.Exact {
+    var first = left.low * right.low
+    var second = left.low * right.high
+    var third = left.high * right.low
+    var fourth = left.high * right.high
+    var lowest = first.minimum(second)
+    lowest = lowest.minimum(third)
+    lowest = lowest.minimum(fourth)
+    var highest = first.maximum(second)
+    highest = highest.maximum(third)
+    highest = highest.maximum(fourth)
+    return whole_range(lowest, highest)
+}
+
+func wide_range(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): LowOptimizationPasses.VectorLoops.Exact {
+    if arithmetic.width == 'bits_32' and arithmetic.is_signed {
+        return integer_range(true)
+    }
+    return unknown_fact()
+}
+
+func defined_decimal(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    size: Integer,
+): LowOptimizationPasses.VectorLoops.Exact {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return decoded(instruction.number, size)
+        LowIntermediaryRepresentation.Instructions.Copy: return decimal_in(instruction.source, size)
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return decimal_arithmetic(instruction, size)
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return converted_decimal(instruction, size)
+        LowIntermediaryRepresentation.Instructions.Load: return loaded_decimal(instruction, size)
+        LowIntermediaryRepresentation.Instructions.Select: return selected_decimal(instruction, size)
+        _: return unknown_fact()
+    }
+}
+
+func decimal_in(register: Integer, size: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    if size == 8 {
+        return read_fact(doubles, local_doubles, register)
+    }
+    return read_fact(floats, local_floats, register)
+}
+
+func decimal_arithmetic(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic,
+    size: Integer,
+): LowOptimizationPasses.VectorLoops.Exact {
+    var own_size = 4
+    if arithmetic.is_double {
+        own_size = 8
+    }
+    if own_size != size {
+        return unknown_fact()
+    }
+    var left = decimal_in(arithmetic.left, size)
+    var right = decimal_in(arithmetic.right, size)
+    switch arithmetic.operator {
+        'add': return sum_of(left, right, false, size)
+        'subtract': return sum_of(left, right, true, size)
+        'multiply': return product_of(left, right, size)
+        _: return unknown_fact()
+    }
+}
+
+func converted_decimal(
+    conversion: LowIntermediaryRepresentation.Instructions.Decimal.Conversion,
+    size: Integer,
+): LowOptimizationPasses.VectorLoops.Exact {
+    if conversion.to_decimal_size != size {
+        return unknown_fact()
+    }
+    var made = LowOptimizationPasses.VectorLoops.Exact()
+    if conversion.from_decimal_size == 0 {
+        var whole = read_fact(wholes, local_wholes, conversion.source)
+        made.take(whole)
+        made.negative_zero = false
+    } else {
+        var decimal = decimal_in(conversion.source, conversion.from_decimal_size)
+        made.take(decimal)
+    }
+    checked_exact(made, size)
+    return made
+}
+
+func loaded_decimal(loaded: LowIntermediaryRepresentation.Instructions.Load, size: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    if size == 4 and loaded.width == 'bits_32' {
+        return keyed_fact(keyed_floats, wild_floats, region_floats, loaded)
+    }
+    if size == 8 and loaded.width == 'bits_64' {
+        return keyed_fact(keyed_doubles, wild_doubles, region_doubles, loaded)
+    }
+    return unknown_fact()
+}
+
+func find_the_kills(function: LowIntermediaryRepresentation.LowFunction) {
+    read_the_definitions(function)
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var killing_block = function.blocks[block_index]
+        var at = 0
+        while at < killing_block.instructions.count() {
+            var instruction = killing_block.instructions[at]
+            kill_through(function, instruction)
+            at = at + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func read_the_definitions(function: LowIntermediaryRepresentation.LowFunction) {
+    var register_total = operands.most_register_of(function)
+    definition_lists = List<List<Integer>>()
+    var register = 0
+    while register < register_total {
+        var places = List<Integer>()
+        definition_lists.append(places)
+        register = register + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            operands.read(instruction)
+            var defined = 0
+            while defined < operands.defines.count() {
+                var target = operands.defines[defined]
+                crash target
+                var places_of = definition_lists[target]
+                crash places_of
+                places_of.append(block_index * 65536 + place)
+                defined = defined + 1
+            }
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func definition_at(function: LowIntermediaryRepresentation.LowFunction, encoded: Integer): LowIntermediaryRepresentation.Instructions.Instruction {
+    var block_index = encoded / 65536
+    var place = encoded % 65536
+    var block = function.blocks[block_index]
+    crash block
+    var instruction = block.instructions[place]
+    crash instruction
+    return instruction
+}
+
+func kill_through(
+    function: LowIntermediaryRepresentation.LowFunction,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+) {
+    if instruction == LowIntermediaryRepresentation.Instructions.CopyBytes {
+        var destination = provenance(function, instruction.destination, 0)
+        var source = provenance(function, instruction.source, 0)
+        if destination != source {
+            kill_for(function, destination)
+        }
+        return
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Store {
+        if instruction.region.is_empty() {
+            var address = provenance(function, instruction.address, 0)
+            kill_for(function, address)
+        }
+        return
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.ImportCall {
+        var index = 0
+        while index < instruction.arguments.count() {
+            var argument = instruction.arguments[index]
+            crash argument
+            var passed = provenance(function, argument, 0)
+            kill_for(function, passed)
+            index = index + 1
+        }
+    }
+}
+
+func kill_for(function: LowIntermediaryRepresentation.LowFunction, found: String) {
+    if found.starts_with("owner:") {
+        var length = found.length()
+        var owner = found.slice(6, length)
+        killed["{owner}.[]"] = true
+    } else if found.starts_with("parameter:") {
+        var parameter_length = found.length()
+        var parameter_text = found.slice(10, parameter_length)
+        var parameter = parameter_text.to_integer()
+        crash parameter
+        kill_through_the_callers(current, parameter)
+    } else if found.starts_with("fresh:") {
+        var fresh_length = found.length()
+        var fresh_text = found.slice(6, fresh_length)
+        var fresh = fresh_text.to_integer()
+        crash fresh
+        kill_where_installed(function, fresh)
+    } else if found == "unknown buffer" {
+        regions_unknown = true
+    }
+}
+
+func kill_where_installed(function: LowIntermediaryRepresentation.LowFunction, buffer: Integer) {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            if instruction == LowIntermediaryRepresentation.Instructions.Store and instruction.source == buffer and instruction.region.ends_with("._buffer") {
+                var length = instruction.region.length()
+                var owner = instruction.region.slice(0, length - 8)
+                killed["{owner}.[]"] = true
+            }
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func kill_through_the_callers(function_index: Integer, parameter: Integer) {
+    var key: Long = function_index
+    key = key * 65536 + parameter
+    var known = killing_parameters.contains(key)
+    killing_parameters[key] = true
+    if not known and taken[function_index] == true {
+        regions_unknown = true
+    } else if not known {
+        kill_in_every_caller(function_index, parameter)
+    }
+}
+
+func kill_in_every_caller(function_index: Integer, parameter: Integer) {
+    var saved_current = current
+    var saved_lists = definition_lists
+    var caller = 0
+    while caller < program.lowered_functions.count() {
+        var calling = program.lowered_functions[caller]
+        crash calling
+        current = caller
+        kill_in_the_calls(calling, function_index, parameter)
+        caller = caller + 1
+    }
+    current = saved_current
+    definition_lists = saved_lists
+}
+
+func kill_in_the_calls(calling: LowIntermediaryRepresentation.LowFunction, function_index: Integer, parameter: Integer) {
+    var callee = program.lowered_functions[function_index]
+    crash callee
+    var read = false
+    var block_index = 0
+    while block_index < calling.blocks.count() {
+        var block = calling.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            if instruction == LowIntermediaryRepresentation.Instructions.Call and instruction.function == callee.key and parameter < instruction.arguments.count() {
+                if not read {
+                    read_the_definitions(calling)
+                    read = true
+                }
+                var argument = instruction.arguments[parameter]
+                crash argument
+                var passed = buffer_owner(calling, argument, 0)
+                kill_for(calling, passed)
+            }
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func provenance(function: LowIntermediaryRepresentation.LowFunction, register: Integer, depth: Integer): String {
+    if depth > 8 or register < 0 or register >= definition_lists.count() {
+        return "unknown"
+    }
+    var places = definition_lists[register]
+    crash places
+    if places.count() != 1 {
+        return "unknown"
+    }
+    var encoded = places[0]
+    crash encoded
+    var instruction = definition_at(function, encoded)
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Load: return provenance_of_a_load(function, instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return provenance_of_a_sum(function, instruction, depth)
+        LowIntermediaryRepresentation.Instructions.Copy: return provenance(function, instruction.source, depth + 1)
+        _: return "unknown"
+    }
+}
+
+func provenance_of_a_sum(
+    function: LowIntermediaryRepresentation.LowFunction,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    depth: Integer,
+): String {
+    if arithmetic.operator != 'add' and arithmetic.operator != 'subtract' {
+        return "unknown"
+    }
+    var left = provenance(function, arithmetic.left, depth + 1)
+    if left != "unknown" or arithmetic.operator != 'add' {
+        return left
+    }
+    return provenance(function, arithmetic.right, depth + 1)
+}
+
+func provenance_of_a_load(
+    function: LowIntermediaryRepresentation.LowFunction,
+    loaded: LowIntermediaryRepresentation.Instructions.Load,
+): String {
+    if loaded.region != "Buffer.$storage" {
+        return "unknown"
+    }
+    return buffer_owner(function, loaded.address, 0)
+}
+
+func buffer_owner(function: LowIntermediaryRepresentation.LowFunction, buffer: Integer, depth: Integer): String {
+    if depth > 8 or buffer < 0 or buffer >= definition_lists.count() {
+        return "unknown buffer"
+    }
+    var places = definition_lists[buffer]
+    crash places
+    if places.is_empty() and buffer < function.parameter_count {
+        return "parameter:{buffer}"
+    }
+    if places.is_empty() {
+        return "unknown buffer"
+    }
+    var agreed = ""
+    var index = 0
+    while index < places.count() {
+        var encoded = places[index]
+        crash encoded
+        var instruction = definition_at(function, encoded)
+        var found = buffer_owner_of(function, instruction, buffer, depth)
+        if index > 0 and found != agreed {
+            return "unknown buffer"
+        }
+        agreed = found
+        index = index + 1
+    }
+    return agreed
+}
+
+func buffer_owner_of(
+    function: LowIntermediaryRepresentation.LowFunction,
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    buffer: Integer,
+    depth: Integer,
+): String {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Load: return owner_of_a_loaded_buffer(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: return buffer_owner(function, instruction.source, depth + 1)
+        LowIntermediaryRepresentation.Instructions.Allocate: return "fresh:{buffer}"
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return owner_of_a_placed_buffer(function, instruction, buffer, depth)
+        _: return "unknown buffer"
+    }
+}
+
+func owner_of_a_placed_buffer(
+    function: LowIntermediaryRepresentation.LowFunction,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    buffer: Integer,
+    depth: Integer,
+): String {
+    if arithmetic.operator != 'add' {
+        return "unknown buffer"
+    }
+    var placed = buffer_owner(function, arithmetic.left, depth + 1)
+    if placed.starts_with("fresh:") {
+        return "fresh:{buffer}"
+    }
+    return "unknown buffer"
+}
+
+func owner_of_a_loaded_buffer(loaded: LowIntermediaryRepresentation.Instructions.Load): String {
+    if loaded.region.is_empty() {
+        return "unknown buffer"
+    }
+    if loaded.region.ends_with("._buffer") {
+        var length = loaded.region.length()
+        var owner = loaded.region.slice(0, length - 8)
+        return "owner:{owner}"
+    }
+    return "owner:{loaded.region}"
+}
