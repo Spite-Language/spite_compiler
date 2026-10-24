@@ -25,8 +25,8 @@ how well it is optimised. A proof that only makes code **cheaper** runs where it
 placing objects in the frame) and records its fact; the optimisation passes read those facts rather than proving
 anything themselves. `ARCHITECTURE.md` lists the order.
 
-Of the 92 proofs the old compiler made, 31 are built, 40 are partly built and 21 are missing (audit of
-2026-10-24). Where a proof is partly built and what is missing could let a wrong program through, the section says
+Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21 are missing (audit of
+2026-10-24, with what was built since). Where a proof is partly built and what is missing could let a wrong program through, the section says
 **fails silently**: that is a D244 bug and its `TODO.md` line comes first.
 
 ## Presence and control flow
@@ -68,56 +68,72 @@ Of the 92 proofs the old compiler made, 31 are built, 40 are partly built and 21
 - **Status**: partly built.
 - **Rule**: after an `if` with no `else` whose block always leaves (a `return`, a bare `crash`, a `switch` whose
   every case leaves, an `if`/`else` that both leave, a `while true`), the opposite of its condition holds: each `or`
-  side written `not path` narrows that path, later sides seeing earlier ones narrowed, and other sides turned around
-  prove `[]` reads and divisors ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule),
+  side written `not path` narrows that path, each side read with the sides before it narrowed (`if not holder or
+  not holder.weapon { return }` proves both), and other sides turned around prove `[]` reads and divisors
+  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule),
   [control_flow.md](../SpiteLanguage/specs/control_flow.md#switch-over-values)).
 - **Buys**: guards read as answers: `if not monster { return }` and the rest reads `monster`.
-- **Missing**: later `or` sides do not see earlier ones narrowed, so `if not a or not a.b { return }` is refused at
-  `a.b`; a count side (`found.count() == 0`) after `not found` proves no `found[0]`.
+- **Missing**: a count side (`found.count() == 0`) after `not found` proves no `found[0]`.
 - **Falls back**: the rest stays unproven, and a read of it is refused.
 - **Lives in**: embedded, `statements.spite` (`build_if`, `read_a_negated_fact`, `read_a_negated_binary`,
   `note_the_leaving_if`), `endings.spite` (`always_leaves`), `ranges.spite` (`prove_an_if`).
-- **Checked by**: tests/leaving_if, tests/returning_branch_proof, tests/control_switch_leaving_narrows;
-  conformance/leaving_if_proves_nothing.
+- **Checked by**: tests/leaving_if, tests/returning_branch_proof, tests/control_switch_leaving_narrows,
+  tests/leaving_or_narrows; conformance/leaving_if_proves_nothing.
 
 ### Assigning undoes a proof
 
-- **Status**: partly built; **fails silently**.
+- **Status**: built.
 - **Rule**: assigning a narrowed path, or anything it reads through (an index name included), undoes every proof
-  beneath it; assigning it a value that cannot be null keeps its own narrowing; inside a `while`, undoing a proof
-  made before the loop and read in it is an error
+  beneath it: an attribute assigned by its bare name undoes the paths written from it (`target.weapon` after
+  `target = Monster()`), a store through a setter undoes its path, and `list[i] = value` undoes what was proven
+  below the items, and every item's narrowing when the value may be null; assigning it a value that cannot be null
+  keeps its own narrowing. Inside a `while`, assigning a value that may be null to a path narrowed before the loop
+  and read in it is an error: for an attribute at once, for a local or a parameter when the end of the body leaves
+  it unnarrowed (a check later in the same pass keeps it)
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
-- **Buys**: nothing stale is read.
-- **Missing**: the loop refusal for a local or a parameter (only attributes are refused); assigning the start of a
-  narrowed path (`target = Monster()` after `assert target.weapon`) leaves the deeper proof; `list[i] = x` and a
-  store through a setter undo nothing. A narrowed read has no run-time test, so the next pass reads a null.
+- **Buys**: nothing stale is read: a narrowed read has no run-time test.
 - **Falls back**: refused, "assigning to '...' inside this loop undoes a narrowing made before the loop, and the
-  next pass would read it unproven: narrow it inside the loop instead"; prove it again after the assignment.
-- **Lives in**: embedded, `statements.spite` (`assign_a_name`, `assign_an_attribute`, `refuse_an_undone_loop_proof`),
-  `scope.spite` (`forget`, `forget_below`, `forget_mentions`, `keep_present`).
-- **Checked by**: tests/narrowed_value_assignment, tests/proof_again_in_loop, tests/narrowing_snapshot_copy;
-  conformance/narrowed_name_reassigned, conformance/path_narrow_assignment, conformance/path_narrow_loop,
-  conformance/narrowed_path_undone_below.
+  next pass would read it unproven: narrow it inside the loop instead"; after the assignment, a read is refused
+  until it is proven again.
+- **Lives in**: embedded, `statements.spite` (`assign_a_name`, `assign_an_attribute`, `forget_the_stored_items`,
+  `note_an_undone_loop_proof`, `refuse_what_the_loop_left_undone`), `scope.spite` (`forget`, `forget_below`,
+  `forget_below_the_items`, `keep_present`).
+- **Checked by**: tests/narrowed_value_assignment, tests/proof_again_in_loop, tests/narrowing_snapshot_copy,
+  tests/loop_narrows_its_local_again; conformance/narrowed_name_reassigned, conformance/path_narrow_assignment,
+  conformance/path_narrow_loop, conformance/narrowed_path_undone_below, conformance/narrowed_local_undone_in_loop,
+  conformance/assigned_start_undoes_narrowing, conformance/index_store_undoes_narrowing.
 
 ### A call keeps a proof it cannot change
 
-- **Status**: partly built; **fails silently**.
-- **Rule**: follow the callee and everything it calls, collect the attributes it may assign and the lists it may
-  shrink, and undo only the proofs that read through those; a call through a function value undoes every attribute
-  and list proof; inside a loop, a call that undoes a proof made before the loop is an error naming the call
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
-- **Buys**: no re-check after a harmless call.
-- **Missing**: only a bare call of the class's own function (the names it assigns itself), a direct shrinking call
-  and a call on a receiver read through `[]` undo anything. Calls inside an assignment, an argument or a condition,
-  calls on other objects, what a callee calls, a list passed to a function that shrinks it and function values are
-  not followed, and the loop error is not built. A kept narrowing has no run-time test.
-- **Falls back**: prove it again after the call.
-- **Lives in**: embedded, `statements.spite` (`forget_what_the_call_writes`, `forget_after_an_own_call`,
-  `forget_after_a_shrinking_call`, `forget_after_a_receiver_call`), `written_attributes.spite`,
-  `shrunk_lists.spite`. The whole write study in `facts.spite` is not used for it yet.
-- **Checked by**: tests/receiver_call_effects, tests/same_name_call_effects; conformance/call_undoes_proof,
-  conformance/branch_undoes_proof, conformance/receiver_call_undoes_proof, conformance/count_undoes_proof,
-  conformance/bound_proofs_undone, conformance/structural_index_undone.
+- **Status**: partly built: every narrowing a read relies on without a test is checked; the `[]` and count proofs,
+  which keep a test, are not.
+- **Rule**: a narrowed attribute read is refused when a call built between the check and the read may assign that
+  attribute, followed through everything the call reaches. What a call may assign is decided by the attribute's
+  class and name: a constructor's writes to its own object and writes to an object made in the same function are
+  not writes to anything a proof reads; a wait writes nothing in a program that makes no `Concurrent` or
+  `Parallel`, and anything in one that does; a call through a function value reaches the functions taken as values
+  with its signature, and a function that only calls its parameters reaches the functions each caller passes it; a
+  `drop()` that may run is followed too. Inside a loop, a call anywhere in the body undoes a narrowing made before
+  the loop for the next pass ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+- **Buys**: no re-check after a harmless call; a call that may null what was proven is never read past.
+- **Missing**: a `[]` or count proof is undone only by a direct shrinking call, a bare call of the class's own
+  function and a call on a `[]` receiver (a read it keeps halts, "is outside its list", when the list changed); a
+  call inside a condition is ordered after the block it guards.
+- **Falls back**: refused, "'keeper.target' was proven before line 12, where 'forget(...)' may assign 'target'
+  again, so this read would use what the call left there, unproven: prove 'keeper.target' again after that line";
+  in a loop, at the call, "'forget(...)' inside this loop may change 'target', which undoes what was proven about
+  'keeper.target' before the loop, and the next pass would read it unproven: prove it inside the loop instead". The
+  message names the function that writes when it is not the one called.
+- **Lives in**: the pass `proofs/narrowings_kept_across_calls` (its own folder), run on the high representation
+  once every function is built. The builder records each narrowed read
+  (`high_intermediary_representation/narrowed_read.spite`, `values.spite`: `note_a_narrowed_read`) with the calls
+  built since its check (`statements.spite`: `log_the_calls_of`); what a call may assign is
+  `low_intermediary_representation/lowering/assignments.spite` read for narrowings (`read_for_narrowings`).
+- **Checked by**: tests/receiver_call_effects, tests/same_name_call_effects,
+  tests/narrowing_kept_across_harmless_call; conformance/call_undoes_proof, conformance/branch_undoes_proof,
+  conformance/receiver_call_undoes_proof, conformance/count_undoes_proof, conformance/bound_proofs_undone,
+  conformance/structural_index_undone, conformance/call_on_other_undoes_narrowing,
+  conformance/call_in_loop_undoes_narrowing.
 
 ### An address keeps its owner alive
 
@@ -157,9 +173,9 @@ Of the 92 proofs the old compiler made, 31 are built, 40 are partly built and 21
   refused: narrow the source itself. A snapshot taken before its source changes is allowed
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: one name per value.
-- **Missing**: a copy narrowed by a `switch`, or by an `if not copy` whose block does not leave, is not refused.
+- **Missing**: a copy narrowed by an `if not copy` whose block does not leave.
 - **Falls back**: accepted, which is safe: only the style rule is missed.
-- **Lives in**: embedded, `statements.spite` (`note_a_copy`, `refuse_a_copy`, `refuse_a_loop_copy`).
+- **Lives in**: embedded, `statements.spite` (`note_a_copy`, `refuse_a_copy`, `refuse_a_loop_copy`, `build_switch`).
 - **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions; tests/narrowing_snapshot_copy.
 
 ### A class test narrows its block
@@ -207,49 +223,50 @@ Of the 92 proofs the old compiler made, 31 are built, 40 are partly built and 21
 
 ### A switch covers every case
 
-- **Status**: partly built; **fails silently**.
-- **Rule**: a switch over a union covers every member or ends with `_:`; over a `T?` it has a `T:` case and a
-  `Null:` case (or `_:` for the one left); over an enum every value or `_:`; over a whole number or a text always
-  `_:`; a needless or repeated case is an error
+- **Status**: built.
+- **Rule**: a switch over a union covers every member or ends with `_:`; over a `T?` of a class or a union it covers
+  the class (or every member) and `Null`, or ends with `_:`; over an enum every value or `_:`; over a whole number
+  or a text always `_:`; a needless or repeated case is an error
   ([control_flow.md](../SpiteLanguage/specs/control_flow.md#switch-over-values),
   [values_and_types.md](../SpiteLanguage/specs/values_and_types.md#unions-in-full)).
-- **Buys**: a member or value added later cannot be forgotten.
-- **Missing**: the cover of a switch over a `T?` is not checked, so `switch maybe { Monster: ... }` with no `Null:`
-  compiles and does nothing for a null.
+- **Buys**: a member, a value or a null added later cannot be forgotten.
 - **Falls back**: refused, "this switch over '...' has no case for ...: add the cases, or end with '_:' for the
-  rest".
+  rest"; over a `T?`, "this switch over 'target' has no case for Null: 'target' is a Monster?, and a switch over a
+  'T?' covers its value and null, so a null cannot be forgotten; add the cases, or end with '_:' for the rest".
 - **Lives in**: `validators/high_intermediary_representation/switch_cover` (asked by `statements.spite`:
-  `build_switch`, `check_the_cover`), `validators/abstract_syntax_tree/switch_cases`.
+  `build_switch`, `check_the_cover`, `check_the_nullable_cover`), `validators/abstract_syntax_tree/switch_cases`.
+  A switch is built as a chain of `if`s, so its cover is judged while it is built.
 - **Checked by**: conformance/missing_switch_case, conformance/control_switch_enum_missing,
   conformance/control_switch_enum_rest_unneeded, conformance/control_switch_number_no_rest,
   conformance/control_switch_text_no_rest, conformance/switch_rest_case, conformance/switch_rest_after_all,
   conformance/switch_rest_not_last, conformance/switch_same_as_rest, conformance/value_switch,
-  conformance/control_switch_value_on_nullable; tests/rest_case, tests/value_switch, tests/nullable_switch_null_case.
+  conformance/control_switch_value_on_nullable, conformance/nullable_switch_without_null; tests/rest_case,
+  tests/value_switch, tests/nullable_switch_null_case, tests/nullable_switch_with_rest.
 
 ## Indices and numbers
 
 ### A proven count or bound proves a read
 
 - **Status**: partly built.
-- **Rule**: `index < list.count()` (also `- k`, `count() > index`, a count kept in a `var`), `base + k <
-  list.count()` for k from 1 to 63, and the count facts `== k`, `>= k`, `> k`, `!= 0` and `not is_empty()` (at most
-  64 indices) prove `list[...]`, in `assert`, `crash`, `if`, `while`, the right of an `and`, and after an `if` that
-  leaves ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+- **Rule**: `index < list.count()` (also `- k`, `count() > index`, a count kept in a `var`), with any call-free
+  index (`code - 32 < glyphs.count()` proves `glyphs[code - 32]`), `base + k < list.count()` for k from 1 to 63, and
+  the count facts `== k`, `>= k`, `> k`, `!= 0` and `not is_empty()` (at most 64 indices) prove `list[...]`, in
+  `assert`, `crash`, `if`, `while`, the right of an `and`, and after an `if` that leaves
+  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: a proven read answers `T`, not `T?`.
-- **Missing**: a left side other than a name, `name + literal` or a member (`code - 32 < glyphs.count()`); bounds
-  written with `<=`; count facts in a `while`; the 63 and 64 caps. Wrong proofs (each still halts at run time, see
-  the next section): `list.count() > index` and `list.count() != n` with a non-literal side, `count() > -1`, a
-  leaving `if list.count() <= index`, and `while base + counter < list.count()` prove `list[0]` or `list[base]`.
-  Undoing a proof inside the loop that read it is not refused, and a shrinking call inside an assignment or an
-  argument does not undo it.
+- **Missing**: bounds written with `<=`; count facts in a `while`; undoing a proof inside the loop that read it is
+  not refused, and a shrinking call inside an assignment or an argument does not undo it (each read still halts
+  when its list changed, see the next section).
 - **Falls back**: an unproven read is a `T?`; where a `T` is needed it is refused, "'...' may be missing, since every
   '[ ]' answers a 'T?' ...: ..., or prove the count first, 'crash list.count() > 2'".
-- **Lives in**: embedded, `statements.spite` (`read_a_bound`, `read_a_count`, `read_a_counted_member`,
-  `note_a_counted_list`, `forget_after_a_shrinking_call`), `values.spite` (`index_value`, `proven_by_its_path`).
+- **Lives in**: embedded, `statements.spite` (`read_a_bound`, `read_a_counted_list`, `read_a_counted_member`,
+  `read_a_turned_bound`, `whole_index_of`, `note_a_counted_list`, `forget_after_a_shrinking_call`), `values.spite`
+  (`index_value`, `proven_by_its_path`).
 - **Checked by**: tests/count_bound_proofs, tests/bound_proofs, tests/count_in_name_proves, tests/structural_index,
-  tests/proof_again_in_loop; conformance/index_reads, conformance/bound_proofs_undone,
-  conformance/count_proves_no_key, conformance/count_undoes_proof, conformance/structural_index_undone,
-  conformance/proven_index_check, conformance/call_in_index, conformance/indexable_unproven.
+  tests/proof_again_in_loop, tests/compared_count_proves_read; conformance/index_reads,
+  conformance/bound_proofs_undone, conformance/count_proves_no_key, conformance/count_undoes_proof,
+  conformance/structural_index_undone, conformance/proven_index_check, conformance/call_in_index,
+  conformance/indexable_unproven.
 
 ### A proven read halts outside its list
 
@@ -443,31 +460,34 @@ Of the 92 proofs the old compiler made, 31 are built, 40 are partly built and 21
 
 ### How many arguments a function takes
 
-- **Status**: partly built; **fails silently**.
+- **Status**: partly built.
 - **Rule**: `$T.argument_count("<pattern>")` and a walk's `phase.argument_count()` fold to a whole number; every
   function a pattern matches must take the same number, and a pattern matching none is an error
   ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks)).
 - **Buys**: generic code chooses its call by the count.
-- **Missing**: functions a pattern matches are not checked to agree (the first one's count is answered); the error
-  for `argument.argument_count()` asked outside a walk over functions.
-- **Falls back**: refused, "'...' has no function named '...', so 'argument_count' has nothing to count ...".
-- **Lives in**: embedded, `values.spite` (`counted_arguments`, `pattern_argument_count`).
+- **Missing**: the error for `argument.argument_count()` asked outside a walk over functions.
+- **Falls back**: refused, "'...' has no function named '...', so 'argument_count' has nothing to count ...", or
+  "... has no one answer: the functions of 'Painter' that fit it take different numbers of arguments ('update_each'
+  1, 'render_each' 2), so ask 'phase.argument_count()' in a template over them, where each is walked on its own".
+- **Lives in**: embedded, `values.spite` (`counted_arguments`, `refuse_disagreeing_counts`,
+  `pattern_argument_count`).
 - **Checked by**: tests/folded_argument_count, tests/system_phases, tests/streamed_rows; conformance/argument_count,
-  conformance/argument_count_missing, conformance/passed_argument_count.
+  conformance/argument_count_missing, conformance/passed_argument_count, conformance/argument_count_disagrees.
 
 ### Whether a class fits a `Vector`
 
-- **Status**: partly built; **fails silently**.
+- **Status**: partly built.
 - **Rule**: every attribute is a number, a Boolean, a text, an enum, a symbol, a singleton or a `T?` of those; no
   `drop()`; no function uses `this` as a value; not a generic template. `fits_vector()`, `is_fixed_size` and
   `any_attribute_fits_vector` fold, and an `Items<T>` stores its items inline exactly when a `Vector<T>` could be
   made ([collections.md](../SpiteLanguage/specs/collections.md)).
 - **Buys**: items inline, lent rather than counted.
-- **Missing**: the answer does not test "no function uses `this` as a value" (tested only where a `Vector<T>` is
-  written) nor "not a generic template", so an `Items<T>` of such a class stores it inline and lends its items.
-- **Falls back**: refused for a `Vector<T>`, "'...' uses 'this' as a value, and an item of a Vector is borrowed ...".
-- **Lives in**: embedded, `values.spite` (`fits_a_vector`, `vector_fit_question`), `borrows.spite`
-  (`fits_a_vector`), `constraints.spite` (`check_the_vector_items`).
+- **Missing**: "not a generic template"; the borrow study (`borrows.spite`) keeps its own copy of the answer, which
+  does not test `this` yet, so it may refuse a borrow of an `Items` item that is held by reference.
+- **Falls back**: refused for a `Vector<T>`, "'...' uses 'this' as a value, and an item of a Vector is borrowed ...";
+  an `Items<T>` holds such items by reference.
+- **Lives in**: embedded, `values.spite` (`fits_a_vector`), `constraints.spite` (`uses_this_as_a_value`,
+  `check_the_vector_items`), `borrows.spite` (`fits_a_vector`).
 - **Checked by**: tests/items_columns, tests/folded_checks, tests/folded_lends, tests/lent_list_elements,
   tests/reflection_objects; conformance/folded_crash.
 
@@ -488,14 +508,16 @@ Of the 92 proofs the old compiler made, 31 are built, 40 are partly built and 21
 
 - **Status**: partly built; **fails silently**.
 - **Rule**: `$T.is_stateful` folds to "some function other than the constructor and `drop()` writes its own object
-  or a singleton, or a singleton it binds keeps state"; where it cannot tell, true
+  or a singleton, or a singleton it binds keeps state"; where it cannot tell (a function it cannot build, such as a
+  member template or one taking a `Spite.*` parameter), true
   ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks)).
 - **Buys**: generic code shares an object nothing changes.
-- **Missing**: a function that cannot be built (a member template, a `Spite.*` parameter) is left out instead of
-  answering true; writing a singleton does not count; it is a filled reflection value, not a folded constant, so
-  an `if` on it builds both branches.
-- **Falls back**: true when a bound singleton has attributes, and for a library class with attributes.
-- **Lives in**: embedded, `reflection.spite` (`is_stateful`, `writes_its_object`).
+- **Missing**: writing a singleton does not count; it is a filled reflection value, not a folded constant, so an
+  `if` on it builds both branches.
+- **Falls back**: true when a bound singleton has attributes, when a function cannot be built, and for a library
+  class with attributes.
+- **Lives in**: embedded, `reflection.spite` (`fill_from_the_model`, `every_writer_can_be_built`,
+  `writes_its_object`).
 - **Checked by**: tests/class_walk, tests/run_time_kinds, tests/reflection_objects.
 
 ### The one class a `type` admits
@@ -957,17 +979,19 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### What a `Parallel` may reach
 
-- **Status**: partly built; **fails silently**.
+- **Status**: partly built.
 - **Rule**: a `Parallel` work or a `parallel_each_` member reaches only its own value attributes, its locals and
-  singletons; it writes a value attribute only of an object handed over to it.
-- **Missing**: `Parallel(holder.work)` with a holder not handed over (an attribute, a parameter, an earlier local)
-  whose work writes a number attribute is accepted, a race; reach is followed only through calls of the work's own
-  class.
-- **Falls back**: refused, "'...' runs '...' on another thread, so it may reach only ...".
+  singletons; it writes a value attribute only of an object handed over to it, never of `this`, an attribute, a
+  parameter or a local used again ([concurrency.md](../SpiteLanguage/specs/concurrency.md)).
+- **Missing**: reach is followed only through calls of the work's own class.
+- **Falls back**: refused, "'...' runs '...' on another thread, so it may reach only ...", or "'Parallel(kept.bump)'
+  writes 'count' of this 'Counter' on another thread while this thread may write it too, so one write would be lost
+  ...".
 - **Lives in**: `high_intermediary_representation/building/parallel_reach.spite`.
 - **Checked by**: conformance/parallel_reach, parallel_function_reach, parallel_handover, parallel_shared_writes,
-  parallel_shared_value_writes, parallel_each_reach_through_call, parallel_each_after_map, parallel_each_numbers,
-  foreign_callback_thread_reach; tests/parallel_work, parallel_handover, parallel_each, parallel_receivers.
+  parallel_shared_value_writes, parallel_held_value_writes, parallel_each_reach_through_call,
+  parallel_each_after_map, parallel_each_numbers, foreign_callback_thread_reach; tests/parallel_work,
+  parallel_handover, parallel_each, parallel_receivers.
 
 ### Which calls suspend a `Concurrent`
 

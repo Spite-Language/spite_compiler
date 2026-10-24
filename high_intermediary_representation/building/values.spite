@@ -886,6 +886,9 @@ func name_value(
         crash local_type
         var declared_type = context.scope.types[internal_name]
         crash declared_type
+        if declared_type.is_nullable and not local_type.is_nullable {
+            note_a_loop_read(internal_name)
+        }
         var narrows_a_handle = declared_type.kind == 'handle' and local_type.kind != 'handle'
         if narrows_a_handle {
             var handle_read = HighIntermediaryRepresentation.Values.LocalRead(declared_type, internal_name)
@@ -1046,6 +1049,7 @@ func narrowed(
     var narrowed_type = context.scope.narrowed_type_of(path)
     if narrowed_type {
         note_a_loop_read(path)
+        note_a_narrowed_read(value, path)
         var is_boxed = value.value_type.kind == 'shape' and is_held_in_a_box(narrowed_type)
         if is_boxed {
             return HighIntermediaryRepresentation.Values.Conversion(narrowed_type, 'unbox', value)
@@ -1053,6 +1057,25 @@ func narrowed(
         return HighIntermediaryRepresentation.Values.Conversion(narrowed_type, 'present', value)
     }
     return value
+}
+
+# ../../PROOFS.md#a-call-keeps-a-proof-it-cannot-change
+func note_a_narrowed_read(value: HighIntermediaryRepresentation.Values.Value, path: String) {
+    assert value == HighIntermediaryRepresentation.Values.AttributeRead
+    var start = context.scope.stamp_of(path)
+    var end = context.logged_calls.count()
+    assert start < end or not context.loop_bases.is_empty()
+    var read = HighIntermediaryRepresentation.NarrowedRead(path, value.attribute)
+    read.calls = context.logged_calls
+    read.call_lines = context.logged_lines
+    read.start = start
+    read.end = end
+    read.loop_end = end
+    read.line = context.line
+    read.path = context.path()
+    read.owner = typing.plain_class_name(context.current_class.shown)
+    read.function_name = typing.shown_function_name(context.current_function)
+    context.narrowed_reads.append(read)
 }
 
 func note_a_loop_read(path: String) {
@@ -7972,7 +7995,8 @@ func fits_a_vector(element: Model.Type): Boolean {
         }
         index = index + 1
     }
-    return true
+    var constraints = Constraints(context, this)
+    return not constraints.uses_this_as_a_value(held)
 }
 
 func is_kept_inline(held: Model.Type): Boolean {
@@ -8273,7 +8297,30 @@ func counted_arguments(
     }
     crash found
     var counted = found.parameters.count()
+    refuse_disagreeing_counts(matching, counted, asked, pattern)
     return HighIntermediaryRepresentation.Values.WholeNumber(integer, counted)
+}
+
+# ../../PROOFS.md#how-many-arguments-a-function-takes
+func refuse_disagreeing_counts(matching: List<Model.FunctionModel>, counted: Integer, asked: String, pattern: String) {
+    var listed = List<String>()
+    var agree = true
+    var index = 0
+    while index < matching.count() {
+        var function = matching[index]
+        var function_count = function.parameters.count()
+        if function_count != counted {
+            agree = false
+        }
+        listed.append("'{function.name}' {function_count}")
+        index = index + 1
+    }
+    assert not agree
+    var found = matching.first()
+    crash found
+    var owner = typing.plain_class_name(found.owner)
+    var counts = listed.join(", ")
+    typing.refuse_disagreeing_counts(context, asked, pattern, owner, counts)
 }
 
 func waits_question(matching: List<Model.FunctionModel>): HighIntermediaryRepresentation.Values.Value {

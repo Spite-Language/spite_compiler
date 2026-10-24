@@ -278,16 +278,14 @@ in the high representation's builder.
 
 ### Presence and control flow
 
-- A switch covers every case (fails silently): the cover of a switch over a `T?` is not checked, so one with no `Null:` (or no `T:`) case compiles
-- Assigning undoes a proof (fails silently): the loop refusal for a local or a parameter, assigning the start of a narrowed path (`target = Monster()` after `assert target.weapon`), `list[i] = x` and a store through a setter undo nothing
-- A call keeps a proof it cannot change (fails silently): only a bare call of the class's own function, a direct shrinking call and a call on a `[]` receiver undo anything; calls inside an assignment, argument or condition, calls on other objects, what a callee calls, a list passed to a function that shrinks it and function values are not followed; the loop error naming the call is not built
-- An `if` that leaves proves the rest: later `or` sides do not see earlier ones narrowed (`if not a or not a.b { return }` is refused at `a.b`), and a count side after `not found` proves no read
+- A call keeps a proof it cannot change: a `[]` or count proof is undone only by a direct shrinking call, a bare call of the class's own function and a call on a `[]` receiver (its read still halts); a call inside a condition is ordered after the block it guards
+- An `if` that leaves proves the rest: a count side after `not found` proves no read
 - Proving what is proven is an error: a re-check inside the `if`/`while`/`switch` that narrowed gets the Boolean text; not refused: a `[]` read proven by a count or an earlier check, a divisor re-proven, a class test already answered, the same condition on the next line, an `assert` that folds true, and a check of a plain local
-- A copy made to narrow is an error: a copy narrowed by a `switch`, or by an `if not copy` that does not leave
+- A copy made to narrow is an error: a copy narrowed by an `if not copy` whose block does not leave
 
 ### Indices and numbers
 
-- A proven count or bound proves a read: a left side other than a name, `name + literal` or a member; `<=` bounds; count facts in a `while`; the 63 and 64 caps; wrong proofs that halt at run time (`count() > index` and `count() != n` with a non-literal side, `count() > -1`, a leaving `if count() <= index`, `while base + counter < count()` prove only `list[0]` or `list[base]`); undoing a proof inside the loop that read it is not refused; a shrinking call inside an assignment or argument does not undo it
+- A proven count or bound proves a read: `<=` bounds; count facts in a `while`; undoing a proof inside the loop that read it is not refused; a shrinking call inside an assignment or argument does not undo it
 - A proven count or bound proves a read of a width (`read_<number>_at`), and a position known not to be negative drops the low test
 - An index built from loop counters is proven by one guard (`rows * stride <= list.count()`)
 - An index offset by a base is proven by one guard (`base + bound <= list.count()`)
@@ -299,9 +297,9 @@ in the high representation's builder.
 ### Compile-time questions
 
 - Whether a function waits (fails silently): letting go of a `Concurrent` is not counted, and a call through an unknown function value adds nothing instead of spreading or answering true
-- How many arguments a function takes (fails silently): the functions a pattern matches are not checked to agree, and `argument.argument_count()` outside a walk over functions has no error
-- Whether a class fits a `Vector` (fails silently): the answer does not test "no function uses `this` as a value" nor "not a generic template", so an `Items<T>` of such a class stores and lends its items inline
-- Whether a class keeps state (fails silently): a function that cannot be built is left out instead of answering true, writing a singleton is not counted, and the answer is a filled value, not a folded constant
+- How many arguments a function takes: `argument.argument_count()` outside a walk over functions has no error
+- Whether a class fits a `Vector`: "not a generic template" is not tested, and `borrows.spite` keeps its own answer, which does not test `this` as a value yet
+- Whether a class keeps state (fails silently): writing a singleton is not counted, and the answer is a filled value, not a folded constant
 - Conditions decided while compiling: `function_waits` and `function_writes_parameter` are late (D673), a codegen number against a literal, a function taking a `type` copied per class, `x and false` and `x or true`
 - Tree shaking: nothing is shaken after lowering, inlining or late folding; a function nobody calls is not type-checked; no inspectable build keeps everything
 - A reload compiles only the changed classes, and reaches every object whose attributes it changes (no reload yet)
@@ -334,7 +332,7 @@ in the high representation's builder.
 ### Threads and locks
 
 - No attribute is read past the lock (fails silently): a locked singleton's attribute read or written directly from another class runs unlocked
-- What a `Parallel` may reach (fails silently): `Parallel(holder.work)` with a holder not handed over whose work writes a number attribute; reach followed only through the work's own class
+- What a `Parallel` may reach: reach is followed only through the work's own class
 - Which singletons a `Parallel` reaches (fails silently): a `ForeignCallback`'s function is not a root (D725 to D728)
 - Calls that share nothing written
 - Classes in a list that share nothing written
