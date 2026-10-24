@@ -2386,3 +2386,51 @@ block, through another path or index, of another value, or after something that 
 is made, comparing what the slot holds as before.
 
 **What a program can observe:** only the time.
+
+## An object only its holder holds lives inside it
+
+```spite
+var price = 0
+var owner = Owner(0)
+
+func Item(new_price: Integer, new_owner: Owner) {
+    price = new_price
+    owner = new_owner
+}
+```
+
+When an attribute's object can only ever be held by the one object that holds it, its bytes are laid inside the
+holder: `Item` grows by the size of an `Owner` (its header and its numbers), `item.owner` is the address of that room
+instead of a load, and writing it copies the numbers of the new `Owner` into the room and lets the new object go.
+An `Owner` made only to be handed to `Item` is then made in registers (see [objects that never leave their function
+live in registers or the frame](#objects-that-never-leave-their-function-live-in-registers-or-the-frame)), so making
+an item is one allocation instead of two, and reading `item.owner.age` is one load from the item
+(`defaults_the_constructor_replaces_are_never_made`: 9.1 ms before, 6.4 ms after, half the allocations;
+`template_chains_run_as_one_loop`: 22.6 ms before, 18.2 ms after). The room's header holds the class and a count no
+release brings to zero, so the code that reads an `Owner` is the code that reads any `Owner`.
+
+The decision is made for the whole program while compiling (`low_intermediary_representation/lowering/embedded_attributes.spite`),
+from the functions the program can reach (a function made from a template only when something calls it):
+
+- the held class is the program's own, holds only plain numbers (no object, text, nullable value or type argument),
+  has no `drop()` and fills no shape; the holder is the program's own, not a singleton, the entry class or generic,
+  and fills no shape;
+- the attribute is written only by the holder's defaults with a new object of the class, or by a constructor,
+  outside any `if` or loop, from a parameter it takes (see [an object handed to the place that keeps it is not
+  counted](#an-object-handed-to-the-place-that-keeps-it-is-not-counted)) and reads nowhere else, when every call of
+  that constructor hands it a new object: made in the call, or a local made in the same block and read only there;
+- every read of the attribute is a part of it (`item.owner.age`, `item.owner.age = 3`, or a call of a function of
+  the class that uses `this` only for its own attributes), or a name declared from it in a block that uses the name
+  only that way and in which nothing can write the attribute, the list slot or any attribute on the path it was
+  read through;
+- no reflection names either class.
+
+**When it does not apply:** anything else refuses the attribute, which stays a counted pointer as before: a read of
+it kept anywhere (a list, another attribute, an answer), compared, passed to a function, copied with `copy()`, a
+second holder for one object, a class with objects or texts in it.
+
+**What a program can observe:** fewer allocations under `--debug-memory` (the object inside its holder is not one),
+and time. Nothing can tell the room from a separate object: nothing else ever holds it, so nothing can see it outlive
+its holder or be shared. If a write into the room is ever given an object that is not new, the compile stops with
+"'...' holds its object inside it, but a value written into it is held elsewhere too: this is a fault of the
+compiler".

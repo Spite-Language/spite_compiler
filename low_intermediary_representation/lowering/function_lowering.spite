@@ -1352,6 +1352,11 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
         return
     }
     var kept_value = lower_a_kept_value(assign.value)
+    if layout.is_embedded(assign.attribute) {
+        store_the_part_inside(object.value, assign.attribute, kept_value)
+        discard(object, assign.object.value_type)
+        return
+    }
     if fresh {
         store_in_a_fresh_slot(object.value, assign.attribute, kept_value, region)
     } else {
@@ -1875,6 +1880,9 @@ func load_attribute_in(object_register: Integer, attribute: Model.AttributeModel
     }
     var object = single(object_register)
     var offset = layout.offset_of(attribute)
+    if layout.is_embedded(attribute) {
+        return the_part_inside(object_register, offset)
+    }
     var attribute_type = attribute.attribute_type
     var target = new_register()
     var width = width_of(attribute_type)
@@ -1903,6 +1911,57 @@ func load_attribute_in(object_register: Integer, attribute: Model.AttributeModel
     }
     emit(loaded_presence)
     return Lowered(target, presence)
+}
+
+# ../../OPTIMIZATIONS.md#an-object-only-its-holder-holds-lives-inside-it
+func the_part_inside(object: Integer, offset: Integer): Lowered {
+    var room = constant(offset)
+    var part = new_register()
+    var found = LowIntermediaryRepresentation.Instructions.Arithmetic(part, 'add', object, room)
+    found.is_checked = false
+    emit(found)
+    return single(part)
+}
+
+func store_the_part_inside(object: Integer, attribute: Model.AttributeModel, value: Lowered) {
+    if not value.owned {
+        var emittable = Validators.LowIntermediaryRepresentation.Emittable.Validator()
+        emittable.refuse('shared_part', "{attribute.owner}.{attribute.name}")
+    }
+    var offset = layout.offset_of(attribute)
+    var part = the_part_inside(object, offset)
+    var held = attribute.attribute_type.name
+    var model = layout.program.class_named(held)
+    crash model
+    var id_number = layout.class_id_of(held)
+    var class_id = constant(id_number)
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(part.value, 0, class_id, 'bits_64')
+    emit(stored_id)
+    var count = constant(layout.immortal_count)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(part.value, 8, count, 'bits_64')
+    emit(stored_count)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var copied = model.declared_attributes[index]
+        copy_a_number(value.value, part.value, copied)
+        index = index + 1
+    }
+    release(value.value)
+}
+
+func copy_a_number(from: Integer, into: Integer, copied: Model.AttributeModel) {
+    assert layout.has_a_slot(copied)
+    var offset = layout.offset_of(copied)
+    var width = width_of(copied.attribute_type)
+    var region = "{copied.owner}.{copied.name}"
+    var number = new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(number, from, offset, width)
+    loaded.is_signed = is_signed(copied.attribute_type)
+    loaded.region = region
+    emit(loaded)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(into, offset, number, width)
+    stored.region = region
+    emit(stored)
 }
 
 func rebuilt_in_place(object: Integer, rebuilder: Model.FunctionModel): Lowered {

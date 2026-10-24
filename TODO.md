@@ -177,7 +177,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A row of borrowed items lives in the frame (built when the function it is passed to is inlined, D801, D942: the row is registers; a row passed to a call too large to inline is still made on the heap, and the items it holds are still counted when it is made and let go when it ends)
 - An `Items`' storage is chosen while compiling
 - A deep copy is written per class, with a table only where a graph needs one
-- An object attribute only its holder ever holds lives inside the holder (`Item.owner`, `Order.customer`), and a list's objects in its storage may hold such attributes
+- An object attribute only its holder ever holds lives inside the holder (built for a class of plain numbers written only by the defaults or a constructor with a new object and read only for its parts, D1034; not built: a held class with objects or texts in it (`Order.customer`), a holder copied by `copy()` or `deep_copy()`, a part passed to a function, and a list's objects in its storage holding such attributes)
 - A loop that sums a list filtered by its counter on every pass is one pass over the list (`report_over_records`' 64 profits)
 - An if-converted body may hold a checked product or difference when ranges prove it fits, and decimals; the generator writes its picks as `cmov` instead of masks (D996)
 - A deep copy nothing changes is the original
