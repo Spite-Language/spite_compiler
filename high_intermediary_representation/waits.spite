@@ -9,6 +9,7 @@ var reached_in_parallel = List<String>()
 var locked = List<String>()
 var starting_name = ""
 var model = Model.ProgramModel()
+var held_work = HeldWork(model)
 var touches_itself = false
 var taken_as_values = List<String>()
 var touching = List<String>()
@@ -29,6 +30,7 @@ var starts_itself = List<String>()
 var plain_leaves = List<String>()
 var is_unplain = false
 var is_starting = false
+var attributes_assigned_after_making = List<String>()
 var blocking = [
     "Socket.accept_handle"
     "Socket.receive_into"
@@ -40,6 +42,7 @@ var blocking = [
 
 func Waits(high: HighIntermediaryRepresentation.HighProgram) {
     model = high.model
+    held_work = HeldWork(model)
     high.built_functions.each(read_a_function)
     callees["$value"] = taken_as_values
     started_in_parallel.each(reach_in_parallel)
@@ -49,11 +52,13 @@ func Waits(high: HighIntermediaryRepresentation.HighProgram) {
         var guarded = touching.contains(key)
         if guarded and is_a_singleton_function(high, key) {
             var owner_key = owner_of(key)
-            locked.append(owner_key)
+            lock_once(owner_key)
         }
+        lock_what_it_touches_from_outside(high, key)
         index = index + 1
     }
     var forms = SingletonForms(high, locked)
+    attributes_assigned_after_making = forms.attributes_assigned_after_making
     steady_singletons = forms.steady
     atomic_singletons = forms.atomic
     var still_locked = List<String>()
@@ -95,6 +100,45 @@ func find_the_shared_classes() {
             add_the_callees(key, waiting)
         }
     }
+}
+
+func lock_once(class_key: String) {
+    if not locked.contains(class_key) {
+        locked.append(class_key)
+    }
+}
+
+# ../PROOFS.md#no-attribute-is-read-past-the-lock
+func lock_what_it_touches_from_outside(high: HighIntermediaryRepresentation.HighProgram, key: String) {
+    var touched = touched_owners[key]
+    assert touched
+    var own = owner_of(key)
+    var index = 0
+    while index < touched.count() {
+        var owner_key = touched[index]
+        if owner_key != own and is_a_singleton_of_the_program(high, owner_key) {
+            lock_once(owner_key)
+        }
+        index = index + 1
+    }
+}
+
+func is_a_singleton_of_the_program(high: HighIntermediaryRepresentation.HighProgram, class_key: String): Boolean {
+    var owner = high.model.class_named(class_key)
+    if not owner {
+        return false
+    }
+    var library = Validators.LibraryFile()
+    return owner.is_singleton and not library.holds(owner.file.path)
+}
+
+func is_a_locked_class(class_key: String): Boolean {
+    return locked.contains(class_key)
+}
+
+# ../PROOFS.md#no-attribute-is-read-past-the-lock
+func is_assigned_after_making(attribute: Model.AttributeModel): Boolean {
+    return attributes_assigned_after_making.contains("{attribute.owner}.{attribute.name}")
 }
 
 func share(class_key: String) {
@@ -354,14 +398,14 @@ func read_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Eva
 
 func note_a_clear(call: HighIntermediaryRepresentation.Values.Call) {
     assert call.function.name == "clear" and call.receiver
-    if holds_work(call.receiver.value_type) {
+    if held_work.holds(call.receiver.value_type) {
         is_waiting = true
     }
 }
 
 func read_a_held_value(value: HighIntermediaryRepresentation.Values.Value?) {
     assert value
-    if holds_work(value.value_type) {
+    if held_work.holds(value.value_type) {
         is_waiting = true
     }
     read_a_value(value)
@@ -369,45 +413,10 @@ func read_a_held_value(value: HighIntermediaryRepresentation.Values.Value?) {
 
 func read_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
     current_touched.append(written.attribute.owner)
-    if holds_work(written.attribute.attribute_type) {
+    if held_work.holds(written.attribute.attribute_type) {
         is_waiting = true
     }
     read_both(written.object, written.value)
-}
-
-func holds_work(of_type: Model.Type): Boolean {
-    var visited = List<String>()
-    return holds_work_through(of_type, visited)
-}
-
-func holds_work_through(of_type: Model.Type, visited: List<String>): Boolean {
-    if of_type.kind == 'handle' {
-        return true
-    }
-    if of_type.kind != 'object' or visited.contains(of_type.name) {
-        return false
-    }
-    visited.append(of_type.name)
-    var held = model.class_named(of_type.name)
-    if not held {
-        return false
-    }
-    if held.is_singleton {
-        return false
-    }
-    var element = held.bound_types["$element_type"]
-    if element {
-        return holds_work_through(element, visited)
-    }
-    var index = 0
-    while index < held.declared_attributes.count() {
-        var attribute = held.declared_attributes[index]
-        if holds_work_through(attribute.attribute_type, visited) {
-            return true
-        }
-        index = index + 1
-    }
-    return false
 }
 
 func read_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
@@ -468,6 +477,7 @@ func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
     current_makes.append(class_key)
     if class_key == "ForeignCallback" {
         has_callbacks = true
+        note_a_callback_root(made)
     }
     made.arguments.each(read_a_present)
     assert made.constructor
@@ -485,6 +495,18 @@ func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
     assert not listed.contains(constructor_key)
     listed.append(constructor_key)
     constructors[class_key] = listed
+}
+
+# ../PROOFS.md#which-singletons-a-parallel-reaches
+func note_a_callback_root(made: HighIntermediaryRepresentation.Values.MakeObject) {
+    assert not made.arguments.is_empty()
+    var handed = made.arguments[0]
+    if handed == HighIntermediaryRepresentation.Values.Function.Value {
+        var key = handed.function.key()
+        if not started_in_parallel.contains(key) {
+            started_in_parallel.append(key)
+        }
+    }
 }
 
 func circle_of(class_key: String): String {

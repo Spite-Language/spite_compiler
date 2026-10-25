@@ -315,16 +315,15 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 - An index offset by a base is proven by one guard (`base + bound <= list.count()`)
 - A counted loop reads its items unchecked: a second list indexed by the counter keeps its test on every pass outside the vector loop, and a window read loses its test only when the registers line up
 - A proven divisor is not checked: `!= 0`, an attribute or member path as the divisor, and `--repl`/`--hot-reload` builds
-- Arithmetic that does not fit halts: a `Long` counter whose bound has no range keeps its check, interactive builds keep every check, and constant overflow is refused only in `Integer` arithmetic
+- Arithmetic that does not fit halts: a `Long` counter whose bound has no range keeps its check and interactive builds keep every check
 - A range proves arithmetic fits (built, D768; not built: `absolute`, the counters stepped down, the loop locals other than counters, see the optimisation's line)
 
 ### Compile-time questions
 
-- Whether a function waits (fails silently): letting go of a `Concurrent` is not counted, and a call through an unknown function value adds nothing instead of spreading or answering true
+- Whether a function waits (fails silently): a local holding a `Concurrent` let go at the end of its scope is not counted, since a local that is moved into a list or an attribute must not count (D1134)
 - How many arguments a function takes: `argument.argument_count()` outside a walk over functions has no error
-- Whether a class fits a `Vector`: "not a generic template" is not tested
-- Whether a class keeps state (fails silently): writing a singleton is not counted, and the answer is a filled value, not a folded constant
-- Conditions decided while compiling: `function_waits` and `function_writes_parameter` are late (D673), a codegen number against a literal, a function taking a `type` copied per class, `x and false` and `x or true`
+- Whether a class keeps state: the answer is a filled value, not a folded constant
+- Conditions decided while compiling: `function_waits` and `function_writes_parameter` are late (D673), a codegen number against a literal, a function taking a `type` copied per class, `x and false` and `x or true` whose `x` calls something
 - Tree shaking: nothing is shaken after lowering, inlining or late folding; a function nobody calls is not type-checked; no inspectable build keeps everything
 - A reload compiles only the changed classes, and reaches every object whose attributes it changes (no reload yet)
 
@@ -337,9 +336,9 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 
 ### Borrowing and lending
 
-- No borrowed read past a resize (fails silently, memory stays safe): assigning a local `Vector` again or an attribute along the path is not a resize; the library's own functions are not followed; a value of unknown type fans out to every function of the name; effects computed under the recursion guard are cached short
-- An item lent to the caller (fails silently): returning a lent result through a name is accepted; not built: the uncounted return, `is_fixed_size` and `functions[...]` folded in its conditions
-- An item lent to a call (fails silently): a lent parameter the callee passes on to a function that keeps it, a row's attribute, the unnamed expression refusal, lending to a local function value, variadic positions; not built: the uncounted argument
+- No borrowed read past a resize (fails silently, memory stays safe): assigning an object two levels up the path is not a resize; the library's own functions are not followed; a value of unknown type fans out to every function of the name; effects computed under the recursion guard are cached short
+- An item lent to the caller: not built: the uncounted return, `is_fixed_size` and `functions[...]` folded in its conditions
+- An item lent to a call (fails silently): a lent parameter the callee passes on through a receiver whose class the study cannot tell, or to a library function, a row's attribute, the unnamed expression refusal, lending to a local function value, variadic positions; not built: the uncounted argument
 - Borrowed items of a `Vector` or `Items`: the reads stay counted references, walk copies and library member templates are not checked, `InlineMemory` is not a borrowing collection
 - Rows of borrowed items: the row in the frame and uncounted for a callee not inlined, a walked template's `var stored_row = rows[...]`, the arguments a plural fills, `row.describe` as a function value, a row passed to a library function
 - A list element lent to a row
@@ -355,9 +354,8 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 
 ### Threads and locks
 
-- No attribute is read past the lock (fails silently): a locked singleton's attribute read or written directly from another class runs unlocked
+- No attribute is read past the lock (fails silently): a counted attribute (an object, a list, a text) of a locked singleton read from another class is counted after the lock is let go, so a write on another thread may let it go first (D1138)
 - What a `Parallel` may reach: reach is followed only through the work's own class
-- Which singletons a `Parallel` reaches (fails silently): a `ForeignCallback`'s function is not a root (D725 to D728)
 - Calls that share nothing written
 - Classes in a list that share nothing written
 - Passes that write only their own item: `Vector`, writes other than number and enum attributes, other calls, a kept thread pool
@@ -376,6 +374,6 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 
 ### Other refusals built on an analysis
 
-- A value fits a `type` (fails silently): an attribute's type and a function's parameter and return types are not compared with the type's; a missing attribute is worded as a missing function
+- A value fits a `type` (fails silently): a member whose type is itself a `type`, a union or a function value is not compared (D1136), and a `$T`'s constraint checks only that each member exists
 - Singletons that make each other in a circle are an error: the "makes" links (a circle through an ordinary object made in an attribute default halts at run time instead)
-- A member template fits: the specific errors for `map_` of a member answering nothing, `sort_by_` of a Boolean, a non-Boolean `filter_`/`any_`/`all_`, `each` given something that is not a function
+- A member template fits: the specific error for `each` given something that is not a function, and the member checks of a member template of the program's own class (only a library collection's are checked)
