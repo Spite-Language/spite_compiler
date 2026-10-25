@@ -61,15 +61,18 @@ the builder's context through `HighProgram.context` (the model, the symbol table
 
 ### The proofs, in order
 
-1. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
-2. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
+1. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.
+2. `vector_fit`: every `Vector` the builder recorded making holds a class that fits one.
+3. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
+4. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
    answer that would decide itself.
-3. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
-4. `every_attribute_is_read`: an attribute nothing reads is a compile error.
-5. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
-6. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
+5. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
+6. `every_attribute_is_read`: an attribute nothing reads is a compile error.
+7. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
+8. `registered_in_setup`: a stage's `register` is called only from its setup.
+9. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
    facts on the operations).
-7. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
+10. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
 
 ### The high passes, in order

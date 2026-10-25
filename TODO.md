@@ -18,7 +18,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `printers/machine_code`
 - Low representation in SSA form; until then a value's register stretches are found per block (D986) but a value no register holds for its whole life is spilled for all of it (D771), unless a scratch register can hold it outside the blocks where it crosses a call (D1011), and copy propagation only crosses a block for a parameter
 - Every function has a stable identity for cache keys
-- A `register` outside a stage's setup is refused only at run time (a crash once `run` has started), not while compiling (D1089); such a stage's `run` stays a loop that tests each pass's class (D1097)
 - Every high-level optimisation is its own pass (D1087, D1096): fused chains, folded dictionaries, banded loops and the shrinking calls are chosen while building (each picks the library template to build, so a pass after the build would have to build functions itself), and the inline and column list layouts, layouts by use, replaced defaults and ownership's uses are decided at the start of the lowering (each sizes what it lays out with the lowering's `Layout` and reads lists through a `FunctionLowering`)
 - `--optimization-report` lists every local list and copy as made on the heap (D733), though the low pass now keeps the objects that never leave their function in registers or the frame (D801), and it leaves out an object only because nothing it reads lets that object go (D884): the report does not read what that pass placed
 - No range is proved yet, so every whole-number `+`, `-` and `*` keeps its overflow check, and `--optimization-report` lists each one (D733); a `-` in front is not listed
@@ -291,9 +290,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 What each proof still lacks; `PROOFS.md` has the whole of each. A line marked "fails silently" lets a wrong program
 through (D244) and comes first. Every proof still made inside a step or another pass moves into its own pass in
 `proofs/` (D1086): narrowing and what undoes it, the bounds and counts, the conditions decided while building, the
-guard `assert`, the switch cover, the vector fit, the borrows other than the lent bodies, the `Parallel` and thread
+guard `assert`, the borrows other than the lent bodies, the `Parallel` and thread
 reach and the lost writes are embedded in the builder, since each reads the builder's scope or the block being built
-(D1094: the next step is for the builder to record each site with what it resolved, for a proof to judge after);
+(D1094: the builder records each site with what it resolved, for a proof to judge after, as it does for the switch
+cover and the vector fit, D1101 and D1102);
 the frame and placement proofs are embedded in the lowering and in `object_placement`.
 
 ### Presence and control flow

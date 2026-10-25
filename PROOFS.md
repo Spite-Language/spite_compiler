@@ -233,8 +233,10 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Falls back**: refused, "this switch over '...' has no case for ...: add the cases, or end with '_:' for the
   rest"; over a `T?`, "this switch over 'target' has no case for Null: 'target' is a Monster?, and a switch over a
   'T?' covers its value and null, so a null cannot be forgotten; add the cases, or end with '_:' for the rest".
-- **Lives in**: `validators/high_intermediary_representation/switch_cover` (asked by `statements.spite`:
-  `build_switch`, `check_the_cover`, `check_the_nullable_cover`), `validators/abstract_syntax_tree/switch_cases`.
+- **Lives in**: the proof `proofs/switch_cover`, which judges every switch the builder recorded before writing it as
+  `if`s (`context.switch_sites`, from `statements.spite`: `check_the_cover`, `check_the_nullable_cover`) with the
+  validator `validators/high_intermediary_representation/switch_cover`; a case of the wrong kind is still refused
+  while building the case, and `validators/abstract_syntax_tree/switch_cases` checks the written cases.
   A switch is built as a chain of `if`s, so its cover is judged while it is built.
 - **Checked by**: conformance/missing_switch_case, conformance/control_switch_enum_missing,
   conformance/control_switch_enum_rest_unneeded, conformance/control_switch_number_no_rest,
@@ -489,10 +491,10 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
   does not test `this` yet, so it may refuse a borrow of an `Items` item that is held by reference.
 - **Falls back**: refused for a `Vector<T>`, "'...' uses 'this' as a value, and an item of a Vector is borrowed ...";
   an `Items<T>` holds such items by reference.
-- **Lives in**: embedded, one test, `constraints.spite` (`fits_a_vector`, with `uses_this_as_a_value`), asked by
-  `values.spite`, `borrows.spite` and `reflection.spite` while building, and `check_the_vector_items` refusing a
-  `Vector` of a class that does not fit. Embedded because the builder asks it to choose the form of a `Vector` it
-  builds.
+- **Lives in**: the proof `proofs/vector_fit` refuses a `Vector` of a class that does not fit, judging every
+  `Vector` the builder recorded making (`context.vector_sites`); the test itself, `constraints.spite`
+  (`fits_a_vector`, with `uses_this_as_a_value`), is still asked while building by `values.spite`, `borrows.spite`
+  and `reflection.spite`, which choose the form of what they build from it.
 - **Checked by**: tests/items_columns, tests/folded_checks, tests/folded_lends, tests/lent_list_elements,
   tests/reflection_objects; conformance/folded_crash.
 
@@ -813,6 +815,20 @@ These proofs belong to the ownership analysis of the high representation; the re
   value it never holds.
 - **Falls back**: the test runs.
 - **Checked by**: tests/listed_values (output only).
+
+### A stage registers its passes only in its setup
+
+- **Status**: built.
+- **Rule**: a function `register` whose one parameter is a `type` and which appends it to a list of its class, when
+  the class's `run` walks that list in a counted loop, may be called only from the class's setup and the functions of the class only the setup calls; a call anywhere else is
+  refused, "'Stage.register' is called outside the setup of 'Stage': its passes are registered only in 'Stage()' and
+  the functions only it calls, so the compiler knows them and its 'run' is direct calls in order: move this call
+  there".
+- **Buys**: the setup's list is known while compiling, so `run` is direct calls in order
+  ([a list its setup fills holds what the setup made](#a-list-its-setup-fills-holds-what-the-setup-made)).
+- **Falls back**: refused.
+- **Lives in**: the proof `proofs/registered_in_setup`, an acceptance proof.
+- **Checked by**: conformance/register_outside_setup.
 
 ### A list its setup fills holds what the setup made
 
