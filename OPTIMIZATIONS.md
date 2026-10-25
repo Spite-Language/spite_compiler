@@ -2044,7 +2044,10 @@ same two values (the loop's own test, `while index < values.count()`), with noth
 and the index is never negative, the test is always true and is left out: the read goes straight to the item. The
 index is never negative when every write of it is a constant of zero or more, a copy of such a value, or the sum of
 two such values that cannot wrap (checked, or proven not to overflow; the library's wrapping sums do not count). A
-signed `index >= 0` or `index < 0` of such an index is decided too (a `List.set_at`'s own check).
+signed `index >= 0` or `index < 0` of such an index is decided too (a `List.set_at`'s own check). The same holds
+after an unsigned test of the same two values that already passed: the true side of an unsigned `index < count`, or
+the false side of an unsigned `index >= count` (the test a `crash values[pick]` makes before the read it proves),
+whatever the sign of the index, so `crash values[pick]` then `values[pick]` tests the index once.
 
 ```spite
 func add_up(values: List<Float>): Float {

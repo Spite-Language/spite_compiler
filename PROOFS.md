@@ -367,7 +367,8 @@ as when each was refused while building.
 - **Falls back**: each read keeps its unsigned test.
 - **Lives in**: the low proof `proofs/bounds_proven_by_signed_tests`, run on the low representation before the
   pass `low_optimization_passes/proven_bounds` in each cleaning, which records on each function the unsigned bound
-  tests a signed test already proved and the sign tests a never negative value decides; the pass only writes what
+  tests a signed test, or an unsigned test of the same values that passed, already proved and the sign tests a
+  never negative value decides; the pass only writes what
   it recorded. With `lowering/list_reads.spite`, `low_optimization_passes/loop_invariants` and
   `low_optimization_passes/vector_loops`.
 - **Checked by**: tests/counted_loops, tests/strided_counted_loops.

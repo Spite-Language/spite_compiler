@@ -163,17 +163,17 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The tree shaking and the compile-time questions
 
-- Deciding conditions at compile time
+- Deciding conditions at compile time (measured 2026-10-25: 12.7 ms against the old compiler's 11.9)
 - Reflection, symbols and registries only where read
-- Reflection on constants folds and unrolls
+- Reflection on constants folds and unrolls (measured 2026-10-25: 19.8 ms against the old compiler's 12.2: the walk is unrolled, the `Stats` objects are still on the heap and read one by one)
 - Template chains run as one loop (built as the high pass `fused_chains`, D1151; not built: a `filter_` or `find_by_` after a `map_`, a passed function, chains on a `Dictionary`'s values, a `Vector` or `Items`); a class whose objects only a dropped step made keeps its layout and defaults (D1153)
 - A function taking a `type` is compiled per class (built once the function is inlined: the class of an object made in the caller is known, D1053; not built: a call not inlined still boxes a number and tests the class at run time, and the loop's four `Double` sums wait on one another, 78 ms against the old compiler's 51)
-- A test against a value a list never holds is decided while compiling
+- A test against a value a list never holds is decided while compiling (measured 2026-10-25: 28.4 ms against the old compiler's 26.8; needs the proof "a list only its class fills holds only what it fills")
 - A table filled once is read as constants (built for an object its own function makes, or a call run while compiling makes, followed through every path and loop, D1041, D1042; not built: an object a singleton holds, made in another function, is never known, so a table a singleton fills once is read at run time)
 - Maths on constants is worked out while compiling (built: whole numbers in the high representation, and every call, decimal operation and maths function on constants in the lowered program, D784, followed through every path and loop of a function, D1041; not built: a call is run on at most 100 000 instructions (D1047), so a whole case over a hundred thousand points is not answered while compiling, and an object a singleton holds is never known)
 - The whole-function evaluation (D1041 to D1046) makes three cases slower than before it: `the_thread_pool_only_where_a_parallel_is_made` 8.7 to 11.1 ms, `a_crashs_report_is_kept_out_of_the_way` 23.5 to 27.3 ms, `copies_that_cost_nothing` 48.9 to 53.1 ms; find which rewrite (an unrolled loop, a constant written before its instruction) costs them and keep it out there
 - A call is copied for its known arguments only when it passes a known closure (D1043): a callee given known numbers or a known object without a function in it is not copied, and a loop is unrolled only when no loop is nested in it
-- A binary schema is a constant
+- A binary schema is a constant (measured 2026-10-25: 2.1 ms against the old compiler's 1.2)
 - Identical functions are folded into one
 
 ### The memory, the placement and the copies
@@ -219,18 +219,17 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - Short text lives inside the `String` (D789): a text whose `String` keeps other attributes is still two allocations
 - A slice shares its source's bytes where the source outlives it and neither changes (texts can change in place through `append_code` and an append, so it needs that proven first)
-- `List.join` copies every `String` item with `to_string()` before it appends it, one allocation per item that an append of the item itself would not need
 - Short symbols are inline text
 - A foreign name is never copied
 - Crash text out of the binary
 - A number's bits are read in place (built for a read at offset 0 of the number's own width, D786, D791 and D805; not built: a read of part of a number's bytes, or at another offset)
 - A decimal literal beside a `Float` is a `Float` (built: the literal is a `Float` and decimals live in decimal registers, D971; not built: a sum of decimals in a loop is never reassociated or vectorised, which needs a proof that every partial sum is exact, so `a_decimal_literal_beside_a_float_is_a_float` waits on one addition after another, about 16 times expert C)
-- Arithmetic is checked in every build
+- Arithmetic is checked in every build (measured 2026-10-25: 38.6 ms against the old compiler's 19.8)
 - Arithmetic a range proves is not checked (built in the proof `proofs/ranges`; not built: a total that adds at most one term a pass, a counter stepped down under `>` or `>=`, a loop local other than a counter keeping the range of what it is assigned, a `-` in front reported as a negation)
 - A loop over plain values reads its count once and its items unchecked (built: the count and the storage read once before the loop when it writes only number items, and the bound test dropped under the loop's own signed test, D972, D973; not built: a `set_at` into another list still tests that list's count each pass, and the loop is never vectorised nor fused with the next loop over the same list)
 - A proven read tests only its bounds (built for a library `List` of numbers or objects; not built: `Vector`, `Items`, a list of `T?` items, unions or function values)
-- A walked `crash` line's read is the row's read
-- Boxing only where a value travels as a shape
+- A walked `crash` line's read is the row's read (measured 2026-10-25: 92 ms against the old compiler's 50)
+- Boxing only where a value travels as a shape (measured 2026-10-25: 57 ms against the old compiler's 17: each `to_string()` through `Printable` makes its text)
 - A function value describes its arguments when asked (built: a function value made and called in one loop is a direct call, inlined, D1052; not built: a function value passed in from outside the function, or one of several functions, is still called through its address)
 - Defaults the constructor replaces are never made: done for a quiet default the constructor assigns before reading it; a default some other making (a deep copy, a reader) overwrites is still made
 - Proofs that survive a call
@@ -258,8 +257,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A reload compiles only the classes that changed
 - What a `--hot-reload` build carries so its objects can move
 - The fault handler is in every program
-- A crash's report is kept out of the way
-- Smaller ones
+- A crash's report is kept out of the way (measured 2026-10-25: 27.7 ms against the old compiler's 13.4): after `crash values[pick]` the read `values[pick]` still tests its bound again, though the proof `bounds_proven_by_signed_tests` now takes a passed unsigned test of the same values as proof; find which round of the cleaning sees the two tests apart
+- Smaller ones (measured 2026-10-25: 45 ms against the old compiler's 26)
 - Other optimisations
 
 ### The machine code (D771 to D775 are built)
