@@ -297,10 +297,10 @@ cover and the vector fit, D1101 and D1102);
 the objects and lists in the frame, the singletons made at the start and the bounds a signed test proves are proofs
 of their own (D1121, D1122), but the lowering's other proofs are still made inside it (D1124): the counts it leaves
 out (an argument its caller holds, an attribute a call cannot assign, a template's element, an item written back, a
-held, tested or used item, an address keeping its owner), the thread reach and the singleton forms of `Waits` and
-`SingletonForms`, and a loop's coarse lock, since each reads the high representation after the high passes or what
-the lowering resolved while writing the function; and the facts the low passes `unread_objects`, `known_headers` and
-`compile_time_evaluation` find stay in them, since each is the optimisation itself.
+held, tested or used item, an address keeping its owner), since each reads what the lowering resolved while
+writing the function (its locals, its scopes, the registers it holds); the facts the low passes `unread_objects`,
+`known_headers` and `compile_time_evaluation` find stay in them, since each is the optimisation itself; the thread
+reach, the singleton forms and a loop's coarse lock go with the decisions at the start of the lowering (D1111).
 
 ### Presence and control flow
 
