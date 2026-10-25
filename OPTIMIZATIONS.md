@@ -120,9 +120,13 @@ list of that class (`_write_value` or `_forget_value` on it, followed through ev
 list itself is a steady path (a name, `this`, a singleton or attributes no call assigns), and the index and the
 call's arguments are plain reads: the slot holds the item for the whole call.
 
+The same holds for an item passed as an argument: `length_of(tracks[at])`, after `crash tracks[at]`, passes the
+track as it is in its slot when the call cannot write an item of a list of that class, the list is a steady path,
+and every argument of the call is a plain read or such an item read.
+
 **When it does not apply:** to an item read without its `crash` (the read may be missing), to a call that may write
-a list of that class or reach a `drop()` that does, to arguments that are calls, and in a function that waits. The
-item is then counted for the call as before.
+a list of that class or reach a `drop()` that does, to arguments that are calls, to a call through a function
+value, and in a function that waits. The item is then counted for the call as before.
 
 **What a program can observe:** nothing but time.
 
@@ -181,6 +185,27 @@ make a `Customer` and a `List<Line>` makes neither
 
 The trimmed defaults are decided by the high pass `high_optimization_passes/replaced_defaults`, which records them
 for the lowering.
+
+## A deep copy is written per class, with a table only where a graph needs one
+
+The builder writes each class's `copy()` and `deep_copy()` (`high_intermediary_representation/building/copying.spite`)
+when the class declares none: a new object made with no defaults, and every attribute assigned from the original,
+through its own class's `deep_copy()` for an object, a union or a shape, and as it is for a number, a `String` or a
+singleton. Only a class whose attributes can reach the class itself again copies through a table
+(`Spite.CopyTable`), made for that call, which remembers every object copied so a graph is copied with its shape;
+every other class's copy is a plain sequence of copies and stores, with no table, no lookup and nothing remembered.
+
+```spite
+var id = 0
+var customer = Customer("", 0)
+var lines = List<Line>()
+```
+
+`orders.deep_copy()` on a `List<Order>` copies each order, its customer and its lines through their own functions,
+with no table, since nothing an `Order` holds leads back to an `Order`.
+
+**When it does not apply:** a class that declares its own `deep_copy()` is copied through it. **What a program can
+observe:** nothing but time and allocations: the copy is what [the rule](https://github.com/Spite-Language/spite_spec/blob/master/specs/memory.md) says.
 
 ## Arithmetic a range proves is not checked
 
@@ -437,13 +462,13 @@ user can observe: the time.
 
 ## A list item read only to test it is not counted
 
-`list[index] is present` on a library `List` or `Vector` of items that cannot be null is the test
+`list[index] is present` on a library `List`, `Vector` or `Items` of items that cannot be null is the test
 `index < count`, compared as unsigned so a negative index is outside too: the item is never read, so it is never
 counted and let go. `crash velocities[entity] and healths[entity]` is two such tests, and its report, made only when
 one fails, reads the items as before.
 
 What a user can observe: the time. When it does not apply: a list of nullable items (an item there can be missing
-inside the bounds), `Items`, a `Dictionary`, and any other function than `get_at`.
+inside the bounds), a `Dictionary`, and any other function than `get_at`.
 
 ## A singleton a function answers is not counted
 
@@ -458,6 +483,11 @@ atomically on every call (about 180 ms); now it is one load (about 135 ms).
 When it does not apply: a function whose declared answer is a union, a shape or a nullable of anything else, even
 when it answers a singleton: its callers count what any member of the type could be. What a user can observe: the
 time.
+
+A local declared from a singleton (`var rules = Rules()`, or from a call answering one) and never assigned again
+is not counted either: it is the singleton, read as it is and let go of nothing when its block ends. A local of a
+union or a shape that holds a singleton, one assigned again, and one in a step of a `Concurrent` work count it as
+before.
 
 ## Letting go of an object counts down in place
 
@@ -552,6 +582,9 @@ threads the number of the thread that owns it.
   memory twice stops with `the program freed the same memory twice`, freeing or resizing a pointer the allocator
   never handed out stops with `the program freed memory it never allocated` (or `resized`), a size past 2^40 bytes
   stops with `the program ran out of memory`, and so does a failed chunk.
+
+Nothing counts the blocks: no counter is kept beside an allocation or a free, and only a `--debug-memory` build
+keeps the two counts it reports at exit.
 
 **When it does not apply:** a program that allocates nothing carries none of it; blocks above 1016 bytes are the
 system heap's; in a program with threads every allocation and free is a call (no inline fast path yet).
@@ -1290,12 +1323,12 @@ never made: its items are written into room in the function's frame (`FrameRoom`
 items written, and `list[index]` tests the index against that number and loads the item from the room. No list, no
 buffer and no count is allocated, so nothing is freed either.
 
-**When it applies:** to a literal of whole numbers (any `Integer`, `Long`, `Byte`... list that is not nullable),
-of at most 4096 bytes, kept in a local that is never assigned again, and whose every use in the function is
+**When it applies:** to a literal of numbers (any `Integer`, `Long`, `Byte`, `Float`, `Double`... list that is
+not nullable), of at most 4096 bytes, kept in a local that is never assigned again, and whose every use in the function is
 `count()`, `list[index]` (read, tested with `crash`, `assert` or `if`), or the literal itself. A list passed to a
 call, answered, kept in an attribute, appended to, read by any other function of `List`, or held by a function
 that waits is made as before, and so is a list whose name the function declares more than once (in two blocks,
-say). A list of decimals or objects is made as before. The proof is `proofs/lists_in_the_frame`
+say). A list of objects or texts is made as before. The proof is `proofs/lists_in_the_frame`
 ([local and variadic lists in the frame](PROOFS.md#local-and-variadic-lists-in-the-frame)), which records the count
 on the list's declaration for the lowering.
 
@@ -2418,6 +2451,34 @@ is made (`singletons_made_on_first_use_never_counted` went from 0.53 s to 0.016 
 **What a program can observe:** nothing but time. A singleton read through an attribute is made at its first read
 instead of when the object holding it is made, which nothing tells apart, since making it does nothing a program
 sees; `--debug-memory` counts the same allocations. A fault while making it reports as before.
+
+## A singleton that holds nothing is a static object
+
+A singleton class of the program with no attributes, no `drop()`, no `back` references, and a constructor and
+defaults that take nothing and do nothing (or none at all) is one object written into the executable's data: its
+class number and a count that never reaches zero. A read of it is the address of that object: no slot to load, no
+test that it is made, no making function, no allocation and nothing let go at exit. Its functions are called on
+that object as on any other, and a test of its class reads the class number as before.
+
+```spite
+singleton
+
+func doubled(value: Integer): Integer {
+    return value * 2
+}
+```
+
+`Doubler().doubled(21)` is the address of a constant object and a call (or, inlined, one addition).
+
+The high pass `high_optimization_passes/static_singletons` records the classes (`HighProgram.static_singletons`),
+and the lowering writes the object once per class in the data and its address wherever one is made.
+
+**When it does not apply:** a singleton with an attribute (even one only its defaults set), a `drop()`, a
+constructor that takes arguments or has any statement, the entry class, and every singleton in a `--repl`,
+`--repl-port` or `--hot-reload` build, which is made on first use as before.
+
+**What a program can observe:** one allocation fewer under `--debug-memory` for each such singleton the program
+uses. Nothing else: making it did nothing a program sees, and it is never let go.
 
 ## Thread safety for singletons, the cheapest safe form
 
