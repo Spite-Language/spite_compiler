@@ -29,6 +29,29 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 2026-10-24, with what was built since). Where a proof is partly built and what is missing could let a wrong program through, the section says
 **fails silently**: that is a D244 bug and its `TODO.md` line comes first.
 
+## What the builder records for the proofs
+
+The builder decides what each piece of code is (the type of every read, which branch of a decided condition is
+compiled), so the facts that decide a type stay in it: narrowing, the bounds and counts that make a `[]` read a `T`,
+and the conditions it folds. What it no longer does is refuse: where a proof needs what the builder resolved, the
+builder records the site, with that data, in its context (`HighProgram.context`), and builds on as if the code were
+right; the proof judges every recorded site after the build, in the order they were built, with the same validator and
+the same text. A refused program never reaches the lowering, so what the builder made past a recorded site is never
+used.
+
+| Site | Recorded by | What it holds | Judged by |
+|---|---|---|---|
+| `StatementSite` | `statements.spite` (`note_a_block`, `note_a_statement`), every block entered and left and every statement of the program's own code, before it is built | the statement list and index, the blocks around it, the line, and a `ScopeView`: every name in scope with its internal name, its narrowed type and its declared type | `proofs/lost_writes`, `proofs/borrowed_items` |
+| `PresenceSite` | `values.spite` (`note_a_maybe_null`, `note_a_maybe_null_type`), `statements.spite` (`note_a_maybe_boolean`) | a value that may be null where a value is needed: its type, the value (for the list read it came from), what was wanted, the member or operator | `proofs/present_values` |
+| `CheckSite` | `statements.spite` (`note_a_proven_check`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`, `note_a_narrowed_copy`) | the check written and what the scope says already proved it, the checked type, the copy and its source | `proofs/proven_checks` |
+| `CheckSite` | `statements.spite` (`note_an_undone_loop_check`, `note_an_undone_path`) | a path assigned a value that may be null inside a loop: whether it was narrowed before the loop and read in it, or whether the end of the body left it narrowed | `proofs/loop_narrowings` |
+| `GuardSite` | `statements.spite` (`default_return`, `note_a_terminal_if`) | a guard `assert` with no "nothing" to answer, or an `if` that may be the last statement | `proofs/guard_asserts` |
+| `ParallelSite` | `values.spite` (`handle_value`, `member_call`) | a `Parallel(...)` or a `parallel_each_` call, the block around it and a `ScopeView` | `proofs/parallel_reach` |
+| `SwitchSite`, `VectorSite` | `statements.spite`, `constraints.spite` | a switch's cases and members, a `Vector` made | `proofs/switch_cover`, `proofs/vector_fit` |
+
+`building/function_entry.spite` puts a proof back inside the function of a site (its class, its function, its line,
+and the member a member template binds), so a validator names the same place it named while building.
+
 ## Presence and control flow
 
 ### Narrowing a `T?`
@@ -42,10 +65,11 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Buys**: reads, calls and stores through a `T?` are accepted, and the narrowed read has no test.
 - **Falls back**: refused, "this value may be null (it is a ...), so '...' cannot be read from it yet: narrow it
   first with 'if value { }', 'assert value' or 'crash value'". Put a call's result in a `var` and narrow that.
-- **Lives in**: embedded in the builder, `high_intermediary_representation/building/statements.spite` (`read_facts`,
-  `read_a_fact`, `narrowed_block_of`), `scope.spite` (`narrow`), `values.spite` (`narrowed`, `with_its_links`,
-  `refuse_an_unproven_read`). Narrowing decides the type of every read, so it is made while the high representation
-  is built.
+- **Lives in**: the narrowing itself is building, since it decides the type of every read:
+  `high_intermediary_representation/building/statements.spite` (`read_facts`, `read_a_fact`, `narrowed_block_of`),
+  `scope.spite` (`narrow`), `values.spite` (`narrowed`, `with_its_links`). The refusal of a value that may be null
+  where a value is needed is the proof `proofs/present_values`, which judges every `PresenceSite` the builder
+  recorded (`values.spite`: `note_a_maybe_null`), a `Boolean?` condition among them.
 - **Checked by**: tests/path_narrowing, tests/present_zero, tests/nullable_narrowing, tests/narrowed_path_kept,
   tests/narrowed_read_local, tests/while_narrows, tests/nullable_switch_null_case; conformance/store_through_nullable,
   conformance/path_narrow_else, conformance/sibling_path_unnarrowed, conformance/maybe_boolean_conditions,
@@ -95,9 +119,10 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Falls back**: refused, "assigning to '...' inside this loop undoes a narrowing made before the loop, and the
   next pass would read it unproven: narrow it inside the loop instead"; after the assignment, a read is refused
   until it is proven again.
-- **Lives in**: embedded, `statements.spite` (`assign_a_name`, `assign_an_attribute`, `forget_the_stored_items`,
-  `note_an_undone_loop_proof`, `refuse_what_the_loop_left_undone`), `scope.spite` (`forget`, `forget_below`,
-  `forget_below_the_items`, `keep_present`).
+- **Lives in**: forgetting is building, `statements.spite` (`assign_a_name`, `assign_an_attribute`,
+  `forget_the_stored_items`), `scope.spite` (`forget`, `forget_below`, `forget_below_the_items`, `keep_present`); the
+  refusals in a loop are the proof `proofs/loop_narrowings`, judging what `note_an_undone_loop_check` and
+  `note_an_undone_path` recorded.
 - **Checked by**: tests/narrowed_value_assignment, tests/proof_again_in_loop, tests/narrowing_snapshot_copy,
   tests/loop_narrows_its_local_again; conformance/narrowed_name_reassigned, conformance/path_narrow_assignment,
   conformance/path_narrow_loop, conformance/narrowed_path_undone_below, conformance/narrowed_local_undone_in_loop,
@@ -160,8 +185,8 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
   already answered, the repeated next-line check and an `assert` that folds true are not refused; the plain-value
   refusal covers parameters and attributes, not locals.
 - **Falls back**: the redundant check is kept as a run-time test (harmless), or refused with a less precise text.
-- **Lives in**: embedded, `statements.spite` (`refuse_a_proven_check`, `refuse_a_proven_read_check`,
-  `refuse_a_check_of_a_plain_value`, `note_the_checks`).
+- **Lives in**: the proof `proofs/proven_checks`, judging what `statements.spite` recorded
+  (`note_a_proven_check`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`, `note_the_checks`).
 - **Checked by**: conformance/check_proves_nothing, conformance/known_fact_checked, conformance/proven_element,
   conformance/proven_index_check, conformance/assert_on_plain_value, conformance/leaving_if_proves_nothing.
 
@@ -175,7 +200,8 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Buys**: one name per value.
 - **Missing**: a copy narrowed by an `if not copy` whose block does not leave.
 - **Falls back**: accepted, which is safe: only the style rule is missed.
-- **Lives in**: embedded, `statements.spite` (`note_a_copy`, `refuse_a_copy`, `refuse_a_loop_copy`, `build_switch`).
+- **Lives in**: the proof `proofs/proven_checks`, judging each copy `statements.spite` recorded when the copy is
+  narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `build_switch`).
 - **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions; tests/narrowing_snapshot_copy.
 
 ### A class test narrows its block
@@ -213,7 +239,8 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
   ([failure.md](../SpiteLanguage/specs/failure.md#assert-is-control-flow)).
 - **Buys**: no default a caller cannot tell from a real answer.
 - **Falls back**: refused, "this 'assert' would answer a default ... that a caller cannot tell from a real one ...".
-- **Lives in**: embedded, `statements.spite` (`build_assert`, `default_return`, `refuse_a_terminal_if`), and
+- **Lives in**: the proof `proofs/guard_asserts`, judging every guard `assert` whose function has no "nothing" to
+  answer (`statements.spite`: `default_return`) and every `if` the builder recorded (`note_a_terminal_if`), and
   `validators/abstract_syntax_tree/default_guard`.
 - **Checked by**: conformance/default_answer, conformance/default_answer_boolean, conformance/default_answer_decimal,
   conformance/default_answer_enum, conformance/default_answer_text, conformance/default_guard,
@@ -261,9 +288,10 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
   when its list changed, see the next section).
 - **Falls back**: an unproven read is a `T?`; where a `T` is needed it is refused, "'...' may be missing, since every
   '[ ]' answers a 'T?' ...: ..., or prove the count first, 'crash list.count() > 2'".
-- **Lives in**: embedded, `statements.spite` (`read_a_bound`, `read_a_counted_list`, `read_a_counted_member`,
-  `read_a_turned_bound`, `whole_index_of`, `note_a_counted_list`, `forget_after_a_shrinking_call`), `values.spite`
-  (`index_value`, `proven_by_its_path`).
+- **Lives in**: the proving is building, since it decides whether a read is a `T`: `statements.spite`
+  (`read_a_bound`, `read_a_counted_list`, `read_a_counted_member`, `read_a_turned_bound`, `whole_index_of`,
+  `note_a_counted_list`, `forget_after_a_shrinking_call`), `values.spite` (`index_value`, `proven_by_its_path`); the
+  refusal of an unproven read where a `T` is needed is the proof `proofs/present_values`.
 - **Checked by**: tests/count_bound_proofs, tests/bound_proofs, tests/count_in_name_proves, tests/structural_index,
   tests/proof_again_in_loop, tests/compared_count_proves_read; conformance/index_reads,
   conformance/bound_proofs_undone, conformance/count_proves_no_key, conformance/count_undoes_proof,
@@ -436,8 +464,9 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
   branches are built and checked (D673); a codegen number compared with a literal folds only when one side is a
   call; a function taking a `type` has no copy per class; `x and false` and `x or true` with a run-time left side.
 - **Falls back**: a run-time test of a constant, removed later by constant folding; both branches must compile.
-- **Lives in**: embedded, `statements.spite` (`build_a_decided_if`), `values.spite` (`condition_of`,
-  `folded_logic`, `decided_comparison`, `reflection_question`).
+- **Lives in**: the builder, `statements.spite` (`build_a_decided_if`), `values.spite` (`condition_of`,
+  `folded_logic`, `decided_comparison`, `reflection_question`): deciding a condition is choosing what to build, and
+  the branch not taken is never built, so nothing is left for a proof to judge (D1110).
 - **Checked by**: tests/codegen_member_fold, tests/walked_class_fold, tests/private_walk, tests/codegen_short_circuit,
   tests/codegen_kind_tests, tests/codegen_class_test, tests/build_settings, tests/folded_helpers,
   tests/folded_functions, tests/folded_argument_count.
@@ -634,8 +663,10 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 
 ## Borrowing and lending
 
-These proofs belong to the ownership analysis of the high representation; the refusals are in
-`high_intermediary_representation/building/borrows.spite`, and the counts it saves in the lowering.
+These proofs belong to the ownership analysis of the high representation. The analysis is
+`high_intermediary_representation/building/borrows.spite`; the proof `proofs/borrowed_items` runs it over every
+statement the builder recorded (a `StatementSite`, with the names in scope), and `proofs/lent_parameters` over the
+bodies of the calls it lends to. The counts it saves are in the lowering.
 
 ### Borrowed items of a `Vector` or `Items`
 
@@ -701,9 +732,9 @@ These proofs belong to the ownership analysis of the high representation; the re
 - **Missing**: the uncounted argument; a lent parameter the callee passes on to a function that keeps it; a row's
   attribute is not lent; the unnamed expression refusal; lending to a local function value; variadic positions.
 - **Falls back**: refused, "'...' is borrowed from '...' and lent to '...' for its call ...".
-- **Lives in**: the proof `proofs/lent_parameters` judges the callee's body; the builder records each lent call in
-  the context (`borrows.spite`, `check_the_lent_body`) and refuses a resizing, library or union
-  lend while building the call (embedded: it needs the call's borrows in scope).
+- **Lives in**: the proof `proofs/borrowed_items` refuses a resizing, library or union lend and records each lent
+  call in the context (`borrows.spite`, `check_the_lent_body`); the proof `proofs/lent_parameters`, after it, judges
+  the callee's body.
 - **Checked by**: conformance/lent_to_calls, lent_call_alias, lent_call_function_value, lent_call_kept,
   lent_call_library, lent_call_listed, lent_call_returned, lent_call_union; tests/lent_to_calls, lent_arguments,
   lent_call_written_back, ignored_lent_argument.
@@ -974,7 +1005,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   that never ends inside a locked function, is refused.
 - **Falls back**: refused, "'...' waits for '...' while it holds ...'s lock ...: each would wait for the other
   forever ...". A handle passed or returned is not judged.
-- **Lives in**: `high_intermediary_representation/building/thread_reach.spite`.
+- **Lives in**: the proof `proofs/parallel_reach` (`thread_reach.spite`), judging every `ParallelSite`.
 - **Checked by**: conformance/locked_wait, conformance/endless_locked_loop; tests/locked_waits,
   tests/locked_bare_return.
 
@@ -985,7 +1016,8 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   it is refused when nothing in it waits.
 - **Missing**: in `Parallel` work "waits" is "calls nothing but the console", not the waits fact.
 - **Falls back**: refused, "this 'while true' never ends: ...".
-- **Lives in**: `validators/abstract_syntax_tree/spinning_loop`, `thread_reach.spite` (`refuse_endless_work`).
+- **Lives in**: `validators/abstract_syntax_tree/spinning_loop`, and the proof `proofs/parallel_reach`
+  (`thread_reach.spite`: `refuse_endless_work`).
 - **Checked by**: conformance/spinning_loop, conformance/endless_parallel_work; tests/parallel_loop_that_leaves.
 
 ### A poll that nothing steps is an error
@@ -1003,7 +1035,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Rule**: a write to a local only this function holds (a constructor's result, a copy, an always-new result),
   never read after it, is refused ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Falls back**: not refused where the always-new answer comes from another class.
-- **Lives in**: `high_intermediary_representation/building/lost_writes.spite`.
+- **Lives in**: the proof `proofs/lost_writes`, judging every assignment the builder recorded (a `StatementSite`).
 - **Checked by**: conformance/lost_writes.
 
 ### A name read from a list, assigned and never read, is an error
@@ -1011,7 +1043,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: a local read from a list item, then assigned as its last mention, is refused: the list still holds the
   old item ([memory.md](../SpiteLanguage/specs/memory.md#assigning-a-name-read-from-a-list-changes-only-the-name)).
-- **Lives in**: `lost_writes.spite` (`check_a_replaced_item`).
+- **Lives in**: the proof `proofs/lost_writes` (`check_a_replaced_item`).
 - **Checked by**: conformance/replaced_items, conformance/memory_replaced_branch,
   conformance/memory_replaced_answered, conformance/memory_replaced_unwritten; tests/memory_replaced_allowed.
 
@@ -1025,7 +1057,8 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Falls back**: refused, "'...' runs '...' on another thread, so it may reach only ...", or "'Parallel(kept.bump)'
   writes 'count' of this 'Counter' on another thread while this thread may write it too, so one write would be lost
   ...".
-- **Lives in**: `high_intermediary_representation/building/parallel_reach.spite`.
+- **Lives in**: the proof `proofs/parallel_reach` (`work_reach.spite`), judging every `Parallel` and `parallel_each_`
+  call the builder recorded (a `ParallelSite`).
 - **Checked by**: conformance/parallel_reach, parallel_function_reach, parallel_handover, parallel_shared_writes,
   parallel_shared_value_writes, parallel_held_value_writes, parallel_each_reach_through_call,
   parallel_each_after_map, parallel_each_numbers, foreign_callback_thread_reach; tests/parallel_work,

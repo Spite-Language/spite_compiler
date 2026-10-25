@@ -61,19 +61,34 @@ the builder's context through `HighProgram.context` (the model, the symbol table
 
 ### The proofs, in order
 
-1. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.
-2. `vector_fit`: every `Vector` the builder recorded making holds a class that fits one.
-3. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
-4. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
+1. `present_values`: a value that may be null (an unnarrowed `T?`, an unproven `[]` read) is never used where a
+   value is needed.
+2. `proven_checks`: no check repeats what is already proven, no `assert` or `crash` checks a plain value, and no
+   copy is made only to narrow it.
+3. `loop_narrowings`: an assignment inside a loop does not undo a narrowing the next pass reads.
+4. `guard_asserts`: a guard `assert` answers only "nothing", and a last `if` is not a hidden guard.
+5. `lost_writes`: a write to an object only this function holds is read, and a name read from a list is not
+   assigned as its last mention.
+6. `borrowed_items`: a borrowed item is not kept, listed, returned, renamed or read past a resize, and is lent only
+   to a program function by name (it records each lent call for `lent_parameters`).
+7. `parallel_reach`: a `Parallel` work or a `parallel_each_` member reaches only what it may, and no lock waits
+   forever.
+8. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.
+9. `vector_fit`: every `Vector` the builder recorded making holds a class that fits one.
+10. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
+11. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
    answer that would decide itself.
-5. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
-6. `every_attribute_is_read`: an attribute nothing reads is a compile error.
-7. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
-8. `registered_in_setup`: a stage's `register` is called only from its setup.
-9. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
+12. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
+13. `every_attribute_is_read`: an attribute nothing reads is a compile error.
+14. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
+15. `registered_in_setup`: a stage's `register` is called only from its setup.
+16. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
    facts on the operations).
-10. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
+17. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
+
+The first seven judge the sites the builder recorded while building, each with what it resolved there (the names in
+scope with their narrowed types, the block and the statement's place in it); `PROOFS.md` lists the sites.
 
 ### The high passes, in order
 

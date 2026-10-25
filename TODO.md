@@ -289,12 +289,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 What each proof still lacks; `PROOFS.md` has the whole of each. A line marked "fails silently" lets a wrong program
 through (D244) and comes first. Every proof still made inside a step or another pass moves into its own pass in
-`proofs/` (D1086): narrowing and what undoes it, the bounds and counts, the conditions decided while building, the
-guard `assert`, the borrows other than the lent bodies, the `Parallel` and thread
-reach and the lost writes are embedded in the builder, since each reads the builder's scope or the block being built
-(D1094: the builder records each site with what it resolved, for a proof to judge after, as it does for the switch
-cover and the vector fit, D1101 and D1102);
-the frame and placement proofs are embedded in the lowering and in `object_placement`.
+`proofs/` (D1086): the frame and placement proofs are embedded in the lowering and in `object_placement`; the
+builder's other refusals (endings, a divisor written as zero, a wider operand, an unstepped poll, a folded build
+crash) are still made while building. The borrow analysis the proofs `borrowed_items` and `lent_parameters` run is
+still `building/borrows.spite`, shared with the builder's `lends` (D1107).
 
 ### Presence and control flow
 

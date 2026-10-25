@@ -10,8 +10,7 @@ var facts_paths = List<String>()
 var facts_types = List<Model.Type>()
 var facts_checks = List<String>()
 var endings = Endings()
-var lost_writes = LostWrites()
-var borrows = Borrows(context)
+var next_is_a_loop = false
 var template_walks = TemplateWalks()
 var rest_is_folded_away = false
 var enclosing_blocks = List<EnclosingBlock>()
@@ -30,7 +29,6 @@ var missing_links = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
 func Statements(starting_context: Context) {
     context = starting_context
     values = Values(starting_context)
-    borrows = Borrows(starting_context)
 }
 
 func block_of(written: AbstractSyntaxTree.Shapes.Statements.Block?): HighIntermediaryRepresentation.Statements.Block {
@@ -69,24 +67,46 @@ func build_all(written: List<AbstractSyntaxTree.Shapes.Statements.Statement>) {
         enclosing_blocks.append(enclosing)
     }
     context.block_statements = written
-    borrows.enter(written)
+    note_a_block("enter", written)
+    var library = Validators.LibraryFile()
+    var path = context.path()
+    var is_the_program = not library.holds(path)
     var index = 0
     while index < written.count() and not rest_is_folded_away {
         var statement = written[index]
         context.block_index = index
-        lost_writes.check(context, written, index, enclosing_blocks)
-        borrows.check(index)
+        if is_the_program {
+            note_a_statement(written, index)
+        }
         build(statement)
         context.block_statements = written
         index = index + 1
     }
-    borrows.leave()
+    note_a_block("leave", written)
     if pushed {
         enclosing_blocks.remove_last()
     }
     context.block_statements = outer_statements
     context.block_index = outer_index
     rest_is_folded_away = false
+}
+
+# ../../PROOFS.md#what-the-builder-records-for-the-proofs
+func note_a_block(kind: String, written: List<AbstractSyntaxTree.Shapes.Statements.Statement>) {
+    var site = StatementSite(kind, written, 0)
+    site.is_a_loop = next_is_a_loop
+    next_is_a_loop = false
+    context.statement_sites.append(site)
+}
+
+func note_a_statement(written: List<AbstractSyntaxTree.Shapes.Statements.Statement>, index: Integer) {
+    var site = StatementSite("statement", written, index)
+    site.owner = context.current_class
+    site.function = context.current_function
+    site.line = context.line
+    site.enclosing = enclosing_blocks.copy()
+    site.view = context.scope.view()
+    context.statement_sites.append(site)
 }
 
 func narrowed_block_of(
@@ -120,7 +140,7 @@ func loop_body_of(
     context.scope.enter()
     narrow_all(paths, types)
     note_the_loop_checks(paths, notes)
-    borrows.next_is_a_loop = true
+    next_is_a_loop = true
     build_all(written.statements)
     refuse_what_the_loop_left_undone()
     context.scope.leave()
@@ -388,7 +408,7 @@ func last_line_of(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDe
     return last.line
 }
 
-func refuse_a_maybe_boolean(
+func note_a_maybe_boolean(
     condition: AbstractSyntaxTree.Shapes.Expressions.Expression?,
     linked: AbstractSyntaxTree.Shapes.Expressions.Expression?,
 ) {
@@ -402,8 +422,8 @@ func refuse_a_maybe_boolean(
     context.scope.leave()
     var value = values.result_of_handle(written_value)
     var tested = value.value_type
-    assert tested.is_nullable and tested.kind == 'scalar' and tested.name == "Boolean"
-    typing.refuse_maybe_boolean(context)
+    var site = PresenceSite("boolean", context, tested)
+    context.presence_sites.append(site)
 }
 
 func refuse_a_false_build_field(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement) {
@@ -470,44 +490,51 @@ func folded_unheld_crash(
     return HighIntermediaryRepresentation.Values.Negation(unheld)
 }
 
-func refuse_a_copy(fact_path: String) {
+# ../../PROOFS.md#a-copy-made-to-narrow-is-an-error
+func note_a_narrowed_copy(fact_path: String) {
     var source = context.scope.copied_sources[fact_path]
     assert source
     var written_name = context.scope.copied_names[fact_path]
     var line = context.scope.copied_lines[fact_path]
     crash written_name
     crash line
-    context.line = line
-    typing.refuse_copy_to_narrow(context, written_name, source)
+    var site = CheckSite("copy", context)
+    site.source = source
+    site.written = written_name
+    site.line = line
+    context.check_sites.append(site)
 }
 
-func refuse_a_loop_copy(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+func note_a_loop_copy(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
     if condition == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
         var fact_path = identifier_path(condition.name)
-        refuse_a_copy(fact_path)
+        note_a_narrowed_copy(fact_path)
     }
 }
 
-func refuse_a_proven_read_check(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, keyword: String) {
+# ../../PROOFS.md#proving-what-is-proven-is-an-error
+func note_a_proven_read_check(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, keyword: String) {
     if condition == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
         var printer = Printers.Spite.ExpressionPrinter(condition)
         var written = printer.text()
-        var check = context.scope.check_of(written)
-        assert check
-        assert check.starts_with("the loop condition ")
-        typing.refuse_proven_read(context, written, check, keyword)
+        var site = CheckSite("proven read", context)
+        site.written = written
+        site.check = context.scope.check_of(written)
+        site.keyword = keyword
+        context.check_sites.append(site)
     }
 }
 
-func refuse_a_proven_check(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
+func note_a_proven_check(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
     assert is_a_bare_path(condition)
     crash condition
     var printer = Printers.Spite.ExpressionPrinter(condition)
     var written = printer.text()
     var fact_path = path_of(condition, written)
-    var check = context.scope.check_of(fact_path)
-    assert check
-    typing.refuse_proven_check(context, written, check)
+    var site = CheckSite("proven check", context)
+    site.written = written
+    site.check = context.scope.check_of(fact_path)
+    context.check_sites.append(site)
 }
 
 func note_the_checks(keyword: String, condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, line: Integer) {
@@ -522,18 +549,16 @@ func note_the_checks(keyword: String, condition: AbstractSyntaxTree.Shapes.Expre
     }
 }
 
-func refuse_a_terminal_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
-    assert not statement.else_branch and facts_paths.count() > 0
-    assert not context.current_function.answer and is_a_bare_path(statement.condition)
-    var line_of_the_last = last_line_of(context.current_function.declaration)
-    assert line_of_the_last == statement.line
-    var path = context.path()
-    var library = Validators.LibraryFile()
-    assert not library.holds(path)
-    crash statement.condition
-    var printer = Printers.Spite.ExpressionPrinter(statement.condition)
-    var written = printer.text()
-    typing.refuse_terminal_if(context, written)
+# ../../PROOFS.md#a-guard-assert-answers-only-nothing
+func note_a_terminal_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    var site = GuardSite("terminal if", context)
+    site.condition = statement.condition
+    site.statement_line = statement.line
+    if statement.else_branch {
+        site.has_an_else = true
+    }
+    site.proves_something = facts_paths.count() > 0
+    context.guard_sites.append(site)
 }
 
 func note_a_counted_list(name: String, written: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
@@ -774,7 +799,7 @@ func assign_an_attribute(
     var value = values.fitted_value_of(statement.value, attribute.attribute_type)
     var was_narrowed = context.scope.narrowed_type_of(path)
     if was_narrowed and may_be_null(value) {
-        refuse_an_undone_loop_proof(statement, path)
+        note_an_undone_loop_check(statement, path)
     }
     context.scope.forget(path)
     forget_the_printed_path(path)
@@ -800,16 +825,20 @@ func may_be_null(value: HighIntermediaryRepresentation.Values.Value): Boolean {
     return value.value_type.is_nullable
 }
 
-func refuse_an_undone_loop_proof(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement, path: String) {
+# ../../PROOFS.md#assigning-undoes-a-proof
+func note_an_undone_loop_check(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement, path: String) {
+    var site = CheckSite("undone in the loop", context)
     var base = context.loop_bases.last()
-    assert base
-    var frame = context.scope.frame_of(path)
-    assert frame >= 0 and frame < base
-    assert context.loop_reads.contains(path)
+    if base {
+        var frame = context.scope.frame_of(path)
+        site.has_a_loop = true
+        site.is_narrowed_outside = frame >= 0 and frame < base
+    }
+    site.is_read_in_the_loop = context.loop_reads.contains(path)
     crash statement.target
     var printer = Printers.Spite.ExpressionPrinter(statement.target)
-    var written = printer.text()
-    typing.refuse_undone_loop_proof(context, written)
+    site.written = printer.text()
+    context.loop_sites.append(site)
 }
 
 # ../../PROOFS.md#assigning-undoes-a-proof
@@ -836,7 +865,7 @@ func refuse_what_the_loop_left_undone() {
         var undone_depth = context.undone_depths[index]
         crash undone_depth
         if undone_depth == depth {
-            refuse_an_undone_path(index)
+            note_an_undone_path(index)
             context.undone_paths.remove_at(index)
             context.undone_lines.remove_at(index)
             context.undone_texts.remove_at(index)
@@ -846,16 +875,21 @@ func refuse_what_the_loop_left_undone() {
     }
 }
 
-func refuse_an_undone_path(index: Integer) {
+func note_an_undone_path(index: Integer) {
     var path = context.undone_paths[index]
     crash path
-    assert not context.scope.narrowed_type_of(path)
     var line = context.undone_lines[index]
     var written = context.undone_texts[index]
     crash line
     crash written
-    context.line = line
-    typing.refuse_undone_loop_proof(context, written)
+    var site = CheckSite("left undone", context)
+    if context.scope.narrowed_type_of(path) {
+        site.is_still_narrowed = true
+    }
+    site.has_a_loop = true
+    site.written = written
+    site.line = line
+    context.loop_sites.append(site)
 }
 
 func is_present(value: HighIntermediaryRepresentation.Values.Value): Boolean {
@@ -1125,7 +1159,7 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
     var printer = Printers.Spite.ExpressionPrinter(statement.condition)
     var written_condition = printer.text()
     statement.condition = values.with_its_links(statement.condition)
-    refuse_a_maybe_boolean(written, statement.condition)
+    note_a_maybe_boolean(written, statement.condition)
     var condition = values.condition_of(statement.condition)
     flush_the_pending()
     if condition == HighIntermediaryRepresentation.Values.WholeNumber {
@@ -1134,7 +1168,7 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
     }
     log_a_value(condition, statement.line)
     read_facts(statement.condition)
-    refuse_a_terminal_if(statement)
+    note_a_terminal_if(statement)
     var paths = facts_paths
     var types = facts_types
     var then_branch = narrowed_block_of(statement.then_branch, paths, types)
@@ -1155,29 +1189,24 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
     }
 }
 
-func refuse_a_check_of_a_plain_value(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, keyword: String) {
+func note_a_check_of_a_plain_value(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, keyword: String) {
     if condition == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        refuse_a_check_of_a_plain_name(condition, keyword)
+        note_a_check_of_a_plain_name(condition, keyword)
     }
 }
 
-func refuse_a_check_of_a_plain_name(
+func note_a_check_of_a_plain_name(
     condition: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
     keyword: String,
 ) {
     var is_declared_plainly = is_a_parameter(condition.name) or context.current_class.attribute_named(condition.name)
     assert is_declared_plainly
     var written_value = values.value_of(condition, null)
-    var is_converted = written_value == HighIntermediaryRepresentation.Values.Conversion
-    var library = Validators.LibraryFile()
-    var path = context.path()
-    var is_generated = path.contains("/.spite/")
-    assert not is_converted and not library.holds(path) and not is_generated
-    var checked_type = written_value.value_type
-    var is_plain = checked_type.kind == 'object' or checked_type.kind == 'union' or checked_type.kind == 'shape'
-    assert is_plain and not checked_type.is_nullable
-    var shown = context.shown(checked_type)
-    typing.refuse_a_check_of_a_plain_value(context, shown, keyword)
+    var site = CheckSite("plain value", context)
+    site.is_converted = written_value == HighIntermediaryRepresentation.Values.Conversion
+    site.checked_type = written_value.value_type
+    site.keyword = keyword
+    context.check_sites.append(site)
 }
 
 func is_a_parameter(name: String): Boolean {
@@ -1278,8 +1307,8 @@ func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement)
     assert not renewed_the_lists(statement)
     template_walks.check(context, statement)
     refuse_an_unstepped_poll(statement)
-    refuse_a_loop_copy(statement.condition)
-    refuse_a_maybe_boolean(statement.condition, statement.condition)
+    note_a_loop_copy(statement.condition)
+    note_a_maybe_boolean(statement.condition, statement.condition)
     var base = context.scope.narrowed.count()
     context.loop_bases.append(base)
     var log_start = context.logged_calls.count()
@@ -1990,9 +2019,9 @@ func build_inner_block(statement: AbstractSyntaxTree.Shapes.Statements.Block) {
 }
 
 func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatement) {
-    refuse_a_proven_check(statement.condition)
-    refuse_a_proven_read_check(statement.condition, "assert")
-    refuse_a_check_of_a_plain_value(statement.condition, "assert")
+    note_a_proven_check(statement.condition)
+    note_a_proven_read_check(statement.condition, "assert")
+    note_a_check_of_a_plain_value(statement.condition, "assert")
     var written_condition = statement.condition
     statement.condition = values.with_its_links(statement.condition)
     var condition = values.condition_of(statement.condition)
@@ -2218,114 +2247,10 @@ func default_return(
         var empty = values.default_of_a_type(answer)
         return HighIntermediaryRepresentation.Statements.Return(empty)
     }
-    var shown = plain_type_name(full_name)
-    var condition_text = ""
-    var opposite = ""
-    if written_condition {
-        var printer = Printers.Spite.ExpressionPrinter(written_condition)
-        condition_text = printer.text()
-        opposite = printer.opposite_text()
-    }
-    var default_shown = default_value_shown(answer)
-    var chosen = chosen_answer_text(answer)
-    typing.refuse_default_answer(context, shown, default_shown, chosen, condition_text, opposite)
+    var site = GuardSite("default", context)
+    site.condition = written_condition
+    context.guard_sites.append(site)
     return HighIntermediaryRepresentation.Statements.Return(null)
-}
-
-func plain_type_name(full_name: String): String {
-    if full_name.contains("<") {
-        return full_name
-    }
-    return last_part_of(full_name)
-}
-
-func default_value_shown(answer: Model.Type): String {
-    if answer.kind == 'scalar' {
-        return default_scalar_shown(answer.name)
-    }
-    if answer.kind == 'enumeration' {
-        return first_enum_value_shown(answer)
-    }
-    if answer.kind == 'object' and answer.name == "String" {
-        return "\"\""
-    }
-    return "an object with every attribute at its default"
-}
-
-func first_enum_value_shown(answer: Model.Type): String {
-    var made = values.enum_model_of(answer)
-    var first_value = made.values.first()
-    crash first_value
-    return "'{first_value}'"
-}
-
-func default_scalar_shown(name: String): String {
-    if name == "Boolean" {
-        return "false"
-    }
-    if name == "Float" or name == "Double" {
-        return "0.0"
-    }
-    return "0"
-}
-
-func chosen_answer_text(answer: Model.Type): String {
-    if answer.kind == 'scalar' {
-        return chosen_scalar_text(answer.name)
-    }
-    if answer.kind == 'enumeration' {
-        return first_enum_value_shown(answer)
-    }
-    if answer.kind == 'object' and answer.name == "String" {
-        return "\"\""
-    }
-    if answer.kind == 'object' {
-        return chosen_object_text(answer)
-    }
-    return ""
-}
-
-func chosen_scalar_text(name: String): String {
-    if name == "Boolean" {
-        return "false"
-    }
-    if name == "Float" or name == "Double" {
-        return "-1.0"
-    }
-    if name.starts_with("Unsigned") or name == "Byte" or name.contains("Address") {
-        return ""
-    }
-    return "-1"
-}
-
-func chosen_object_text(answer: Model.Type): String {
-    if context.current_class.bound_types.count() > 0 {
-        return ""
-    }
-    if not context.has_a_class(answer) {
-        return ""
-    }
-    var model = context.class_of(answer)
-    if model.is_singleton or model.bound_types.count() > 0 {
-        return ""
-    }
-    if made_with_arguments(model) {
-        return ""
-    }
-    var simple = last_part_of(model.shown)
-    return "{simple}()"
-}
-
-func made_with_arguments(model: Model.ClassModel): Boolean {
-    var index = 0
-    while index < model.declared_functions.count() {
-        var function = model.declared_functions[index]
-        if function.is_constructor and function.parameters.count() > 0 {
-            return true
-        }
-        index = index + 1
-    }
-    return false
 }
 
 func is_a_collection(answer: Model.Type, shown: String): Boolean {
@@ -2357,9 +2282,9 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
         stopping.each(add)
         return
     }
-    refuse_a_proven_check(statement.condition)
-    refuse_a_proven_read_check(statement.condition, "crash")
-    refuse_a_check_of_a_plain_value(statement.condition, "crash")
+    note_a_proven_check(statement.condition)
+    note_a_proven_read_check(statement.condition, "crash")
+    note_a_check_of_a_plain_value(statement.condition, "crash")
     refuse_a_false_build_field(statement)
     var identity = identity_of_a_site(statement.condition, "|crash")
     var written = statement.condition
@@ -3215,7 +3140,7 @@ func build_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatemen
     var printer = Printers.Spite.ExpressionPrinter(statement.value)
     var path = printer.text()
     if subject.value_type.is_nullable {
-        refuse_a_loop_copy(statement.value)
+        note_a_loop_copy(statement.value)
     }
     check_the_case_kinds(statement, subject.value_type)
     if is_closed(subject.value_type) {
@@ -3686,7 +3611,7 @@ func read_a_fact(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
     var path = printer.text()
     var present = value.value_type.present()
     var fact_path = path_of(condition, path)
-    refuse_a_copy(fact_path)
+    note_a_narrowed_copy(fact_path)
     facts_paths.append(fact_path)
     facts_types.append(present)
 }

@@ -121,9 +121,8 @@ func fitted(
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'nullable', value)
     }
     if same_base and given.is_nullable {
-        refuse_an_unproven_fit(value, wanted)
-        var shown = context.shown(given)
-        typing.refuse_maybe_null(context, shown)
+        note_a_maybe_null("fit", value, "", wanted)
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'proven', value)
     }
     if wanted.is_nullable and not given.is_nullable and wanted.kind == 'scalar' and given.kind == 'scalar' {
         var present = wanted.present()
@@ -156,7 +155,7 @@ func fitted(
     }
     if wanted.kind == 'shape' and given.kind != 'shape' {
         if given.is_nullable {
-            refuse_a_null_that_cannot_answer(value, wanted)
+            note_a_maybe_null("shape", value, "", wanted)
         }
         var present = given.present()
         filled_shape(present, wanted)
@@ -1149,9 +1148,8 @@ func member_value(
         return shape_call(shaped, read_name, none_written)
     }
     if target.value_type.is_nullable {
-        refuse_an_unproven_read(target, member.name, "read from")
-        var shown_maybe = context.shown(target.value_type)
-        typing.refuse_maybe_null_member(context, shown_maybe, member.name)
+        note_a_maybe_null("member", target, member.name, target.value_type)
+        target = as_present(target)
     }
     var owner = present_class_of(target)
     refuse_a_private_name(owner, member.name)
@@ -2116,8 +2114,7 @@ func named_argument(
 func present_class_of(value: HighIntermediaryRepresentation.Values.Value): Model.ClassModel {
     var value_type = value.value_type
     if value_type.is_nullable {
-        var shown = context.shown(value_type)
-        typing.refuse_maybe_null(context, shown)
+        note_a_maybe_null_type(value_type)
     }
     if not context.has_a_class(value_type) {
         var shown_type = context.shown(value_type)
@@ -2227,8 +2224,9 @@ func handle_value(
 ): HighIntermediaryRepresentation.Values.Value {
     var work = call.arguments[0]
     if name == "Parallel" {
-        var reach = ParallelReach()
-        reach.check(context, work)
+        var site = ParallelSite("work", context)
+        site.work = work
+        context.parallel_sites.append(site)
     }
     var done = work_of(work)
     var handle_type = context.resolver.handle_of(name, done.value_type)
@@ -2828,11 +2826,11 @@ func attribute_function_call(
     var own = this_value()
     var read = HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
     var held = narrowed(read, attribute.name)
-    var held_type = held.value_type
-    if held_type.is_nullable {
-        var shown = context.shown(held_type)
-        typing.refuse_maybe_null(context, shown)
+    if held.value_type.is_nullable {
+        note_a_maybe_null_type(held.value_type)
+        held = as_present(held)
     }
+    var held_type = held.value_type
     return call_through_a_value(held, held_type, call)
 }
 
@@ -2973,7 +2971,8 @@ func member_call(
         return read_enum
     }
     if receiver.value_type.is_nullable {
-        refuse_an_unproven_read(receiver, callee.name, "called on")
+        note_a_maybe_null("call", receiver, callee.name, receiver.value_type)
+        receiver = as_present(receiver)
     }
     var owner = present_class_of(receiver)
     var renewing = context.renews_the_lists and callee.name == "clear" and call.arguments.count() == 1
@@ -2999,9 +2998,10 @@ func member_call(
     }
     var own_function = owner.function_named(callee.name)
     if not own_function and callee.name.starts_with("parallel_each_") {
-        var reach = ParallelReach()
-        reach.check_the_steps(context, callee)
-        reach.check_each(context, owner, callee.name)
+        var site = ParallelSite("each", context)
+        site.callee = callee
+        site.each_owner = owner
+        context.parallel_sites.append(site)
     }
     var fusing = FusedChains(context, this)
     var fused = fusing.fused_step(receiver, owner, callee.name)
@@ -5053,7 +5053,7 @@ func handle_member(
 func union_shape_of(union_type: Model.Type, name: String): Model.ShapeModel {
     var shown = context.shown(union_type)
     if union_type.is_nullable {
-        typing.refuse_maybe_null(context, shown)
+        note_a_maybe_null_type(union_type)
     }
     var united = union_model_of(union_type)
     var key = "{united.key}|{name}"
@@ -5273,7 +5273,7 @@ func shape_call(
 ): HighIntermediaryRepresentation.Values.Value {
     var shown = context.shown(receiver.value_type)
     if receiver.value_type.is_nullable {
-        typing.refuse_maybe_null(context, shown)
+        note_a_maybe_null_type(receiver.value_type)
     }
     var shape = context.program.shape_keyed(receiver.value_type.name)
     crash shape
@@ -6398,55 +6398,28 @@ func is_a_counted_collection(owner: Model.ClassModel): Boolean {
     return not owner.shown.starts_with("Dictionary<")
 }
 
-func refuse_an_unproven_read(value: HighIntermediaryRepresentation.Values.Value, name: String, verb: String) {
-    assert value.value_type.is_nullable
-    if value == HighIntermediaryRepresentation.Values.Call {
-        refuse_an_unproven_call_read(value, name, verb)
-    }
+# ../../PROOFS.md#narrowing-a-t
+func note_a_maybe_null(
+    kind: String,
+    value: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    wanted: Model.Type,
+) {
+    var site = PresenceSite(kind, context, value.value_type)
+    site.value = value
+    site.name = name
+    site.wanted = wanted
+    context.presence_sites.append(site)
 }
 
-func refuse_an_unproven_call_read(read: HighIntermediaryRepresentation.Values.Call, name: String, verb: String) {
-    assert read.index_path != ""
-    var shown = context.shown(read.value_type)
-    typing.refuse_missing_read_member(context, read.index_path, shown, name, verb, read.index_hint)
+func note_a_maybe_null_type(maybe: Model.Type) {
+    var site = PresenceSite("value", context, maybe)
+    context.presence_sites.append(site)
 }
 
-func refuse_an_unproven_fit(value: HighIntermediaryRepresentation.Values.Value, wanted: Model.Type) {
-    assert value.value_type.is_nullable
-    var present = wanted.present()
-    var shown_wanted = context.shown(present)
-    if wanted.kind == 'shape' {
-        var shape = context.program.shape_keyed(wanted.name)
-        crash shape
-        shown_wanted = shape.name
-    }
-    var shown = context.shown(value.value_type)
-    if value == HighIntermediaryRepresentation.Values.Call and value.index_path != "" {
-        typing.refuse_missing_read_needed(context, value.index_path, shown, shown_wanted, value.index_hint)
-    }
-}
-
-func refuse_a_null_that_cannot_answer(value: HighIntermediaryRepresentation.Values.Value, wanted: Model.Type) {
-    var shape = context.program.shape_keyed(wanted.name)
-    crash shape
-    var index = 0
-    var answered = true
-    while index < shape.members.count() {
-        var member = shape.members[index]
-        if not is_answered_by_null(member) {
-            answered = false
-        }
-        index = index + 1
-    }
-    assert not answered and shape.name != "Anything"
-    refuse_an_unproven_fit(value, wanted)
-    var shown = context.shown(value.value_type)
-    typing.refuse_maybe_null_needed(context, shown, shape.name)
-}
-
-func is_answered_by_null(member: Model.FunctionModel): Boolean {
-    var names_it = member.name == "to_string" or member.name == "to_debug"
-    return names_it and member.parameters.is_empty() and not member.is_an_attribute
+func as_present(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
+    var present = value.value_type.present()
+    return HighIntermediaryRepresentation.Values.Conversion(present, 'proven', value)
 }
 
 func absent_stand_in(): Model.Type {
@@ -6747,7 +6720,11 @@ func binary_value(
         }
         return same
     }
-    refuse_a_maybe_operand(binary, left)
+    if is_a_maybe_operand(binary, left) {
+        var symbol = operator_symbol_of(binary)
+        note_a_maybe_null("operand", left, symbol, left.value_type)
+        left = as_present(left)
+    }
     if is_machine_comparable(left.value_type) {
         var fitted_right = fitted(right, left.value_type)
         refuse_a_cut(binary, fitted_right, left.value_type, right.value_type)
@@ -7275,18 +7252,19 @@ func refuse_a_cut_conversion(
     )
 }
 
-func refuse_a_maybe_operand(
+func is_a_maybe_operand(
     binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
     operand: HighIntermediaryRepresentation.Values.Value,
-) {
+): Boolean {
     var operand_type = operand.value_type
     var asks_if_equal = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
     var reads_an_index = binary.left == AbstractSyntaxTree.Shapes.Expressions.IndexExpression
-    assert operand_type.is_nullable and operand_type.kind == 'scalar' and not asks_if_equal and not reads_an_index
-    var shown = context.shown(operand_type)
+    return operand_type.is_nullable and operand_type.kind == 'scalar' and not asks_if_equal and not reads_an_index
+}
+
+func operator_symbol_of(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): String {
     var printer = Printers.Spite.ExpressionPrinter(binary)
-    var symbol = printer.operator_text(binary.operator)
-    typing.refuse_maybe_null_operand(context, shown, symbol)
+    return printer.operator_text(binary.operator)
 }
 
 func changes_only_its_sign(left_type: Model.Type, right_type: Model.Type): Boolean {
@@ -7859,8 +7837,7 @@ func value_call_of(
 ): HighIntermediaryRepresentation.Values.Value {
     var called_type = invoked.value_type
     if called_type.is_nullable {
-        var shown = context.shown(called_type)
-        typing.refuse_maybe_null(context, shown)
+        note_a_maybe_null_type(called_type)
     }
     if written.count() != called_type.parameters.count() {
         var shown_type = context.shown(called_type)
