@@ -294,7 +294,13 @@ guard `assert`, the borrows other than the lent bodies, the `Parallel` and threa
 reach and the lost writes are embedded in the builder, since each reads the builder's scope or the block being built
 (D1094: the builder records each site with what it resolved, for a proof to judge after, as it does for the switch
 cover and the vector fit, D1101 and D1102);
-the frame and placement proofs are embedded in the lowering and in `object_placement`.
+the objects and lists in the frame, the singletons made at the start and the bounds a signed test proves are proofs
+of their own (D1121, D1122), but the lowering's other proofs are still made inside it (D1124): the counts it leaves
+out (an argument its caller holds, an attribute a call cannot assign, a template's element, an item written back, a
+held, tested or used item, an address keeping its owner), the thread reach and the singleton forms of `Waits` and
+`SingletonForms`, and a loop's coarse lock, since each reads the high representation after the high passes or what
+the lowering resolved while writing the function; and the facts the low passes `unread_objects`, `known_headers` and
+`compile_time_evaluation` find stay in them, since each is the optimisation itself.
 
 ### Presence and control flow
 

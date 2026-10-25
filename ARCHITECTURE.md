@@ -46,6 +46,7 @@ registered:
 | Stage | Type | The function |
 |---|---|---|
 | proofs | `Proof` | `check(HighIntermediaryRepresentation.HighProgram)` |
+| proofs (on the low representation) | `LowProof` | `proved(LowIntermediaryRepresentation.LoweredProgram)` |
 | high_optimization_passes | `HighOptimizationPass` | `optimized(HighIntermediaryRepresentation.HighProgram)` |
 | low_optimization_passes | `LowOptimizationPass` | `optimized(LowIntermediaryRepresentation.LoweredProgram)` |
 
@@ -58,6 +59,13 @@ named for the folder and is what the stage registers; a low pass whose work is p
 function, except between the late inlining and `EveryFunction`, where only the functions the late inlining changed).
 A pass that needs more than the representation reads it from the representation: the high passes and proofs read
 the builder's context through `HighProgram.context` (the model, the symbol table, the flags, the facts asked).
+
+A proof whose facts exist only on the low representation (after inlining, say) is a `LowProof`, declared in
+`proofs/proofs.spite` and kept in its own folder of `proofs/` like every proof, but registered among the low passes,
+right before the pass that reads its facts, through `LowOptimizationPasses.Proving(proof)`, whose `optimized` runs
+the proof's `proved`. It records its facts on the representation (`LowFunction.placed_objects`,
+`LowFunction.proven_tests`, `LoweredProgram.made_at_start`), and the pass after it only acts on what was recorded,
+clearing a function's facts once it has, so no fact outlives the round that proved it.
 
 ### The proofs, in order
 
@@ -74,6 +82,20 @@ the builder's context through `HighProgram.context` (the model, the symbol table
    facts on the operations).
 10. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
+11. `lists_in_the_frame`: a local list of whole numbers filled at its own level and then only counted and read by
+   index holds a known count of items (a speed proof: it records the count on the list's declaration,
+   `Declare.frame_items`, which a high pass carries with the statement, and the lowering lays the list out in the
+   frame).
+
+### The low proofs, where they run
+
+1. `singletons_made_at_start`: which singletons the entry class's defaults make on every path, and which functions
+   may run before they end; once, before `made_singletons`.
+2. `objects_in_the_frame`: which objects a function makes never leave it, and how each is placed; before each
+   `object_placement`, so after inlining and compile-time evaluation, and again after the late inlining on the
+   functions it changed.
+3. `bounds_proven_by_signed_tests`: which unsigned bound tests a signed test of the same values already proved, and
+   which sign tests a never negative value decides; before each `proven_bounds`, in every cleaning.
 
 ### The high passes, in order
 
@@ -84,8 +106,8 @@ the builder's context through `HighProgram.context` (the model, the symbol table
 
 ### The low passes, in order
 
-`low_optimization_passes/low_optimization_passes.spite` lists them: the cold reports, the singletons made at the
-start, a first folding and threading, compile-time evaluation, inlining, compile-time evaluation again and the
+`low_optimization_passes/low_optimization_passes.spite` lists them, with the low proofs before the passes that
+read them: the cold reports, the singletons made at the start, a first folding and threading, compile-time evaluation, inlining, compile-time evaluation again and the
 specialised calls; then the placement (known headers, object placement) and the cleaning (twenty-five function
 passes from settling the singletons to the last live values); then direct calls and the late inlining, the placement
 and the cleaning again on the functions it changed; then, on every function again, releasing in place, vector loops,
@@ -175,7 +197,9 @@ A text that is an identity (a type's key, an instance's name) is not printing: i
 
 ## Passes
 
-`<stage>/<name>/<name>.spite` holds the pass's entry class, which fits the stage's type. A unit pass reads one
+`<stage>/<name>/<name>.spite` holds the pass's entry class, which fits the stage's type. What several low passes
+and low proofs read the same way is a reader at the top of `low_optimization_passes/` (`Operands`, `Flow`,
+`BlockEdges`, `SingletonTests`), not part of any one pass. A unit pass reads one
 function or class at a time; a program pass needs the whole program (tree shaking, inlining across classes,
 placement of objects that leave their function). Each optimisation and each proof is a pass of its own (D1086,
 D1087), and nothing that builds a representation also optimises it.
@@ -185,13 +209,15 @@ D1087), and nothing that builds a representation also optimises it.
 `proofs/<what_it_proves>/<what_it_proves>.spite` proves one fact over the whole built high representation and hands
 what breaks it to its validator (D1072). A proof that decides whether code is accepted runs here, after every
 function is built and before any optimisation, so what a program may say never depends on how well it is optimised;
-a proof that only makes code cheaper records its facts for the passes after it. `PROOFS.md` lists every proof, the
+a proof that only makes code cheaper records its facts for the passes after it, where those facts exist: on the
+high representation as a `Proof`, or on the low representation as a `LowProof` run among the low passes. `PROOFS.md` lists every proof, the
 pass that makes it, and the ones still made inside a step or a pass, with why.
 
 ## Memory
 
-- An object lives on the heap and is freed by reference counting (D658); a pass that proves an object never leaves
-  its function places it in the frame instead. The lowering writes every count:
+- An object lives on the heap and is freed by reference counting (D658); where the proof `objects_in_the_frame`
+  records that an object never leaves its function, the pass `object_placement` places it in registers or the frame
+  instead. The lowering writes every count:
   - a value is owned (a new object, a call's answer, a text constant, a box) or borrowed (a read of a local, an
     attribute, a list slot, `this`, a singleton);
   - a place that keeps a value (a local, an attribute, a list slot, a function value's receiver, an answer) retains

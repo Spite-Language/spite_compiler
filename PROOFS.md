@@ -23,7 +23,9 @@ Two kinds of proof run at two places (D1086, D1072). A proof that decides whethe
 high representation once it is built and before any optimisation pass, so what a program may say never depends on
 how well it is optimised. A proof that only makes code **cheaper** runs where its facts exist (after inlining, for
 placing objects in the frame) and records its fact; the optimisation passes read those facts rather than proving
-anything themselves. `ARCHITECTURE.md` lists the order.
+anything themselves. A proof on the low representation is a `LowProof`, in its own folder of `proofs/` like every
+proof, registered among the low passes right before the pass that reads its facts. `ARCHITECTURE.md` lists the
+order.
 
 Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21 are missing (audit of
 2026-10-24, with what was built since). Where a proof is partly built and what is missing could let a wrong program through, the section says
@@ -279,9 +281,9 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Buys**: a wrong or stale proof halts, never reads out of bounds.
 - **Falls back**: "spite: '...' is outside its list: a bound proves only the top of an index, and this one is below 0
   or the list changed, at ...".
-- **Lives in**: `low_intermediary_representation/lowering/list_reads.spite` (`read_the_item`), and the pass
-  `low_optimization_passes/proven_bounds`, which drops the test where a signed test of the same values and a never
-  negative index already prove it.
+- **Lives in**: `low_intermediary_representation/lowering/list_reads.spite` (`read_the_item`), and the low proof
+  `proofs/bounds_proven_by_signed_tests`, whose facts let the pass `low_optimization_passes/proven_bounds` drop the
+  test where a signed test of the same values and a never negative index already prove it.
 - **Checked by**: tests/proven_read_outside.
 
 ### A proven count or bound proves a read of a width
@@ -326,8 +328,11 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Missing**: in the scalar loop a second list keeps its test on every pass (only the vector loop tests once); a
   window read (`values[index + k]`) loses its test only when the registers line up with the loop test.
 - **Falls back**: each read keeps its unsigned test.
-- **Lives in**: the pass `low_optimization_passes/proven_bounds` (`proven_by_a_signed_test`), with
-  `lowering/list_reads.spite`, `low_optimization_passes/loop_invariants` and `low_optimization_passes/vector_loops`.
+- **Lives in**: the low proof `proofs/bounds_proven_by_signed_tests`, run on the low representation before the
+  pass `low_optimization_passes/proven_bounds` in each cleaning, which records on each function the unsigned bound
+  tests a signed test already proved and the sign tests a never negative value decides; the pass only writes what
+  it recorded. With `lowering/list_reads.spite`, `low_optimization_passes/loop_invariants` and
+  `low_optimization_passes/vector_loops`.
 - **Checked by**: tests/counted_loops, tests/strided_counted_loops.
 
 ### A proven divisor is not checked
@@ -606,7 +611,13 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Missing**: the fresh result of a function that is not inlined goes to the heap; an object whose class lets go
   of attributes is placed only in registers, never in the frame; `.memory.section` answering `'stack'`.
 - **Falls back**: a heap object.
-- **Lives in**: the pass `low_optimization_passes/object_placement`, after inlining and compile-time evaluation.
+- **Lives in**: the low proof `proofs/objects_in_the_frame`, run on the low representation after inlining and
+  compile-time evaluation (and again after the late inlining, on the functions it changed): it follows each object
+  a function makes through its copies, loads, stores, calls and returns, asks whether each callee keeps what it is
+  handed (`kept_parameters.spite`) and reads the class's free function, and records on the function how each object
+  that never leaves it is placed (`LowFunction.placed_objects`: in shared registers, in registers of its own, or in
+  the frame) with the fields it has. The pass `low_optimization_passes/object_placement` right after it only writes
+  what was recorded.
 - **Checked by**: tests/generic_vectors, tests/written_codegen_in_frame, tests/owned_objects (output only).
 
 ### Local and variadic lists in the frame
@@ -619,7 +630,10 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Missing**: variadic lists; lists of anything but whole numbers; reads other than `count()` and `[]`; constant
   data.
 - **Falls back**: a heap list.
-- **Lives in**: embedded in the lowering, `lowering/frame_lists.spite`.
+- **Lives in**: the speed proof `proofs/lists_in_the_frame`, run on the high representation after the acceptance
+  proofs, which records on the list's declaration (and on a name that only holds it) how many items it holds
+  (`Declare.frame_items`); the lowering lays out what was recorded. A name declared twice in one function is never
+  placed in the frame.
 - **Checked by**: tests/frame_lists, tests/variadic_answers_in_frame, tests/text_building (output only).
 
 ### A function value its callee only calls lives in the frame
@@ -629,8 +643,25 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
   uncounted ([functions_and_operators.md](../SpiteLanguage/specs/functions_and_operators.md)).
 - **Missing**: the "only calls it" proof over the callee, so a callee not inlined gets a counted heap value.
 - **Falls back**: a heap function value with a counted receiver.
-- **Lives in**: indirectly, `compile_time_evaluation/partial_evaluation.spite` and `object_placement`.
+- **Lives in**: indirectly, `compile_time_evaluation/partial_evaluation.spite` (an optimisation, which calls a
+  known closure directly) and the low proof `proofs/objects_in_the_frame` (a closure object the inlined callee only
+  calls never leaves the caller).
 - **Checked by**: tests/function_value_in_frame, tests/held_value_functions, tests/function_values.
+
+### A singleton made at the start is never tested again
+
+- **Status**: built.
+- **Rule**: a singleton the entry class's attribute defaults make on every path is made before the entry function
+  starts, so a function that cannot run before those defaults end reads its slot without testing that it is made;
+  the functions that may run before are the ones reached by calls and function addresses from what the start calls
+  up to the defaults, the fault handler and every singleton's destroy at exit.
+- **Buys**: no first-use test, and a slot load that never changes (moved out of loops, shared across calls).
+- **Falls back**: the test stays in every function that may run before the defaults end, and for every singleton
+  made only on some paths.
+- **Lives in**: the low proof `proofs/singletons_made_at_start`, run on the low representation before the singletons
+  are settled, which records `LoweredProgram.made_at_start` and `runs_before_the_entry`; the passes
+  `low_optimization_passes/made_singletons` (once, and `Settled` in each cleaning) skip the tests it recorded.
+- **Checked by**: tests/singleton_attribute_reads (output only).
 
 ## Borrowing and lending
 
@@ -742,7 +773,8 @@ These proofs belong to the ownership analysis of the high representation; the re
   classes as its address, with no count and no lock.
 - **Missing**: the per-attribute fact: a singleton is steady only when all its attributes are plain.
 - **Falls back**: a counted read.
-- **Lives in**: `lowering/singleton_forms.spite`, the passes `made_singletons` and `unread_objects`.
+- **Lives in**: `lowering/singleton_forms.spite`, the low proof `proofs/singletons_made_at_start` (the next
+  section), the passes `made_singletons` and `unread_objects`.
 - **Checked by**: tests/singleton_attribute_reads.
 
 ### A list's templates read their elements uncounted
