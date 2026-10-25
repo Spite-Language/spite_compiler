@@ -120,9 +120,13 @@ list of that class (`_write_value` or `_forget_value` on it, followed through ev
 list itself is a steady path (a name, `this`, a singleton or attributes no call assigns), and the index and the
 call's arguments are plain reads: the slot holds the item for the whole call.
 
+The same holds for an item passed as an argument: `length_of(tracks[at])`, after `crash tracks[at]`, passes the
+track as it is in its slot when the call cannot write an item of a list of that class, the list is a steady path,
+and every argument of the call is a plain read or such an item read.
+
 **When it does not apply:** to an item read without its `crash` (the read may be missing), to a call that may write
-a list of that class or reach a `drop()` that does, to arguments that are calls, and in a function that waits. The
-item is then counted for the call as before.
+a list of that class or reach a `drop()` that does, to arguments that are calls, to a call through a function
+value, and in a function that waits. The item is then counted for the call as before.
 
 **What a program can observe:** nothing but time.
 
@@ -181,6 +185,27 @@ make a `Customer` and a `List<Line>` makes neither
 
 The trimmed defaults are decided by the high pass `high_optimization_passes/replaced_defaults`, which records them
 for the lowering.
+
+## A deep copy is written per class, with a table only where a graph needs one
+
+The builder writes each class's `copy()` and `deep_copy()` (`high_intermediary_representation/building/copying.spite`)
+when the class declares none: a new object made with no defaults, and every attribute assigned from the original,
+through its own class's `deep_copy()` for an object, a union or a shape, and as it is for a number, a `String` or a
+singleton. Only a class whose attributes can reach the class itself again copies through a table
+(`Spite.CopyTable`), made for that call, which remembers every object copied so a graph is copied with its shape;
+every other class's copy is a plain sequence of copies and stores, with no table, no lookup and nothing remembered.
+
+```spite
+var id = 0
+var customer = Customer("", 0)
+var lines = List<Line>()
+```
+
+`orders.deep_copy()` on a `List<Order>` copies each order, its customer and its lines through their own functions,
+with no table, since nothing an `Order` holds leads back to an `Order`.
+
+**When it does not apply:** a class that declares its own `deep_copy()` is copied through it. **What a program can
+observe:** nothing but time and allocations: the copy is what [the rule](https://github.com/Spite-Language/spite_spec/blob/master/specs/memory.md) says.
 
 ## Arithmetic a range proves is not checked
 
@@ -437,13 +462,13 @@ user can observe: the time.
 
 ## A list item read only to test it is not counted
 
-`list[index] is present` on a library `List` or `Vector` of items that cannot be null is the test
+`list[index] is present` on a library `List`, `Vector` or `Items` of items that cannot be null is the test
 `index < count`, compared as unsigned so a negative index is outside too: the item is never read, so it is never
 counted and let go. `crash velocities[entity] and healths[entity]` is two such tests, and its report, made only when
 one fails, reads the items as before.
 
 What a user can observe: the time. When it does not apply: a list of nullable items (an item there can be missing
-inside the bounds), `Items`, a `Dictionary`, and any other function than `get_at`.
+inside the bounds), a `Dictionary`, and any other function than `get_at`.
 
 ## A singleton a function answers is not counted
 
@@ -458,6 +483,11 @@ atomically on every call (about 180 ms); now it is one load (about 135 ms).
 When it does not apply: a function whose declared answer is a union, a shape or a nullable of anything else, even
 when it answers a singleton: its callers count what any member of the type could be. What a user can observe: the
 time.
+
+A local declared from a singleton (`var rules = Rules()`, or from a call answering one) and never assigned again
+is not counted either: it is the singleton, read as it is and let go of nothing when its block ends. A local of a
+union or a shape that holds a singleton, one assigned again, and one in a step of a `Concurrent` work count it as
+before.
 
 ## Letting go of an object counts down in place
 
@@ -553,6 +583,9 @@ threads the number of the thread that owns it.
   never handed out stops with `the program freed memory it never allocated` (or `resized`), a size past 2^40 bytes
   stops with `the program ran out of memory`, and so does a failed chunk.
 
+Nothing counts the blocks: no counter is kept beside an allocation or a free, and only a `--debug-memory` build
+keeps the two counts it reports at exit.
+
 **When it does not apply:** a program that allocates nothing carries none of it; blocks above 1016 bytes are the
 system heap's; in a program with threads every allocation and free is a call (no inline fast path yet).
 
@@ -599,6 +632,31 @@ observe: nothing but the time.
 Every optimisation the compiler makes, one section each: what it does, when it applies, when it does not, what a
 user can observe, and a small program that shows it. None of them changes what a program prints, returns or
 crashes with; they change only its time and its memory.
+
+## A question on a codegen type folds
+
+`$T.is_fixed_size` and `$T.is_singleton`, asked of a class a generic class is specialised for, are answered while
+compiling, so an `if` on them keeps only its taken branch in each specialisation, and the other branch is never
+built: in `Store<List<Integer>>` the `Vector<$component_type>` below is not made, and so not refused.
+
+```
+generic $component_type
+
+func describe(): String {
+    if $component_type.is_fixed_size {
+        var packed = Vector<$component_type>()
+        var packed_count = packed.count()
+        return "inline, {packed_count} so far"
+    }
+    var listed = List<$component_type>()
+    var listed_count = listed.count()
+    return "as references, {listed_count} so far"
+}
+```
+
+When it does not apply: a codegen type bound to a number, a text or a `T?`, and the other questions, are read from
+the class object at run time. What a user can observe: nothing but the time, and a branch that could not be built
+for that class is no longer refused (`tests/fits_vector_doc`).
 
 ## Layouts by use (the design)
 
@@ -1265,12 +1323,12 @@ never made: its items are written into room in the function's frame (`FrameRoom`
 items written, and `list[index]` tests the index against that number and loads the item from the room. No list, no
 buffer and no count is allocated, so nothing is freed either.
 
-**When it applies:** to a literal of whole numbers (any `Integer`, `Long`, `Byte`... list that is not nullable),
-of at most 4096 bytes, kept in a local that is never assigned again, and whose every use in the function is
+**When it applies:** to a literal of numbers (any `Integer`, `Long`, `Byte`, `Float`, `Double`... list that is
+not nullable), of at most 4096 bytes, kept in a local that is never assigned again, and whose every use in the function is
 `count()`, `list[index]` (read, tested with `crash`, `assert` or `if`), or the literal itself. A list passed to a
 call, answered, kept in an attribute, appended to, read by any other function of `List`, or held by a function
 that waits is made as before, and so is a list whose name the function declares more than once (in two blocks,
-say). A list of decimals or objects is made as before. The proof is `proofs/lists_in_the_frame`
+say). A list of objects or texts is made as before. The proof is `proofs/lists_in_the_frame`
 ([local and variadic lists in the frame](PROOFS.md#local-and-variadic-lists-in-the-frame)), which records the count
 on the list's declaration for the lowering.
 
@@ -1615,7 +1673,8 @@ not apply: a read at another offset or of another width, and `to_buffer()`, whic
 
 `sine()`, `cosine()`, `tangent()`, `arc_sine()`, `arc_cosine()`, `arc_tangent()`, `arc_tangent_over(run)`,
 `power(exponent)`, `exponential()`, the three logarithms, `floor()`, `ceiling()`, `truncate()` and `round()` on
-`Float` and `Double` are bodiless declarations (`_sine()` and the rest) the compiler writes as one call through the
+`Float` and `Double` are bodiless declarations (`_sine()` and the rest), and `%` on them is `fmodf` or `fmod`, exact
+where `x - trunc(x / y) * y` lost digits once the quotient passed 2^53. The compiler writes them as one call through the
 import table to the C library's function (`sinf`, `cos`, ...), with the operands in the decimal registers the
 Windows calling convention passes them in. The executable imports `ucrtbase.dll` only when it calls one of them,
 and only the functions it calls. `square_root()` is one `sqrtss` or `sqrtsd`.
@@ -2068,9 +2127,10 @@ argument) is moved there at that point.
 
 A decimal constant read only by decimal maths is a value of its own in a decimal register rather than an immediate
 moved in at each use, and [a loop](#what-a-loop-does-not-change-is-computed-before-it) makes it once, before it
-starts. A decimal comparison (`<`, `<=`, `>`, `>=`) read only by the branch after it is the branch: `ucomiss` and a
-jump on its flags (a comparison with a NaN is false on either side, as unordered compares jump neither `ja` nor
-`jae`). `==` and `!=` still make their answer, since they read the parity flag too.
+starts. A decimal comparison read only by the branch after it is the branch: `ucomiss` and a jump on its flags. For
+`<`, `<=`, `>` and `>=` that is one jump (a comparison with a NaN is false on either side, as unordered compares jump
+neither `ja` nor `jae`); `==` and `!=` jump on the parity flag first, to the false side for `==` and to the true side
+for `!=` (a NaN equals nothing, itself included), then on the zero flag, so they make no answer either.
 
 ```spite
 func scaled_sum(values: List<Float>, shift: Float): Float {
@@ -2176,8 +2236,13 @@ other divisor from 3 to 2^31 - 1, it is a multiplication by a magic number worke
 sign correction. A signed divisor from -2^31 + 1 to -2 divides by its size and negates the quotient (the remainder
 is the same, since it takes the sign of what is divided). An unsigned number of 32 bits or fewer divided by any
 other constant from 3 to 2^31 - 1 is multiplied by `2^63 / divisor + 1` worked out while compiling, keeping the top
-of the 128-bit product: exact for every such number. A multiplication by a power of two that is not checked is a
-shift. An unsigned 64-bit number divided by a constant that is not a power of two keeps the `div`.
+of the 128-bit product: exact for every such number. An unsigned 64-bit number divided by a constant `d` from 3 to
+2^63 - 1 that is not a power of two is multiplied by `m = 2^(64 + l) / d - 2^64 + 1`, where `2^l` is the power of two
+just above `d` (worked out while compiling, by long division on two 32-bit halves so no step overflows): the top of the
+product is `t`, and the quotient is `(t + (x - t) / 2) / 2^(l - 1)`, two shifts, an addition and a subtraction, exact
+for every 64-bit `x` (the remainder is `x - quotient * d`); by a power of two above 2^30 it is a shift or a mask; by a
+constant of 2^63 or more (written as a negative `Long`) the quotient is `x >= d`, one comparison, and the remainder
+`x` less `d` when it is. A multiplication by a power of two that is not checked is a shift.
 
 ```spite
 func Sums(): Long {
@@ -2192,6 +2257,34 @@ func Sums(): Long {
 ```
 
 `index % 7` is no `idiv`: a multiplication, two shifts, two additions and a subtraction.
+
+## A division and a remainder of the same two numbers are one division
+
+The processor's `div` and `idiv` answer the quotient and the remainder together. A division followed at once by the
+remainder of the same two numbers (or a remainder followed by the division), of the same width and sign, with a
+divisor that is not a constant, is one division: the quotient is written from `rax` and the remainder from `rdx`. A
+divisor that is checked is tested for zero once (and, signed, for -1 once: the quotient negated, halting when it does
+not fit, and the remainder zero); the division that stops names the one written first, which is the one that would
+have stopped first.
+
+```spite
+func digits(value: Integer, base: Integer): Integer {
+    crash base > 1
+    var rest = value
+    var total = 0
+    while rest > 0 {
+        var digit = rest % base
+        rest = rest / base
+        total = total + digit
+    }
+    return total
+}
+```
+
+`rest % base` and `rest / base` are one `idiv` on each pass. **What a program can observe:** nothing but time.
+
+**Not built:** a pair with another instruction between them, and a pair by a constant divisor (each is its own
+multiplication).
 
 ## A proven divisor is not checked
 
@@ -2330,9 +2423,10 @@ func points_for(golds: Integer, silvers: Integer): Integer {
 }
 ```
 
-`points_for` makes no dictionary and hashes nothing. When it does not apply: a key or a value that is not a
-literal (`-5` included), any other mention of the local (a key in a variable, a key the literal does not have, a
-write, `count()`, passing it), a dictionary held in an attribute, and the interactive builds (`--repl`,
+`points_for` makes no dictionary and hashes nothing. A read of a key the literal does not have is known to be
+`null` (the proof `literal_dictionaries`), so a `crash` on it is a compile error, and the dictionary of such a read is
+kept. When it does not apply: a key or a value that is not a literal (`-5` included), any other mention of the local
+(a key in a variable, a write, `count()`, passing it), a dictionary held in an attribute, and the interactive builds (`--repl`,
 `--repl-port`, `--development`, `--hot-reload`), which keep the dictionary a reader can inspect. What a user can
 observe: no dictionary, no allocation and no hashing for the folded ones, and nothing else.
 
@@ -2372,6 +2466,18 @@ the lock that guards the list of loops.
 writes `_scheduler_start` and `_scheduler_wait_for` for this program, and `Spite.Work_of_Integer._settled` for the
 join; `--low-ir` shows them.
 
+## A thread is started only where a `Parallel` is made
+
+A program starts a thread only at a `Parallel` (or a banded loop's pass): the compiler writes the thread's entry
+function and its start there, and nowhere else. There is no pool made at the start and no worker waiting for work, so
+a program that makes no `Parallel` starts no thread, imports no thread function and allocates nothing for one.
+
+    var total = Parallel(sum_of_squares)
+    var answer: Long = total
+
+starts one thread, at the `Parallel`, and joins it where `total` is read. **What a program can observe:** the time; a
+`Parallel` pays for starting its thread each time it is made.
+
 ## A singleton is made on first use, by a function of its own
 
 A read of a singleton is a load of its slot and a test that it is made; making it (the claim of the slot, the wait
@@ -2396,6 +2502,34 @@ is made (`singletons_made_on_first_use_never_counted` went from 0.53 s to 0.016 
 **What a program can observe:** nothing but time. A singleton read through an attribute is made at its first read
 instead of when the object holding it is made, which nothing tells apart, since making it does nothing a program
 sees; `--debug-memory` counts the same allocations. A fault while making it reports as before.
+
+## A singleton that holds nothing is a static object
+
+A singleton class of the program with no attributes, no `drop()`, no `back` references, and a constructor and
+defaults that take nothing and do nothing (or none at all) is one object written into the executable's data: its
+class number and a count that never reaches zero. A read of it is the address of that object: no slot to load, no
+test that it is made, no making function, no allocation and nothing let go at exit. Its functions are called on
+that object as on any other, and a test of its class reads the class number as before.
+
+```spite
+singleton
+
+func doubled(value: Integer): Integer {
+    return value * 2
+}
+```
+
+`Doubler().doubled(21)` is the address of a constant object and a call (or, inlined, one addition).
+
+The high pass `high_optimization_passes/static_singletons` records the classes (`HighProgram.static_singletons`),
+and the lowering writes the object once per class in the data and its address wherever one is made.
+
+**When it does not apply:** a singleton with an attribute (even one only its defaults set), a `drop()`, a
+constructor that takes arguments or has any statement, the entry class, and every singleton in a `--repl`,
+`--repl-port` or `--hot-reload` build, which is made on first use as before.
+
+**What a program can observe:** one allocation fewer under `--debug-memory` for each such singleton the program
+uses. Nothing else: making it did nothing a program sees, and it is never let go.
 
 ## Thread safety for singletons, the cheapest safe form
 
@@ -2720,8 +2854,11 @@ Measured on `template_chains_run_as_one_loop`: 102 ms before the `map_` joined t
 The steps the fused call replaced are not compiled when nothing else calls them
 ([below](#a-function-only-a-replaced-call-reached-is-not-compiled)).
 
+A chain on a `Vector` is fused the same way, on the first vector's class, so `each_` after `filter_` writes into the
+vector's own items and not into a filtered copy (`tests/vector_items_run`).
+
 **Not built:** a `filter_` or `find_by_` after a `map_`, a passed function (`filter(f)`), chains on a
-`Dictionary`'s values, on a `Vector` or on `Items`.
+`Dictionary`'s values or on `Items`.
 
 ## A function only a replaced call reached is not compiled
 

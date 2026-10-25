@@ -27,35 +27,19 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The scheduler's crash lines name the program's frames only where the walk reaches them: a halt inside a `Concurrent`'s state machine prints no `spite.frame` line, since its frame lives on the heap (`concurrent_wait_cycle_in_place`)
 
 ## Faults found
-- `String.code_at` past the end of the text answers whatever byte is in memory there instead of halting naming the index and the length (D244); `tests/short_text` passes only because that byte happens to be 0
-- `tests/memory_debug_memory_balance` prints `allocations: 24 frees: 22` under `--debug-memory` (D883): two blocks are never freed, and nothing names them until the leaked-object summary is built
+- A class that reaches itself only through a union attribute may get no copy table (`uses_a_table` in `building/copying.spite` follows only object attributes), so its `deep_copy()` would recurse around the cycle until the stack overflows (D244); not yet verified with a program
 
-- A serializer's `keys` map (D893) is refused when assigned through an index, but `clear()`, `set_at`, `remove_at` called on it, or a local holding it, change a map whose folded keys stay as they were: a lost write (D244)
+- A serializer's `keys` map (D893, D1204) is refused when changed through an index, `set_at`, `remove_at`, `clear` or a local holding it, but not when it is passed to a function that changes it: a lost write (D244)
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D748)
 - A getter or setter called by its bare name inside its own class (`set_rotation(rotation)` in `Matrix4`) is not refused (D752 refuses `point.set_height(4)`), and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
-- `conformance/vector_rows` stops first on `'alias' is never read`, an abstract syntax tree rule that runs before any borrow rule can, where it expects the row's resize error (D731)
-- `conformance/lent_arguments` stops on `unknown type 'argument.class'` (the reflection walks over a function's arguments, as `tests/reflection_walks`), before its plural-naming error
 - A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
-- A class name that reaches no file is collected in `SymbolTable.unknown_names` and never reported
-- The emitter resolves a call whose class is unknown by the function's name alone, when one class has it
-- A `load` inside an `if` is refused; the language allows it when the condition reads only build settings
-- `WholeNumber.value()` answers 0 for a text that is not a number
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 
 ## The language
 - From the old repository's programs (spite_spec `CORPUS.md`), still failing:
-  - a statement after a `return` is not refused (`conformance/after_return_error`)
-  - the old `Nullable<T>` spelling is not refused with the error that names the `?` suffix (`conformance/old_nullable_spelling`)
-  - the may-be-null error leaves out "but an Anything is needed" (`conformance/maybe_null_into_type`)
-  - no bound proof for `values[base + counter]` from `base >= 0`, `base + width <= count` and `counter < width` (`tests/list_base_counter`)
-  - a `crash` bounding the offset does not prove `Buffer.read_*_at(offset)` in range (`tests/list_byte_numbers`)
-  - calling a function value read by index, `listeners[index](event)` (`tests/event_bus`)
-  - an attribute of a generic class set from a codegen value still needs its type written (`tests/fits_vector_doc`)
-  - `JsonReader.parse_object` calls `Item()` with no arguments where `Item` takes two (`tests/json_basics`)
-  - `Build().program` is not filled in (`tests/loaded_program`)
-  - the library has no `Reload` singleton for hot reload (`tests/recooking`)
-  - `Vector` has no `parallel_each_<member>` (`tests/vector_items_run`)
+  - the library has no `Reload` singleton for hot reload (`tests/recooking`): a new library class, waiting for Mortaro's yes
+  - a load pinned to a commit is not fetched (`tests/pinned_widgets`, the `load` line below)
 - `Spite.Call` on a declaration known only at run time (D864): `call()` of a function that takes arguments halts instead of passing the ones `.arguments` holds, and an argument filled there twice or under a name the function lacks is not refused
 - A bare call of an operator function inside its own class (`negate()`, which `-this` writes) is not refused yet (D910)
 - A call of an operator function by name on a value of a `type` or a union (`item.less_than(other)`) is not refused yet (D907)
@@ -80,10 +64,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A header's prototype casts each foreign argument to its C type's number (D848), but a prototype written over several lines, or with a `typedef`'d parameter type, is not read, so its arguments pass as written
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
 - `--debug-memory` prints its counts (D883), but not the leaked-object summary by class name, and fresh memory is zeroed, not filled with `0xA5`; the counts a pass proves unneeded are still written
-- Chains of member templates as one loop beyond `filter_` and `map_` steps on a `List` (D876, D945: a `filter_` or `find_by_` after a `map_`, a passed function `filter(f)`, a chain on a `Dictionary`'s values or a `Vector`/`Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
+- Chains of member templates as one loop beyond `filter_` and `map_` steps on a `List` (D876, D945: a `filter_` or `find_by_` after a `map_`, a passed function `filter(f)`, a chain on a `Dictionary`'s values or an `Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A dictionary keyed by hashing instead of a walk of its keys
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
-- `Float` and `Double`: `%`, exponent notation in literals, a `Double` too large for a `Float` halting, and `UnsignedLong` to and from a decimal past 2^63; a decimal too large for a `Long` prints a wrong number in its range-stop message
+- `Float` and `Double`: exponent notation in literals, a `Double` too large for a `Float` halting, and `UnsignedLong` to and from a decimal past 2^63; a decimal too large for a `Long` prints a wrong number in its range-stop message
 - Crash reports (D908, D913 to D920): a call the condition may skip (the right side of an `and`, or of an `or` that passed) or one after a read it could change is not reported; a reported call's answer is let go at the end of the function, not after the check; a function holding a `crash` is never inlined, since its report is written in line; halts other than `crash` (overflow, a missing item) and native faults print neither the ring nor the frames; the `.crashes` map gives each part's line only through the site's line (the tree keeps no column per expression); `Color(text)` prints its own `spite:` line naming the text and exits 1 instead of crashing, an `assert` of several parts keeps one site for all of them, the ring allocates its 32 lines as they first fill, a crash line carries no site id, and the map leaves out the asserts in `library/` (D881)
 - A number's room is a `Buffer` made on every read of `_buffer` (D659): fold a read at a known position of a fresh room into the number itself
 
@@ -104,21 +88,16 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## Faults found while porting
 
-- `String.code_at(index)` reads its bytes without testing the index (D244): past the length it answers the zeroed room's 0, and past the room or below 0 whatever memory holds, where `specs/standard_library.md` says `0` out of range (itself a default a caller cannot tell from a real 0)
 
 - A file write (`File.write`, `File.append`, `File.write_bytes`, `File.append_bytes`) answers `function_waits` true (D873) but blocks its thread inside a `Concurrent`: the helper-thread wait for file writes is not built
 - `Vector<T>` refuses a class holding a singleton attribute (`Date._time_text`), while `Items<T>` and `is_fixed_size` count it inline: the two answers of "fits a Vector" disagree (D877)
 
 - At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)
 
-- `shape_members` corrupts the heap once a `type`'s function is held as a value and run through `Parallel`: a count is released once too often
 
-- `tests/system` expects `Arguments.get(3)` to answer "" for a missing argument, a default nobody can tell from a real answer (D244): the library stops instead, and the test needs a decision
 
 - The fault handler runs before any library's own exception handling, so a C library that catches its own faults inside a foreign call would be stopped
 
-- `Json` and the old type spellings (`Int`, `Bool`, `LocalDate`...) are refused by name even when the program declares a class of that name
-- `items_columns`, `sparse_rows` and `plain_items` stop reading a column after `Items.remove_swapping`
 
 - Class objects are filled from a worklist once compiling ends, but every read of a constant one still reads the run-time object: fold the constant ones while compiling (the 64 MB main stack reserve raised for the nested fills can come back down)
 
@@ -127,20 +106,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The library breaks three rules it is exempt from for now (D680): singletons bound as locals (`Arguments`, `Environment._setting`, `Spite.Internal.Fault.report`), locals that only copy a path to narrow it (`BinaryCursor._buffer`, `BinaryWriterCursor`, `JsonReader`, `JsonWriter`), and a terminal `if` (`Dictionary.remove_at`)
 
 - Lost writes: a local holding an item that a program function answers (`lookup.of(0)`, "'found' holds 'values[row]' of 'Column'") and an assignment in the branches of a last `if` or `switch` are not judged; a write is judged only to a local the block made with a constructor, `copy()` or an own function that always answers one
-- A decimal `%` is computed as `x - trunc(x / y) * y`, which loses digits once the quotient passes 2^53: compute it exactly, as `fmod` does
 
 - A singleton circle closed at run time halts with the message for one singleton; it should name the chain (`singleton 'Registry' binds 'Catalog', which binds 'Registry'`). The compile-time check follows only a singleton binding another directly, not a circle through an object that is not one (`Metronome` binds a `Tick` that binds `Metronome`)
-- A list of `Parallel` handles read with a proven index stops as if the item were missing (`singleton_function_values`)
-- `private_walk` crashes the compiler (`class_of` of an unknown class while building a JSON or binary reader of a class with a private union attribute)
-- A shape declared inside a class, or in a namespace's own file (`tools/tools.spite`), is not found by its short name (`nearest_type`)
-- Two folders making one namespace (`mod/creatures` reopening `package/creatures`) are refused instead of merged (`reopening`, `folder_namesake`)
 
-- `lent_to_calls` stops with heap corruption (0xC0000374): bisect it
 - A temporary the builder declares for a comparison (`call() == true`) can be read before its declaration in some branch; plain reads avoid it today
-
-## The errors
-
-- Every folder of the old compiler's diagnostic programs is ported to `conformance/<name>` of [spite_spec](https://github.com/Spite-Language/spite_spec) with its exact text, and passes
 
 ## The outputs
 
@@ -166,7 +135,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Deciding conditions at compile time (measured 2026-10-25: 12.7 ms against the old compiler's 11.9)
 - Reflection, symbols and registries only where read
 - Reflection on constants folds and unrolls (measured 2026-10-25: 19.8 ms against the old compiler's 12.2: the walk is unrolled, the `Stats` objects are still on the heap and read one by one)
-- Template chains run as one loop (built as the high pass `fused_chains`, D1151; not built: a `filter_` or `find_by_` after a `map_`, a passed function, chains on a `Dictionary`'s values, a `Vector` or `Items`); a class whose objects only a dropped step made keeps its layout and defaults (D1153)
+- Template chains run as one loop (built as the high pass `fused_chains`, D1151; not built: a `filter_` or `find_by_` after a `map_`, a passed function, chains on a `Dictionary`'s values or `Items`); a class whose objects only a dropped step made keeps its layout and defaults (D1153)
 - A function taking a `type` is compiled per class (built once the function is inlined: the class of an object made in the caller is known, D1053; not built: a call not inlined still boxes a number and tests the class at run time, and the loop's four `Double` sums wait on one another, 78 ms against the old compiler's 51)
 - A test against a value a list never holds is decided while compiling (measured 2026-10-25: 28.4 ms against the old compiler's 26.8; needs the proof "a list only its class fills holds only what it fills")
 - A table filled once is read as constants (built for an object its own function makes, or a call run while compiling makes, followed through every path and loop, D1041, D1042; not built: an object a singleton holds, made in another function, is never known, so a table a singleton fills once is read at run time)
@@ -182,37 +151,32 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The compiler places memory
 - Reading an address is one machine operation (`reading_an_address_is_one_machine_operation` is about 50 times expert C: `Base64._encoded`'s values are nearly all spilled, see the register intervals in Architecture, and every `append_code` keeps the buffer's and the text's counts in memory)
 - Objects that never leave their function live in the frame (built after inlining, D801: in registers or the frame, made at the `return` when answered, its count followed while compiling, D953; not built: a local assigned a new object on every pass of a loop whose first object was made before it (`accumulated = accumulated * step_matrix` in `game_maths`, made on the heap 200 000 times), an object whose class has a `drop`, back references or frees its attributes other than by releasing them, an object of a class that releases attributes passed to a call that is not inlined, and anything in a function that waits)
-- A local list of known size lives in the frame (built for a literal of whole numbers only counted and read by index, D991; not built: a literal of decimals or objects, one passed to a call that only reads it, and one made with `List()` and a known count of appends)
+- A local list of known size lives in the frame (built for a literal of numbers, whole or decimal, only counted and read by index, D991, D1171; not built: a literal of objects or texts, one passed to a call that only reads it, and one made with `List()` and a known count of appends)
 - A variadic list the callee only reads lives in the caller's frame (built: once the callee is inlined the list object is registers, D1051; not built: its `Buffer` is still made and let go on every call, because the address of its inline storage is arithmetic on the object, which placing refuses: 30 ms against the old compiler's 4)
 - A list held only by another list lives in its slot
 - A list of lists filled again keeps each list's room
 - Objects of one class sit together (built: a list of a class of numbers, filled only with fresh objects and read back, holds its objects inside its storage, D994, and one array per attribute with no header when no item is handed whole to a function of its class, D998; not built: the header dropped for a list whose items are handed to the class's functions, elements holding text, decimals or objects, and objects of one class outside a list)
 - A row of borrowed items lives in the frame (built when the function it is passed to is inlined, D801, D942: the row is registers; a row passed to a call too large to inline is still made on the heap, and the items it holds are still counted when it is made and let go when it ends)
 - An `Items`' storage is chosen while compiling
-- A deep copy is written per class, with a table only where a graph needs one
 - An object attribute only its holder ever holds lives inside the holder (built for a class of plain numbers written only by the defaults or a constructor with a new object and read only for its parts, D1034; not built: a held class with objects or texts in it (`Order.customer`), a holder copied by `copy()` or `deep_copy()`, a part passed to a function, and a list's objects holding such attributes laid whole in the list's storage (built in one array per attribute, D1065; laid whole, `defaults_the_constructor_replaces_are_never_made` ran 2.3 times slower); an `Item` holding a room is still made on the heap and copied into the arrays, since an object that holds a room is never placed in registers)
 - A loop that sums a list filtered by its counter on every pass is one pass over the list (`report_over_records`' 64 profits)
 - An if-converted body may hold a checked product or difference when ranges prove it fits, and decimals; the generator writes its picks as `cmov` instead of masks (D996)
 - A deep copy nothing changes is the original
 - Copies that cost nothing (built for a copy of a plain object that never leaves the function, once `copy()` is inlined, D801; not built: a copy kept or passed on, and a copy nothing changes being the original)
-- Allocation is the C library's, counted only where read
 
 ### The counts
 
-- Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, a function answering a singleton (a rebuilt attribute among them) neither counts it nor has its caller let it go, D949, and an attribute holding a quiet singleton is the singleton itself, D954; not built: kept in a local or a list it still is, and so is an attribute in a program with a `drop()`; a singleton the entry class makes is never tested again outside what its defaults reach (D961), and a quiet one read in a loop is tested once before it (D967), but the first-use test of any other singleton read in a loop is made on every pass)
-- Singletons that hold nothing are static objects
+- Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, a function answering a singleton (a rebuilt attribute among them) neither counts it nor has its caller let it go, D949, and an attribute holding a quiet singleton is the singleton itself, D954; a local declared from a call answering one is not counted either, D1173; not built: kept in a list or a local of a union it still is, and so is an attribute in a program with a `drop()`; a singleton the entry class makes is never tested again outside what its defaults reach (D961), and a quiet one read in a loop is tested once before it (D967), but the first-use test of any other singleton read in a loop is made on every pass)
 - Plain reference counts where no thread reaches a class (built per class, D1166: a count whose object's class is known where it is taken or let go; not built: a count the compiler's own machinery writes (a thread's start and end, a task's frame, the free functions' texts), a union's, a shape's or a function value's, and `_release` where it is called rather than written in place stay atomic in a program with threads, and the loop passes that move counts (`loop_invariants`) still stand aside for the whole program once it has a thread)
-- An item passed to a call that cannot change its list is not counted (built for the receiver of a call after a `crash` that proves the read, D957; not built: an argument, and a read whose index or call arguments are not plain reads)
-- A singleton's attribute that never changes is read in place
+- An item passed to a call that cannot change its list is not counted (built for the receiver of a call and for an argument after a `crash` that proves the read, D957, D1170; not built: a read whose index or call arguments are not plain reads, and a call through a function value)
+- A singleton's attribute that never changes is read in place: read in place today only because a read of a locked singleton's attribute from another class takes no lock at all (The threads); when that lock is built, an attribute holding an object nothing assigns after the singleton is made must stay outside it
 - A list's templates read its elements without counting them: done where nothing after the read in the template can write a list of that class; a template handed a function value still counts when any function the program takes as a value could write one
 - An item written back to its own slot is not written (built for `list[index] = name` after `var name = list[index]` proven in the same block, D1033, and for a call whose whole body is `list[index] = held` after a call on the same receiver that ended with `held = list[index]`, D1061; not built: any other write-back from another block, or of a name that is counted)
 - `a_list_held_only_by_another_list_lives_in_its_slot` runs about 9% slower since `append` stores into the empty slot past the end without the load and comparison it made before (D1032): fewer instructions, so the cause is in the generated loop's layout, not yet found
 - Who holds an object is decided while compiling (built: a parameter a function keeps on its one read is handed its count, and a local is handed to what keeps it at its last read, D1031; a slot a constructor's defaults leave empty is stored without reading it, D1032; a singleton's attribute only given items of a list it holds is not counted and its default is not made, D1062, D1063; not built: such an attribute of an object that is not a singleton, a borrow of a slot of a row passed to calls across a loop (the row slots of `a_walked_crash_lines_read_is_the_rows_read`), objects laid inside their one holder, and classes with a `drop()` in what they hold)
-- A list item read only to test it is not counted (built for `is present` on a `List` or `Vector`, D947; not built: a read tested by another comparison than presence, and `Items`)
-- An item a name holds from its list is not counted
+- A list item read only to test it is not counted (built for `is present` on a `List`, `Vector` or `Items`, D947, D1172; not built: a read tested by another comparison than presence)
 - Reading through a `type` without counting (built for a row placed in registers whose reads meet their releases on one path, D951 to D953; not built: a row passed to a call too large to inline, and a count taken before a call that is not inlined)
-- Objects made for their owner are told apart
-- Counts stay plain for what one of the calls run at once counts
+- Objects made for their owner are told apart, and counts stay plain for what one of the calls run at once counts: both wait on calls in a row and loops over a list of different classes running at once (The threads, D1175); until then no call runs at the same time as another, and every count those calls take is already plain
 
 ### The text, the numbers and the collections
 
@@ -239,7 +203,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Concurrency machinery only where it is used
 - Hidden async/await as compile-time state machines
 - Reads in a row overlap
-- The thread pool only where a `Parallel` is made
 - Thread safety for singletons, the cheapest safe form (built: unreached, never changing, atomic and locked, D780 to D783): a read or write of a locked singleton's attribute from another class takes no lock yet
 - A singleton no other thread reaches takes no lock: the walk is made only from what a `Parallel` starts, not again over the tree-shaken program
 - A singleton's reading functions do not exclude each other: a counted loop of reads shares the lock (D988), but a single read outside such a loop still takes it alone
@@ -266,18 +229,17 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - In a program with threads a load moves out of a loop only when the compiler knows it never changes or no other thread touches its class (D968, D973): a load without a region (a worker's local list) is still made on every pass
 - Assigning a fresh empty `List()` to a slot whose old list nothing else holds (count 1, proven or tested once) clears the old list in place and keeps its room (D969); not built (the `clear()` of a list of lists followed by a loop appending new empty lists is, D981, but nothing else between them, and not a list of `Vector`s or `Dictionary`s)
 - An attribute a loop updates is kept in a register (D966, D974) only when every access in the loop carries its region and the loop calls and allocates nothing: an access through a union, a shape or a type parameter, or any call (a buffer's growth on a cold path) keeps every attribute in memory; in a program with threads only a locked singleton's attributes and those of a class no other thread touches are kept
-- Decimals live in decimal registers (built, D971): a decimal load or store still passes through `rax`, a decimal constant is moved in from an immediate rather than read from the program's data, `==` or `!=` of decimals still makes its answer before the branch, a decimal that finds no decimal register free (and no constant to take one from, D1058) is moved through a general register on every use instead of spilled, and a decimal operation on a constant (`x + 0.0` with `x` known) is never folded through a loop
+- Decimals live in decimal registers (built, D971): a decimal load or store still passes through `rax`, a decimal constant is moved in from an immediate rather than read from the program's data, a decimal that finds no decimal register free (and no constant to take one from, D1058) is moved through a general register on every use instead of spilled, and a decimal operation on a constant (`x + 0.0` with `x` known) is never folded through a loop
 - `an_attribute_a_call_cannot_assign_is_passed_without_counting` runs about 20% slower (11.2 to 13.5 ms), `a_list_of_lists_filled_again_keeps_each_lists_room` and `a_list_held_only_by_another_list_lives_in_its_slot` about 10%, since the loop inlining and the late cleanups (D1051 to D1059): not yet found which
 - Copies are read through only for a register written once (D1054): a loop's variable copied from another register written several times keeps both registers, and the allocator does not coalesce them
 - The block merges, inverted comparisons and steady constants (D1056) run only after vectorising, so the passes before it (common subexpressions, loop invariants) still see the small blocks inlining left
 - Common subexpressions across blocks only for registers written once (D803): a computation over a register written twice (a loop counter) is still made again in a later block, and a repeated comparison is made again
-- An unsigned 64-bit division by a constant that is not a power of two keeps the `div` (D804)
 - A function inlined into a loop keeps the bounds checks its ranges needed (ranges are proved before inlining; after it only registers written once get bounds, D1059, so a counter's range is not followed into an inlined callee), and a callee of more than 40 instructions, or that waits, is called (D802) unless the call is in a loop (up to 96, or 400 for the only call to it, with no loop of its own, D1051); inlining is chosen by size alone, with no estimate of the registers a loop then needs
-- A division and a remainder of the same two numbers are two divisions, not one `idiv`
+- A division and a remainder of the same two numbers are one `div` (D1183) only when written one right after the other with a divisor that is not a constant: an instruction between them, or a constant divisor (two multiplications), keeps two
 - A value is split only around the blocks where it crosses a call, and only into a scratch register (D1011): a value live across a hot loop it barely uses still holds a kept register there, a value the loop needs is not moved into it from the slot at the loop's edge, and loads are never rematerialised
 - An object let go unread is never made (D984) only when nothing but its class and count is written into it and its class frees nothing but its memory: a default object with attributes, or one holding objects, is still made and freed
 - An object read from a steady load is not counted (D985) only when every register holding it is written by that load or copies of it: a local that may hold either a steady object or another one is counted
-- Loops are not rotated (each pass jumps back to the test at the top)
+- Loops are not rotated (each pass jumps back to the test at the top): copying a head that only tests (up to three comparisons, loads and copies) to the end of each pass was measured slower (D1181), `particles` 77 to 89 ms (aligning the body instead of the head or not), though its loop takes as many jumps per pass either way; a rotation must first find why
 - A counted loop runs in vector lanes (D1021 to D1024) only with AVX2: a processor without it runs every loop as written (no SSE2 kernels); and only a loop whose head is the one test `counter < bound`, with no other branch than halting bound tests, that reads and writes numbers at `counter * size`: not built are a read through an object an item points to (a gather: `sum_` over a list of objects, the most common refusal across the benchmarks), a write narrower than 4 bytes, a division or a remainder, an unsigned comparison of two values, the counter used as a number, a decimal `if` (no decimal `Select`), a loop that reloads its bound in its head, a stride other than the item's width (an object kept inside its list's storage), and two loops over the same lists fused into one pass
 - A decimal total runs in lanes only where the exactness proof (D1023) follows every term: a list's items are told apart by where the list (or its buffer) was made, so lists made by one shared function, a list written through a `Buffer` function or filled by copying bytes from elsewhere, and a decimal a call answers prove nothing; and only one decimal total per loop is kept in lanes
 - Live-range splitting is not built: a value spilled anywhere is spilled across every loop it lives in, and a value live across a call takes a kept register for its whole life

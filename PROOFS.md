@@ -294,7 +294,9 @@ as when each was refused while building.
   `assert`, `crash`, `if`, `while`, the right of an `and`, and after an `if` that leaves
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: a proven read answers `T`, not `T?`.
-- **Missing**: bounds written with `<=`; count facts in a `while`; undoing a proof inside the loop that read it is
+- **Bounds written with `<=`**: `crash p + k <= list.count()` (in an `assert`, a `crash` or an `if`), and the `if
+  p + k > list.count()` that leaves, prove `list[p]` to `list[p + k - 1]`, as `p + (k - 1) < list.count()` would.
+- **Missing**: a `<=` bound in a `while`; count facts in a `while`; undoing a proof inside the loop that read it is
   not refused, and a shrinking call inside an assignment or an argument does not undo it (each read still halts
   when its list changed, see the next section).
 - **Falls back**: an unproven read is a `T?`; where a `T` is needed it is refused, "'...' may be missing, since every
@@ -325,14 +327,19 @@ as when each was refused while building.
 
 ### A proven count or bound proves a read of a width
 
-- **Status**: missing.
-- **Rule**: `read_<number>_at(p)` of width w is proven where `bytes[p + w - 1]` would be (a bound, a count, a `<=`
-  bound with k from 1 to 64, a counted loop's window); a position known not to be negative drops the low test
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
-- **Buys**: a header or a record is read with one bound.
-- **Falls back**: the read is a `T?` the program narrows; the library read tests both ends.
-- **Lives in**: none.
-- **Checked by**: conformance/byte_reads (the refusals only).
+- **Status**: built.
+- **Rule**: `buffer.read_<number>_at(p)` of width w (1 for `tiny` and `byte`, 2 for `short`, 4 for `integer` and
+  `float`, 8 for `long` and `double`) answers the number, not a `T?`, where `buffer[p + w - 1]` is proven: by a
+  bound (`while p + 3 < bytes.count()`), a count, or a `<=` bound (`crash body + 10 <= header.count()` proves the
+  reads at `body`, `body + 4` and `body + 8` up to a short). The position is a name, a name plus a literal, or a
+  literal ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+- **Buys**: a header or a record is read with one bound, and each read is a number.
+- **Falls back**: the read is a `T?` the program narrows. A proven read still answers null below 0 or past a
+  changed buffer, and then halts: "spite: 'header.read_integer_little_endian_at(body)' is outside its list: a
+  bound proves only the top of an index, and this one is below 0 or the list changed, at ...".
+- **Lives in**: `high_intermediary_representation/building/width_reads.spite`, which reads the facts the bound
+  recorded (`statements.spite`, `read_a_bound_at_most`).
+- **Checked by**: tests/list_byte_numbers; conformance/byte_reads (the refusals).
 
 ### An index built from loop counters is proven by one guard
 
@@ -347,13 +354,17 @@ as when each was refused while building.
 
 ### An index offset by a base is proven by one guard
 
-- **Status**: missing.
-- **Rule**: the guard `base + bound <= list.count()` with `while counter < bound`, base and counter not negative,
-  proves `list[base + counter]` ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+- **Status**: built.
+- **Rule**: the guard `base + width <= list.count()` (an `assert` or a `crash`), or the `if base + width >
+  list.count()` that leaves, with `while counter < width`, proves `list[base + counter]` inside the loop, base and
+  width and counter being names. Assigning `base` or `width`, or a call that shrinks the list, forgets the guard
+  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: a slice of a list is read with one guard.
-- **Falls back**: the read is a `T?` and is narrowed.
-- **Lives in**: none.
-- **Checked by**: none.
+- **Falls back**: the read is a `T?` and is narrowed. The guard proves only the top: a negative base or counter
+  halts at the read, as every proven read does ("... is outside its list ...").
+- **Lives in**: `high_intermediary_representation/building/windows.spite`, called by `statements.spite` from the
+  leaving `if`, the `assert`, the `crash` and the loop condition.
+- **Checked by**: tests/list_base_counter.
 
 ### A counted loop reads its items unchecked
 
@@ -459,12 +470,16 @@ as when each was refused while building.
 
 - **Status**: built.
 - **Rule**: a local made from a dictionary literal of literal keys and values, every later mention of which is
-  `name[literal]` with a key the literal holds and never assigned, is never made: each read is its value, still a
-  `T?`.
-- **Buys**: no dictionary, no hashing.
+  `name[literal]` and never assigned, holds exactly those entries. A read of a key it holds is its value, still a
+  `T?`; a read of a key it does not hold is known to be `null`, so `crash points["platinum"]` is the compile error a
+  `crash` that folds false is, with the reason `the dictionary written out as 'points' holds no key 'platinum'`, in
+  every build, `--repl` included.
+- **Buys**: no dictionary, no hashing, when every read asks a key it holds.
 - **Falls back**: the dictionary is made and read as written.
-- **Lives in**: embedded, the high pass `high_optimization_passes/folded_dictionaries`.
-- **Checked by**: tests/dictionary_folding.
+- **Lives in**: the proof `proofs/literal_dictionaries`, before `folded_crashes`, which records each such dictionary
+  (`HighProgram.literal_dictionaries`) and marks each read of a key it lacks (`Call.missing_key`); the high pass
+  `high_optimization_passes/folded_dictionaries` folds the ones with no such read.
+- **Checked by**: tests/dictionary_folding; conformance/dictionary_literal_missing_key.
 
 ## Compile-time questions
 
@@ -667,14 +682,14 @@ as when each was refused while building.
   frame; a variadic list its callee only reads lives in the caller's frame
   ([functions_and_operators.md](../SpiteLanguage/specs/functions_and_operators.md)).
 - **Buys**: no allocation.
-- **Missing**: variadic lists; lists of anything but whole numbers; reads other than `count()` and `[]`; constant
-  data.
+- **Missing**: variadic lists; lists of objects or texts; reads other than `count()` and `[]`; constant data.
 - **Falls back**: a heap list.
 - **Lives in**: the speed proof `proofs/lists_in_the_frame`, run on the high representation after the acceptance
   proofs, which records on the list's declaration (and on a name that only holds it) how many items it holds
   (`Declare.frame_items`); the lowering lays out what was recorded. A name declared twice in one function is never
   placed in the frame.
-- **Checked by**: tests/frame_lists, tests/variadic_answers_in_frame, tests/text_building (output only).
+- **Checked by**: tests/frame_lists, tests/frame_lists_of_decimals, tests/variadic_answers_in_frame,
+  tests/text_building (output only).
 
 ### A function value its callee only calls lives in the frame
 
@@ -860,20 +875,22 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 - **Status**: partly built.
 - **Rule**: a presence test of `list[index]` tests the slot in place.
-- **Missing**: lists of nullable items, `Items`, and a test of a path through the item.
+- **Missing**: lists of nullable items, and a test of a path through the item.
 - **Falls back**: a counted read and its release.
 - **Lives in**: the lowering, `function_lowering.spite` (`lower_presence_test`), `list_reads.spite`.
-- **Checked by**: tests/tested_items.
+- **Checked by**: tests/tested_items, tests/items_presence.
 
 ### An item used at once is not counted
 
 - **Status**: partly built.
 - **Rule**: a proven `list[index]` used once, as a receiver or passed to a call that cannot change the list, is
   read in its slot.
-- **Missing**: the item passed as an argument; indices and arguments that are not plain reads.
+- **Missing**: indices and arguments that are not plain reads (or such item reads), and a call through a function
+  value.
 - **Falls back**: a counted read.
-- **Lives in**: the lowering, `function_lowering.spite` (`is_a_held_receiver`, `is_a_held_item`).
-- **Checked by**: tests/items_at_once.
+- **Lives in**: the lowering, `function_lowering.spite` (`is_a_held_receiver`, `is_a_held_item`,
+  `is_a_held_argument`).
+- **Checked by**: tests/items_at_once, tests/held_item_arguments.
 
 ### A list held only in a slot of another list
 

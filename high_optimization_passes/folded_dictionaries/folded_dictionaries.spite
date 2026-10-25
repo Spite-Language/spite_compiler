@@ -5,33 +5,23 @@ var no_table = Symbols.SymbolTable(no_folders)
 var no_resolver = NameResolution.Resolver(no_table)
 var context = HighIntermediaryRepresentation.Building.Context(no_program, no_resolver)
 var no_high = HighIntermediaryRepresentation.HighProgram(no_program)
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
 var building = HighOptimizationPasses.FunctionBuilding(no_high)
-var library = Validators.LibraryFile()
 var no_function = Model.FunctionModel("", "")
 var no_body = HighIntermediaryRepresentation.Statements.Block()
 var current = HighIntermediaryRepresentation.HighFunction(no_function, no_body)
-var made_name = ""
-var dictionary_name = ""
-var dictionary_key = ""
-var keys = List<HighIntermediaryRepresentation.Values.Value>()
-var entries = List<HighIntermediaryRepresentation.Values.Value>()
-var setter = Model.FunctionModel("", "")
-var constructor: Model.FunctionModel? = null
+var written = HighIntermediaryRepresentation.LiteralDictionary("", "", "")
+var found_block: HighIntermediaryRepresentation.Statements.Block? = null
+var found_index = -1
 
 func optimized(high: HighIntermediaryRepresentation.HighProgram) {
-    assert high.will_be_lowered()
+    assert high.will_be_lowered() and not high.literal_dictionaries.is_empty()
     crash high.context
     context = high.context
+    program = high
     assert not is_interactive()
     building = HighOptimizationPasses.FunctionBuilding(high)
-    var built = high.built_functions.copy()
-    var index = 0
-    while index < built.count() {
-        var function = built[index]
-        current = function
-        fold_in_block(function.body)
-        index = index + 1
-    }
+    high.literal_dictionaries.each(fold)
 }
 
 func is_interactive(): Boolean {
@@ -40,242 +30,68 @@ func is_interactive(): Boolean {
     return asked or flags.contains("hot_reload")
 }
 
-func fold_in_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+func fold(dictionary: HighIntermediaryRepresentation.LiteralDictionary) {
+    assert dictionary.missed == 0
+    written = dictionary
+    var function = function_keyed(dictionary.function_key)
+    assert function
+    current = function
+    found_block = null
+    found_index = -1
+    find_in_block(function.body)
+    assert found_block
+    fold_at(found_block, found_index)
+}
+
+func function_keyed(key: String): HighIntermediaryRepresentation.HighFunction? {
+    var index = 0
+    while index < program.built_functions.count() {
+        var function = program.built_functions[index]
+        if function.function.key() == key {
+            return function
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func find_in_block(block: HighIntermediaryRepresentation.Statements.Block?) {
     assert block
     var index = 0
     while index < block.statements.count() {
-        if folds_at(block, index) {
-            fold_at(block, index)
-        } else {
-            var statement = block.statements[index]
-            fold_inside(statement)
-            index = index + 1
+        var statement = block.statements[index]
+        if declares_the_made(statement) {
+            found_block = block
+            found_index = index
         }
+        find_inside(statement)
+        index = index + 1
     }
 }
 
-func fold_inside(statement: HighIntermediaryRepresentation.Statements.Statement?) {
+func declares_the_made(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    if statement == HighIntermediaryRepresentation.Statements.Declare {
+        return statement.name == written.made_name
+    }
+    return false
+}
+
+func find_inside(statement: HighIntermediaryRepresentation.Statements.Statement) {
     switch statement {
-        HighIntermediaryRepresentation.Statements.If: fold_in_branches(statement)
-        HighIntermediaryRepresentation.Statements.While: fold_in_block(statement.body)
-        HighIntermediaryRepresentation.Statements.Block: fold_in_block(statement)
+        HighIntermediaryRepresentation.Statements.If: find_in_branches(statement)
+        HighIntermediaryRepresentation.Statements.While: find_in_block(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: find_in_block(statement)
         _: return
     }
 }
 
-func fold_in_branches(branch: HighIntermediaryRepresentation.Statements.If) {
-    fold_in_block(branch.then_branch)
-    fold_in_block(branch.else_branch)
-}
-
-func folds_at(block: HighIntermediaryRepresentation.Statements.Block, index: Integer): Boolean {
-    var made = block.statements[index]
-    if made == HighIntermediaryRepresentation.Statements.Declare {
-        return folds_from(block, index, made)
-    }
-    return false
-}
-
-func folds_from(
-    block: HighIntermediaryRepresentation.Statements.Block,
-    index: Integer,
-    made: HighIntermediaryRepresentation.Statements.Declare,
-): Boolean {
-    var making = made.value
-    if making == HighIntermediaryRepresentation.Values.MakeObject and is_a_dictionary(making.value_type) {
-        made_name = made.name
-        dictionary_key = making.value_type.name
-        constructor = making.constructor
-        return is_written_out(block, index)
-    }
-    return false
-}
-
-func is_a_dictionary(of_type: Model.Type): Boolean {
-    if of_type.kind != 'object' or of_type.is_nullable {
-        return false
-    }
-    var model = context.program.class_named(of_type.name)
-    if not model {
-        return false
-    }
-    return model.file.namespace == "Dictionary" and library.holds(model.file.path)
-}
-
-func is_written_out(block: HighIntermediaryRepresentation.Statements.Block, index: Integer): Boolean {
-    keys = List<HighIntermediaryRepresentation.Values.Value>()
-    entries = List<HighIntermediaryRepresentation.Values.Value>()
-    var position = index + 1
-    var stored = true
-    while stored and position < block.statements.count() {
-        var statement = block.statements[position]
-        stored = stores_an_entry(statement)
-        if stored {
-            position = position + 1
-        }
-    }
-    if keys.is_empty() or position >= block.statements.count() {
-        return false
-    }
-    var naming = block.statements[position]
-    return names_the_dictionary(naming) and is_only_read_by_its_keys()
-}
-
-func stores_an_entry(statement: HighIntermediaryRepresentation.Statements.Statement?): Boolean {
-    if statement == HighIntermediaryRepresentation.Statements.Evaluate and not statement.waited {
-        return stores_by_a_call(statement.value)
-    }
-    return false
-}
-
-func stores_by_a_call(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
-    if value == HighIntermediaryRepresentation.Values.Call and value.function.name == "set_at" {
-        return stores_constants(value)
-    }
-    return false
-}
-
-func stores_constants(call: HighIntermediaryRepresentation.Values.Call): Boolean {
-    var receiver = call.receiver
-    var is_the_made = receiver == HighIntermediaryRepresentation.Values.LocalRead and receiver.name == made_name
-    if not is_the_made or call.function.owner != dictionary_key or call.arguments.count() != 2 {
-        return false
-    }
-    var key = call.arguments[0]
-    var entry = call.arguments[1]
-    crash key and entry
-    if not is_a_key(key) or not is_an_entry(entry) or holds_the_key(key) {
-        return false
-    }
-    keys.append(key)
-    entries.append(entry)
-    setter = call.function
-    return true
-}
-
-func is_a_key(value: HighIntermediaryRepresentation.Values.Value): Boolean {
-    switch value {
-        HighIntermediaryRepresentation.Values.TextConstant: return true
-        HighIntermediaryRepresentation.Values.WholeNumber: return true
-        _: return false
-    }
-}
-
-func is_an_entry(value: HighIntermediaryRepresentation.Values.Value): Boolean {
-    switch value {
-        HighIntermediaryRepresentation.Values.TextConstant: return true
-        HighIntermediaryRepresentation.Values.WholeNumber: return true
-        HighIntermediaryRepresentation.Values.DecimalNumber: return true
-        _: return false
-    }
-}
-
-func holds_the_key(key: HighIntermediaryRepresentation.Values.Value): Boolean {
-    var index = position_of(key)
-    return index >= 0
-}
-
-func position_of(key: HighIntermediaryRepresentation.Values.Value): Integer {
-    var index = 0
-    while index < keys.count() {
-        var known = keys[index]
-        if is_the_same_key(known, key) {
-            return index
-        }
-        index = index + 1
-    }
-    return -1
-}
-
-func is_the_same_key(
-    known: HighIntermediaryRepresentation.Values.Value,
-    asked: HighIntermediaryRepresentation.Values.Value,
-): Boolean {
-    if known == HighIntermediaryRepresentation.Values.TextConstant {
-        return is_the_same_text(known, asked)
-    }
-    if known == HighIntermediaryRepresentation.Values.WholeNumber {
-        return is_the_same_number(known, asked)
-    }
-    return false
-}
-
-func is_the_same_text(
-    known: HighIntermediaryRepresentation.Values.TextConstant,
-    asked: HighIntermediaryRepresentation.Values.Value,
-): Boolean {
-    if asked == HighIntermediaryRepresentation.Values.TextConstant {
-        return known.text == asked.text
-    }
-    return false
-}
-
-func is_the_same_number(
-    known: HighIntermediaryRepresentation.Values.WholeNumber,
-    asked: HighIntermediaryRepresentation.Values.Value,
-): Boolean {
-    if asked == HighIntermediaryRepresentation.Values.WholeNumber {
-        return known.number == asked.number
-    }
-    return false
-}
-
-func names_the_dictionary(statement: HighIntermediaryRepresentation.Statements.Statement?): Boolean {
-    if statement == HighIntermediaryRepresentation.Statements.Declare {
-        return names_the_made(statement)
-    }
-    return false
-}
-
-func names_the_made(declared: HighIntermediaryRepresentation.Statements.Declare): Boolean {
-    var value = declared.value
-    if value == HighIntermediaryRepresentation.Values.LocalRead and value.name == made_name {
-        dictionary_name = declared.name
-        return true
-    }
-    return false
-}
-
-func is_only_read_by_its_keys(): Boolean {
-    var mentions = HighOptimizationPasses.FoldedDictionaries.Mentions(this)
-    mentions.count_in(current.body)
-    var made_reads = keys.count() + 1
-    var only_reads = mentions.named == mentions.reads and mentions.missed == 0
-    return only_reads and mentions.made_reads == made_reads and mentions.declared == 1 and mentions.written == 0
-}
-
-func is_a_folded_read(value: HighIntermediaryRepresentation.Values.Value): Boolean {
-    if value == HighIntermediaryRepresentation.Values.Call and value.function.name == "get_at" {
-        return reads_by_a_key(value)
-    }
-    return false
-}
-
-func reads_by_a_key(call: HighIntermediaryRepresentation.Values.Call): Boolean {
-    var receiver = call.receiver
-    var is_the_dictionary = receiver == HighIntermediaryRepresentation.Values.LocalRead
-    is_the_dictionary = is_the_dictionary and is_named(receiver, dictionary_name)
-    if not is_the_dictionary or call.function.owner != dictionary_key or call.arguments.count() != 1 {
-        return false
-    }
-    return call.value_type.is_nullable
-}
-
-func is_named(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
-    if value == HighIntermediaryRepresentation.Values.LocalRead {
-        return value.name == name
-    }
-    return false
-}
-
-func asked_position(call: HighIntermediaryRepresentation.Values.Call): Integer {
-    var asked = call.arguments[0]
-    crash asked
-    return position_of(asked)
+func find_in_branches(branch: HighIntermediaryRepresentation.Statements.If) {
+    find_in_block(branch.then_branch)
+    find_in_block(branch.else_branch)
 }
 
 func fold_at(block: HighIntermediaryRepresentation.Statements.Block, index: Integer) {
-    var removed = keys.count() + 2
+    var removed = written.keys.count() + 2
     var kept = List<HighIntermediaryRepresentation.Statements.Statement>()
     var position = 0
     while position < block.statements.count() {
@@ -290,9 +106,9 @@ func fold_at(block: HighIntermediaryRepresentation.Statements.Block, index: Inte
     var rewriting = HighOptimizationPasses.Rewriting(this)
     rewriting.rewrite_block(current.body)
     decide_in_block(current.body)
-    building.replaced(setter)
-    assert constructor
-    building.replaced(constructor)
+    building.replaced(written.setter)
+    assert written.constructor
+    building.replaced(written.constructor)
 }
 
 func rewritten(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
@@ -328,7 +144,7 @@ func entry_read(value: HighIntermediaryRepresentation.Values.Value): HighInterme
 }
 
 func entry_at(position: Integer): HighIntermediaryRepresentation.Values.Value {
-    var entry = entries[position]
+    var entry = written.entries[position]
     crash entry
     switch entry {
         HighIntermediaryRepresentation.Values.WholeNumber: return number_copy(entry)
@@ -432,4 +248,88 @@ func is_a_lifted_entry(value: HighIntermediaryRepresentation.Values.Value?): Boo
         return is_an_entry(value.converted)
     }
     return false
+}
+
+func is_a_folded_read(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call and value.function.name == "get_at" {
+        return reads_by_a_key(value)
+    }
+    return false
+}
+
+func reads_by_a_key(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    var receiver = call.receiver
+    var is_the_dictionary = receiver == HighIntermediaryRepresentation.Values.LocalRead
+    is_the_dictionary = is_the_dictionary and is_named(receiver, written.dictionary_name)
+    if not is_the_dictionary or call.function.owner != written.dictionary_key or call.arguments.count() != 1 {
+        return false
+    }
+    return call.value_type.is_nullable
+}
+
+func is_named(value: HighIntermediaryRepresentation.Values.Value?, name: String): Boolean {
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        return value.name == name
+    }
+    return false
+}
+
+func asked_position(call: HighIntermediaryRepresentation.Values.Call): Integer {
+    var asked = call.arguments[0]
+    crash asked
+    return position_of(asked)
+}
+
+func position_of(key: HighIntermediaryRepresentation.Values.Value): Integer {
+    var index = 0
+    while index < written.keys.count() {
+        var known = written.keys[index]
+        if is_the_same_key(known, key) {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func is_the_same_key(
+    known: HighIntermediaryRepresentation.Values.Value,
+    asked: HighIntermediaryRepresentation.Values.Value,
+): Boolean {
+    if known == HighIntermediaryRepresentation.Values.TextConstant {
+        return is_the_same_text(known, asked)
+    }
+    if known == HighIntermediaryRepresentation.Values.WholeNumber {
+        return is_the_same_number(known, asked)
+    }
+    return false
+}
+
+func is_the_same_text(
+    known: HighIntermediaryRepresentation.Values.TextConstant,
+    asked: HighIntermediaryRepresentation.Values.Value,
+): Boolean {
+    if asked == HighIntermediaryRepresentation.Values.TextConstant {
+        return known.text == asked.text
+    }
+    return false
+}
+
+func is_the_same_number(
+    known: HighIntermediaryRepresentation.Values.WholeNumber,
+    asked: HighIntermediaryRepresentation.Values.Value,
+): Boolean {
+    if asked == HighIntermediaryRepresentation.Values.WholeNumber {
+        return known.number == asked.number
+    }
+    return false
+}
+
+func is_an_entry(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    switch value {
+        HighIntermediaryRepresentation.Values.TextConstant: return true
+        HighIntermediaryRepresentation.Values.WholeNumber: return true
+        HighIntermediaryRepresentation.Values.DecimalNumber: return true
+        _: return false
+    }
 }

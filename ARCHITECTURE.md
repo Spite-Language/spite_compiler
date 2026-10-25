@@ -89,15 +89,18 @@ clearing a function's facts once it has, so no fact outlives the round that prov
 5. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
 6. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
    answer that would decide itself.
-7. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
-8. `every_attribute_is_read`: an attribute nothing reads is a compile error.
-9. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
-10. `registered_in_setup`: a stage's `register` is called only from its setup.
-11. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
+7. `literal_dictionaries`: a local dictionary written out and only read by keys written out holds exactly its
+   entries; it records each one and marks each read of a key it lacks (a speed proof, and what lets the next proof
+   refuse a `crash` on such a read).
+8. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
+9. `every_attribute_is_read`: an attribute nothing reads is a compile error.
+10. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
+11. `registered_in_setup`: a stage's `register` is called only from its setup.
+12. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
    facts on the operations).
-12. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
+13. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
-13. `lists_in_the_frame`: a local list of whole numbers filled at its own level and then only counted and read by
+14. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
    index holds a known count of items (a speed proof: it records the count on the list's declaration,
    `Declare.frame_items`, which a high pass carries with the statement, and the lowering lays the list out in the
    frame).
@@ -119,8 +122,8 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
 
 1. `setup_list_calls`: each recorded loop over a setup's list is one direct call per item, to the function of the
    item's class. This is what makes a stage's `run` direct calls in order.
-2. `fused_chains`: a `List` template called on the answer of `filter_` and `map_` steps is one call to a function
-   written from the last template's body, with the steps inside its loop.
+2. `fused_chains`: a `List` or `Vector` template called on the answer of `filter_` and `map_` steps is one call to
+   a function written from the last template's body, with the steps inside its loop.
 3. `banded_loops`: an `each_` over a `List` whose passes write only their own item calls the template that runs it
    in bands, and a counted loop of one such call runs its count inside each band.
 4. `folded_dictionaries`: a local dictionary written out and only read by keys written out is its entries.
@@ -129,21 +132,23 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    they are read.
 7. `layouts_by_use`: every class's layout (offsets, sizes, packing, the shared blocks of union members, the room of
    a short text), recorded as `HighProgram.layout`.
-8. `call_assignments`: what each call may assign (`HighProgram.assignments`).
-9. `singleton_locks`: which functions wait or can be resumed, which singletons keep a lock and which loops share
+8. `static_singletons`: the singletons that hold nothing and make nothing, each one object in the executable's data
+   (`HighProgram.static_singletons`).
+9. `call_assignments`: what each call may assign (`HighProgram.assignments`).
+10. `singleton_locks`: which functions wait or can be resumed, which singletons keep a lock and which loops share
    it (`HighProgram.waits`).
    Right after it, the proof `no_thread_counts`, registered through `HighOptimizationPasses.Proving` since it reads
    that walk, records the classes another thread may count (`HighProgram.thread_counted_classes`); every other
    class is counted plainly.
-10. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
+11. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
    fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`, `fresh_by_constructor`).
-11. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
+12. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
    (`HighProgram.taken_parameters`).
-12. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).
-13. `inline_items`: a list's objects sit inside its storage, or in one array per attribute (into the layout).
-14. `lent_attributes`: an attribute that only holds an item of its holder's list is not counted (into the layout).
+13. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).
+14. `inline_items`: a list's objects sit inside its storage, or in one array per attribute (into the layout).
+15. `lent_attributes`: an attribute that only holds an item of its holder's list is not counted (into the layout).
 
-Passes 2 to 14 run only when the program is lowered (not with `--check`). Passes 7 to 14 make the decisions the
+Passes 2 to 15 run only when the program is lowered (not with `--check`). Passes 7 to 15 make the decisions the
 lowering reads, so the lowering only lowers; they read nothing a later high pass changes. The layout and the studies of calls
 they share (`Layout`, `Assignments`, `Waits`, `SingletonForms`, `CoarseLoops`, `QuietValues`, `ListGets`) are
 classes of `high_intermediary_representation/`, beside the representation they describe.
