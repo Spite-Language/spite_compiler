@@ -415,7 +415,8 @@ as when each was refused while building.
   ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#numeric-types)).
 - **Buys**: no wrapped number is ever read.
 - **Missing**: a `Long` counter whose bound has no range keeps its check; `--repl` and `--hot-reload` builds keep
-  every check; the constant overflow error is made only for `Integer` arithmetic.
+  every check. The constant overflow error is made for `Integer` arithmetic only, as the old compiler made it: other
+  widths are folded in their own type and checked where they are narrowed.
 - **Falls back**: the check stays, "spite: '...' does not fit in an Integer (...), at ...".
 - **Lives in**: the lowering (`function_lowering.spite`: `is_checked`, `check_the_range`), the generator
   (`emit_a_cold_stop`), and the counter proof in `ranges.spite`.
@@ -487,27 +488,33 @@ as when each was refused while building.
 - **Buys**: generic code compiles only the branch its class takes.
 - **Missing**: `function_waits` and `function_writes_parameter` are answered after every function is built, so both
   branches are built and checked (D673); a codegen number compared with a literal folds only when one side is a
-  call; a function taking a `type` has no copy per class; `x and false` and `x or true` with a run-time left side.
+  call; a function taking a `type` has no copy per class; `x and false` and `x or true` whose left side calls
+  something (one that only reads names, attributes and tests folds, D1143).
 - **Falls back**: a run-time test of a constant, removed later by constant folding; both branches must compile.
 - **Lives in**: the builder, `statements.spite` (`build_a_decided_if`), `values.spite` (`condition_of`,
   `folded_logic`, `decided_comparison`, `reflection_question`): deciding a condition is choosing what to build, and
   the branch not taken is never built, so nothing is left for a proof to judge (D1110).
 - **Checked by**: tests/codegen_member_fold, tests/walked_class_fold, tests/private_walk, tests/codegen_short_circuit,
   tests/codegen_kind_tests, tests/codegen_class_test, tests/build_settings, tests/folded_helpers,
-  tests/folded_functions, tests/folded_argument_count.
+  tests/folded_functions, tests/folded_argument_count, tests/decided_and_false.
 
 ### Whether a function waits
 
-- **Status**: partly built; **fails silently**.
+- **Status**: partly built; **fails silently** (one case).
 - **Rule**: waiting spreads from `sleep`, console, file and socket reads and joins, through calls, function values
   (to every function taken as a value with the same signature) and `type` dispatch, to a fixed point; letting go of
   a `Concurrent` waits; where it cannot tell, the answer is true
   ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks),
   [concurrency.md](../SpiteLanguage/specs/concurrency.md)).
 - **Buys**: `function_waits` and `is_resumable` fold.
-- **Missing**: the study behind `function_waits` does not count letting go of a `Concurrent` (a local or an
-  attribute assigned again, a holder dropped, a list cleared), which the lowering's own study does count; a call
-  through a function value it does not know adds nothing, where it should spread or answer true. Both answer false.
+- **How**: a function that assigns a local again, assigns an attribute or clears a list, where what it replaces may
+  hold a `Concurrent` (the handle itself, an object or a list holding one), lets one go, so it waits (D1134; the
+  test of what holds one is `high_intermediary_representation/held_work.spite`, which the lowering's own study reads
+  for every handle). A call through a function value the study
+  cannot name reaches every function taken as a value anywhere in the program with as many parameters as the call
+  passes: the first such call reads every body once.
+- **Missing**: a local holding a `Concurrent` let go at the end of its scope (the study cannot yet tell it from one
+  moved into a list or an attribute, which must not count).
 - **Falls back**: refused when the answer would decide itself, "whether '...' can wait was answered ... before the
   functions that ask 'function_waits' were compiled ...".
 - **Lives in**: the proof `proofs/compile_time_facts`, which answers every question asked while building and
@@ -515,7 +522,7 @@ as when each was refused while building.
   (`waits`, `waits_through`), which the builder also reads for the frame starts; a second study in `high_intermediary_representation/waits.spite`
   (embedded: the lowering's own, for what each call suspends).
 - **Checked by**: tests/waiting_systems, tests/entry_function_waits, tests/pooled_loads_wait, tests/default_handles,
-  tests/reflection_objects; conformance/function_waits_paradox.
+  tests/reflection_objects, tests/function_waits_dropped; conformance/function_waits_paradox.
 
 ### How many arguments a function takes
 
@@ -541,7 +548,10 @@ as when each was refused while building.
   `any_attribute_fits_vector` fold, and an `Items<T>` stores its items inline exactly when a `Vector<T>` could be
   made ([collections.md](../SpiteLanguage/specs/collections.md)).
 - **Buys**: items inline, lent rather than counted.
-- **Missing**: "not a generic template"; the borrow study (`borrows.spite`) keeps its own copy of the answer, which
+- **Generic templates**: every generic class is made once per set of type arguments before anything asks, so no
+  `fits_vector()` is ever asked of an unbound template and the old compiler's "not a generic template" test has
+  nothing to refuse here.
+- **Missing**: the borrow study (`borrows.spite`) keeps its own copy of the answer, which
   does not test `this` yet, so it may refuse a borrow of an `Items` item that is held by reference.
 - **Falls back**: refused for a `Vector<T>`, "'...' uses 'this' as a value, and an item of a Vector is borrowed ...";
   an `Items<T>` holds such items by reference.
@@ -567,19 +577,22 @@ as when each was refused while building.
 
 ### Whether a class keeps state
 
-- **Status**: partly built; **fails silently**.
+- **Status**: partly built.
 - **Rule**: `$T.is_stateful` folds to "some function other than the constructor and `drop()` writes its own object
   or a singleton, or a singleton it binds keeps state"; where it cannot tell (a function it cannot build, such as a
   member template or one taking a `Spite.*` parameter), true
   ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks)).
 - **Buys**: generic code shares an object nothing changes.
-- **Missing**: writing a singleton does not count; it is a filled reflection value, not a folded constant, so an
-  `if` on it builds both branches.
-- **Falls back**: true when a bound singleton has attributes, when a function cannot be built, and for a library
-  class with attributes.
-- **Lives in**: embedded, `reflection.spite` (`fill_from_the_model`, `every_writer_can_be_built`,
-  `writes_its_object`).
-- **Checked by**: tests/class_walk, tests/run_time_kinds, tests/reflection_objects.
+- **How**: the study (`building/facts.spite`) gives every singleton a slot of its own (`s:<class>`), reached by
+  naming the singleton, by an attribute or a local holding it, and through every call that writes one; a program
+  class whose writers can all be built asks the proof whether one of them writes its object or any singleton
+  (the fact `keeps_state`), with or without attributes of its own (D1135).
+- **Missing**: it is a filled reflection value, not a folded constant, so an `if` on it builds both branches.
+- **Falls back**: true when a bound singleton has attributes, when a function of a program class cannot be built,
+  and for a library class with attributes.
+- **Lives in**: the proof `proofs/compile_time_facts` answers the fact; `reflection.spite` (`fill_the_state`,
+  `every_writer_can_be_built`, `writes_its_object`) asks it.
+- **Checked by**: tests/class_walk, tests/run_time_kinds, tests/reflection_objects, tests/stateful_singleton_writes.
 
 ### The one class a `type` admits
 
@@ -735,15 +748,16 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 ### No borrowed read past a resize
 
-- **Status**: partly built (D730); **fails silently** (the rule goes unenforced, memory stays safe).
+- **Status**: partly built (D730, D1140); **fails silently** (the rule goes unenforced, memory stays safe).
 - **Rule**: a borrowed name is not read after anything that may resize its collection, followed through calls; a
   resize anywhere in a loop ends the borrow for the loop
-  ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)).
-- **Missing**: assigning a local `Vector` again, or an attribute along the path, is not a resize; library functions
-  are not followed; a value of unknown type fans out to every function of the name; a callee's effects computed
-  under the recursion guard are cached short.
+  ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)). Assigning the collection again,
+  a local as well as an attribute, is a resize, and so is assigning an object whose attribute holds it (one level:
+  `holder = Holder()` ends what was borrowed from `holder.velocities`).
+- **Missing**: an object two levels up the path; library functions are not followed; a value of unknown type fans
+  out to every function of the name; a callee's effects computed under the recursion guard are cached short.
 - **Falls back**: refused, "'...' is borrowed from '...', and '...' on line ... may move the items ...".
-- **Checked by**: conformance/vector_borrow_call_grows, vector_borrow_loop, vector_borrow_removed,
+- **Checked by**: conformance/vector_borrow_call_grows, vector_borrow_loop, vector_borrow_removed, vector_borrow_local_assigned, vector_borrow_holder_assigned,
   vector_borrow_swap, vector_reserve_borrows, dispatched_resizes, found_item_borrows, items_borrow_remove_swapping;
   tests/queued_borrows.
 
@@ -763,15 +777,15 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 ### An item lent to the caller
 
-- **Status**: partly built; **fails silently** (one case).
+- **Status**: partly built.
 - **Rule**: a `return` of an item read straight from a singleton's `Vector` or fitting `Items` lends it: every
   return is such an item or null, the caller borrows it, and it is called only by name
-  ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)).
-- **Missing**: the uncounted return; `is_fixed_size` and `functions[...]` folded in its conditions; returning a lent
-  result through a name (`var h = lookup.of(0); return h`) is accepted.
+  ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)). A borrowed item returned through a
+  name (`var h = lookup.of(0); return h`) is refused like any borrowed item (D1139).
+- **Missing**: the uncounted return; `is_fixed_size` and `functions[...]` folded in its conditions.
 - **Falls back**: refused, "'...' lends its caller an item of '...' ...".
 - **Checked by**: conformance/lent_escapes, lent_results, lent_function_type, lent_function_value,
-  lent_result_name_reused, lent_result_other_value, lent_result_returned_further; tests/lent_results,
+  lent_result_name_reused, lent_result_other_value, lent_result_returned_further, lent_result_returned_through_a_name; tests/lent_results,
   narrowed_lends, folded_lends.
 
 ### An item lent to a call
@@ -780,13 +794,16 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 - **Rule**: a borrowed item passed to a program function called by name is lent for the call; the callee is
   compiled under the borrow rules, the call may not resize the source, and lending to a library function, a union
   or an unnamed expression is an error ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)).
-- **Missing**: the uncounted argument; a lent parameter the callee passes on to a function that keeps it; a row's
-  attribute is not lent; the unnamed expression refusal; lending to a local function value; variadic positions.
+- **How**: a lent parameter the callee passes on by name to a program function called by name is lent to that
+  function too, for the call, and its body is judged the same way, through any depth of calls (D1141).
+- **Missing**: the uncounted argument; passing on through a receiver whose class the study cannot tell, or to a
+  library function; a row's attribute is not lent; the unnamed expression refusal; lending to a local function
+  value; variadic positions.
 - **Falls back**: refused, "'...' is borrowed from '...' and lent to '...' for its call ...".
 - **Lives in**: the proof `proofs/borrowed_items` refuses a resizing, library or union lend and records each lent
   call in the context (`borrows.spite`, `check_the_lent_body`); the proof `proofs/lent_parameters`, after it, judges
   the callee's body.
-- **Checked by**: conformance/lent_to_calls, lent_call_alias, lent_call_function_value, lent_call_kept,
+- **Checked by**: conformance/lent_to_calls, lent_call_alias, lent_call_function_value, lent_call_kept, lent_call_passed_on,
   lent_call_library, lent_call_listed, lent_call_returned, lent_call_union; tests/lent_to_calls, lent_arguments,
   lent_call_written_back, ignored_lent_argument.
 
@@ -999,14 +1016,15 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### Which singletons a `Parallel` reaches
 
-- **Status**: partly built; **fails silently**.
-- **Rule**: walk the calls from every function a `Parallel` or the pool can run; a reached singleton is made safe,
-  an unreached one takes no lock.
-- **Missing**: a `ForeignCallback`'s function is not a root, so a singleton reached only from a callback C calls on
-  its own thread takes no lock.
+- **Status**: built.
+- **Rule**: walk the calls from every function a `Parallel` or the pool can run, and from every function handed to C
+  as a `ForeignCallback`, which C may call on a thread of its own (D1137); a reached singleton is made safe, an
+  unreached one takes no lock. A reached function that reads or writes an attribute of a singleton of the program
+  directly, from another class, reaches that singleton too (D1138).
 - **Falls back**: locked.
 - **Lives in**: `high_intermediary_representation/waits.spite`, recorded by the high pass `singleton_locks`.
-- **Checked by**: tests/singleton_forms, tests/singleton_race, tests/unshared_locks, tests/singleton_lock_calls.
+- **Checked by**: tests/singleton_forms, tests/singleton_race, tests/unshared_locks, tests/singleton_lock_calls,
+  tests/singleton_outside_writes, tests/foreign_callbacks.
 
 ### No other thread touches a singleton
 
@@ -1057,11 +1075,19 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### No attribute is read past the lock
 
-- **Status**: missing; **fails silently**.
+- **Status**: partly built (D1138).
 - **Rule**: no attribute of a locked singleton is read or written directly from another class, except a lone atomic
-  one.
-- **Falls back**: none: a direct `singleton.attribute` read or write from another class runs unlocked, a race.
-- **Checked by**: none.
+  one, without its lock.
+- **How**: the lowering takes the singleton's lock (re-entered by the thread that holds it) around a load of a
+  locked singleton's attribute from a function of another class, and around the whole statement that assigns one,
+  so `tally.total = tally.total + 1` from another class adds once per run. An attribute nothing assigns after the singleton is
+  made (outside its constructor and defaults) is read with no lock, since it holds the same value for the rest of
+  the program.
+- **Missing**: a counted attribute (an object, a list, a text) read this way is counted after the lock is let go;
+  the old compiler's plain attributes under the lock and atomic attributes are not built.
+- **Lives in**: `low_intermediary_representation/lowering/function_lowering.spite` (`locks_from_outside`), reading
+  `waits.spite` (`is_a_locked_class`).
+- **Checked by**: tests/singleton_outside_writes.
 
 ### A lock that would wait forever is an error
 
@@ -1197,15 +1223,22 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### A value fits a `type`
 
-- **Status**: partly built; **fails silently**.
+- **Status**: partly built.
 - **Rule**: a value fits a `type`, and a `$T` its constraint, on its attributes, its functions, their types and
   not-null ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#inline-types-and-duck-typing-in-full)).
-- **Missing**: only a member's existence is checked; an attribute's type and a function's parameter and return types
-  are not compared with the type's, and a missing attribute is worded as a missing function.
-- **Falls back**: refused, "'...' does not fit type '...': it has no function '...'".
+- **How**: a class passed as a `type` must have each attribute with the type's type, and each function with as many
+  parameters, the same parameter types and the same answer, the type's own name standing for the class that fits
+  (D1136).
+- **Missing**: a member whose type is itself a `type`, a union or a function value is not compared; a `$T`'s
+  constraint (`constraints.spite`, `is_filled`) still checks only that each member exists.
+- **Falls back**: refused, "'...' does not fit type '...': it has no function '...'", "... it has no attribute
+  '...'", "... attribute 'size' is a String, but the type needs an Integer", "... its 'render' returns an Integer,
+  but the type needs a String", "... argument 1 of its 'scaled' is a String, but the type needs an Integer", "... its
+  'scaled' takes 2 argument(s), but the type needs 1".
 - **Lives in**: embedded, `values.spite` (`filled_shape`, `fits_as_a_class`), `constraints.spite`.
-- **Checked by**: conformance/shape_mismatch, shape_function_mismatch, generic_constraints,
-  generic_constraint_nullable, generic_constraint_not_a_type, shape_operator_without_function.
+- **Checked by**: conformance/shape_mismatch, shape_function_mismatch, shape_attribute_type_mismatch,
+  shape_return_type_mismatch, shape_parameter_type_mismatch, generic_constraints, generic_constraint_nullable,
+  generic_constraint_not_a_type, shape_operator_without_function.
 
 ### A member template fits
 
@@ -1213,12 +1246,15 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Rule**: the member a template names exists and has the right kind (a Boolean for `filter_`, a number for
   `sum_`), and a passed function takes the element
   ([collections.md](../SpiteLanguage/specs/collections.md#standard-library-metaprogramming)).
-- **Missing**: the specific errors for `map_` of a member that answers nothing, `sort_by_` of a Boolean, a
-  non-Boolean `filter_`, `any_` or `all_` (refused by the general condition error), `each` given something that is
-  not a function.
+- **How**: on a library collection, `sum_` needs a number, `count_` a Boolean, `each_` a function, `map_` a member
+  that answers something, `sort_by_` a number or a text, and `filter_`, `any_` and `all_` a Boolean, each refused at
+  the call with its own text (D1142).
+- **Missing**: the specific error for `each` given something that is not a function, and the same checks for a
+  member template of the program's own class.
 - **Falls back**: refused, mostly with a more general text.
 - **Lives in**: embedded, `values.spite` (`specialized_over_a_class`), `validators/high_intermediary_representation/typing`.
-- **Checked by**: conformance/member_template_mistakes, conformance/passed_functions.
+- **Checked by**: conformance/member_template_mistakes, member_template_map_nothing, member_template_sort_boolean,
+  member_template_filter_text, member_template_any_number, conformance/passed_functions.
 
 ### A value can be written
 
