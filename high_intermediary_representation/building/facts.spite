@@ -20,6 +20,9 @@ var current_line = 0
 var write_paths = Dictionary<String, String>()
 var write_lines = Dictionary<String, Integer>()
 var aliases = Aliases()
+var held_work = HighIntermediaryRepresentation.HeldWork(program)
+var studied_everything = false
+var singleton_writes = Dictionary<String, List<String>>()
 var blocking = ["Socket.accept_handle", "Socket.receive_into", "Socket.first_readable", "Console.read_line"]
 var file_reads = ["File.read", "File.read_bytes", "File.read_bytes_at"]
 var file_writes = ["File.write", "File.append", "File.write_bytes", "File.append_bytes"]
@@ -30,6 +33,8 @@ func Facts(
     starting_excluded: List<String>,
 ) {
     program = starting_program
+    held_work = HighIntermediaryRepresentation.HeldWork(program)
+    held_work.counts_only_a_concurrent = true
     excluded = starting_excluded
     var index = 0
     while index < built.count() {
@@ -56,6 +61,9 @@ func waits_through(key: String, seen: List<String>): Boolean {
         return false
     }
     seen.append(key)
+    if key.starts_with("$value") {
+        study_everything()
+    }
     var called = waits_callees[key]
     if not called {
         return false
@@ -69,6 +77,19 @@ func waits_through(key: String, seen: List<String>): Boolean {
         index = index + 1
     }
     return false
+}
+
+# ../../PROOFS.md#whether-a-class-keeps-state
+func writes_a_singleton(function: Model.FunctionModel): Boolean {
+    var asked = List<String>()
+    var key = function.key()
+    asked.append(key)
+    study(asked)
+    var found = singleton_writes[key]
+    if not found {
+        return false
+    }
+    return not found.is_empty()
 }
 
 func writes(function: Model.FunctionModel, slot: String): Boolean {
@@ -135,6 +156,25 @@ func study(asked: List<String>) {
     }
 }
 
+# ../../PROOFS.md#whether-a-function-waits
+func study_everything() {
+    assert not studied_everything
+    studied_everything = true
+    var unread = List<String>()
+    var known = bodies.keys()
+    var index = 0
+    while index < known.count() {
+        var key = known[index]
+        if not studied.contains(key) and not excluded.contains(key) {
+            unread.append(key)
+        }
+        index = index + 1
+    }
+    if not unread.is_empty() {
+        study(unread)
+    }
+}
+
 func add_pending(key: String) {
     pending.append(key)
 }
@@ -154,6 +194,11 @@ func read_function(key: String) {
         current_parameters.append(parameter.name)
         var own = List<String>()
         own.append("p:{parameter.name}")
+        var passed_type = parameter.parameter_type
+        if is_a_singleton(passed_type) {
+            own = List<String>()
+            own.append("s:{passed_type.name}")
+        }
         aliases.set(parameter.name, own)
         index = index + 1
     }
@@ -297,11 +342,25 @@ func mark(slots: List<String>) {
         var entry = "{current_key}|{slot}"
         if not written.contains(entry) {
             written.append(entry)
+            note_a_singleton_write(slot)
             write_paths[entry] = current_path
             write_lines[entry] = current_line
             changed = true
         }
         index = index + 1
+    }
+}
+
+func note_a_singleton_write(slot: String) {
+    assert slot.starts_with("s:")
+    var listed = singleton_writes[current_key]
+    if not listed {
+        listed = List<String>()
+        singleton_writes[current_key] = listed
+    }
+    crash listed
+    if not listed.contains(slot) {
+        listed.append(slot)
     }
 }
 
@@ -321,7 +380,7 @@ func read_statement(statement: HighIntermediaryRepresentation.Statements.Stateme
     current_line = statement.line
     switch statement {
         HighIntermediaryRepresentation.Statements.Declare: read_a_naming(statement.name, statement.value)
-        HighIntermediaryRepresentation.Statements.Assign.Assign: read_a_naming(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: read_a_reassignment(statement.name, statement.value)
         HighIntermediaryRepresentation.Statements.Assign.Attribute: read_an_attribute_write(statement)
         HighIntermediaryRepresentation.Statements.Assign.ThroughShape: read_a_shape_write(statement)
         HighIntermediaryRepresentation.Statements.Evaluate: look(statement.value)
@@ -349,6 +408,14 @@ func read_a_return(value: HighIntermediaryRepresentation.Values.Value?) {
     }
 }
 
+func read_a_reassignment(name: String, value: HighIntermediaryRepresentation.Values.Value?) {
+    crash value
+    if held_work.holds(value.value_type) {
+        note_waiting()
+    }
+    read_a_naming(name, value)
+}
+
 func read_a_naming(name: String, value: HighIntermediaryRepresentation.Values.Value?) {
     look(value)
     var found = roots(value)
@@ -356,6 +423,9 @@ func read_a_naming(name: String, value: HighIntermediaryRepresentation.Values.Va
 }
 
 func read_an_attribute_write(statement: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    if held_work.holds(statement.attribute.attribute_type) {
+        note_waiting()
+    }
     look(statement.object)
     look(statement.value)
     var target = statement.object
@@ -414,7 +484,7 @@ func look(value: HighIntermediaryRepresentation.Values.Value?) {
         HighIntermediaryRepresentation.Values.EnumFromText: look(value.text)
         HighIntermediaryRepresentation.Values.EnumText: look(value.number)
         HighIntermediaryRepresentation.Values.ForeignCall: value.arguments.each(look_a_foreign_argument)
-        HighIntermediaryRepresentation.Values.Function.Value: look(value.receiver)
+        HighIntermediaryRepresentation.Values.Function.Value: look_a_taken_function(value)
         HighIntermediaryRepresentation.Values.Function.ValueCall: look_a_value_call(value)
         HighIntermediaryRepresentation.Values.MachineOperation: look_both(value.left, value.right)
         HighIntermediaryRepresentation.Values.MakeObject: look_a_making(value)
@@ -480,6 +550,7 @@ func look_a_call(call: HighIntermediaryRepresentation.Values.Call) {
     look(call.receiver)
     call.arguments.each(look_present)
     var key = call.function.key()
+    note_a_cleared_holder(call)
     var touches_a_file = file_reads.contains(key) or file_writes.contains(key)
     if key == "Program.sleep" or blocking.contains(key) or touches_a_file {
         note_waiting()
@@ -490,6 +561,13 @@ func look_a_call(call: HighIntermediaryRepresentation.Values.Call) {
         add_same_class_callee(key)
     }
     map_the_writes(call.function, call.receiver, call.arguments)
+}
+
+func note_a_cleared_holder(call: HighIntermediaryRepresentation.Values.Call) {
+    assert call.function.name == "clear" and call.receiver
+    if held_work.holds(call.receiver.value_type) {
+        note_waiting()
+    }
 }
 
 func map_the_writes(
@@ -511,6 +589,31 @@ func map_the_writes(
         }
         index = index + 1
     }
+    var key = function.key()
+    var singletons = singleton_writes[key]
+    if singletons and key != current_key {
+        var written_there = singletons.copy()
+        mark(written_there)
+    }
+}
+
+func look_a_taken_function(taken: HighIntermediaryRepresentation.Values.Function.Value) {
+    look(taken.receiver)
+    var key = taken.function.key()
+    var counted = taken.function.parameters.count()
+    var through = "$value:{counted}"
+    var listed = waits_callees[through]
+    if not listed {
+        listed = List<String>()
+        waits_callees[through] = listed
+    }
+    crash listed
+    if not listed.contains(key) {
+        listed.append(key)
+    }
+    if not studied.contains(key) and bodies[key] and not excluded.contains(key) {
+        pending.append(key)
+    }
 }
 
 func look_a_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
@@ -520,6 +623,13 @@ func look_a_value_call(call: HighIntermediaryRepresentation.Values.Function.Valu
     if called == HighIntermediaryRepresentation.Values.Function.Value {
         look_a_known_value_call(called, call.arguments)
         return
+    }
+    var waited = waits_callees[current_key]
+    crash waited
+    var passed = call.arguments.count()
+    var through = "$value:{passed}"
+    if not starting and not waited.contains(through) {
+        waited.append(through)
     }
     var reached = mentions(called)
     mark(reached)
@@ -635,7 +745,7 @@ func roots(value: HighIntermediaryRepresentation.Values.Value?): List<String> {
         HighIntermediaryRepresentation.Values.Call: return roots_of_a_known_call(value)
         HighIntermediaryRepresentation.Values.ShapeCall: return roots_of_a_call(value.receiver, value.arguments)
         HighIntermediaryRepresentation.Values.Function.ValueCall: return roots_of_a_call(value.called, value.arguments)
-        HighIntermediaryRepresentation.Values.MakeObject: return roots_of_a_call(null, value.arguments)
+        HighIntermediaryRepresentation.Values.MakeObject: return roots_of_a_making(value)
         _: return found
     }
 }
@@ -672,6 +782,15 @@ func roots_of_a_known_call(call: HighIntermediaryRepresentation.Values.Call): Li
     return found
 }
 
+func roots_of_a_making(made: HighIntermediaryRepresentation.Values.MakeObject): List<String> {
+    if is_a_singleton(made.value_type) {
+        var found = List<String>()
+        found.append("s:{made.value_type.name}")
+        return found
+    }
+    return roots_of_a_call(null, made.arguments)
+}
+
 func own_slot(): List<String> {
     var found = List<String>()
     found.append("this")
@@ -680,7 +799,9 @@ func own_slot(): List<String> {
 
 func roots_of_an_attribute(attribute_read: HighIntermediaryRepresentation.Values.AttributeRead): List<String> {
     var found = List<String>()
-    if is_a_singleton(attribute_read.attribute.attribute_type) {
+    var held = attribute_read.attribute.attribute_type
+    if is_a_singleton(held) {
+        found.append("s:{held.name}")
         return found
     }
     var object = attribute_read.object
