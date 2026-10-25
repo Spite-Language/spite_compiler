@@ -1,0 +1,242 @@
+var model = Model.ProgramModel()
+var bodies = Dictionary<String, HighFunction>()
+var visiting = List<String>()
+var quiet_calls = ["Buffer._resize_room"]
+
+func QuietValues(high: HighProgram) {
+    model = high.model
+    high.built_functions.each(note_a_function)
+}
+
+func note_a_function(function: HighFunction) {
+    var key = function.function.key()
+    bodies[key] = function
+}
+
+func is_quiet(value: HighIntermediaryRepresentation.Values.Value?, bound: Dictionary<String, Long>): Boolean {
+    if not value {
+        return true
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return true
+        HighIntermediaryRepresentation.Values.DecimalNumber: return true
+        HighIntermediaryRepresentation.Values.NullConstant: return true
+        HighIntermediaryRepresentation.Values.TextConstant: return true
+        HighIntermediaryRepresentation.Values.LocalRead: return true
+        HighIntermediaryRepresentation.Values.ThisRead: return true
+        HighIntermediaryRepresentation.Values.AttributeRead: return is_quiet(value.object, bound)
+        HighIntermediaryRepresentation.Values.Conversion: return is_a_quiet_conversion(value, bound)
+        HighIntermediaryRepresentation.Values.MakeObject: return is_a_quiet_making(value, bound)
+        HighIntermediaryRepresentation.Values.Call: return is_a_quiet_call(value, bound)
+        _: return false
+    }
+}
+
+func are_quiet(values: List<HighIntermediaryRepresentation.Values.Value>, bound: Dictionary<String, Long>): Boolean {
+    var index = 0
+    while index < values.count() {
+        var value = values[index]
+        if not is_quiet(value, bound) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_quiet_conversion(
+    conversion: HighIntermediaryRepresentation.Values.Conversion,
+    bound: Dictionary<String, Long>,
+): Boolean {
+    var kind = conversion.kind
+    var carries = kind == 'present' or kind == 'nullable' or kind == 'into_union' or kind == 'into_shape'
+    carries = carries or kind == 'widen' or kind == 'proven' or kind == 'to_decimal'
+    if not carries {
+        return false
+    }
+    return is_quiet(conversion.converted, bound)
+}
+
+func is_a_quiet_making(
+    made: HighIntermediaryRepresentation.Values.MakeObject,
+    bound: Dictionary<String, Long>,
+): Boolean {
+    var class_key = made.value_type.name
+    var made_model = model.class_named(class_key)
+    if not made_model {
+        return false
+    }
+    if made_model.is_singleton or made_model.function_named("drop") or class_key == "ForeignCallback" {
+        return false
+    }
+    if not are_quiet(made.arguments, bound) {
+        return false
+    }
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var no_bound = Dictionary<String, Long>()
+    if not is_a_quiet_function("{class_key}._attribute_defaults", no_arguments, no_bound) {
+        return false
+    }
+    if not made.constructor {
+        return true
+    }
+    var constructor_key = made.constructor.key()
+    return is_a_quiet_function(constructor_key, made.arguments, bound)
+}
+
+func is_a_quiet_call(call: HighIntermediaryRepresentation.Values.Call, bound: Dictionary<String, Long>): Boolean {
+    if not is_quiet(call.receiver, bound) or not are_quiet(call.arguments, bound) {
+        return false
+    }
+    var key = call.function.key()
+    if not call.function.has_a_body() {
+        return quiet_calls.contains(key)
+    }
+    if not call.number_positions.is_empty() {
+        return false
+    }
+    return is_a_quiet_function(key, call.arguments, bound)
+}
+
+func is_a_quiet_function(
+    key: String,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+    outer: Dictionary<String, Long>,
+): Boolean {
+    var function = bodies[key]
+    if not function or visiting.contains(key) {
+        return false
+    }
+    var bound = Dictionary<String, Long>()
+    var index = 0
+    while index < function.function.parameters.count() and index < arguments.count() {
+        var parameter = function.function.parameters[index]
+        var argument = arguments[index]
+        var known = constant_of(argument, outer)
+        if known {
+            bound[parameter.name] = known
+        }
+        index = index + 1
+    }
+    visiting.append(key)
+    var quiet = is_a_quiet_block(function.body, bound)
+    var last = visiting.count() - 1
+    visiting.remove_at(last)
+    return quiet
+}
+
+func constant_of(value: HighIntermediaryRepresentation.Values.Value?, bound: Dictionary<String, Long>): Long? {
+    if value == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value.number
+    }
+    if value == HighIntermediaryRepresentation.Values.LocalRead {
+        return bound[value.name]
+    }
+    return null
+}
+
+func is_a_quiet_block(
+    block: HighIntermediaryRepresentation.Statements.Block?,
+    bound: Dictionary<String, Long>,
+): Boolean {
+    if not block {
+        return true
+    }
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        if not is_a_quiet_statement(statement, bound) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_quiet_statement(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+    bound: Dictionary<String, Long>,
+): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return is_quiet(statement.value, bound)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return is_a_quiet_write(statement, bound)
+        HighIntermediaryRepresentation.Statements.Evaluate: return is_a_quiet_evaluation(statement, bound)
+        HighIntermediaryRepresentation.Statements.If: return is_a_quiet_if(statement, bound)
+        HighIntermediaryRepresentation.Statements.Block: return is_a_quiet_block(statement, bound)
+        _: return false
+    }
+}
+
+func is_a_quiet_write(
+    written: HighIntermediaryRepresentation.Statements.Assign.Attribute,
+    bound: Dictionary<String, Long>,
+): Boolean {
+    if written.object != HighIntermediaryRepresentation.Values.ThisRead {
+        return false
+    }
+    return is_quiet(written.value, bound)
+}
+
+func is_a_quiet_evaluation(
+    evaluated: HighIntermediaryRepresentation.Statements.Evaluate,
+    bound: Dictionary<String, Long>,
+): Boolean {
+    if evaluated.waited {
+        return false
+    }
+    return is_quiet(evaluated.value, bound)
+}
+
+func is_a_quiet_if(branch: HighIntermediaryRepresentation.Statements.If, bound: Dictionary<String, Long>): Boolean {
+    var folded = folded_condition(branch.condition, bound)
+    if folded == 1 {
+        return is_a_quiet_block(branch.then_branch, bound)
+    }
+    if folded == 0 {
+        return is_a_quiet_block(branch.else_branch, bound)
+    }
+    var quiet = is_quiet(branch.condition, bound) and is_a_quiet_block(branch.then_branch, bound)
+    return quiet and is_a_quiet_block(branch.else_branch, bound)
+}
+
+func folded_condition(
+    condition: HighIntermediaryRepresentation.Values.Value?,
+    bound: Dictionary<String, Long>,
+): Integer {
+    if condition == HighIntermediaryRepresentation.Values.Negation {
+        var inner = folded_condition(condition.negated, bound)
+        if inner < 0 {
+            return inner
+        }
+        return 1 - inner
+    }
+    if condition == HighIntermediaryRepresentation.Values.MachineOperation {
+        return folded_comparison(condition, bound)
+    }
+    return -1
+}
+
+func folded_comparison(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+    bound: Dictionary<String, Long>,
+): Integer {
+    var left = constant_of(operation.left, bound)
+    var right = constant_of(operation.right, bound)
+    if not left or not right {
+        return -1
+    }
+    var holds = false
+    switch operation.operator {
+        'equal': holds = left == right
+        'not_equal': holds = left != right
+        'less': holds = left < right
+        'less_or_equal': holds = left <= right
+        'greater': holds = left > right
+        'greater_or_equal': holds = left >= right
+        _: return -1
+    }
+    if holds {
+        return 1
+    }
+    return 0
+}

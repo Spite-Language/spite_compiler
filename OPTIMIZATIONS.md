@@ -69,6 +69,9 @@ func measure(at: Integer): Integer {
 `reading_at` and `offset_of` assign neither `readings`, `settings` nor `Settings.limits`, so both are passed
 uncounted. Ten million calls of `measure` went from 0.35 s to 0.22 s.
 
+What each call may assign is found by the high pass `high_optimization_passes/call_assignments`, which records it
+for the lowering.
+
 ## A name holding an item or an attribute is not counted
 
 `var held = this.part`, `var point = points[position]` once the read is proven, or a list's own
@@ -176,6 +179,8 @@ assigns every attribute itself, so it makes its object with no defaults at all: 
 make a `Customer` and a `List<Line>` makes neither
 (`a_deep_copy_is_written_per_class_with_a_table_only_where_a_graph_needs_one`: 37 ms before, 22 ms after).
 
+The trimmed defaults are decided by the high pass `high_optimization_passes/replaced_defaults`, which records them
+for the lowering.
 
 ## Arithmetic a range proves is not checked
 
@@ -625,6 +630,9 @@ every declared attribute, because it lists the declaration, not the slots. A pro
 hot reload or with `--development` keeps every attribute of its own classes in its declared place, because code
 added later may read any of them; only `String` is shrunk there too (see the section on `String`'s words below).
 
+Every layout is decided by the high pass `high_optimization_passes/layouts_by_use`, which records it as
+`HighProgram.layout` for the passes after it and the lowering.
+
 ## Untouched attributes have no slot
 
 An attribute that no built function reads or writes, whose default is pure, takes no slot in its object, its
@@ -798,7 +806,8 @@ of a known class into a local, hands such a local to that function, or calls ano
 a name from 0 below the list's `count()`, reads the item at it, makes one call through the item's `type` with plain
 names as arguments, and steps the name by one; and the class's function has the same parameters and answer as the
 `type`'s. The proof is `proofs/setup_lists` ([a list its setup fills holds what the setup
-made](PROOFS.md#a-list-its-setup-fills-holds-what-the-setup-made)) and the rewrite `high_optimization_passes/setup_list_calls`.
+made](PROOFS.md#a-list-its-setup-fills-holds-what-the-setup-made)) and the rewrite
+`high_optimization_passes/setup_list_calls`.
 **When it does not:** anything else reads or writes the list, an item is made anywhere but in the setup's own
 statements, a `--repl`, `--repl-port` or `--hot-reload` build: the loop runs as written, testing each item's class.
 
@@ -1148,6 +1157,8 @@ before, 433 ms after).
 **Not built:** one array per attribute (the layout the attributes a walk reads would want), an element holding
 text or objects, an object appended that is read again after, and the list's other functions.
 
+It is decided by the high pass `high_optimization_passes/inline_items`, which records each stride in the layout.
+
 ## A list's objects sit in one array per attribute
 
 A list whose objects [sit inside its storage](#a-lists-objects-sit-inside-its-storage) goes one step further when
@@ -1188,6 +1199,8 @@ func sum_points(): Long {
 ```
 
 `point` is the position, and `point.down` and `point.across` are reads of two arrays.
+
+It is decided by the high pass `high_optimization_passes/inline_items`, which records each such list in the layout.
 
 ## A local list of known size lives in the frame
 
@@ -2376,6 +2389,9 @@ the step in place and adds with one compare-exchange, where every call took two 
 from another class taking the lock, and the walk made again after tree shaking (form 1 decided over the whole
 program as written out).
 
+Which singletons keep a lock, and in which form, is decided by the high pass
+`high_optimization_passes/singleton_locks`, which records it for the lowering.
+
 ## While no task runs, a singleton's lock is claimed with a plain store
 
 Every thread a `Parallel` (or a helper for a blocking call) starts is counted in one word from just before it
@@ -2807,6 +2823,10 @@ allocations where a default inside a default is no longer made, and time. An obj
 when its holder lets it go before the block of the name would have ended, earlier; nothing it holds has a `drop()`,
 so that moment cannot be seen (`defaults_the_constructor_replaces_are_never_made`: 9.9 ms before, 9.1 ms after).
 
+The parameters a function keeps are found by the high pass `high_optimization_passes/taken_parameters`, and the
+slots a constructor fills with a fresh object by `high_optimization_passes/replaced_defaults`; both record them for
+the lowering.
+
 ## An item written back to the slot it came from is not written
 
 ```spite
@@ -2958,6 +2978,9 @@ before.
 is freed at the same moment as before: the list held each item the attribute pointed at for as long as it pointed
 at it.
 
+It is decided by the high pass `high_optimization_passes/lent_attributes`, which records each such attribute in the
+layout.
+
 ## An object only its holder holds lives inside it
 
 ```spite
@@ -2980,7 +3003,8 @@ an item is one allocation instead of two, and reading `item.owner.age` is one lo
 `template_chains_run_as_one_loop`: 22.6 ms before, 18.2 ms after). The room's header holds the class and a count no
 release brings to zero, so the code that reads an `Owner` is the code that reads any `Owner`.
 
-The decision is made for the whole program while compiling (`low_intermediary_representation/lowering/embedded_attributes.spite`),
+The decision is made for the whole program while compiling (the high pass
+`high_optimization_passes/embedded_attributes`),
 from the functions the program can reach (a function made from a template only when something calls it):
 
 - the held class is the program's own, holds only plain numbers (no object, text, nullable value or type argument),
