@@ -23,9 +23,9 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
                                            formatted by printers/formatted_source and read again); then
                                            validators/abstract_syntax_tree
     name_resolution                        the model; then validators/name_resolution
-    high_intermediary_representation       every reached function built (building only builds); then the rules
-                                           of validators/abstract_syntax_tree that need the built program
-    proofs                                 the proofs, in their order (below)
+    high_intermediary_representation       every reached function built (building only builds)
+    proofs                                 the proofs, in their order (below), the rules of
+                                           validators/abstract_syntax_tree that need the built program among them
     high_optimization_passes               the high passes, in their order (below)
     low_intermediary_representation        the lowering; then validators/low_intermediary_representation
     low_optimization_passes                the low passes, in their order (below)
@@ -69,35 +69,41 @@ clearing a function's facts once it has, so no fact outlives the round that prov
 
 ### The proofs, in order
 
-1. `present_values`: a value that may be null (an unnarrowed `T?`, an unproven `[]` read) is never used where a
-   value is needed.
-2. `proven_checks`: no check repeats what is already proven, no `assert` or `crash` checks a plain value, and no
-   copy is made only to narrow it.
-3. `loop_narrowings`: an assignment inside a loop does not undo a narrowing the next pass reads.
-4. `guard_asserts`: a guard `assert` answers only "nothing", and a last `if` is not a hidden guard.
-5. `lost_writes`: a write to an object only this function holds is read, and a name read from a list is not
-   assigned as its last mention.
-6. `borrowed_items`: a borrowed item is not kept, listed, returned, renamed or read past a resize, and is lent only
-   to a program function by name (it records each lent call for `lent_parameters`).
-7. `parallel_reach`: a `Parallel` work or a `parallel_each_` member reaches only what it may, and no lock waits
-   forever.
-8. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.
-9. `vector_fit`: every `Vector` the builder recorded making holds a class that fits one.
-10. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
-11. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
+1. `recorded_sites`: every site the builder recorded, in the order built, judged by the proof of its kind:
+   - `present_values`: a value that may be null (an unnarrowed `T?`, an unproven `[]` read) is never used where a
+     value is needed;
+   - `proven_checks`: no check repeats what is already proven, no `assert` or `crash` checks a plain value, and no
+     copy is made only to narrow it;
+   - `loop_narrowings`: an assignment inside a loop does not undo a narrowing the next pass reads;
+   - `guard_asserts`: a guard `assert` answers only "nothing", and a last `if` is not a hidden guard;
+   - `lost_writes`: a write to an object only this function holds is read, and a name read from a list is not
+     assigned as its last mention;
+   - `borrowed_items`: a borrowed item is not kept, listed, returned, renamed or read past a resize, and is lent
+     only to a program function by name (it records each lent call for `lent_parameters`);
+   - `parallel_reach`: a `Parallel` work or a `parallel_each_` member reaches only what it may, and no lock waits
+     forever.
+   A refusal the builder still makes asks this walk first, so the earliest error is the one told.
+2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program.
+3. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.
+4. `vector_fit`: every `Vector` the builder recorded making holds a class that fits one.
+5. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
+6. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
    answer that would decide itself.
-12. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
-13. `every_attribute_is_read`: an attribute nothing reads is a compile error.
-14. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
-15. `registered_in_setup`: a stage's `register` is called only from its setup.
-16. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
+7. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
+8. `every_attribute_is_read`: an attribute nothing reads is a compile error.
+9. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
+10. `registered_in_setup`: a stage's `register` is called only from its setup.
+11. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
    facts on the operations).
-17. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
+12. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
-11. `lists_in_the_frame`: a local list of whole numbers filled at its own level and then only counted and read by
+13. `lists_in_the_frame`: a local list of whole numbers filled at its own level and then only counted and read by
    index holds a known count of items (a speed proof: it records the count on the list's declaration,
    `Declare.frame_items`, which a high pass carries with the statement, and the lowering lays the list out in the
    frame).
+
+The sites `recorded_sites` judges hold what the builder resolved where it recorded them (the names in scope with
+their narrowed types, the block and the statement's place in it); `PROOFS.md` lists them.
 
 ### The low proofs, where they run
 
@@ -108,9 +114,6 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    functions it changed.
 3. `bounds_proven_by_signed_tests`: which unsigned bound tests a signed test of the same values already proved, and
    which sign tests a never negative value decides; before each `proven_bounds`, in every cleaning.
-
-The first seven judge the sites the builder recorded while building, each with what it resolved there (the names in
-scope with their narrowed types, the block and the statement's place in it); `PROOFS.md` lists the sites.
 
 ### The high passes, in order
 

@@ -54,6 +54,15 @@ used.
 `building/function_entry.spite` puts a proof back inside the function of a site (its class, its function, its line,
 and the member a member template binds), so a validator names the same place it named while building.
 
+The builder also lists every site in the order it recorded them (`context.recorded_sites`), and the proof
+`proofs/recorded_sites` walks that list, handing each site to the proof of its kind (a statement to `lost_writes`,
+then to `borrowed_items`), so the first error is the one in the earliest code, whichever proof finds it. A refusal
+the builder still makes itself first asks the same walk to judge what was recorded before it
+(`Context.judge_what_is_recorded`, from `Typing.Validator.stop`; the proofs stage hands its walk to the high
+representation stage before the build), and the rules of the syntax tree that need the built program run as the
+proof `proofs/rules_after_building`, right after the walk. A program with several errors is told the same first one
+as when each was refused while building.
+
 ## Presence and control flow
 
 ### Narrowing a `T?`
