@@ -665,14 +665,14 @@ as when each was refused while building.
   frame; a variadic list its callee only reads lives in the caller's frame
   ([functions_and_operators.md](../SpiteLanguage/specs/functions_and_operators.md)).
 - **Buys**: no allocation.
-- **Missing**: variadic lists; lists of anything but whole numbers; reads other than `count()` and `[]`; constant
-  data.
+- **Missing**: variadic lists; lists of objects or texts; reads other than `count()` and `[]`; constant data.
 - **Falls back**: a heap list.
 - **Lives in**: the speed proof `proofs/lists_in_the_frame`, run on the high representation after the acceptance
   proofs, which records on the list's declaration (and on a name that only holds it) how many items it holds
   (`Declare.frame_items`); the lowering lays out what was recorded. A name declared twice in one function is never
   placed in the frame.
-- **Checked by**: tests/frame_lists, tests/variadic_answers_in_frame, tests/text_building (output only).
+- **Checked by**: tests/frame_lists, tests/frame_lists_of_decimals, tests/variadic_answers_in_frame,
+  tests/text_building (output only).
 
 ### A function value its callee only calls lives in the frame
 
@@ -858,20 +858,22 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 - **Status**: partly built.
 - **Rule**: a presence test of `list[index]` tests the slot in place.
-- **Missing**: lists of nullable items, `Items`, and a test of a path through the item.
+- **Missing**: lists of nullable items, and a test of a path through the item.
 - **Falls back**: a counted read and its release.
 - **Lives in**: the lowering, `function_lowering.spite` (`lower_presence_test`), `list_reads.spite`.
-- **Checked by**: tests/tested_items.
+- **Checked by**: tests/tested_items, tests/items_presence.
 
 ### An item used at once is not counted
 
 - **Status**: partly built.
 - **Rule**: a proven `list[index]` used once, as a receiver or passed to a call that cannot change the list, is
   read in its slot.
-- **Missing**: the item passed as an argument; indices and arguments that are not plain reads.
+- **Missing**: indices and arguments that are not plain reads (or such item reads), and a call through a function
+  value.
 - **Falls back**: a counted read.
-- **Lives in**: the lowering, `function_lowering.spite` (`is_a_held_receiver`, `is_a_held_item`).
-- **Checked by**: tests/items_at_once.
+- **Lives in**: the lowering, `function_lowering.spite` (`is_a_held_receiver`, `is_a_held_item`,
+  `is_a_held_argument`).
+- **Checked by**: tests/items_at_once, tests/held_item_arguments.
 
 ### A list held only in a slot of another list
 

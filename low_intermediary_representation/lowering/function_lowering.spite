@@ -1299,6 +1299,9 @@ func is_a_borrowed_local(declare: HighIntermediaryRepresentation.Statements.Decl
     if reassigned_names.contains(declare.name) {
         return false
     }
+    if is_a_singleton_type(declare.declared_type) and declare.value {
+        return is_a_singleton_type(declare.value.value_type)
+    }
     var watched = List<String>()
     if not gather_the_sources(declare.value, watched) or watched.is_empty() {
         return false
@@ -2093,6 +2096,10 @@ func lower_make_object(made: HighIntermediaryRepresentation.Values.MakeObject): 
     var class_key = made.value_type.name
     var made_model = layout.program.class_named(class_key)
     crash made_model
+    if program.static_singletons.contains(class_key) {
+        var static_object = static_object_of(class_key)
+        return single(static_object)
+    }
     if made_model.is_singleton {
         var singleton = singleton_of(class_key, made)
         return single(singleton)
@@ -2104,6 +2111,37 @@ func lower_make_object(made: HighIntermediaryRepresentation.Values.MakeObject): 
         callbacks.handed_over(object, made)
     }
     return owned(object)
+}
+
+# ../../OPTIMIZATIONS.md#a-singleton-that-holds-nothing-is-a-static-object
+func static_object_of(class_key: String): Integer {
+    var known = program.static_objects[class_key]
+    var label = 0
+    if known {
+        label = known
+    } else {
+        label = static_object_label(class_key)
+    }
+    var object = new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(object, label)
+    emit(addressed)
+    return object
+}
+
+func static_object_label(class_key: String): Integer {
+    var size = layout.made_size_of(class_key)
+    var bytes = Buffer(0)
+    var index = 0
+    while index < size {
+        bytes.append(0)
+        index = index + 1
+    }
+    var class_id: Long = layout.class_id_of(class_key)
+    bytes.write_long_little_endian_at(0, class_id)
+    bytes.write_long_little_endian_at(8, layout.immortal_count)
+    var label = data_label(bytes)
+    program.static_objects[class_key] = label
+    return label
 }
 
 func make_object_for(class_key: String, made: HighIntermediaryRepresentation.Values.MakeObject): Integer {
@@ -2608,6 +2646,9 @@ func add_arguments(
         if hands_the_argument(callee, index) {
             var handed = handed_over(value)
             arguments.append(handed)
+        } else if is_a_held_argument(value, values, called_keys) {
+            var held = lower_a_held_argument(value)
+            arguments.append(held.value)
         } else {
             var argument_value = lower_value(value)
             passed_on(argument_value, value, called_keys)
@@ -2761,6 +2802,80 @@ func is_a_held_read(
         return false
     }
     return leaves_the_items(calling, read.function.owner)
+}
+
+# ../../OPTIMIZATIONS.md#an-item-a-call-cannot-let-go-is-passed-without-counting
+func is_a_held_argument(
+    value: HighIntermediaryRepresentation.Values.Value,
+    values: List<HighIntermediaryRepresentation.Values.Value>,
+    called_keys: List<String>,
+): Boolean {
+    if resumable_mode or called_keys.contains("$unknown") {
+        return false
+    }
+    if value == HighIntermediaryRepresentation.Values.Conversion {
+        return is_a_held_item_argument(value, values, called_keys)
+    }
+    return false
+}
+
+func is_a_held_item_argument(
+    conversion: HighIntermediaryRepresentation.Values.Conversion,
+    values: List<HighIntermediaryRepresentation.Values.Value>,
+    called_keys: List<String>,
+): Boolean {
+    if conversion.kind != 'proven' {
+        return false
+    }
+    var read = conversion.converted
+    if read == HighIntermediaryRepresentation.Values.Call {
+        if not is_a_steady_item_read(read, called_keys) {
+            return false
+        }
+        if not values.all(reads_without_writing) {
+            return false
+        }
+        return leaves_the_items(called_keys, read.function.owner)
+    }
+    return false
+}
+
+func is_a_steady_item_read(read: HighIntermediaryRepresentation.Values.Call, called_keys: List<String>): Boolean {
+    var reads = ListReads(this)
+    if not reads.is_a_plain_get(read) or not is_a_pointer(read.value_type) {
+        return false
+    }
+    return is_steady(read.receiver, called_keys) and read.arguments.all(is_plain_reading)
+}
+
+func reads_without_writing(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Conversion {
+        return is_a_proven_plain_get(value)
+    }
+    return is_plain_reading(value)
+}
+
+func is_a_proven_plain_get(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
+    if conversion.kind != 'proven' {
+        return false
+    }
+    var read = conversion.converted
+    if read == HighIntermediaryRepresentation.Values.Call {
+        var reads = ListReads(this)
+        if not reads.is_a_plain_get(read) or not is_plain_reading_of(read.receiver) {
+            return false
+        }
+        return read.arguments.all(is_plain_reading)
+    }
+    return false
+}
+
+func lower_a_held_argument(value: HighIntermediaryRepresentation.Values.Value): Lowered {
+    if value == HighIntermediaryRepresentation.Values.Conversion {
+        var reads = ListReads(this)
+        return reads.held_item(value)
+    }
+    crash
 }
 
 func leaves_the_items(calling: List<String>, list_key: String): Boolean {

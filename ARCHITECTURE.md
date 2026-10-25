@@ -97,7 +97,7 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    facts on the operations).
 12. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
-13. `lists_in_the_frame`: a local list of whole numbers filled at its own level and then only counted and read by
+13. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
    index holds a known count of items (a speed proof: it records the count on the list's declaration,
    `Declare.frame_items`, which a high pass carries with the statement, and the lowering lays the list out in the
    frame).
@@ -123,21 +123,23 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    they are read.
 3. `layouts_by_use`: every class's layout (offsets, sizes, packing, the shared blocks of union members, the room of
    a short text), recorded as `HighProgram.layout`.
-4. `call_assignments`: what each call may assign (`HighProgram.assignments`).
-5. `singleton_locks`: which functions wait or can be resumed, which singletons keep a lock and which loops share
+4. `static_singletons`: the singletons that hold nothing and make nothing, each one object in the executable's data
+   (`HighProgram.static_singletons`).
+5. `call_assignments`: what each call may assign (`HighProgram.assignments`).
+6. `singleton_locks`: which functions wait or can be resumed, which singletons keep a lock and which loops share
    it (`HighProgram.waits`).
    Right after it, the proof `no_thread_counts`, registered through `HighOptimizationPasses.Proving` since it reads
    that walk, records the classes another thread may count (`HighProgram.thread_counted_classes`); every other
    class is counted plainly.
-6. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
+7. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
    fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`, `fresh_by_constructor`).
-7. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
+8. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
    (`HighProgram.taken_parameters`).
-8. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).
-9. `inline_items`: a list's objects sit inside its storage, or in one array per attribute (into the layout).
-10. `lent_attributes`: an attribute that only holds an item of its holder's list is not counted (into the layout).
+9. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).
+10. `inline_items`: a list's objects sit inside its storage, or in one array per attribute (into the layout).
+11. `lent_attributes`: an attribute that only holds an item of its holder's list is not counted (into the layout).
 
-Passes 3 to 10 make the decisions the lowering reads, so the lowering only lowers; they read nothing a later high
+Passes 3 to 11 make the decisions the lowering reads, so the lowering only lowers; they read nothing a later high
 pass changes, and with `--check`, where nothing is lowered, they do not run. The layout and the studies of calls
 they share (`Layout`, `Assignments`, `Waits`, `SingletonForms`, `CoarseLoops`, `QuietValues`, `ListGets`) are
 classes of `high_intermediary_representation/`, beside the representation they describe.
