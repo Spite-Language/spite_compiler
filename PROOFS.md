@@ -379,7 +379,7 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Missing**: `absolute` gives no range; a counter stepped down keeps no floor and counts no passes; loop locals
   other than counters; types wider than 4 bytes only where a value gives a range.
 - **Falls back**: the check stays and is listed by `--optimization-report`.
-- **Lives in**: the proof `proofs/ranges`, a speed proof run last of the proofs, over every function built from
+- **Lives in**: the proof `proofs/ranges`, a speed proof run after the acceptance proofs, over every function built from
   the source; it records its fact on each operation (`proves_no_ranges`, the unchecked arithmetic) for the lowering.
 - **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room.
 
@@ -534,7 +534,7 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Buys**: no class test on a read through a `type`.
 - **Falls back**: a test of the class id, for a member some filler answers with a function, a shape call with
   arguments, or an offset another union takes.
-- **Lives in**: embedded, `attribute_layouts.spite` (`lay_out`), and the lowering (`lower_shape_call`).
+- **Lives in**: embedded, the high pass `high_optimization_passes/untouched_attributes` (`optimized`), and the lowering (`lower_shape_call`).
 - **Checked by**: none aimed at it (tests/class_through_shape and tests/unions read through a `type`).
 
 ### A `crash` that folds false is a compile error
