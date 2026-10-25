@@ -38,6 +38,11 @@ var stub_froms = List<Integer>()
 var stub_tos = List<Integer>()
 var flags_condition = 0
 var flags_register = -1
+var flags_have_parity = false
+var flags_unordered_is_true = false
+var current_instructions = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+var instruction_position = 0
+var skips_the_next = false
 var frame_slots = 0
 var decimal_save_base = 0
 var room_slots = 0
@@ -835,6 +840,9 @@ func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index
         crash only
         emit_the_moves(only, block_index)
     }
+    current_instructions = block.instructions
+    instruction_position = 0
+    skips_the_next = false
     block.instructions.each(emit_instruction)
     var last = block.instructions.last()
     var ends = false
@@ -848,6 +856,13 @@ func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index
 }
 
 func emit_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    var position = instruction_position
+    instruction_position = position + 1
+    if skips_the_next {
+        skips_the_next = false
+        flags_register = -1
+        return
+    }
     var compares = instruction == LowIntermediaryRepresentation.Instructions.Compare
     var keeps_flags = keeps_the_flags(instruction)
     emit_an_instruction(instruction)
@@ -1480,6 +1495,19 @@ func emit_fused_decimal_compare(compare: LowIntermediaryRepresentation.Instructi
         first = right
         second = left
     }
+    flags_have_parity = false
+    var equal = 148
+    var not_equal = 149
+    if compare.comparison == 'equal' {
+        setting = equal
+        flags_have_parity = true
+        flags_unordered_is_true = false
+    }
+    if compare.comparison == 'not_equal' {
+        setting = not_equal
+        flags_have_parity = true
+        flags_unordered_is_true = true
+    }
     encoder.compare_xmm(first, second, is_double)
     flags_condition = setting
     flags_register = compare.target
@@ -1563,6 +1591,7 @@ func wrap_to_the_width(arithmetic: LowIntermediaryRepresentation.Instructions.Ar
 }
 
 func emit_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    assert not emitted_as_a_pair(arithmetic)
     read_into(encoder.rax, arithmetic.left)
     if allocation.constant_of(arithmetic.right) {
         var divisor = allocation.value_of(arithmetic.right)
@@ -1579,6 +1608,113 @@ func emit_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithm
         emit_proven_division(arithmetic)
     }
     write_from(arithmetic.target, encoder.rax)
+}
+
+# ../../OPTIMIZATIONS.md#a-division-and-a-remainder-of-the-same-two-numbers-are-one-division
+func emitted_as_a_pair(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
+    if instruction_position >= current_instructions.count() {
+        return false
+    }
+    var following = current_instructions[instruction_position]
+    crash following
+    if following == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        return emitted_with(arithmetic, following)
+    }
+    return false
+}
+
+func emitted_with(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    following: LowIntermediaryRepresentation.Instructions.Arithmetic,
+): Boolean {
+    if not pairs_with(arithmetic, following) {
+        return false
+    }
+    read_into(encoder.rax, arithmetic.left)
+    read_into(encoder.rcx, arithmetic.right)
+    if arithmetic.is_checked {
+        encoder.test_rcx()
+        var zero = 132
+        defer_a_stop(zero, arithmetic, 2, 0, 0, false)
+    }
+    var dividing = arithmetic
+    if arithmetic.operator == 'remainder' {
+        dividing = following
+    }
+    if arithmetic.is_checked and arithmetic.is_signed {
+        divide_signed_into_both(dividing)
+    } else if arithmetic.is_signed {
+        divide_signed_by_rcx_into_both(arithmetic)
+    } else {
+        divide_unsigned_by_rcx_into_both(arithmetic)
+    }
+    var quotient = arithmetic.target
+    var remainder = following.target
+    if arithmetic.operator == 'remainder' {
+        quotient = following.target
+        remainder = arithmetic.target
+    }
+    write_from(quotient, encoder.rax)
+    write_from(remainder, encoder.rdx)
+    skips_the_next = true
+    return true
+}
+
+func pairs_with(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    following: LowIntermediaryRepresentation.Instructions.Arithmetic,
+): Boolean {
+    var divides = arithmetic.operator == 'divide' and following.operator == 'remainder'
+    var takes_the_rest = arithmetic.operator == 'remainder' and following.operator == 'divide'
+    if not divides and not takes_the_rest {
+        return false
+    }
+    var same_numbers = arithmetic.left == following.left and arithmetic.right == following.right
+    var same_kind = arithmetic.width == following.width and arithmetic.is_signed == following.is_signed
+    if not same_numbers or not same_kind {
+        return false
+    }
+    var keeps_its_operands = arithmetic.target != arithmetic.left and arithmetic.target != arithmetic.right
+    if not keeps_its_operands or arithmetic.target == following.target {
+        return false
+    }
+    if allocation.is_elided_target(following.target) or allocation.constant_of(arithmetic.right) {
+        return false
+    }
+    return not allocation.constant_of(arithmetic.left)
+}
+
+func divide_signed_into_both(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var minus_one = [72, 131, 249, 255]
+    minus_one.each(emit_a_byte)
+    var not_minus_one = 133
+    var dividing = encoder.jump_if(not_minus_one)
+    negate_or_stop(arithmetic)
+    encoder.clear_rdx()
+    var done = encoder.jump()
+    patch_here(dividing)
+    divide_signed_by_rcx_into_both(arithmetic)
+    patch_here(done)
+}
+
+func divide_signed_by_rcx_into_both(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    if arithmetic.width != 'bits_32' {
+        encoder.sign_extend_rax_into_rdx()
+        encoder.divide_signed_by_rcx()
+        return
+    }
+    var narrow = [153, 247, 249, 72, 99, 192, 72, 99, 210]
+    narrow.each(emit_a_byte)
+}
+
+func divide_unsigned_by_rcx_into_both(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    if arithmetic.width != 'bits_32' {
+        encoder.clear_rdx()
+        encoder.divide_unsigned_by_rcx()
+        return
+    }
+    var narrow = [49, 210, 247, 241, 137, 192, 137, 210]
+    narrow.each(emit_a_byte)
 }
 
 func emit_proven_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
@@ -1648,6 +1784,14 @@ func emit_division_by(arithmetic: LowIntermediaryRepresentation.Instructions.Ari
         divide_unsigned_by_multiplying(arithmetic, divisor)
         return
     }
+    if not arithmetic.is_signed and not narrow and divisor > 2 {
+        divide_wide_unsigned_by_multiplying(arithmetic, divisor)
+        return
+    }
+    if not arithmetic.is_signed and not narrow and divisor < -1 {
+        divide_wide_unsigned_by_a_larger_half(arithmetic, divisor)
+        return
+    }
     encoder.move_small_immediate(encoder.rcx, divisor)
     if arithmetic.is_signed {
         encoder.sign_extend_rax_into_rdx()
@@ -1691,6 +1835,54 @@ func divide_unsigned_by_multiplying(arithmetic: LowIntermediaryRepresentation.In
         return
     }
     encoder.move_register(encoder.rax, encoder.rdx)
+}
+
+# ../../OPTIMIZATIONS.md#dividing-by-a-constant-is-a-multiplication
+func divide_wide_unsigned_by_multiplying(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, divisor: Long) {
+    var magic = UnsignedMagic(divisor)
+    if magic.is_a_power {
+        divide_wide_unsigned_by_a_power(arithmetic, divisor, magic.shift)
+        return
+    }
+    encoder.move_register(encoder.rcx, encoder.rax)
+    encoder.move_small_immediate(encoder.rax, magic.multiplier)
+    encoder.multiply_unsigned_by_rcx()
+    encoder.move_register(encoder.rax, encoder.rcx)
+    encoder.register_operation(41, encoder.rax, encoder.rdx)
+    encoder.shift_immediate(5, encoder.rax, 1)
+    encoder.register_operation(1, encoder.rax, encoder.rdx)
+    encoder.shift_immediate(5, encoder.rax, magic.shift)
+    assert arithmetic.operator == 'remainder'
+    encoder.move_small_immediate(encoder.rdx, divisor)
+    encoder.multiply_registers(encoder.rax, encoder.rdx)
+    encoder.register_operation(41, encoder.rcx, encoder.rax)
+    encoder.move_register(encoder.rax, encoder.rcx)
+}
+
+func divide_wide_unsigned_by_a_power(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    divisor: Long,
+    shift: Integer,
+) {
+    if arithmetic.operator == 'remainder' {
+        encoder.move_small_immediate(encoder.rcx, divisor - 1)
+        encoder.register_operation(33, encoder.rax, encoder.rcx)
+    } else {
+        encoder.shift_immediate(5, encoder.rax, shift)
+    }
+}
+
+func divide_wide_unsigned_by_a_larger_half(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, divisor: Long) {
+    encoder.move_small_immediate(encoder.rcx, divisor)
+    var at_least = [49, 210, 72, 57, 200, 15, 147, 194]
+    at_least.each(emit_a_byte)
+    if arithmetic.operator == 'remainder' {
+        var taken = [72, 247, 218, 72, 33, 202]
+        taken.each(emit_a_byte)
+        encoder.register_operation(41, encoder.rax, encoder.rdx)
+    } else {
+        encoder.move_register(encoder.rax, encoder.rdx)
+    }
 }
 
 func divide_by_multiplying(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, divisor: Long) {
@@ -1841,6 +2033,7 @@ func emit_compare(compare: LowIntermediaryRepresentation.Instructions.Compare) {
     var condition = condition_code(compare.comparison, compare.is_signed)
     flags_condition = condition
     flags_register = compare.target
+    flags_have_parity = false
     assert not allocation.is_fused(compare.target)
     encoder.al_from_condition(condition)
     encoder.zero_extend_al_into_rax()
@@ -2170,7 +2363,96 @@ func stop_naming_the_library(name: Integer) {
 }
 
 func emit_jump(jump: LowIntermediaryRepresentation.Instructions.Jump) {
-    go_to_block(jump.block)
+    if rotates_into(jump.block) {
+        emit_the_test_of(jump.block)
+    } else {
+        go_to_block(jump.block)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-loop-tests-its-condition-at-the-bottom
+func rotates_into(head: Integer): Boolean {
+    var head_position = allocation.layout_positions[head]
+    crash head_position
+    if head_position < 0 or head_position > current_block {
+        return false
+    }
+    if loop_heads[head] != true or moves_at_the_tail(head) or allocation.moves_at_the_head(head) {
+        return false
+    }
+    var block = allocation.function.blocks[head]
+    crash block
+    var count = block.instructions.count()
+    if count < 1 or count > 4 {
+        return false
+    }
+    var last = block.instructions.last()
+    crash last
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        return tests_and_leaves(head, last, block)
+    }
+    return false
+}
+
+func tests_and_leaves(
+    head: Integer,
+    branch: LowIntermediaryRepresentation.Instructions.Branch,
+    block: LowIntermediaryRepresentation.LowBlock,
+): Boolean {
+    if branch.when_true == head or branch.when_false == head {
+        return false
+    }
+    var true_moves = allocation.moves_on_the_edge(head, branch.when_true)
+    var false_moves = allocation.moves_on_the_edge(head, branch.when_false)
+    if true_moves or false_moves {
+        return false
+    }
+    var index = 0
+    while index + 1 < block.instructions.count() {
+        var instruction = block.instructions[index]
+        crash instruction
+        if not repeats_freely(instruction) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func repeats_freely(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    var compares = instruction == LowIntermediaryRepresentation.Instructions.Compare
+    var decimal_compares = instruction == LowIntermediaryRepresentation.Instructions.Decimal.Compare
+    var loads = instruction == LowIntermediaryRepresentation.Instructions.Load
+    var copies = instruction == LowIntermediaryRepresentation.Instructions.Copy
+    return compares or decimal_compares or loads or copies
+}
+
+func emit_the_test_of(head: Integer) {
+    var block = allocation.function.blocks[head]
+    crash block
+    var latch = current_block_index
+    var kept_instructions = current_instructions
+    var kept_position = instruction_position
+    current_block_index = head
+    allocation.current_block = head
+    flags_register = -1
+    current_instructions = block.instructions
+    instruction_position = 0
+    block.instructions.each(emit_instruction)
+    current_instructions = kept_instructions
+    instruction_position = kept_position
+    current_block_index = latch
+    allocation.current_block = latch
+    flags_register = -1
+}
+
+func jump_when_unordered(branch: LowIntermediaryRepresentation.Instructions.Branch) {
+    var parity = 138
+    if flags_unordered_is_true {
+        jump_to_block_if_through_moves(parity, branch.when_true)
+    } else {
+        jump_to_block_if_through_moves(parity, branch.when_false)
+    }
 }
 
 func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
@@ -2194,6 +2476,10 @@ func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
     if branch.when_true == branch.when_false {
         go_to_block(branch.when_true)
         return
+    }
+    var on_the_flags = allocation.is_fused(branch.condition) or flagged
+    if flags_have_parity and on_the_flags {
+        jump_when_unordered(branch)
     }
     var true_moves = moves_at_the_tail(branch.when_true)
     var false_moves = moves_at_the_tail(branch.when_false)
