@@ -469,6 +469,62 @@ written last, after every other pass (`low_optimization_passes/released_in_place
 
 What a user can observe: the time, and a larger executable where releases are many.
 
+## Counts are atomic only in a program with threads
+
+Taking and letting go of a count is a plain addition and subtraction on the object's count, unless the program can
+run code on another thread: one that starts a `Parallel` (a `parallel_each_` pass included) or makes a
+`ForeignCallback`, which C may call from a thread of its own. Only such a program takes a count with a locked
+addition (`lock inc`) and lets one go with a locked subtraction; the allocator's own lists take their lock only there
+too. The lowering marks the program as one that uses threads where it writes a thread's start or a callback, and the
+generator and the passes that write counts (`released_in_place`, the free functions) read that mark.
+
+```
+func Counts() {
+    var names = List<String>()
+    names.append("ada")
+    console.print(names.count())
+}
+```
+
+Nothing here starts a thread, so the text's count is taken and let go with plain arithmetic. What a user can
+observe: the time. A program that makes a `Concurrent` and no `Parallel` runs its tasks on its own thread and counts
+plainly.
+
+## Plain counts where no other thread counts a class
+
+In a program with threads, most classes are still counted by one thread only: a worker that sums numbers never
+touches the program's `Point`s. The proof [no other thread counts a class](PROOFS.md#no-other-thread-counts-a-class)
+finds every class whose objects code on another thread can count, and every count of an object of any other class
+is plain arithmetic, in the whole program, while the classes another thread counts keep their atomic counts.
+
+```
+func PlainCounts() {
+    var summer = Summer(1000000)
+    var sum = Parallel(summer.total)
+    var points = List<Point>()
+    var index = 0
+    while index < 1000 {
+        var point = Point(index, index * 2)
+        points.append(point)
+        index = index + 1
+    }
+    console.print(sum, points.count())
+}
+```
+
+`summer.total` runs on a worker, which lets go of `summer` when it is done, so `Summer` counts atomically; the
+thousand `Point`s and their list are counted only by the program's own thread, so each append takes its count with
+a plain addition and the list's release lets each go with a plain subtraction.
+
+A count is plain where its object's class is known while compiling: a name's, a parameter's, an argument's, an
+attribute's or an item's declared class. A count whose class is not known there (a union, a shape, a function
+value, a count the compiler's own machinery writes, `_release` itself when it is called rather than written in
+place) stays atomic in a program with threads. A program that makes a `ForeignCallback` counts every class
+atomically, since C may call it from any thread. What a user can observe: the time
+(`plain_reference_counts_where_no_thread_reaches_a_class`, 25.6 ms with every count atomic, against 22.4 ms with
+no thread at all). `tests/plain_counts` and `tests/thread_counted_classes` (a class counted on both threads, beside
+one only the program's thread counts) show it.
+
 ## Small blocks come from the compiler's own free lists
 
 Every object, list storage, text and task frame used to be one `HeapAlloc` and one `HeapFree` (about 60 ns each on

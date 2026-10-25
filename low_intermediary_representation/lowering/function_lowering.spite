@@ -7,6 +7,8 @@ var current = 0
 var terminated = false
 var locals = Dictionary<String, Integer>()
 var held_types = Dictionary<Integer, Model.Type>()
+var plain_registers = List<Integer>()
+var atomic_registers = List<Integer>()
 var local_presences = Dictionary<String, Integer>()
 var scalars = Model.Scalars()
 var path = ""
@@ -518,7 +520,8 @@ func passed_on(value: Lowered, given: HighIntermediaryRepresentation.Values.Valu
     release_later(value, given.value_type)
     assert is_a_pointer(given.value_type) and not value.owned
     assert not is_steady(given, called_keys)
-    retain(value.value)
+    retain_counted(value.value, given.value_type)
+    note_the_count(value.value, given.value_type)
     pending_releases.append(value.value)
 }
 
@@ -580,6 +583,8 @@ func is_a_steady_attribute(
 func start(key: String) {
     function = LowIntermediaryRepresentation.LowFunction(key, 0)
     locals = Dictionary<String, Integer>()
+    plain_registers = List<Integer>()
+    atomic_registers = List<Integer>()
     local_presences = Dictionary<String, Integer>()
     var first = new_block()
     switch_to(first)
@@ -647,7 +652,8 @@ func hold_a_parameter(parameter: Model.ParameterModel) {
     assert not borrows_parameters or reassigned_names.contains(parameter.name)
     var register = locals[parameter.name]
     crash register
-    retain(register)
+    retain_counted(register, parameter.parameter_type)
+    note_the_count(register, parameter.parameter_type)
     hold(register)
 }
 
@@ -677,6 +683,36 @@ func retain(register: Integer) {
     emit(retained)
 }
 
+# ../../OPTIMIZATIONS.md#plain-counts-where-no-other-thread-counts-a-class
+func retain_counted(register: Integer, of_type: Model.Type) {
+    var retained = LowIntermediaryRepresentation.Instructions.Retain(register)
+    retained.is_atomic = not counts_plainly(of_type)
+    emit(retained)
+}
+
+func release_counted(register: Integer, of_type: Model.Type) {
+    var arguments = List<Integer>()
+    arguments.append(register)
+    var released = LowIntermediaryRepresentation.Instructions.Call(-1, "_release", arguments)
+    released.counts_plainly = counts_plainly(of_type)
+    emit(released)
+}
+
+func note_the_count(register: Integer, of_type: Model.Type) {
+    if counts_plainly(of_type) {
+        plain_registers.append(register)
+    } else {
+        atomic_registers.append(register)
+    }
+}
+
+func counts_plainly(of_type: Model.Type): Boolean {
+    var counted = of_type.kind == 'object' and not of_type.is_symbol
+    counted = counted and not program.counts_every_class_atomically
+    counted = counted and layout.class_ids.contains(of_type.name)
+    return counted and not program.thread_counted_classes.contains(of_type.name)
+}
+
 func release_held(register: Integer) {
     var held_type = held_types[register]
     if held_type {
@@ -702,12 +738,13 @@ func release(register: Integer) {
     var arguments = List<Integer>()
     arguments.append(register)
     var released = LowIntermediaryRepresentation.Instructions.Call(-1, "_release", arguments)
+    released.counts_plainly = plain_registers.contains(register) and not atomic_registers.contains(register)
     emit(released)
 }
 
 func kept(value: Lowered, of_type: Model.Type) {
     if is_a_pointer(of_type) and not value.owned {
-        retain(value.value)
+        retain_counted(value.value, of_type)
     }
 }
 
@@ -802,6 +839,7 @@ func is_a_borrowed_source(name: String): Boolean {
 
 func release_later(value: Lowered, of_type: Model.Type) {
     if is_a_pointer(of_type) and value.owned {
+        note_the_count(value.value, of_type)
         pending_releases.append(value.value)
     }
 }
@@ -813,7 +851,7 @@ func release_the_pending() {
 
 func discard(value: Lowered, of_type: Model.Type) {
     if is_a_pointer(of_type) and value.owned {
-        release(value.value)
+        release_counted(value.value, of_type)
     }
 }
 
@@ -1026,6 +1064,7 @@ func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
     if is_a_pointer(declare.declared_type) and not borrowed {
         hold(register)
         held_types[register] = declare.declared_type
+        note_the_count(register, declare.declared_type)
     }
     if is_a_nullable_scalar(declare.declared_type) {
         var presence = new_register()
@@ -1336,7 +1375,7 @@ func lower_assign(assign: HighIntermediaryRepresentation.Statements.Assign.Assig
     emit(copied)
     if is_a_pointer(assigned_type) {
         settle_before_letting_go(old, assigned_type)
-        release(old)
+        release_counted(old, assigned_type)
     }
     var presence = local_presences[assign.name]
     assert presence
@@ -1473,7 +1512,7 @@ func store_an_attribute(object: Integer, attribute: Model.AttributeModel, value:
     emit(stored)
     if is_a_pointer(attribute_type) {
         settle_before_letting_go(old, attribute_type)
-        release(old)
+        release_counted(old, attribute_type)
     }
     assert is_a_nullable_scalar(attribute_type)
     var presence_offset = layout.presence_offset_of(attribute)
@@ -1611,7 +1650,7 @@ func store_in_place(object: Integer, attribute: Model.AttributeModel, value: Low
     var stored = LowIntermediaryRepresentation.Instructions.Store(object, offset, value.value, width)
     emit(stored)
     assert is_a_pointer(value_type)
-    release(old)
+    release_counted(old, value_type)
 }
 
 func lower_evaluate(evaluate: HighIntermediaryRepresentation.Statements.Evaluate) {
@@ -2598,7 +2637,7 @@ func taking_callee(called_keys: List<String>): String {
 func handed_over(value: HighIntermediaryRepresentation.Values.Value): Integer {
     var handed = lower_a_kept_value(value)
     if not handed.owned {
-        retain(handed.value)
+        retain_counted(handed.value, value.value_type)
     }
     return handed.value
 }
