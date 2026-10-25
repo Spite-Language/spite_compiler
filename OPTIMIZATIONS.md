@@ -2127,9 +2127,10 @@ argument) is moved there at that point.
 
 A decimal constant read only by decimal maths is a value of its own in a decimal register rather than an immediate
 moved in at each use, and [a loop](#what-a-loop-does-not-change-is-computed-before-it) makes it once, before it
-starts. A decimal comparison (`<`, `<=`, `>`, `>=`) read only by the branch after it is the branch: `ucomiss` and a
-jump on its flags (a comparison with a NaN is false on either side, as unordered compares jump neither `ja` nor
-`jae`). `==` and `!=` still make their answer, since they read the parity flag too.
+starts. A decimal comparison read only by the branch after it is the branch: `ucomiss` and a jump on its flags. For
+`<`, `<=`, `>` and `>=` that is one jump (a comparison with a NaN is false on either side, as unordered compares jump
+neither `ja` nor `jae`); `==` and `!=` jump on the parity flag first, to the false side for `==` and to the true side
+for `!=` (a NaN equals nothing, itself included), then on the zero flag, so they make no answer either.
 
 ```spite
 func scaled_sum(values: List<Float>, shift: Float): Float {
@@ -2232,8 +2233,13 @@ other divisor from 3 to 2^31 - 1, it is a multiplication by a magic number worke
 sign correction. A signed divisor from -2^31 + 1 to -2 divides by its size and negates the quotient (the remainder
 is the same, since it takes the sign of what is divided). An unsigned number of 32 bits or fewer divided by any
 other constant from 3 to 2^31 - 1 is multiplied by `2^63 / divisor + 1` worked out while compiling, keeping the top
-of the 128-bit product: exact for every such number. A multiplication by a power of two that is not checked is a
-shift. An unsigned 64-bit number divided by a constant that is not a power of two keeps the `div`.
+of the 128-bit product: exact for every such number. An unsigned 64-bit number divided by a constant `d` from 3 to
+2^63 - 1 that is not a power of two is multiplied by `m = 2^(64 + l) / d - 2^64 + 1`, where `2^l` is the power of two
+just above `d` (worked out while compiling, by long division on two 32-bit halves so no step overflows): the top of the
+product is `t`, and the quotient is `(t + (x - t) / 2) / 2^(l - 1)`, two shifts, an addition and a subtraction, exact
+for every 64-bit `x` (the remainder is `x - quotient * d`); by a power of two above 2^30 it is a shift or a mask; by a
+constant of 2^63 or more (written as a negative `Long`) the quotient is `x >= d`, one comparison, and the remainder
+`x` less `d` when it is. A multiplication by a power of two that is not checked is a shift.
 
 ```spite
 func Sums(): Long {
@@ -2248,6 +2254,34 @@ func Sums(): Long {
 ```
 
 `index % 7` is no `idiv`: a multiplication, two shifts, two additions and a subtraction.
+
+## A division and a remainder of the same two numbers are one division
+
+The processor's `div` and `idiv` answer the quotient and the remainder together. A division followed at once by the
+remainder of the same two numbers (or a remainder followed by the division), of the same width and sign, with a
+divisor that is not a constant, is one division: the quotient is written from `rax` and the remainder from `rdx`. A
+divisor that is checked is tested for zero once (and, signed, for -1 once: the quotient negated, halting when it does
+not fit, and the remainder zero); the division that stops names the one written first, which is the one that would
+have stopped first.
+
+```spite
+func digits(value: Integer, base: Integer): Integer {
+    crash base > 1
+    var rest = value
+    var total = 0
+    while rest > 0 {
+        var digit = rest % base
+        rest = rest / base
+        total = total + digit
+    }
+    return total
+}
+```
+
+`rest % base` and `rest / base` are one `idiv` on each pass. **What a program can observe:** nothing but time.
+
+**Not built:** a pair with another instruction between them, and a pair by a constant divisor (each is its own
+multiplication).
 
 ## A proven divisor is not checked
 
@@ -2426,6 +2460,18 @@ the lock that guards the list of loops.
 
 writes `_scheduler_start` and `_scheduler_wait_for` for this program, and `Spite.Work_of_Integer._settled` for the
 join; `--low-ir` shows them.
+
+## A thread is started only where a `Parallel` is made
+
+A program starts a thread only at a `Parallel` (or a banded loop's pass): the compiler writes the thread's entry
+function and its start there, and nowhere else. There is no pool made at the start and no worker waiting for work, so
+a program that makes no `Parallel` starts no thread, imports no thread function and allocates nothing for one.
+
+    var total = Parallel(sum_of_squares)
+    var answer: Long = total
+
+starts one thread, at the `Parallel`, and joins it where `total` is read. **What a program can observe:** the time; a
+`Parallel` pays for starting its thread each time it is made.
 
 ## A singleton is made on first use, by a function of its own
 
