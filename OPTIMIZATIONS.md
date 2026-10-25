@@ -1213,7 +1213,10 @@ buffer and no count is allocated, so nothing is freed either.
 of at most 4096 bytes, kept in a local that is never assigned again, and whose every use in the function is
 `count()`, `list[index]` (read, tested with `crash`, `assert` or `if`), or the literal itself. A list passed to a
 call, answered, kept in an attribute, appended to, read by any other function of `List`, or held by a function
-that waits is made as before. A list of decimals or objects is made as before.
+that waits is made as before, and so is a list whose name the function declares more than once (in two blocks,
+say). A list of decimals or objects is made as before. The proof is `proofs/lists_in_the_frame`
+([local and variadic lists in the frame](PROOFS.md#local-and-variadic-lists-in-the-frame)), which records the count
+on the list's declaration for the lowering.
 
 **What a program can observe:** fewer allocations under `--debug-memory`. An index outside the list still stops
 the program with the same report.

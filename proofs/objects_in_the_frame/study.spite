@@ -1,0 +1,563 @@
+# ../../PROOFS.md#objects-that-never-leave-their-function-live-in-the-frame
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var keeping = Proofs.ObjectsInTheFrame.KeptParameters()
+var operands = LowOptimizationPasses.Operands()
+var flow = LowOptimizationPasses.Flow()
+var facts = LowIntermediaryRepresentation.PlacedObjects()
+var definition_counts = List<Integer>()
+var allocated = List<Boolean>()
+var escaped = List<Boolean>()
+var passed = List<Boolean>()
+var returned = List<Boolean>()
+var class_ids = List<Long>()
+var largest_room = 4096
+var largest_field_count = 32
+
+func Study(
+    starting_function: LowIntermediaryRepresentation.LowFunction,
+    starting_program: LowIntermediaryRepresentation.LoweredProgram,
+    starting_keeping: Proofs.ObjectsInTheFrame.KeptParameters,
+) {
+    function = starting_function
+    program = starting_program
+    keeping = starting_keeping
+}
+
+func placed(): LowIntermediaryRepresentation.PlacedObjects? {
+    assert not function.is_resumable and allocates_anything()
+    facts.register_total = operands.most_register_of(function)
+    fill_the_registers()
+    read_the_definitions()
+    join_the_copies()
+    fill_the_roots()
+    study_the_uses()
+    var index = 0
+    while index < function.parameter_count {
+        mark_escaped(index)
+        index = index + 1
+    }
+    choose_the_modes()
+    assert any_mode()
+    return facts
+}
+
+func allocates_anything(): Boolean {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Allocate {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func fill_the_registers() {
+    var index = 0
+    while index < facts.register_total {
+        facts.parents.append(index)
+        definition_counts.append(0)
+        facts.constant_known.append(false)
+        facts.constant_values.append(0)
+        facts.shapes.append(0)
+        index = index + 1
+    }
+}
+
+func read_the_definitions() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            operands.read(instruction)
+            operands.defines.each(count_a_definition)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(note_the_shape)
+        block_index = block_index + 1
+    }
+}
+
+func count_a_definition(register: Integer) {
+    var count = definition_counts[register]
+    crash count
+    definition_counts[register] = count + 1
+}
+
+func defined_once(register: Integer): Boolean {
+    if register < function.parameter_count {
+        return false
+    }
+    return definition_counts[register] == 1
+}
+
+func note_the_shape(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: note_a_constant(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: note_a_load_shape(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: note_an_arithmetic_shape(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: note_a_decimal_shape(instruction)
+        _: return
+    }
+}
+
+func note_a_constant(constant: LowIntermediaryRepresentation.Instructions.Constant) {
+    assert defined_once(constant.target)
+    facts.constant_known[constant.target] = true
+    facts.constant_values[constant.target] = constant.number
+}
+
+func note_a_load_shape(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    assert defined_once(loaded.target) and not loaded.is_swapped
+    var bytes = bytes_of(loaded.width)
+    facts.shapes[loaded.target] = facts.shape_code(bytes, loaded.is_signed)
+}
+
+func note_an_arithmetic_shape(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    assert defined_once(arithmetic.target)
+    assert arithmetic.operator != 'divide' and arithmetic.operator != 'remainder'
+    var bytes = bytes_of(arithmetic.width)
+    facts.shapes[arithmetic.target] = facts.shape_code(bytes, arithmetic.is_signed)
+}
+
+func note_a_decimal_shape(arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic) {
+    assert defined_once(arithmetic.target) and not arithmetic.is_double
+    facts.shapes[arithmetic.target] = facts.shape_code(4, false)
+}
+
+func bytes_of(width: LowIntermediaryRepresentation.Width): Integer {
+    switch width {
+        'bits_8': return 1
+        'bits_16': return 2
+        'bits_32': return 4
+        'bits_64': return 8
+    }
+}
+
+func join(first: Integer, second: Integer) {
+    var first_root = facts.root_of(first)
+    var second_root = facts.root_of(second)
+    if first_root != second_root {
+        facts.parents[second_root] = first_root
+    }
+}
+
+func join_the_copies() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(join_a_copy)
+        block_index = block_index + 1
+    }
+}
+
+func join_a_copy(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy and instruction.source >= 0 and instruction.target >= 0 {
+        join(instruction.target, instruction.source)
+    }
+}
+
+func fill_the_roots() {
+    var index = 0
+    while index < facts.register_total {
+        allocated.append(false)
+        escaped.append(false)
+        passed.append(false)
+        returned.append(false)
+        facts.allocation_sizes.append(-1)
+        class_ids.append(-1)
+        facts.modes.append(0)
+        facts.plain.append(false)
+        facts.field_counts.append(0)
+        var children = List<Integer>()
+        facts.free_children.append(children)
+        index = index + 1
+    }
+}
+
+func mark_escaped(register: Integer) {
+    if register >= 0 and register < facts.register_total {
+        var root = facts.root_of(register)
+        escaped[root] = true
+    }
+}
+
+func study_the_uses() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(study_an_instruction)
+        block_index = block_index + 1
+    }
+}
+
+func study_an_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var is_made = instruction == LowIntermediaryRepresentation.Instructions.Allocate
+    var is_copied = instruction == LowIntermediaryRepresentation.Instructions.Copy
+    if not is_made and not is_copied {
+        operands.defines.each(mark_escaped)
+    }
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Allocate: study_an_allocation(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: return
+        LowIntermediaryRepresentation.Instructions.Load: study_a_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: study_a_store(instruction)
+        LowIntermediaryRepresentation.Instructions.Retain: return
+        LowIntermediaryRepresentation.Instructions.Call: study_a_call(instruction)
+        LowIntermediaryRepresentation.Instructions.Return: study_a_return(instruction)
+        _: operands.uses.each(mark_escaped)
+    }
+}
+
+func study_a_return(returning: LowIntermediaryRepresentation.Instructions.Return) {
+    mark_escaped(returning.presence)
+    if returning.is_a_suspension {
+        mark_escaped(returning.source)
+        return
+    }
+    if returning.source >= 0 {
+        var root = facts.root_of(returning.source)
+        returned[root] = true
+    }
+}
+
+func study_an_allocation(allocate: LowIntermediaryRepresentation.Instructions.Allocate) {
+    var root = facts.root_of(allocate.target)
+    allocated[root] = true
+    if facts.constant_known[allocate.size] != true {
+        escaped[root] = true
+        return
+    }
+    var value = facts.constant_values[allocate.size]
+    crash value
+    var size = value.to_integer()
+    var earlier = facts.allocation_sizes[root]
+    crash earlier
+    if earlier >= 0 and earlier != size {
+        escaped[root] = true
+    }
+    facts.allocation_sizes[root] = size
+}
+
+func study_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    if loaded.is_swapped {
+        mark_escaped(loaded.address)
+        return
+    }
+    var root = facts.root_of(loaded.address)
+    var bytes = bytes_of(loaded.width)
+    var sign = 2
+    if loaded.is_signed {
+        sign = 1
+    }
+    note_a_field(root, loaded.offset, bytes, sign)
+}
+
+func study_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    mark_escaped(stored.source)
+    if stored.is_swapped {
+        mark_escaped(stored.address)
+        return
+    }
+    var root = facts.root_of(stored.address)
+    var bytes = bytes_of(stored.width)
+    note_a_field(root, stored.offset, bytes, 0)
+    if stored.offset == 0 {
+        note_the_class(root, stored)
+    }
+}
+
+func note_the_class(root: Integer, stored: LowIntermediaryRepresentation.Instructions.Store) {
+    var known = class_ids[root]
+    crash known
+    if stored.width != 'bits_64' or facts.constant_known[stored.source] != true {
+        class_ids[root] = -2
+        return
+    }
+    var value = facts.constant_values[stored.source]
+    crash value
+    if known == -1 or known == value {
+        class_ids[root] = value
+        return
+    }
+    class_ids[root] = -2
+}
+
+func study_a_call(call: LowIntermediaryRepresentation.Instructions.Call) {
+    assert call.function != "_release" or call.arguments.count() != 1
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if argument >= 0 {
+            var root = facts.root_of(argument)
+            if keeping.keeps_nothing_of(call.function, index) {
+                passed[root] = true
+            } else {
+                escaped[root] = true
+            }
+        }
+        index = index + 1
+    }
+}
+
+func note_a_field(root: Integer, offset: Integer, bytes: Integer, sign: Integer) {
+    var index = 0
+    while index < facts.field_roots.count() {
+        var owner = facts.field_roots[index]
+        var start = facts.field_offsets[index]
+        var width = facts.field_widths[index]
+        crash start
+        crash width
+        if owner == root {
+            if start == offset and width == bytes {
+                widen_the_sign(index, sign)
+                return
+            }
+            if offset < start + width and start < offset + bytes {
+                escaped[root] = true
+            }
+        }
+        index = index + 1
+    }
+    facts.field_roots.append(root)
+    facts.field_offsets.append(offset)
+    facts.field_widths.append(bytes)
+    facts.field_signs.append(sign)
+    var count = facts.field_counts[root]
+    crash count
+    facts.field_counts[root] = count + 1
+}
+
+func widen_the_sign(index: Integer, sign: Integer) {
+    var known = facts.field_signs[index]
+    crash known
+    assert sign != 0 and known != sign
+    if known == 0 {
+        facts.field_signs[index] = sign
+        return
+    }
+    facts.field_signs[index] = 3
+}
+
+func choose_the_modes() {
+    flow.find_the_edges(function)
+    var root = 0
+    while root < facts.register_total {
+        if allocated[root] == true and escaped[root] == false and facts.root_of(root) == root {
+            choose_a_mode(root)
+        }
+        root = root + 1
+    }
+}
+
+func choose_a_mode(root: Integer) {
+    assert fields_fit(root)
+    var class_id = class_ids[root]
+    crash class_id
+    assert class_id >= 0
+    var class_number = class_id.to_integer()
+    var free_key = program.free_keys[class_number]
+    assert free_key
+    var freeing = keeping.function_named(free_key)
+    assert freeing
+    assert read_the_free(root, freeing)
+    var is_plain = facts.plain[root] == true
+    var is_returned = returned[root] == true
+    assert is_plain or not is_returned
+    var members = members_of(root)
+    var shared = passed[root] != true and fits_in_registers(root)
+    var one_at_a_time = flow.holds_one_at_a_time(function, members)
+    if shared and one_at_a_time and (is_plain or facts.count_field_of(root) >= 0) {
+        facts.modes[root] = 1
+        return
+    }
+    if shared and is_plain and flow.copies_are_moves(function, members) {
+        facts.modes[root] = 2
+        return
+    }
+    var size = facts.allocation_sizes[root]
+    crash size
+    assert is_plain and size <= largest_room and not is_returned
+    if one_at_a_time or not flow.allocates_in_a_loop(function, members) {
+        facts.modes[root] = 3
+    }
+}
+
+func members_of(root: Integer): List<Boolean> {
+    var members = List<Boolean>()
+    var index = 0
+    while index < facts.register_total {
+        var joined = facts.root_of(index)
+        members.append(joined == root)
+        index = index + 1
+    }
+    return members
+}
+
+func fields_fit(root: Integer): Boolean {
+    var size = facts.allocation_sizes[root]
+    crash size
+    var index = 0
+    while index < facts.field_roots.count() {
+        var owner = facts.field_roots[index]
+        var start = facts.field_offsets[index]
+        var width = facts.field_widths[index]
+        crash start
+        crash width
+        if owner == root and (start < 0 or start + width > size) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func fits_in_registers(root: Integer): Boolean {
+    var count = facts.field_counts[root]
+    crash count
+    if count > largest_field_count {
+        return false
+    }
+    var index = 0
+    while index < facts.field_roots.count() {
+        var owner = facts.field_roots[index]
+        var sign = facts.field_signs[index]
+        if owner == root and sign == 3 {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func read_the_free(root: Integer, freeing: LowIntermediaryRepresentation.LowFunction): Boolean {
+    if freeing.parameter_count != 1 {
+        return false
+    }
+    var children = List<Integer>()
+    var released = released_children(freeing, children)
+    if not released {
+        children = List<Integer>()
+        released = inlined_children(freeing, children)
+    }
+    if not released {
+        return false
+    }
+    facts.free_children[root] = children
+    facts.plain[root] = children.is_empty()
+    if escaped[root] == true {
+        return false
+    }
+    var child_index = 0
+    while child_index < children.count() {
+        var child = children[child_index]
+        var field = facts.field_of(root, child)
+        if field < 0 {
+            note_a_field(root, child, 8, 0)
+        }
+        child_index = child_index + 1
+    }
+    return escaped[root] != true
+}
+
+func released_children(freeing: LowIntermediaryRepresentation.LowFunction, children: List<Integer>): Boolean {
+    if freeing.blocks.count() != 1 {
+        return false
+    }
+    var block = freeing.blocks[0]
+    var count = block.instructions.count()
+    if count < 2 {
+        return false
+    }
+    var index = 0
+    while index + 2 < count {
+        var loaded = block.instructions[index]
+        var called = block.instructions[index + 1]
+        var offset = released_offset(loaded, called)
+        if offset < 0 {
+            return false
+        }
+        children.append(offset)
+        index = index + 2
+    }
+    if index + 2 != count {
+        return false
+    }
+    var freed = block.instructions[index]
+    var returned = block.instructions[index + 1]
+    crash freed
+    crash returned
+    return frees_the_object(freed) and returns_nothing(returned)
+}
+
+func inlined_children(freeing: LowIntermediaryRepresentation.LowFunction, children: List<Integer>): Boolean {
+    var reading = Proofs.ObjectsInTheFrame.InlinedFree(freeing)
+    if not reading.read() {
+        return false
+    }
+    var index = 0
+    while index < reading.offsets.count() {
+        var offset = reading.offsets[index]
+        children.append(offset)
+        index = index + 1
+    }
+    return true
+}
+
+func released_offset(
+    loaded: LowIntermediaryRepresentation.Instructions.Instruction,
+    called: LowIntermediaryRepresentation.Instructions.Instruction,
+): Integer {
+    if loaded == LowIntermediaryRepresentation.Instructions.Load {
+        if loaded.address != 0 or loaded.width != 'bits_64' or loaded.is_swapped {
+            return -1
+        }
+        if called == LowIntermediaryRepresentation.Instructions.Call {
+            var releases = called.function == "_release" and called.arguments.count() == 1
+            if releases and called.arguments.contains(loaded.target) and loaded.offset >= 16 {
+                return loaded.offset
+            }
+        }
+    }
+    return -1
+}
+
+func frees_the_object(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Free {
+        return instruction.pointer == 0
+    }
+    return false
+}
+
+func returns_nothing(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    if instruction == LowIntermediaryRepresentation.Instructions.Return {
+        return instruction.source < 0 and instruction.presence < 0
+    }
+    return false
+}
+
+func any_mode(): Boolean {
+    var root = 0
+    while root < facts.register_total {
+        if facts.modes[root] != 0 {
+            return true
+        }
+        root = root + 1
+    }
+    return false
+}

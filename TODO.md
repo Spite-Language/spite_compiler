@@ -289,10 +289,16 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 What each proof still lacks; `PROOFS.md` has the whole of each. A line marked "fails silently" lets a wrong program
 through (D244) and comes first. Every proof still made inside a step or another pass moves into its own pass in
-`proofs/` (D1086): the frame and placement proofs are embedded in the lowering and in `object_placement`; the
-builder's other refusals (endings, a divisor written as zero, a wider operand, an unstepped poll, a folded build
-crash) are still made while building. The borrow analysis the proofs `borrowed_items` and `lent_parameters` run is
-still `building/borrows.spite`, shared with the builder's `lends` (D1107).
+`proofs/` (D1086): the builder's other refusals (endings, a divisor written as zero, a wider operand, an unstepped
+poll, a folded build crash) are still made while building, and the borrow analysis the proofs `borrowed_items` and
+`lent_parameters` run is still `building/borrows.spite`, shared with the builder's `lends` (D1107);
+the objects and lists in the frame, the singletons made at the start and the bounds a signed test proves are proofs
+of their own (D1121, D1122), but the lowering's other proofs are still made inside it (D1124): the counts it leaves
+out (an argument its caller holds, an attribute a call cannot assign, a template's element, an item written back, a
+held, tested or used item, an address keeping its owner), since each reads what the lowering resolved while
+writing the function (its locals, its scopes, the registers it holds); the facts the low passes `unread_objects`,
+`known_headers` and `compile_time_evaluation` find stay in them, since each is the optimisation itself; the thread
+reach, the singleton forms and a loop's coarse lock go with the decisions at the start of the lowering (D1111).
 
 ### Presence and control flow
 
