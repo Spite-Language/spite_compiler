@@ -2096,14 +2096,6 @@ fetched and decoded the same way whatever code comes before it, so a change else
 a hot loop across a fetch boundary and changes its time. The padding before a loop head runs once each time the loop
 is entered from above. **What a program can observe:** the time, and an executable a few bytes larger per loop.
 
-## A loop tests its condition at the bottom
-
-A loop's head that only tests (up to three comparisons, loads and copies, then the branch) is written a second time
-at the end of each block that jumps back to it, so a pass ends with the test and a jump straight to the body instead
-of a jump to the head and the test there: one taken jump per pass instead of two. The copy is made only where no
-value changes its register on the way into the head or out of it, and the head itself is still there for the first
-pass. **What a program can observe:** the time, and an executable a few bytes larger per loop.
-
 ## Constants are immediates, and a compare is the branch
 
 A register written once by a constant (and that is not a parameter) is never written: each use is the constant
