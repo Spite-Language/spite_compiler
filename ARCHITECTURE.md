@@ -50,7 +50,9 @@ registered:
 | low_optimization_passes | `LowOptimizationPass` | `optimized(LowIntermediaryRepresentation.LoweredProgram)` |
 
 The entry class registers its passes in its own setup, in order, with `register(pass)`, each made there and never
-changed; `run` runs them in that order. `register` crashes once `run` has started. Each pass folder's entry class is
+changed; `run` runs them in that order. Since the setup only makes passes and registers them, `proofs/setup_lists`
+knows the list and `high_optimization_passes/setup_list_calls` writes `run` as one direct call per pass, so a stage
+costs nothing over a hand-written sequence. `register` crashes once `run` has started. Each pass folder's entry class is
 named for the folder and is what the stage registers; a low pass whose work is per function keeps that work in its
 `Pass(function)` and its entry class runs it over every selected function (`LoweredProgram.is_selected`: every
 function, except between the late inlining and `EveryFunction`, where only the functions the late inlining changed).
@@ -67,10 +69,14 @@ the builder's context through `HighProgram.context` (the model, the symbol table
 5. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
 6. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
    facts on the operations).
+7. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
+   counted loop over such a list in `HighProgram.setup_list_walks`).
 
 ### The high passes, in order
 
-1. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
+1. `setup_list_calls`: each recorded loop over a setup's list is one direct call per item, to the function of the
+   item's class. This is what makes a stage's `run` direct calls in order.
+2. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
    they are read.
 
 ### The low passes, in order

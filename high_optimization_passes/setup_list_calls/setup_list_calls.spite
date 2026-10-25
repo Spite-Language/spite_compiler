@@ -1,0 +1,241 @@
+# ../../OPTIMIZATIONS.md#a-walk-over-a-list-its-setup-filled-calls-each-item-directly
+var no_model = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(no_model)
+var built_keys = List<String>()
+var used_names = List<String>()
+
+func optimized(starting: HighIntermediaryRepresentation.HighProgram) {
+    high = starting
+    assert not high.setup_list_walks.is_empty()
+    high.built_functions.each(note_a_built_function)
+    high.setup_list_walks.each(unroll)
+}
+
+func note_a_built_function(function: HighIntermediaryRepresentation.HighFunction) {
+    var key = function.function.key()
+    built_keys.append(key)
+    note_the_names(function.body)
+    function.function.parameters.each(note_a_parameter)
+}
+
+func note_a_parameter(parameter: Model.ParameterModel) {
+    used_names.append(parameter.name)
+}
+
+func note_the_names(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(note_a_name)
+}
+
+func note_a_name(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: used_names.append(statement.name)
+        HighIntermediaryRepresentation.Statements.If: note_both_branches(statement)
+        HighIntermediaryRepresentation.Statements.While: note_the_names(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: note_the_names(statement)
+        _: return
+    }
+}
+
+func note_both_branches(branch: HighIntermediaryRepresentation.Statements.If) {
+    note_the_names(branch.then_branch)
+    note_the_names(branch.else_branch)
+}
+
+func unroll(walk: HighIntermediaryRepresentation.SetupListWalk) {
+    var loop = walk.block.statements[walk.position]
+    crash loop
+    assert loop == HighIntermediaryRepresentation.Statements.While
+    var taking = loop.body.statements[0]
+    var calling = loop.body.statements[1]
+    var stepping = loop.body.statements[2]
+    crash taking and calling and stepping
+    assert taking == HighIntermediaryRepresentation.Statements.Declare
+    assert calling == HighIntermediaryRepresentation.Statements.Evaluate
+    assert stepping == HighIntermediaryRepresentation.Statements.Assign.Assign
+    var unrolled = HighIntermediaryRepresentation.Statements.Block()
+    unrolled.line = loop.line
+    var index = 0
+    while index < walk.made.count() {
+        var made = walk.made[index]
+        crash made
+        var copied = copy_of(walk, taking, calling, stepping, made)
+        assert not copied.is_empty()
+        copied.each(unrolled.statements.append)
+        index = index + 1
+    }
+    walk.block.statements[walk.position] = unrolled
+}
+
+func copy_of(
+    walk: HighIntermediaryRepresentation.SetupListWalk,
+    taking: HighIntermediaryRepresentation.Statements.Declare,
+    calling: HighIntermediaryRepresentation.Statements.Evaluate,
+    stepping: HighIntermediaryRepresentation.Statements.Assign.Assign,
+    made: Model.Type,
+): List<HighIntermediaryRepresentation.Statements.Statement> {
+    var copied = List<HighIntermediaryRepresentation.Statements.Statement>()
+    var direct = direct_function(made, calling.value)
+    assert direct
+    var name = fresh_name(walk.item_name)
+    var item = item_of(taking, made, name)
+    copied.append(item)
+    var call = direct_call(direct, made, name, calling.value)
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(call)
+    evaluated.line = calling.line
+    copied.append(evaluated)
+    var stepped = step_of(stepping)
+    copied.append(stepped)
+    return copied
+}
+
+func step_of(stepping: HighIntermediaryRepresentation.Statements.Assign.Assign): HighIntermediaryRepresentation.Statements.Assign.Assign {
+    var added = step_value_of(stepping.value)
+    var stepped = HighIntermediaryRepresentation.Statements.Assign.Assign(stepping.name, added)
+    stepped.line = stepping.line
+    return stepped
+}
+
+func step_value_of(step: HighIntermediaryRepresentation.Values.Value?): HighIntermediaryRepresentation.Values.Value {
+    crash step == HighIntermediaryRepresentation.Values.MachineOperation
+    var read = local_copy_of(step.left)
+    var one = number_copy_of(step.right)
+    var added = HighIntermediaryRepresentation.Values.MachineOperation(step.value_type, step.operator, read, one)
+    added.shown = step.shown
+    added.shown_left = step.shown_left
+    added.shown_right = step.shown_right
+    added.are_ranges_studied = step.are_ranges_studied
+    added.proves_no_ranges = step.proves_no_ranges
+    added.is_left_ranged = step.is_left_ranged
+    added.left_lowest = step.left_lowest
+    added.left_highest = step.left_highest
+    added.is_right_ranged = step.is_right_ranged
+    added.right_lowest = step.right_lowest
+    added.right_highest = step.right_highest
+    added.is_proven_to_fit = step.is_proven_to_fit
+    added.is_divisor_proven = step.is_divisor_proven
+    added.is_folded = step.is_folded
+    added.folded_number = step.folded_number
+    return added
+}
+
+func local_copy_of(value: HighIntermediaryRepresentation.Values.Value?): HighIntermediaryRepresentation.Values.LocalRead {
+    crash value == HighIntermediaryRepresentation.Values.LocalRead
+    return HighIntermediaryRepresentation.Values.LocalRead(value.value_type, value.name)
+}
+
+func number_copy_of(value: HighIntermediaryRepresentation.Values.Value?): HighIntermediaryRepresentation.Values.WholeNumber {
+    crash value == HighIntermediaryRepresentation.Values.WholeNumber
+    return HighIntermediaryRepresentation.Values.WholeNumber(value.value_type, value.number)
+}
+
+func direct_function(made: Model.Type, called: HighIntermediaryRepresentation.Values.Value?): Model.FunctionModel? {
+    assert called == HighIntermediaryRepresentation.Values.ShapeCall
+    var model = high.model.class_named(made.name)
+    assert model
+    var function = model.function_named(called.member.name)
+    assert function
+    var key = function.key()
+    var fits = built_keys.contains(key) and fits_the_member(function, called.member)
+    assert fits
+    return function
+}
+
+func fits_the_member(function: Model.FunctionModel, member: Model.FunctionModel): Boolean {
+    if function.parameters.count() != member.parameters.count() {
+        return false
+    }
+    var fits = true
+    var index = 0
+    while index < function.parameters.count() {
+        var own = function.parameters[index]
+        var asked = member.parameters[index]
+        crash own and asked
+        if not own.parameter_type.is_the_same_as(asked.parameter_type) {
+            fits = false
+        }
+        index = index + 1
+    }
+    var own_answer = answer_of(function)
+    var asked_answer = answer_of(member)
+    return fits and own_answer.is_the_same_as(asked_answer)
+}
+
+func answer_of(function: Model.FunctionModel): Model.Type {
+    if function.answer {
+        return function.answer
+    }
+    return Model.Type('nothing', "")
+}
+
+func fresh_name(name: String): String {
+    var count = 1
+    var fresh = "{name}_{count}"
+    while used_names.contains(fresh) {
+        count = count + 1
+        fresh = "{name}_{count}"
+    }
+    used_names.append(fresh)
+    return fresh
+}
+
+func item_of(
+    taking: HighIntermediaryRepresentation.Statements.Declare,
+    made: Model.Type,
+    name: String,
+): HighIntermediaryRepresentation.Statements.Declare {
+    var as_class = class_item_of(taking.value, made)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, made, as_class)
+    declared.line = taking.line
+    return declared
+}
+
+func class_item_of(taken: HighIntermediaryRepresentation.Values.Value?, made: Model.Type): HighIntermediaryRepresentation.Values.Value {
+    crash taken == HighIntermediaryRepresentation.Values.Conversion
+    var item = item_read_of(taken.converted)
+    var present = HighIntermediaryRepresentation.Values.Conversion(taken.value_type, 'proven', item)
+    return HighIntermediaryRepresentation.Values.Conversion(made, 'proven', present)
+}
+
+func item_read_of(read: HighIntermediaryRepresentation.Values.Value?): HighIntermediaryRepresentation.Values.Call {
+    crash read == HighIntermediaryRepresentation.Values.Call
+    var list = list_read_of(read.receiver)
+    var at = read.arguments[0]
+    crash at
+    var position = local_copy_of(at)
+    var positions = List<HighIntermediaryRepresentation.Values.Value>()
+    positions.append(position)
+    var item = HighIntermediaryRepresentation.Values.Call(read.function, list, positions)
+    item.value_type = read.value_type
+    return item
+}
+
+func list_read_of(listed: HighIntermediaryRepresentation.Values.Value?): HighIntermediaryRepresentation.Values.AttributeRead {
+    crash listed == HighIntermediaryRepresentation.Values.AttributeRead
+    var own = this_copy_of(listed.object)
+    return HighIntermediaryRepresentation.Values.AttributeRead(own, listed.attribute)
+}
+
+func this_copy_of(holder: HighIntermediaryRepresentation.Values.Value?): HighIntermediaryRepresentation.Values.ThisRead {
+    crash holder
+    return HighIntermediaryRepresentation.Values.ThisRead(holder.value_type)
+}
+
+func direct_call(
+    function: Model.FunctionModel,
+    made: Model.Type,
+    name: String,
+    called: HighIntermediaryRepresentation.Values.Value?,
+): HighIntermediaryRepresentation.Values.Call {
+    crash called == HighIntermediaryRepresentation.Values.ShapeCall
+    var receiver = HighIntermediaryRepresentation.Values.LocalRead(made, name)
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var index = 0
+    while index < called.arguments.count() {
+        var argument = called.arguments[index]
+        var read = local_copy_of(argument)
+        arguments.append(read)
+        index = index + 1
+    }
+    return HighIntermediaryRepresentation.Values.Call(function, receiver, arguments)
+}

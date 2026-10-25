@@ -814,6 +814,20 @@ These proofs belong to the ownership analysis of the high representation; the re
 - **Falls back**: the test runs.
 - **Checked by**: tests/listed_values (output only).
 
+### A list its setup fills holds what the setup made
+
+- **Status**: built.
+- **Rule**: a list attribute read only by the one function that appends its parameter to it and by counted loops
+  over it, written by nothing but its default, and filled only from the class's setup with objects the setup makes,
+  holds exactly those objects, in the order the setup made them, whenever a function of the object runs after its
+  setup.
+- **Buys**: a loop over the list that calls through the list's `type` calls each item's function directly
+  ([a walk over a list its setup filled calls each item directly](OPTIMIZATIONS.md#a-walk-over-a-list-its-setup-filled-calls-each-item-directly)).
+- **Falls back**: the loop as written; nothing is refused.
+- **Lives in**: the proof `proofs/setup_lists`, a speed proof run after the acceptance proofs; it records each walk it
+  proves (`HighProgram.setup_list_walks`) for `high_optimization_passes/setup_list_calls`.
+- **Checked by**: the compiler's own stages (their `run` is direct calls in its low representation).
+
 ### A table filled once holds what its setup put in
 
 - **Status**: partly built (by whole-function evaluation).

@@ -752,6 +752,59 @@ making the tables makes texts:
     text would never end: never write it, and make its default only of literals, so the compiler rebuilds it
     where it is read
 
+## A walk over a list its setup filled calls each item directly
+
+A class whose setup fills a list with objects it makes there, and nothing else ever changes, holds exactly those
+objects in that order; a loop over that list that calls a function through the list's `type` on each item is
+written as one direct call per item, to the function of the class the item is, with no test of its class and no
+loop. This is how each stage of the compiler runs its passes: its setup registers them, and its `run` calls them.
+
+```spite
+type Step {
+    applied(Integer): Integer
+}
+
+var steps = List<Step>()
+
+func Steps() {
+    var doubling = Doubling()
+    register(doubling)
+    var adding = Adding()
+    register(adding)
+}
+
+func register(step: Step) {
+    steps.append(step)
+}
+
+func run(number: Integer): Integer {
+    var current = number
+    var index = 0
+    while index < steps.count() {
+        var step = steps[index]
+        current = step.applied(current)
+        index = index + 1
+    }
+    return current
+}
+```
+
+`run` becomes `Doubling.applied` then `Adding.applied`, each called directly on the item read from its slot.
+
+**When it applies:** the list is an attribute of the class read only by the one function that appends its parameter
+to it and by such loops, and written by nothing but the attribute's default; that function is called only from the
+class's setup, directly or through functions of the class called only from it, whose every statement makes an object
+of a known class into a local, hands such a local to that function, or calls another such function; the loop counts
+a name from 0 below the list's `count()`, reads the item at it, makes one call through the item's `type` with plain
+names as arguments, and steps the name by one; and the class's function has the same parameters and answer as the
+`type`'s. The proof is `proofs/setup_lists` ([a list its setup fills holds what the setup
+made](PROOFS.md#a-list-its-setup-fills-holds-what-the-setup-made)) and the rewrite `high_optimization_passes/setup_list_calls`.
+**When it does not:** anything else reads or writes the list, an item is made anywhere but in the setup's own
+statements, a `--repl`, `--repl-port` or `--hot-reload` build: the loop runs as written, testing each item's class.
+
+**What a program can observe:** only the time. The items are read from the list as before, so a list that is somehow
+shorter halts on the read, naming it.
+
 ## What runs after lowering
 
 These run in this order on the low representation, then in the x64 generator:
