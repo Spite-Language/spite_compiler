@@ -955,9 +955,20 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### No other thread counts a class
 
-- **Status**: missing.
-- **Falls back**: every class counts atomically in a program with threads, plainly in one without.
-- **Checked by**: tests/plain_counts (output only).
+- **Status**: built.
+- **Rule**: code that can run on another thread is every function a `Parallel` or a `Concurrent` starts (a
+  `parallel_each_` band among them), every function those call, every constructor and attribute defaults of what
+  they make, and, where they call a function value, every function the program takes as a value. A class is counted
+  by another thread when that code names a value, a local, a parameter, an answer or an attribute of it, or of
+  anything that holds it (an attribute, a list's or a dictionary's items, a union's member, a shape's filler); a
+  function value there counts every class whose function is taken as a value, and a union or shape whose members are
+  not known counts every class. A program that makes a `ForeignCallback` counts every class atomically.
+- **Buys**: [plain counts](OPTIMIZATIONS.md#plain-counts-where-no-other-thread-counts-a-class) for every other
+  class whose objects' class is known where they are counted.
+- **Falls back**: an atomic count wherever the class is not known while compiling, or another thread may count it.
+- **Lives in**: `proofs/no_thread_counts`, registered among the high passes right after `singleton_locks`, whose
+  walk it reads; it records `HighProgram.thread_counted_classes`.
+- **Checked by**: tests/plain_counts, tests/thread_counted_classes (output only).
 
 ### What one of the calls run at once counts
 

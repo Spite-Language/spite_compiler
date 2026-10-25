@@ -126,6 +126,9 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
 4. `call_assignments`: what each call may assign (`HighProgram.assignments`).
 5. `singleton_locks`: which functions wait or can be resumed, which singletons keep a lock and which loops share
    it (`HighProgram.waits`).
+   Right after it, the proof `no_thread_counts`, registered through `HighOptimizationPasses.Proving` since it reads
+   that walk, records the classes another thread may count (`HighProgram.thread_counted_classes`); every other
+   class is counted plainly.
 6. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
    fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`, `fresh_by_constructor`).
 7. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
