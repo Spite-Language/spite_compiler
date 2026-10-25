@@ -119,30 +119,52 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
 
 1. `setup_list_calls`: each recorded loop over a setup's list is one direct call per item, to the function of the
    item's class. This is what makes a stage's `run` direct calls in order.
-2. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
+2. `fused_chains`: a `List` template called on the answer of `filter_` and `map_` steps is one call to a function
+   written from the last template's body, with the steps inside its loop.
+3. `banded_loops`: an `each_` over a `List` whose passes write only their own item calls the template that runs it
+   in bands, and a counted loop of one such call runs its count inside each band.
+4. `folded_dictionaries`: a local dictionary written out and only read by keys written out is its entries.
+5. `unreached_functions`: a function only the calls those passes replaced reached is dropped.
+6. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
    they are read.
-3. `layouts_by_use`: every class's layout (offsets, sizes, packing, the shared blocks of union members, the room of
+7. `layouts_by_use`: every class's layout (offsets, sizes, packing, the shared blocks of union members, the room of
    a short text), recorded as `HighProgram.layout`.
-4. `call_assignments`: what each call may assign (`HighProgram.assignments`).
-5. `singleton_locks`: which functions wait or can be resumed, which singletons keep a lock and which loops share
+8. `call_assignments`: what each call may assign (`HighProgram.assignments`).
+9. `singleton_locks`: which functions wait or can be resumed, which singletons keep a lock and which loops share
    it (`HighProgram.waits`).
-6. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
+10. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
    fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`, `fresh_by_constructor`).
-7. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
+11. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
    (`HighProgram.taken_parameters`).
-8. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).
-9. `inline_items`: a list's objects sit inside its storage, or in one array per attribute (into the layout).
-10. `lent_attributes`: an attribute that only holds an item of its holder's list is not counted (into the layout).
+12. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).
+13. `inline_items`: a list's objects sit inside its storage, or in one array per attribute (into the layout).
+14. `lent_attributes`: an attribute that only holds an item of its holder's list is not counted (into the layout).
 
-Passes 3 to 10 make the decisions the lowering reads, so the lowering only lowers; they read nothing a later high
-pass changes, and with `--check`, where nothing is lowered, they do not run. The layout and the studies of calls
+Passes 2 to 14 run only when the program is lowered (not with `--check`). Passes 7 to 14 make the decisions the
+lowering reads, so the lowering only lowers; they read nothing a later high pass changes. The layout and the studies of calls
 they share (`Layout`, `Assignments`, `Waits`, `SingletonForms`, `CoarseLoops`, `QuietValues`, `ListGets`) are
 classes of `high_intermediary_representation/`, beside the representation they describe.
 
-The optimisations that choose which library template to build (fused chains, folded dictionaries, banded loops,
-the shrinking calls) are still chosen while building: a pass after the build would build the plain template first
-and the chosen one after every other function, which changes the order of the built functions and so the
-executable, and the new function would miss the facts the proofs recorded (D1113).
+### A high pass that rewrites and builds functions
+
+The builder builds what the program says, plain: a chain of templates builds each template, a dictionary literal
+makes its dictionary. A high pass that replaces such a call with a cheaper one uses two kits at the top of
+`high_optimization_passes/`:
+
+- `Rewriting(rule)` walks every statement and value of a body and hands each value to the rule's
+  `rewritten(value)`, before its parts, putting back what the rule answers; a rule that only reads answers the value.
+- `FunctionBuilding(high)` builds the functions a pass asks for (`need`): the builder goes on from where it
+  stopped (`Builder.continue_from`, `build_the_needed`), building them and whatever they newly reach, after every
+  function built before, and the proof `ranges` records its facts on each new body, so its arithmetic is unchecked
+  where a range proves it as in any other function. The new functions are then placed right after the first
+  function whose call the pass replaced, where the builder would have built them, so the order of the others stays
+  as it was. `replaced` records the function a call reached before a pass
+  replaced it, for `unreached_functions`.
+
+A pass that builds functions runs after the proofs that decide what a program may say, so what a program may say
+never depends on these passes. Moving a function to the end of the order changes the executable, so such a pass is
+proven by the same outputs on every test and the same or better times on the benchmarks it affects, not by
+identical bytes.
 
 ### The low passes, in order
 

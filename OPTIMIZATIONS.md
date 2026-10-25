@@ -2256,9 +2256,11 @@ under `--debug-memory`, and the time.
 
 A local made from a dictionary literal whose keys are all text or all whole numbers written out, whose values are
 all literals of one kind, and that its function only ever reads with a key written out (`points["gold"]`), is
-never made: each read is the value written for that key, or `null` for a key the literal does not have. The read
-keeps its type, a `T?`, so `crash points["gold"]` and `if` narrow it as they would; after the `crash`, the read is
-the value itself.
+never made: each read is the value written for that key. The read keeps its type, a `T?`, so
+`crash points["gold"]` and `if` narrow it as they would; after the `crash`, the read is the value itself. The
+dictionary is built first, as written, and the high pass `high_optimization_passes/folded_dictionaries` takes it
+out, so what the program may say is the same with and without it. A test of whether a folded entry is there (the
+`crash` above, and the report it would print) is decided there too, so only the branch it takes is left.
 
 ```
 func points_for(golds: Integer, silvers: Integer): Integer {
@@ -2269,12 +2271,11 @@ func points_for(golds: Integer, silvers: Integer): Integer {
 }
 ```
 
-`points_for` makes no dictionary and hashes nothing. When it does not apply: a literal with a declared type, a key
-or a value that is not a literal (`-5` included), the same key twice, any other mention of the local (a key in a
-variable, a write, `count()`, passing it, a second `var` of the same name in the function), a dictionary held in an
-attribute, and the interactive builds (`--repl`, `--repl-port`, `--development`, `--hot-reload`), which keep the
-dictionary a reader can inspect. What a user can observe: no dictionary, no allocation and no hashing for the
-folded ones, and nothing else.
+`points_for` makes no dictionary and hashes nothing. When it does not apply: a key or a value that is not a
+literal (`-5` included), any other mention of the local (a key in a variable, a key the literal does not have, a
+write, `count()`, passing it), a dictionary held in an attribute, and the interactive builds (`--repl`,
+`--repl-port`, `--development`, `--hot-reload`), which keep the dictionary a reader can inspect. What a user can
+observe: no dictionary, no allocation and no hashing for the folded ones, and nothing else.
 
 ## A serializer's keys are folded into its code
 
@@ -2525,7 +2526,7 @@ reads only number attributes of the element, its locals and literals, and calls 
 take and answer numbers. Nothing else may appear in it: no member call, no index, no text, no object made, no
 `crash`, no `switch`. It is `parallel_each_` without writing it: the
 compiler proves what that form asks the programmer to keep true, and when it cannot, the loop is the loop as written
-(`high_intermediary_representation/building/banded_loops.spite`, the library's `List._each_in_bands_member`).
+(the high pass `high_optimization_passes/banded_loops`, the library's `List._each_in_bands_member`).
 
 ```spite
 var angle = 0.0
@@ -2639,7 +2640,7 @@ went from 15.5 ms to 13.9 ms).
 `lamps.filter_is_lit().sum_brightness()` makes no list in between: when a `List`'s member template is called on
 the answer of a `filter_` template (or of a chain of them), the compiler writes one function on the first list's
 class, `_fused_is_lit_then_sum_brightness`, from the last template's body with its loop's step wrapped in an `if`
-per `filter_`, and calls that on the first list (`high_intermediary_representation/building/fused_chains.spite`).
+per `filter_`, and calls that on the first list (the high pass `high_optimization_passes/fused_chains`).
 The last step may be `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_` or `find_by_`. A `map_` may
 stand in the middle too: `items.filter_is_active().map_owners().filter_is_adult().sum_age()` is one loop over
 `items`, `_fused_is_active_to_owner_is_adult_then_sum_age`, that names each item's owner in the loop
@@ -2657,9 +2658,36 @@ list for the filtered lamps.
 
 Measured on `template_chains_run_as_one_loop`: 102 ms before the `map_` joined the loop, 35 ms after.
 
+The steps the fused call replaced are not compiled when nothing else calls them
+([below](#a-function-only-a-replaced-call-reached-is-not-compiled)).
+
 **Not built:** a `filter_` or `find_by_` after a `map_`, a passed function (`filter(f)`), chains on a
-`Dictionary`'s values, on a `Vector` or on `Items`, and leaving out the unfused step's own function, which is still
-compiled.
+`Dictionary`'s values, on a `Vector` or on `Items`.
+
+## A function only a replaced call reached is not compiled
+
+A high pass that replaces a call ([fused chains](#a-chain-of-filter_-steps-runs-as-one-loop),
+[bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands),
+[folded dictionaries](#a-dictionary-written-out-and-only-read-by-literal-keys-is-folded)) leaves the function that
+call reached built. The high pass `high_optimization_passes/unreached_functions` drops each such function nothing
+else reaches (no call, no object made with it, no function value, no question asked about it, no call through a
+shape of its name), and then each function it called that is a template's copy or of the same class, under the same
+test, so the executable carries only code the program can run.
+
+```spite
+var lamps = List<Lamp>()
+
+func total(): Integer {
+    return lamps.filter_is_lit().sum_brightness()
+}
+```
+
+compiles `_fused_is_lit_then_sum_brightness` and not `filter_is_lit`, which nothing else calls.
+
+**When it does not apply:** a constructor, `drop`, `to_string`, `to_debug` and the functions the lowering calls by
+name (`_read_value`, `_settled`, `_attribute_defaults`) are kept, and so is a function another class's function
+called that nothing else reaches. A class whose objects only a dropped function made keeps its layout. **What a
+program can observe:** a smaller executable, and nothing else.
 
 ## A list of lists cleared and filled with new lists keeps their room
 

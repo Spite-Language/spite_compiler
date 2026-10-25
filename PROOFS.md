@@ -458,10 +458,11 @@ as when each was refused while building.
 
 - **Status**: built.
 - **Rule**: a local made from a dictionary literal of literal keys and values, every later mention of which is
-  `name[literal]` and never assigned, is never made: each read is its value or `null`, still a `T?`.
+  `name[literal]` with a key the literal holds and never assigned, is never made: each read is its value, still a
+  `T?`.
 - **Buys**: no dictionary, no hashing.
 - **Falls back**: the dictionary is made and read as written.
-- **Lives in**: embedded, `high_intermediary_representation/building/folded/dictionaries.spite`.
+- **Lives in**: embedded, the high pass `high_optimization_passes/folded_dictionaries`.
 - **Checked by**: tests/dictionary_folding.
 
 ## Compile-time questions
@@ -946,7 +947,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Missing**: `Vector`; writes other than the element's number and enum attributes; calls other than its own
   number functions; a kept thread pool.
 - **Falls back**: the loop in order.
-- **Lives in**: `high_intermediary_representation/building/banded_loops.spite`.
+- **Lives in**: embedded, the high pass `high_optimization_passes/banded_loops` (`pass_weights.spite`).
 - **Checked by**: tests/band_passes.
 
 ### An object made for its owner is told apart

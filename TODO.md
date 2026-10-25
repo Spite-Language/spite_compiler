@@ -18,7 +18,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `printers/machine_code`
 - Low representation in SSA form; until then a value's register stretches are found per block (D986) but a value no register holds for its whole life is spilled for all of it (D771), unless a scratch register can hold it outside the blocks where it crosses a call (D1011), and copy propagation only crosses a block for a parameter
 - Every function has a stable identity for cache keys
-- Every high-level optimisation is its own pass (D1087, D1096, D1113): fused chains, folded dictionaries, banded loops and the shrinking calls are still chosen while building (each picks the library template to build); a pass after the build that builds the chosen function changes the order of the built functions, so it cannot be proven by identical executables and waits for Mortaro to accept a measured move
+- Every high-level optimisation is its own pass (D1087, D1096, D1151): a list of lists renewed in place (`_renew_lists`) and a serializer's folded keys are still chosen while building; the weights of a banded pass and the values a folded dictionary holds are proven inside their passes, not in `proofs/`
 - `--optimization-report` lists every local list and copy as made on the heap (D733), though the low pass now keeps the objects that never leave their function in registers or the frame (D801), and it leaves out an object only because nothing it reads lets that object go (D884): the report does not read what that pass placed
 - No range is proved yet, so every whole-number `+`, `-` and `*` keeps its overflow check, and `--optimization-report` lists each one (D733); a `-` in front is not listed
 - An argument is passed by its parameter's type only, never by where the caller's value came from
@@ -166,7 +166,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Deciding conditions at compile time
 - Reflection, symbols and registries only where read
 - Reflection on constants folds and unrolls
-- Template chains run as one loop
+- Template chains run as one loop (built as the high pass `fused_chains`, D1151; not built: a `filter_` or `find_by_` after a `map_`, a passed function, chains on a `Dictionary`'s values, a `Vector` or `Items`); a class whose objects only a dropped step made keeps its layout and defaults (D1153)
 - A function taking a `type` is compiled per class (built once the function is inlined: the class of an object made in the caller is known, D1053; not built: a call not inlined still boxes a number and tests the class at run time, and the loop's four `Double` sums wait on one another, 78 ms against the old compiler's 51)
 - A test against a value a list never holds is decided while compiling
 - A table filled once is read as constants (built for an object its own function makes, or a call run while compiling makes, followed through every path and loop, D1041, D1042; not built: an object a singleton holds, made in another function, is never known, so a table a singleton fills once is read at run time)

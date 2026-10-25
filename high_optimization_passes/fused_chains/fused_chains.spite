@@ -1,10 +1,15 @@
+# ../../OPTIMIZATIONS.md#a-chain-of-filter_-steps-runs-as-one-loop
 var no_program = Model.ProgramModel()
 var no_folders = Mapping.FolderMap()
 var no_table = Symbols.SymbolTable(no_folders)
 var no_resolver = NameResolution.Resolver(no_table)
-var context = Context(no_program, no_resolver)
-var values = Values(context)
+var context = HighIntermediaryRepresentation.Building.Context(no_program, no_resolver)
+var values = HighIntermediaryRepresentation.Building.Values(context)
+var no_high = HighIntermediaryRepresentation.HighProgram(no_program)
+var building = HighOptimizationPasses.FunctionBuilding(no_high)
+var library = Validators.LibraryFile()
 var chain_steps = List<String>()
+var chain_functions = List<Model.FunctionModel>()
 var chain_first: HighIntermediaryRepresentation.Values.Value? = null
 var after_a_map = ["count_member", "any_member", "all_member", "sum_member", "each_member", "map_members"]
 
@@ -19,31 +24,55 @@ var fused_templates = [
     "find_by_member"
 ]
 
-func FusedChains(starting_context: Context, starting_values: Values) {
-    context = starting_context
-    values = starting_values
+func optimized(high: HighIntermediaryRepresentation.HighProgram) {
+    assert high.will_be_lowered()
+    crash high.context
+    context = high.context
+    values = HighIntermediaryRepresentation.Building.Values(context)
+    building = HighOptimizationPasses.FunctionBuilding(high)
+    var rewriting = HighOptimizationPasses.Rewriting(this)
+    var built = high.built_functions.copy()
+    var index = 0
+    while index < built.count() {
+        var function = built[index]
+        rewriting.rewrite_block(function.body)
+        index = index + 1
+    }
+    building.build_the_needed()
 }
 
-func fused_step(
-    receiver: HighIntermediaryRepresentation.Values.Value,
-    owner: Model.ClassModel,
-    name: String,
-): Model.FunctionModel? {
-    var library = Validators.LibraryFile()
+func rewritten(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        fuse(value)
+    }
+    return value
+}
+
+func fuse(call: HighIntermediaryRepresentation.Values.Call) {
+    var fused = fused_step(call)
+    assert fused
+    var first = first_list_of()
+    chain_functions.each(building.replaced)
+    building.replaced(call.function)
+    call.function = fused
+    call.receiver = first
+    building.need(fused)
+}
+
+func fused_step(call: HighIntermediaryRepresentation.Values.Call): Model.FunctionModel? {
+    var owner = context.program.class_named(call.function.owner)
+    assert owner and call.receiver
     assert owner.file.namespace == "List" and library.holds(owner.file.path)
     chain_steps = List<String>()
+    chain_functions = List<Model.FunctionModel>()
     chain_first = null
+    var receiver: HighIntermediaryRepresentation.Values.Value = call.receiver
     assert follows_a_chain(receiver)
     var filters = chain_steps
     var first = first_list_of()
     var first_class = values.present_class_of(first)
     assert first_class.file.namespace == "List" and library.holds(first_class.file.path)
-    var last = owner.function_named(name)
-    if not last {
-        last = values.member_template_of(owner, name)
-    }
-    assert last
-    return fused_function(first_class, filters, last)
+    return fused_function(first_class, filters, call.function)
 }
 
 func first_list_of(): HighIntermediaryRepresentation.Values.Value {
@@ -67,6 +96,7 @@ func follows_a_chain(value: HighIntermediaryRepresentation.Values.Value): Boolea
             var step = member_step(value.function, kind)
             steps.append(step)
             chain_steps = steps
+            chain_functions.append(value.function)
             return true
         }
     }

@@ -1,0 +1,346 @@
+# ../../OPTIMIZATIONS.md#a-loop-whose-passes-write-only-their-own-item-runs-in-bands
+# ../../OPTIMIZATIONS.md#a-counted-loop-of-one-banded-pass-runs-its-count-inside-each-band
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = HighIntermediaryRepresentation.Building.Context(no_program, no_resolver)
+var values = HighIntermediaryRepresentation.Building.Values(context)
+var no_high = HighIntermediaryRepresentation.HighProgram(no_program)
+var building = HighOptimizationPasses.FunctionBuilding(no_high)
+var library = Validators.LibraryFile()
+
+func optimized(high: HighIntermediaryRepresentation.HighProgram) {
+    assert high.will_be_lowered()
+    crash high.context
+    context = high.context
+    values = HighIntermediaryRepresentation.Building.Values(context)
+    building = HighOptimizationPasses.FunctionBuilding(high)
+    var rewriting = HighOptimizationPasses.Rewriting(this)
+    var built = high.built_functions.copy()
+    var index = 0
+    while index < built.count() {
+        var function = built[index]
+        if enters(function) {
+            repeat_in_block(function.body)
+            rewriting.rewrite_block(function.body)
+        }
+        index = index + 1
+    }
+    building.build_the_needed()
+}
+
+func enters(function: HighIntermediaryRepresentation.HighFunction): Boolean {
+    var owner = context.program.class_named(function.function.owner)
+    if not owner {
+        return false
+    }
+    context.current_class = owner
+    context.current_function = function.function
+    var path = context.path()
+    return not library.holds(path)
+}
+
+func rewritten(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        band(value)
+    }
+    return value
+}
+
+func band(call: HighIntermediaryRepresentation.Values.Call) {
+    assert call.arguments.is_empty()
+    var least = least_count_of(call)
+    assert least > 0
+    var template = bands_template(call, "_each_in_bands_")
+    assert template
+    building.replaced(call.function)
+    var counted = List<HighIntermediaryRepresentation.Values.Value>()
+    var integer = context.scalar_type("Integer")
+    var least_number = HighIntermediaryRepresentation.Values.WholeNumber(integer, least)
+    counted.append(least_number)
+    call.function = template
+    call.arguments = counted
+    building.need(template)
+}
+
+func least_count_of(call: HighIntermediaryRepresentation.Values.Call): Integer {
+    var name = call.function.name
+    if not name.starts_with("each_") or call.function.bound_member.is_empty() {
+        return -1
+    }
+    var owner = context.program.class_named(call.function.owner)
+    if not owner {
+        return -1
+    }
+    var weights = HighOptimizationPasses.BandedLoops.PassWeights()
+    return weights.least_count_for(context, owner, name)
+}
+
+func bands_template(call: HighIntermediaryRepresentation.Values.Call, prefix: String): Model.FunctionModel? {
+    var owner = context.program.class_named(call.function.owner)
+    assert owner
+    var name = call.function.name
+    var name_length = name.length()
+    var member_name = name.slice(5, name_length)
+    return values.member_template_of(owner, "{prefix}{member_name}")
+}
+
+func repeat_in_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        var repeated = repeated_loop(statement)
+        if repeated {
+            block.statements[index] = repeated
+        } else {
+            repeat_inside(statement)
+        }
+        index = index + 1
+    }
+}
+
+func repeat_inside(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.If: repeat_in_branches(statement)
+        HighIntermediaryRepresentation.Statements.While: repeat_in_block(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: repeat_in_block(statement)
+        _: return
+    }
+}
+
+func repeat_in_branches(branch: HighIntermediaryRepresentation.Statements.If) {
+    repeat_in_block(branch.then_branch)
+    repeat_in_block(branch.else_branch)
+}
+
+func repeated_loop(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    if statement == HighIntermediaryRepresentation.Statements.While {
+        return repeated_while(statement)
+    }
+    return null
+}
+
+func repeated_while(
+    loop: HighIntermediaryRepresentation.Statements.While,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    var condition = loop.condition
+    if condition == HighIntermediaryRepresentation.Values.MachineOperation {
+        return repeated_under(loop, condition)
+    }
+    return null
+}
+
+func repeated_under(
+    loop: HighIntermediaryRepresentation.Statements.While,
+    condition: HighIntermediaryRepresentation.Values.MachineOperation,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    assert condition.operator == 'less' and loop.body.statements.count() == 2
+    var bound = condition.right
+    if bound == HighIntermediaryRepresentation.Values.WholeNumber {
+        return repeated_to(loop, condition, bound)
+    }
+    return null
+}
+
+func repeated_to(
+    loop: HighIntermediaryRepresentation.Statements.While,
+    condition: HighIntermediaryRepresentation.Values.MachineOperation,
+    bound: HighIntermediaryRepresentation.Values.WholeNumber,
+): HighIntermediaryRepresentation.Statements.Statement? {
+    var counter = counter_of(condition.left)
+    assert not counter.is_empty()
+    var passing = loop.body.statements[0]
+    var stepping = loop.body.statements[1]
+    crash passing and stepping
+    assert steps_by_one(stepping, counter)
+    var call = called_alone(passing, counter)
+    assert call
+    assert least_count_of(call) > 0
+    var template = bands_template(call, "_each_in_bands_repeated_")
+    assert template
+    return repeated_through(loop, condition, call, template, bound)
+}
+
+func repeated_through(
+    loop: HighIntermediaryRepresentation.Statements.While,
+    condition: HighIntermediaryRepresentation.Values.MachineOperation,
+    call: HighIntermediaryRepresentation.Values.Call,
+    template: Model.FunctionModel,
+    bound: HighIntermediaryRepresentation.Values.WholeNumber,
+): HighIntermediaryRepresentation.Statements.Statement {
+    var least = least_count_of(call)
+    var integer = context.scalar_type("Integer")
+    var least_number = HighIntermediaryRepresentation.Values.WholeNumber(integer, least)
+    var bound_number = HighIntermediaryRepresentation.Values.WholeNumber(integer, bound.number)
+    crash condition.left
+    var counted = counter_copy(condition.left)
+    var times = HighIntermediaryRepresentation.Values.MachineOperation(integer, 'subtract', bound_number, counted)
+    times.shown = "{condition.shown_right} - {condition.shown_left}"
+    times.shown_left = condition.shown_right
+    times.shown_right = condition.shown_left
+    var arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    arguments.append(least_number)
+    arguments.append(times)
+    building.replaced(call.function)
+    call.function = template
+    call.arguments = arguments
+    building.need(template)
+    var running = HighIntermediaryRepresentation.Statements.Evaluate(call)
+    running.line = loop.line
+    var finishing = loop.body.statements[1]
+    crash finishing
+    finish_at(finishing, bound.number)
+    var then_block = HighIntermediaryRepresentation.Statements.Block()
+    then_block.line = loop.line
+    then_block.statements.append(running)
+    then_block.statements.append(finishing)
+    var once = HighIntermediaryRepresentation.Statements.If(condition, then_block, null)
+    once.line = loop.line
+    return once
+}
+
+func counter_of(value: HighIntermediaryRepresentation.Values.Value?): String {
+    if value == HighIntermediaryRepresentation.Values.LocalRead and counts_whole_numbers(value.value_type) {
+        return "local {value.name}"
+    }
+    if value == HighIntermediaryRepresentation.Values.AttributeRead and counts_whole_numbers(value.value_type) {
+        return own_attribute_of(value)
+    }
+    return ""
+}
+
+func own_attribute_of(read: HighIntermediaryRepresentation.Values.AttributeRead): String {
+    var object = read.object
+    if object == HighIntermediaryRepresentation.Values.ThisRead {
+        return "attribute {read.attribute.owner}.{read.attribute.name}"
+    }
+    return ""
+}
+
+func counter_copy(read: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
+    switch read {
+        HighIntermediaryRepresentation.Values.LocalRead: return local_copy(read)
+        HighIntermediaryRepresentation.Values.AttributeRead: return attribute_copy(read)
+        _: return read
+    }
+}
+
+func local_copy(read: HighIntermediaryRepresentation.Values.LocalRead): HighIntermediaryRepresentation.Values.Value {
+    return HighIntermediaryRepresentation.Values.LocalRead(read.value_type, read.name)
+}
+
+func attribute_copy(
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+): HighIntermediaryRepresentation.Values.Value {
+    var own = this_copy(read)
+    return HighIntermediaryRepresentation.Values.AttributeRead(own, read.attribute)
+}
+
+func this_copy(read: HighIntermediaryRepresentation.Values.AttributeRead): HighIntermediaryRepresentation.Values.Value {
+    crash read.object
+    return HighIntermediaryRepresentation.Values.ThisRead(read.object.value_type)
+}
+
+func finish_at(stepping: HighIntermediaryRepresentation.Statements.Statement, number: Long) {
+    switch stepping {
+        HighIntermediaryRepresentation.Statements.Assign.Assign: finish_a_local(stepping, number)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: finish_an_attribute(stepping, number)
+        _: return
+    }
+}
+
+func finish_a_local(stepping: HighIntermediaryRepresentation.Statements.Assign.Assign, number: Long) {
+    var integer = context.scalar_type("Integer")
+    stepping.value = HighIntermediaryRepresentation.Values.WholeNumber(integer, number)
+}
+
+func finish_an_attribute(stepping: HighIntermediaryRepresentation.Statements.Assign.Attribute, number: Long) {
+    var integer = context.scalar_type("Integer")
+    stepping.value = HighIntermediaryRepresentation.Values.WholeNumber(integer, number)
+}
+
+func counts_whole_numbers(counter_type: Model.Type): Boolean {
+    return counter_type.kind == 'scalar' and counter_type.name == "Integer" and not counter_type.is_nullable
+}
+
+func steps_by_one(statement: HighIntermediaryRepresentation.Statements.Statement, counter: String): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return steps_a_local(statement, counter)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return steps_an_attribute(statement, counter)
+        _: return false
+    }
+}
+
+func steps_a_local(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign, counter: String): Boolean {
+    var written = "local {assigned.name}"
+    return written == counter and adds_one_to(assigned.value, counter)
+}
+
+func steps_an_attribute(
+    assigned: HighIntermediaryRepresentation.Statements.Assign.Attribute,
+    counter: String,
+): Boolean {
+    var object = assigned.object
+    if object == HighIntermediaryRepresentation.Values.ThisRead {
+        var written = "attribute {assigned.attribute.owner}.{assigned.attribute.name}"
+        return written == counter and adds_one_to(assigned.value, counter)
+    }
+    return false
+}
+
+func adds_one_to(value: HighIntermediaryRepresentation.Values.Value?, counter: String): Boolean {
+    if value == HighIntermediaryRepresentation.Values.MachineOperation and value.operator == 'add' {
+        var added_to = counter_of(value.left)
+        return added_to == counter and is_one(value.right)
+    }
+    return false
+}
+
+func is_one(step: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if step == HighIntermediaryRepresentation.Values.WholeNumber {
+        return step.number == 1
+    }
+    return false
+}
+
+func called_alone(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+    counter: String,
+): HighIntermediaryRepresentation.Values.Call? {
+    if statement == HighIntermediaryRepresentation.Statements.Evaluate and not statement.waited {
+        return plain_call(statement.value, counter)
+    }
+    return null
+}
+
+func plain_call(
+    value: HighIntermediaryRepresentation.Values.Value?,
+    counter: String,
+): HighIntermediaryRepresentation.Values.Call? {
+    if value == HighIntermediaryRepresentation.Values.Call and value.arguments.is_empty() {
+        var named = names_the_list(value.receiver, counter)
+        if named {
+            return value
+        }
+    }
+    return null
+}
+
+func names_the_list(receiver: HighIntermediaryRepresentation.Values.Value?, counter: String): Boolean {
+    var named = counter_of(receiver)
+    if named == counter {
+        return false
+    }
+    if receiver == HighIntermediaryRepresentation.Values.LocalRead {
+        return true
+    }
+    if receiver == HighIntermediaryRepresentation.Values.AttributeRead {
+        var object = receiver.object
+        return object == HighIntermediaryRepresentation.Values.ThisRead
+    }
+    return false
+}
