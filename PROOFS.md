@@ -337,8 +337,8 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Missing**: `!= 0` proves nothing (a range cannot leave out a middle value); a divisor that is an attribute or a
   member path; nothing in `--repl` and `--hot-reload` builds.
 - **Falls back**: the test stays, "spite: '...' divided by zero, at ...".
-- **Lives in**: embedded, `high_intermediary_representation/building/ranges.spite` (`prove_the_divisor`), read by
-  the lowering (`is_divisor_proven`).
+- **Lives in**: the proof `proofs/ranges` (`prove_the_divisor`), a speed proof run after the acceptance proofs,
+  whose fact the lowering reads (`is_divisor_proven`).
 - **Checked by**: tests/division_by_zero, tests/divisions, tests/smallest_divided.
 
 ### A divisor written as zero is an error
@@ -379,7 +379,8 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Missing**: `absolute` gives no range; a counter stepped down keeps no floor and counts no passes; loop locals
   other than counters; types wider than 4 bytes only where a value gives a range.
 - **Falls back**: the check stays and is listed by `--optimization-report`.
-- **Lives in**: embedded, `high_intermediary_representation/building/ranges.spite`, run by the builder's `finish`.
+- **Lives in**: the proof `proofs/ranges`, a speed proof run last of the proofs, over every function built from
+  the source; it records its fact on each operation (`proves_no_ranges`, the unchecked arithmetic) for the lowering.
 - **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room.
 
 ### A wider operand is written first
@@ -453,8 +454,10 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
   through a function value it does not know adds nothing, where it should spread or answer true. Both answer false.
 - **Falls back**: refused when the answer would decide itself, "whether '...' can wait was answered ... before the
   functions that ask 'function_waits' were compiled ...".
-- **Lives in**: embedded, `high_intermediary_representation/building/facts.spite` (`waits`, `waits_through`),
-  answered by `builder.spite` (`answer_the_facts`); a second study in `lowering/waits.spite`.
+- **Lives in**: the proof `proofs/compile_time_facts`, which answers every question asked while building and
+  refuses an answer that would decide itself; the study it reads is `high_intermediary_representation/building/facts.spite`
+  (`waits`, `waits_through`), which the builder also reads for the frame starts; a second study in `lowering/waits.spite`
+  (embedded: the lowering's own, for what each call suspends).
 - **Checked by**: tests/waiting_systems, tests/entry_function_waits, tests/pooled_loads_wait, tests/default_handles,
   tests/reflection_objects; conformance/function_waits_paradox.
 
@@ -486,8 +489,10 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
   does not test `this` yet, so it may refuse a borrow of an `Items` item that is held by reference.
 - **Falls back**: refused for a `Vector<T>`, "'...' uses 'this' as a value, and an item of a Vector is borrowed ...";
   an `Items<T>` holds such items by reference.
-- **Lives in**: embedded, `values.spite` (`fits_a_vector`), `constraints.spite` (`uses_this_as_a_value`,
-  `check_the_vector_items`), `borrows.spite` (`fits_a_vector`).
+- **Lives in**: embedded, one test, `constraints.spite` (`fits_a_vector`, with `uses_this_as_a_value`), asked by
+  `values.spite`, `borrows.spite` and `reflection.spite` while building, and `check_the_vector_items` refusing a
+  `Vector` of a class that does not fit. Embedded because the builder asks it to choose the form of a `Vector` it
+  builds.
 - **Checked by**: tests/items_columns, tests/folded_checks, tests/folded_lends, tests/lent_list_elements,
   tests/reflection_objects; conformance/folded_crash.
 
@@ -500,7 +505,7 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
   ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks)).
 - **Buys**: generic code skips a copy a callee never writes.
 - **Falls back**: true for an unknown function value, a member template or a function with a `Spite.*` parameter.
-- **Lives in**: embedded, `facts.spite` (`writes`, `callee_writes`), answered by `builder.spite`.
+- **Lives in**: the proof `proofs/compile_time_facts`, reading `building/facts.spite` (`writes`, `callee_writes`).
 - **Checked by**: tests/parameter_writes, tests/parameter_write_rows, tests/run_time_kinds;
   conformance/parameter_write_question, conformance/snapshot_argument_writes.
 
@@ -542,8 +547,8 @@ Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21
 - **Buys**: a generic class that cannot work for a class is refused for it.
 - **Falls back**: refused, "'crash ...' always halts in ...: its condition is decided while compiling and is false
   ...".
-- **Lives in**: `high_intermediary_representation/building/folded/crashes.spite` (`check`), run by the builder once
-  the facts are answered, and `statements.spite` (`build_crash`, `refuse_a_folded_crash`).
+- **Lives in**: the proof `proofs/folded_crashes`, run once the facts are answered, and embedded in
+  `statements.spite` (`build_crash`, `refuse_a_folded_crash`) for a `crash` the builder folds while building it.
 - **Checked by**: conformance/folded_crash, conformance/folded_build_crash, conformance/folded_crash_and_side,
   conformance/empty_walk_crash, conformance/snapshot_argument_writes; tests/folded_crash_uncalled,
   tests/folded_checks.
@@ -694,6 +699,9 @@ These proofs belong to the ownership analysis of the high representation; the re
 - **Missing**: the uncounted argument; a lent parameter the callee passes on to a function that keeps it; a row's
   attribute is not lent; the unnamed expression refusal; lending to a local function value; variadic positions.
 - **Falls back**: refused, "'...' is borrowed from '...' and lent to '...' for its call ...".
+- **Lives in**: the proof `proofs/lent_parameters` judges the callee's body; the builder records each lent call in
+  the context (`borrows.spite`, `check_the_lent_body`) and refuses a resizing, library or union
+  lend while building the call (embedded: it needs the call's borrows in scope).
 - **Checked by**: conformance/lent_to_calls, lent_call_alias, lent_call_function_value, lent_call_kept,
   lent_call_library, lent_call_listed, lent_call_returned, lent_call_union; tests/lent_to_calls, lent_arguments,
   lent_call_written_back, ignored_lent_argument.
@@ -1025,7 +1033,8 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: a name, parameter or attribute only written and never read is refused
   ([style.md](../SpiteLanguage/specs/style.md#unused-is-an-error)).
-- **Lives in**: `validators/abstract_syntax_tree/unused_names`, `high_intermediary_representation/building/attribute_reads.spite`.
+- **Lives in**: `validators/abstract_syntax_tree/unused_names`, and the proof `proofs/every_attribute_is_read`
+  for attributes.
 - **Checked by**: conformance/unused_names, written_not_read, unused_attributes, template_unused_attribute,
   template_unused_function.
 

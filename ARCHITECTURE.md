@@ -13,22 +13,74 @@ A representation is data only: no function on it writes text or decides an error
 
 ## The order
 
-`spite_compiler.spite` lists the steps and nothing else:
+Every stage folder has one entry class named for the folder (`proofs/proofs.spite` is `Proofs.Proofs`), whose
+`run` does the stage. `spite_compiler.spite` only makes each stage and calls its `run`, in this order:
 
-    command_line
-    mapping                                then validators/mapping
-    symbols + abstract_syntax_tree         a class at a time, as names ask for it; then validators/abstract_syntax_tree
-    format                                 each file as it is parsed: printers/formatted_source, written back and read again
-    name_resolution                        then validators/name_resolution
-    high_intermediary_representation       then validators/high_intermediary_representation
-    proofs                                 the proofs that decide what is accepted, on the built high representation
-    high_optimization_passes               unit passes, then program passes
-    low_intermediary_representation        then validators/low_intermediary_representation
-    low_optimization_passes                unit passes, then program passes
-    generators/windows_x64
-    outputs                                each through its printer
+    command_line                           the settings, the program they name, the last build removed
+    mapping                                the program's folders; then validators/mapping
+    symbols                                the entry class and every class it names, a class at a time as names ask
+                                           for it, each read through abstract_syntax_tree's `run` (lexed, parsed,
+                                           formatted by printers/formatted_source and read again); then
+                                           validators/abstract_syntax_tree
+    name_resolution                        the model; then validators/name_resolution
+    high_intermediary_representation       every reached function built (building only builds); then the rules
+                                           of validators/abstract_syntax_tree that need the built program
+    proofs                                 the proofs, in their order (below)
+    high_optimization_passes               the high passes, in their order (below)
+    low_intermediary_representation        the lowering; then validators/low_intermediary_representation
+    low_optimization_passes                the low passes, in their order (below)
+    outputs                                the texts (high and low representations, generated classes, the
+                                           optimisation report, the crash map), then generators/windows_x64's `run`
+                                           and the executable with its function map
 
-No step reaches back into an earlier one.
+The outputs stage runs the generator after writing the texts, so a refusal while emitting still leaves the
+representations to read. With `--check` the low stages and the generator do not run, and the outputs stage writes
+only what the high representation gives. No stage reaches back into an earlier one.
+
+## A stage's passes
+
+A stage with passes (proofs, high_optimization_passes, low_optimization_passes) declares a `type` for them in its
+entry class, with the one function every pass has, so a class that does not fit is a compile error where it is
+registered:
+
+| Stage | Type | The function |
+|---|---|---|
+| proofs | `Proof` | `check(HighIntermediaryRepresentation.HighProgram)` |
+| high_optimization_passes | `HighOptimizationPass` | `optimized(HighIntermediaryRepresentation.HighProgram)` |
+| low_optimization_passes | `LowOptimizationPass` | `optimized(LowIntermediaryRepresentation.LoweredProgram)` |
+
+The entry class registers its passes in its own setup, in order, with `register(pass)`, each made there and never
+changed; `run` runs them in that order. `register` crashes once `run` has started. Each pass folder's entry class is
+named for the folder and is what the stage registers; a low pass whose work is per function keeps that work in its
+`Pass(function)` and its entry class runs it over every selected function (`LoweredProgram.is_selected`: every
+function, except between the late inlining and `EveryFunction`, where only the functions the late inlining changed).
+A pass that needs more than the representation reads it from the representation: the high passes and proofs read
+the builder's context through `HighProgram.context` (the model, the symbol table, the flags, the facts asked).
+
+### The proofs, in order
+
+1. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
+2. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
+   answer that would decide itself.
+3. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
+4. `every_attribute_is_read`: an attribute nothing reads is a compile error.
+5. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
+6. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
+   facts on the operations).
+
+### The high passes, in order
+
+1. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
+   they are read.
+
+### The low passes, in order
+
+`low_optimization_passes/low_optimization_passes.spite` lists them: the cold reports, the singletons made at the
+start, a first folding and threading, compile-time evaluation, inlining, compile-time evaluation again and the
+specialised calls; then the placement (known headers, object placement) and the cleaning (twenty-five function
+passes from settling the singletons to the last live values); then direct calls and the late inlining, the placement
+and the cleaning again on the functions it changed; then, on every function again, releasing in place, vector loops,
+and the last shaping of blocks, live values and copy coalescing.
 
 ## What the compiler writes itself
 
@@ -114,20 +166,18 @@ A text that is an identity (a type's key, an instance's name) is not printing: i
 
 ## Passes
 
-`<level>_optimization_passes/<name>/pass.spite` holds a class `Pass(input)` answering `transformed()`. A unit pass
-reads one function or class and is cached by the hash of its input; a reload runs only unit passes. A program
-pass needs the whole program (tree shaking, inlining across classes, placement of objects that leave their
-function). Each optimisation and each proof is a pass of its own.
+`<stage>/<name>/<name>.spite` holds the pass's entry class, which fits the stage's type. A unit pass reads one
+function or class at a time; a program pass needs the whole program (tree shaking, inlining across classes,
+placement of objects that leave their function). Each optimisation and each proof is a pass of its own (D1086,
+D1087), and nothing that builds a representation also optimises it.
 
 ## Proofs
 
-`proofs/<what_it_proves>/pass.spite` holds a class `Pass(high)` whose `check()` proves one fact over the whole
-built high representation and hands what breaks it to its validator (D1072). A proof that decides whether code is
-accepted runs here, after every function is built and before any optimisation, so what a program may say never
-depends on how well it is optimised; a proof that only makes code cheaper runs where its facts exist and records
-them. `PROOFS.md` lists every proof, where it lives, and the ones still made inside a step or a pass. In order:
-
-1. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
+`proofs/<what_it_proves>/<what_it_proves>.spite` proves one fact over the whole built high representation and hands
+what breaks it to its validator (D1072). A proof that decides whether code is accepted runs here, after every
+function is built and before any optimisation, so what a program may say never depends on how well it is optimised;
+a proof that only makes code cheaper records its facts for the passes after it. `PROOFS.md` lists every proof, the
+pass that makes it, and the ones still made inside a step or a pass, with why.
 
 ## Memory
 
