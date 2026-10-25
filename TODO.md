@@ -201,8 +201,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - Singletons: made on first use, never counted (built: a singleton passed to a call is not counted, a function answering a singleton (a rebuilt attribute among them) neither counts it nor has its caller let it go, D949, and an attribute holding a quiet singleton is the singleton itself, D954; not built: kept in a local or a list it still is, and so is an attribute in a program with a `drop()`; a singleton the entry class makes is never tested again outside what its defaults reach (D961), and a quiet one read in a loop is tested once before it (D967), but the first-use test of any other singleton read in a loop is made on every pass)
 - Singletons that hold nothing are static objects
-- Atomic reference counts only with threads
-- Plain reference counts where no thread reaches a class
+- Plain reference counts where no thread reaches a class (built per class, D1166: a count whose object's class is known where it is taken or let go; not built: a count the compiler's own machinery writes (a thread's start and end, a task's frame, the free functions' texts), a union's, a shape's or a function value's, and `_release` where it is called rather than written in place stay atomic in a program with threads, and the loop passes that move counts (`loop_invariants`) still stand aside for the whole program once it has a thread)
 - An item passed to a call that cannot change its list is not counted (built for the receiver of a call after a `crash` that proves the read, D957; not built: an argument, and a read whose index or call arguments are not plain reads)
 - A singleton's attribute that never changes is read in place
 - A list's templates read its elements without counting them: done where nothing after the read in the template can write a list of that class; a template handed a function value still counts when any function the program takes as a value could write one
