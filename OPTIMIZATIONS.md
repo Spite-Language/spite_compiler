@@ -544,6 +544,31 @@ Every optimisation the compiler makes, one section each: what it does, when it a
 user can observe, and a small program that shows it. None of them changes what a program prints, returns or
 crashes with; they change only its time and its memory.
 
+## A question on a codegen type folds
+
+`$T.is_fixed_size` and `$T.is_singleton`, asked of a class a generic class is specialised for, are answered while
+compiling, so an `if` on them keeps only its taken branch in each specialisation, and the other branch is never
+built: in `Store<List<Integer>>` the `Vector<$component_type>` below is not made, and so not refused.
+
+```
+generic $component_type
+
+func describe(): String {
+    if $component_type.is_fixed_size {
+        var packed = Vector<$component_type>()
+        var packed_count = packed.count()
+        return "inline, {packed_count} so far"
+    }
+    var listed = List<$component_type>()
+    var listed_count = listed.count()
+    return "as references, {listed_count} so far"
+}
+```
+
+When it does not apply: a codegen type bound to a number, a text or a `T?`, and the other questions, are read from
+the class object at run time. What a user can observe: nothing but the time, and a branch that could not be built
+for that class is no longer refused (`tests/fits_vector_doc`).
+
 ## Layouts by use (the design)
 
 A class is one class to the program and several layouts to the compiler. The program sees `Player` with its forty
@@ -1559,7 +1584,8 @@ not apply: a read at another offset or of another width, and `to_buffer()`, whic
 
 `sine()`, `cosine()`, `tangent()`, `arc_sine()`, `arc_cosine()`, `arc_tangent()`, `arc_tangent_over(run)`,
 `power(exponent)`, `exponential()`, the three logarithms, `floor()`, `ceiling()`, `truncate()` and `round()` on
-`Float` and `Double` are bodiless declarations (`_sine()` and the rest) the compiler writes as one call through the
+`Float` and `Double` are bodiless declarations (`_sine()` and the rest), and `%` on them is `fmodf` or `fmod`, exact
+where `x - trunc(x / y) * y` lost digits once the quotient passed 2^53. The compiler writes them as one call through the
 import table to the C library's function (`sinf`, `cos`, ...), with the operands in the decimal registers the
 Windows calling convention passes them in. The executable imports `ucrtbase.dll` only when it calls one of them,
 and only the functions it calls. `square_root()` is one `sqrtss` or `sqrtsd`.

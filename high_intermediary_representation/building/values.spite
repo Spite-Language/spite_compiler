@@ -1098,6 +1098,10 @@ func member_value(
     if described_member {
         return described_member
     }
+    var folded_flag = folded_class_flag(member)
+    if folded_flag {
+        return folded_flag
+    }
     var generic_values = generic_enum_values(member)
     if generic_values {
         return generic_values
@@ -1704,6 +1708,34 @@ func namespace_named(
     return reflection.namespace_object(folder.namespace)
 }
 
+# ../../OPTIMIZATIONS.md#a-question-on-a-codegen-type-folds
+func folded_class_flag(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): HighIntermediaryRepresentation.Values.Value? {
+    var asks_a_flag = member.name == "is_fixed_size" or member.name == "is_singleton"
+    var target = member.target
+    var bound_name = ""
+    if target == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        bound_name = target.name
+    }
+    assert asks_a_flag and bound_name.starts_with("$")
+    var bound = context.current_class.bound_types[bound_name]
+    assert bound
+    assert bound.kind == 'object' and not bound.is_nullable and context.has_a_class(bound)
+    var model = context.class_of(bound)
+    var holds = model.is_singleton
+    if member.name == "is_fixed_size" {
+        var reflection = Reflection(context, this)
+        holds = reflection.is_fixed_size(model)
+    }
+    var flag = 0
+    if holds {
+        flag = 1
+    }
+    var boolean = context.boolean()
+    return HighIntermediaryRepresentation.Values.WholeNumber(boolean, flag)
+}
+
 func generic_enum_values(
     member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): HighIntermediaryRepresentation.Values.Value? {
@@ -2152,7 +2184,30 @@ func call_value(
     if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
         return member_call(call, callee)
     }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return indexed_function_call(call, callee)
+    }
     return unbuilt()
+}
+
+func indexed_function_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+): HighIntermediaryRepresentation.Values.Value {
+    var held = value_of(callee, null)
+    if held.value_type.is_nullable {
+        var wanted = held.value_type.present()
+        note_a_maybe_null("fit", held, "", wanted)
+        held = as_present(held)
+    }
+    var held_type = held.value_type
+    if held_type.kind != 'function' {
+        var printer = Printers.Spite.ExpressionPrinter(callee)
+        var written = printer.text()
+        var shown = context.shown(held_type)
+        typing.refuse_not_callable(context, written, shown)
+    }
+    return call_through_a_value(held, held_type, call)
 }
 
 func made_from_a_bound_type(
@@ -2178,12 +2233,28 @@ func made_from_a_bound_type(
     var made = context.class_of(made_type)
     context.need_defaults(made.key)
     var constructor = constructor_of(made)
+    if constructor and call.arguments.is_empty() and reads_into_defaults(constructor) {
+        var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+        return HighIntermediaryRepresentation.Values.MakeObject(made_type, null, no_arguments)
+    }
     var arguments = List<HighIntermediaryRepresentation.Values.Value>()
     if constructor {
         need(constructor)
         arguments = fitted_arguments(constructor, call.arguments)
     }
     return HighIntermediaryRepresentation.Values.MakeObject(made_type, constructor, arguments)
+}
+
+func reads_into_defaults(constructor: Model.FunctionModel): Boolean {
+    if constructor.parameters.is_empty() {
+        return false
+    }
+    var library = Validators.LibraryFile()
+    var path = context.current_class.file.path.replace("\\", "/")
+    if not library.holds(path) {
+        return false
+    }
+    return path.ends_with("/json_reader.spite") or path.ends_with("/binary_format.spite")
 }
 
 func is_the_symbol_maker(name: String): Boolean {
@@ -3061,6 +3132,8 @@ func member_call(
         typing.refuse_unknown_member(context, shown, callee.name)
     }
     crash function
+    var folded_keys = Folded.Keys(context, this)
+    folded_keys.refuse_a_changing_call(receiver, callee.name)
     refuse_a_comparison_of_objects(receiver, owner, callee.name)
     refuse_a_drop_by_name(owner, function)
     refuse_an_operator_call(callee, call, function, receiver)
@@ -3071,7 +3144,8 @@ func member_call(
     refuse_an_accessor_call(callee, call, function)
     var made = called(function, receiver, call.arguments)
     refuse_a_wider_bitwise_operand(callee, call, made)
-    return made
+    var width_reads = WidthReads(context)
+    return width_reads.proven(made, owner, call, callee)
 }
 
 func refuse_a_drop_by_name(owner: Model.ClassModel, function: Model.FunctionModel) {

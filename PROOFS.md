@@ -294,7 +294,9 @@ as when each was refused while building.
   `assert`, `crash`, `if`, `while`, the right of an `and`, and after an `if` that leaves
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: a proven read answers `T`, not `T?`.
-- **Missing**: bounds written with `<=`; count facts in a `while`; undoing a proof inside the loop that read it is
+- **Bounds written with `<=`**: `crash p + k <= list.count()` (in an `assert`, a `crash` or an `if`), and the `if
+  p + k > list.count()` that leaves, prove `list[p]` to `list[p + k - 1]`, as `p + (k - 1) < list.count()` would.
+- **Missing**: a `<=` bound in a `while`; count facts in a `while`; undoing a proof inside the loop that read it is
   not refused, and a shrinking call inside an assignment or an argument does not undo it (each read still halts
   when its list changed, see the next section).
 - **Falls back**: an unproven read is a `T?`; where a `T` is needed it is refused, "'...' may be missing, since every
@@ -325,14 +327,19 @@ as when each was refused while building.
 
 ### A proven count or bound proves a read of a width
 
-- **Status**: missing.
-- **Rule**: `read_<number>_at(p)` of width w is proven where `bytes[p + w - 1]` would be (a bound, a count, a `<=`
-  bound with k from 1 to 64, a counted loop's window); a position known not to be negative drops the low test
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
-- **Buys**: a header or a record is read with one bound.
-- **Falls back**: the read is a `T?` the program narrows; the library read tests both ends.
-- **Lives in**: none.
-- **Checked by**: conformance/byte_reads (the refusals only).
+- **Status**: built.
+- **Rule**: `buffer.read_<number>_at(p)` of width w (1 for `tiny` and `byte`, 2 for `short`, 4 for `integer` and
+  `float`, 8 for `long` and `double`) answers the number, not a `T?`, where `buffer[p + w - 1]` is proven: by a
+  bound (`while p + 3 < bytes.count()`), a count, or a `<=` bound (`crash body + 10 <= header.count()` proves the
+  reads at `body`, `body + 4` and `body + 8` up to a short). The position is a name, a name plus a literal, or a
+  literal ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+- **Buys**: a header or a record is read with one bound, and each read is a number.
+- **Falls back**: the read is a `T?` the program narrows. A proven read still answers null below 0 or past a
+  changed buffer, and then halts: "spite: 'header.read_integer_little_endian_at(body)' is outside its list: a
+  bound proves only the top of an index, and this one is below 0 or the list changed, at ...".
+- **Lives in**: `high_intermediary_representation/building/width_reads.spite`, which reads the facts the bound
+  recorded (`statements.spite`, `read_a_bound_at_most`).
+- **Checked by**: tests/list_byte_numbers; conformance/byte_reads (the refusals).
 
 ### An index built from loop counters is proven by one guard
 
@@ -347,13 +354,17 @@ as when each was refused while building.
 
 ### An index offset by a base is proven by one guard
 
-- **Status**: missing.
-- **Rule**: the guard `base + bound <= list.count()` with `while counter < bound`, base and counter not negative,
-  proves `list[base + counter]` ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+- **Status**: built.
+- **Rule**: the guard `base + width <= list.count()` (an `assert` or a `crash`), or the `if base + width >
+  list.count()` that leaves, with `while counter < width`, proves `list[base + counter]` inside the loop, base and
+  width and counter being names. Assigning `base` or `width`, or a call that shrinks the list, forgets the guard
+  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: a slice of a list is read with one guard.
-- **Falls back**: the read is a `T?` and is narrowed.
-- **Lives in**: none.
-- **Checked by**: none.
+- **Falls back**: the read is a `T?` and is narrowed. The guard proves only the top: a negative base or counter
+  halts at the read, as every proven read does ("... is outside its list ...").
+- **Lives in**: `high_intermediary_representation/building/windows.spite`, called by `statements.spite` from the
+  leaving `if`, the `assert`, the `crash` and the loop condition.
+- **Checked by**: tests/list_base_counter.
 
 ### A counted loop reads its items unchecked
 
