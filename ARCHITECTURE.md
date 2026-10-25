@@ -96,6 +96,28 @@ scope with their narrowed types, the block and the statement's place in it); `PR
    item's class. This is what makes a stage's `run` direct calls in order.
 2. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
    they are read.
+3. `layouts_by_use`: every class's layout (offsets, sizes, packing, the shared blocks of union members, the room of
+   a short text), recorded as `HighProgram.layout`.
+4. `call_assignments`: what each call may assign (`HighProgram.assignments`).
+5. `singleton_locks`: which functions wait or can be resumed, which singletons keep a lock and which loops share
+   it (`HighProgram.waits`).
+6. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
+   fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`, `fresh_by_constructor`).
+7. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
+   (`HighProgram.taken_parameters`).
+8. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).
+9. `inline_items`: a list's objects sit inside its storage, or in one array per attribute (into the layout).
+10. `lent_attributes`: an attribute that only holds an item of its holder's list is not counted (into the layout).
+
+Passes 3 to 10 make the decisions the lowering reads, so the lowering only lowers; they read nothing a later high
+pass changes, and with `--check`, where nothing is lowered, they do not run. The layout and the studies of calls
+they share (`Layout`, `Assignments`, `Waits`, `SingletonForms`, `CoarseLoops`, `QuietValues`, `ListGets`) are
+classes of `high_intermediary_representation/`, beside the representation they describe.
+
+The optimisations that choose which library template to build (fused chains, folded dictionaries, banded loops,
+the shrinking calls) are still chosen while building: a pass after the build would build the plain template first
+and the chosen one after every other function, which changes the order of the built functions and so the
+executable, and the new function would miss the facts the proofs recorded (D1113).
 
 ### The low passes, in order
 
@@ -214,8 +236,8 @@ pass that makes it, and the ones still made inside a step or a pass, with why.
   - an owned value nobody keeps (an argument, a receiver, a tested or discarded value) is released after its use;
   - a caller holds what it passes for the whole call, so a function counts only the parameters it assigns again
     (and every parameter of a step of a `Concurrent` work); the caller counts an argument or a receiver read from
-    a place the call may assign, and lets it go after the call (`lowering/assignments.spite` answers what a call
-    may assign, following every call to the end);
+    a place the call may assign, and lets it go after the call (`high_intermediary_representation/assignments.spite`,
+    recorded by the high pass `call_assignments`, answers what a call may assign, following every call to the end);
   - every block releases its locals when it ends or returns; a local declared from an attribute or a list slot
     that nothing after it in its block can write holds it uncounted;
   - `_release` frees an object whose count reaches zero through its class's `_free_<class>`: `drop()` first, then

@@ -1,12 +1,11 @@
 var no_program = Model.ProgramModel()
 var high = HighIntermediaryRepresentation.HighProgram(no_program)
-var layout = Layout(no_program)
+var layout = HighIntermediaryRepresentation.Layout(no_program)
 var program = LowIntermediaryRepresentation.LoweredProgram()
 var singleton_slots = Dictionary<String, Integer>()
-var waits: Waits? = null
-var assignments: Assignments? = null
+var waits: HighIntermediaryRepresentation.Waits? = null
+var assignments: HighIntermediaryRepresentation.Assignments? = null
 var trimmed_keys = List<String>()
-var library = Validators.LibraryFile()
 var counts_memory = false
 var taken: HighIntermediaryRepresentation.Ownership.TakenParameters? = null
 var fresh_by_constructor = Dictionary<String, List<String>>()
@@ -14,39 +13,18 @@ var calls_of = Dictionary<String, Integer>()
 
 func Lowering(starting_high: HighIntermediaryRepresentation.HighProgram) {
     high = starting_high
-    layout = Layout(starting_high.model)
-    layout.lay_out_by_use(starting_high)
+    crash starting_high.layout
+    layout = starting_high.layout
 }
 
 func lowered(): LowIntermediaryRepresentation.LoweredProgram {
-    waits = Waits(high)
-    assignments = Assignments(high)
+    waits = high.waits
+    assignments = high.assignments
     crash waits
     crash assignments
-    if waits.locks_any() {
-        waits.find_the_shared_loops(high, assignments)
-    }
-    var replacing = ReplacedDefaults(high)
-    trimmed_keys = replacing.trimmed_keys
-    note_the_fresh_slots(replacing)
-    var not_taking = keys_that_take_nothing()
-    var taking = HighIntermediaryRepresentation.Ownership.TakenParameters(high.model, not_taking)
-    taking.study(high)
-    taken = taking
-    var embedding = EmbeddedAttributes(high, assignments, taking)
-    var reading = FunctionLowering(layout, program, singleton_slots)
-    embedding.reads = ListReads(reading)
-    var embedded = embedding.found(layout)
-    layout.embed(embedded)
-    var inlining = InlineItems(high, layout, assignments)
-    if not embedded.is_empty() {
-        inlining.live = embedding.live
-    }
-    layout.inline_strides = inlining.found()
-    layout.columnar = inlining.columnar
-    var lending = LentAttributes(high, assignments, replacing, taking)
-    lending.reads = ListReads(reading)
-    layout.lent = lending.found()
+    trimmed_keys = high.trimmed_keys
+    taken = high.taken_parameters
+    fresh_by_constructor = high.fresh_by_constructor
     if layout.program.class_named("Spite.Fault") {
         program.reports_faults = true
         var placeholder = Buffer(0)
@@ -61,10 +39,9 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
         program.allocation_count_label = zeroed_count()
         program.free_count_label = zeroed_count()
     }
-    layout.plain_text_room = plain_text_room()
     high.built_functions.each(lower_function)
     lower_the_unguarded_bodies()
-    lower_the_trimmed_defaults(replacing)
+    lower_the_trimmed_defaults()
     if high.makes_work {
         write_the_work()
     }
@@ -87,63 +64,6 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
     program.shared_classes = waits.shared_owners()
     high.quiet_singletons.each(note_a_quiet_singleton)
     return program
-}
-
-# ../../OPTIMIZATIONS.md#an-object-handed-to-the-place-that-keeps-it-is-not-counted
-func note_the_fresh_slots(replacing: ReplacedDefaults) {
-    var index = 0
-    while index < replacing.trimmed_keys.count() {
-        var key = replacing.trimmed_keys[index]
-        crash key
-        var skipped = replacing.skipped_attributes[key]
-        if skipped and is_made_fresh(key) {
-            fresh_by_constructor[key] = skipped
-        }
-        index = index + 1
-    }
-}
-
-func is_made_fresh(constructor_key: String): Boolean {
-    var index = 0
-    while index < high.built_functions.count() {
-        var function = high.built_functions[index]
-        if function.function.key() == constructor_key {
-            return is_an_ordinary_class(function.function.owner)
-        }
-        index = index + 1
-    }
-    return false
-}
-
-func is_an_ordinary_class(class_key: String): Boolean {
-    var model = high.model.class_named(class_key)
-    if not model or model.is_singleton {
-        return false
-    }
-    if high.entry and high.entry.owner == class_key {
-        return false
-    }
-    if high.prompt and high.prompt.owner == class_key {
-        return false
-    }
-    return not class_key.starts_with("Spite.")
-}
-
-func keys_that_take_nothing(): List<String> {
-    var found = List<String>()
-    crash waits
-    crash assignments
-    var index = 0
-    while index < high.built_functions.count() {
-        var function = high.built_functions[index]
-        var key = function.function.key()
-        var not_ordinary = not is_an_ordinary_class(function.function.owner)
-        if not_ordinary or waits.is_resumable(key) or waits.blocks(key) or assignments.taken_as_values.contains(key) {
-            found.append(key)
-        }
-        index = index + 1
-    }
-    return found
 }
 
 func check_the_handed_calls() {
@@ -217,7 +137,7 @@ func note_a_quiet_singleton(class_key: String) {
 
 func note_the_steady_singletons() {
     var classes = singleton_slots.keys()
-    var forms = SingletonForms(high, classes)
+    var forms = HighIntermediaryRepresentation.SingletonForms(high, classes)
     var index = 0
     while index < forms.steady.count() {
         var class_key = forms.steady[index]
@@ -253,98 +173,6 @@ func zeroed_count(): Integer {
     }
     program.data.append(room)
     return program.data.count() - 1
-}
-
-func plain_text_room(): Integer {
-    var index = 0
-    while index < high.built_functions.count() {
-        var function = high.built_functions[index]
-        if function.function.key() == "String._attribute_defaults" {
-            return room_of_the_defaults(function)
-        }
-        index = index + 1
-    }
-    return -1
-}
-
-func room_of_the_defaults(function: HighIntermediaryRepresentation.HighFunction): Integer {
-    var statements = function.body.statements
-    if statements.count() != 2 {
-        return -1
-    }
-    var room = -1
-    var length_is_zero = false
-    var index = 0
-    while index < statements.count() {
-        var statement = statements[index]
-        if statement == HighIntermediaryRepresentation.Statements.Assign.Attribute {
-            var name = statement.attribute.name
-            if name == "_buffer" {
-                room = buffer_room_of(statement.value)
-            }
-            if name == "_length" {
-                length_is_zero = is_zero(statement.value)
-            }
-        }
-        index = index + 1
-    }
-    if not length_is_zero {
-        return -1
-    }
-    return room
-}
-
-func buffer_room_of(value: HighIntermediaryRepresentation.Values.Value?): Integer {
-    if not value {
-        return -1
-    }
-    if value == HighIntermediaryRepresentation.Values.MakeObject {
-        return room_made(value)
-    }
-    return -1
-}
-
-func room_made(made: HighIntermediaryRepresentation.Values.MakeObject): Integer {
-    if made.value_type.name != "Buffer" or made.arguments.count() != 1 or not made.constructor {
-        return -1
-    }
-    var constructor = made.constructor
-    if constructor.key() != "Buffer.Buffer" or not constructor.declaration {
-        return -1
-    }
-    var written = constructor.declaration.path.replace("\\", "/")
-    if not library.holds(written) or not written.ends_with("/common/buffer.spite") {
-        return -1
-    }
-    var size = made.arguments[0]
-    if not size {
-        return -1
-    }
-    return whole_number_of(size)
-}
-
-func whole_number_of(value: HighIntermediaryRepresentation.Values.Value): Integer {
-    if value == HighIntermediaryRepresentation.Values.WholeNumber {
-        return small_number(value.number)
-    }
-    return -1
-}
-
-func small_number(number: Long): Integer {
-    if number < 0 or number > 1000000 {
-        return -1
-    }
-    return number
-}
-
-func is_zero(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
-    if not value {
-        return false
-    }
-    if value == HighIntermediaryRepresentation.Values.WholeNumber {
-        return value.number == 0
-    }
-    return false
 }
 
 func lower_function(function: HighIntermediaryRepresentation.HighFunction) {
@@ -397,11 +225,11 @@ func lower_unguarded(function: HighIntermediaryRepresentation.HighFunction) {
     program.lowered_functions.append(made)
 }
 
-func lower_the_trimmed_defaults(replacing: ReplacedDefaults) {
+func lower_the_trimmed_defaults() {
     var index = 0
-    while index < replacing.trimmed.count() {
-        var variant = replacing.trimmed[index]
-        var constructor_key = replacing.trimmed_keys[index]
+    while index < high.trimmed_defaults.count() {
+        var variant = high.trimmed_defaults[index]
+        var constructor_key = high.trimmed_keys[index]
         crash constructor_key
         var owner = high.model.class_named(variant.function.owner)
         crash owner

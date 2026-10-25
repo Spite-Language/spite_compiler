@@ -153,7 +153,7 @@ and the member a member template binds), so a validator names the same place it 
   once every function is built. The builder records each narrowed read
   (`high_intermediary_representation/narrowed_read.spite`, `values.spite`: `note_a_narrowed_read`) with the calls
   built since its check (`statements.spite`: `log_the_calls_of`); what a call may assign is
-  `low_intermediary_representation/lowering/assignments.spite` read for narrowings (`read_for_narrowings`).
+  `high_intermediary_representation/assignments.spite` read for narrowings (`read_for_narrowings`).
 - **Checked by**: tests/receiver_call_effects, tests/same_name_call_effects,
   tests/narrowing_kept_across_harmless_call; conformance/call_undoes_proof, conformance/branch_undoes_proof,
   conformance/receiver_call_undoes_proof, conformance/count_undoes_proof, conformance/bound_proofs_undone,
@@ -487,7 +487,7 @@ and the member a member template binds), so a validator names the same place it 
   functions that ask 'function_waits' were compiled ...".
 - **Lives in**: the proof `proofs/compile_time_facts`, which answers every question asked while building and
   refuses an answer that would decide itself; the study it reads is `high_intermediary_representation/building/facts.spite`
-  (`waits`, `waits_through`), which the builder also reads for the frame starts; a second study in `lowering/waits.spite`
+  (`waits`, `waits_through`), which the builder also reads for the frame starts; a second study in `high_intermediary_representation/waits.spite`
   (embedded: the lowering's own, for what each call suspends).
 - **Checked by**: tests/waiting_systems, tests/entry_function_waits, tests/pooled_loads_wait, tests/default_handles,
   tests/reflection_objects; conformance/function_waits_paradox.
@@ -762,7 +762,7 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 - **Rule**: an attribute path from `this` or a held name whose callee may assign none of its attributes is passed
   uncounted; see `OPTIMIZATIONS.md`.
 - **Falls back**: counted before the call and let go after.
-- **Lives in**: the lowering, `function_lowering.spite` (`is_a_steady_attribute`), `lowering/assignments.spite`
+- **Lives in**: the lowering, `function_lowering.spite` (`is_a_steady_attribute`), `high_intermediary_representation/assignments.spite`
   (`may_assign`).
 - **Checked by**: tests/held_paths.
 
@@ -773,7 +773,7 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
   classes as its address, with no count and no lock.
 - **Missing**: the per-attribute fact: a singleton is steady only when all its attributes are plain.
 - **Falls back**: a counted read.
-- **Lives in**: `lowering/singleton_forms.spite`, the passes `made_singletons` and `unread_objects`.
+- **Lives in**: `high_intermediary_representation/singleton_forms.spite`, the passes `made_singletons` and `unread_objects`.
 - **Checked by**: tests/singleton_attribute_reads.
 
 ### A list's templates read their elements uncounted
@@ -940,7 +940,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Missing**: a `ForeignCallback`'s function is not a root, so a singleton reached only from a callback C calls on
   its own thread takes no lock.
 - **Falls back**: locked.
-- **Lives in**: `low_intermediary_representation/lowering/waits.spite`.
+- **Lives in**: `high_intermediary_representation/waits.spite`, recorded by the high pass `singleton_locks`.
 - **Checked by**: tests/singleton_forms, tests/singleton_race, tests/unshared_locks, tests/singleton_lock_calls.
 
 ### No other thread touches a singleton
@@ -956,7 +956,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   touched once per function, outside loops, is atomic.
 - **Missing**: one lone atomic attribute inside a locked singleton.
 - **Falls back**: the whole singleton takes its lock.
-- **Lives in**: `lowering/singleton_forms.spite`, `lowering/waits.spite`.
+- **Lives in**: `high_intermediary_representation/singleton_forms.spite` and `waits.spite`, recorded by the high pass `singleton_locks`.
 - **Checked by**: tests/singleton_forms, tests/singleton_lock_calls, tests/lone_atomic_counter.
 
 ### A function that touches no changing state takes no lock
@@ -967,14 +967,14 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Missing**: it tests "never reads `this`", so reading an attribute nothing changes still locks; a call between
   two locked functions takes the lock again.
 - **Falls back**: the lock, taken again by its owner.
-- **Lives in**: `lowering/waits.spite`, `function_lowering.spite`.
+- **Lives in**: `high_intermediary_representation/waits.spite`, `function_lowering.spite`.
 - **Checked by**: tests/singleton_stateless_calls, tests/singleton_function_values.
 
 ### Reading functions share the lock
 
 - **Status**: partly built (D988): only for a counted loop that holds the lock.
 - **Falls back**: the lock alone.
-- **Lives in**: `lowering/waits.spite`, `lowering/coarse_loops.spite`.
+- **Lives in**: `high_intermediary_representation/waits.spite` and `coarse_loops.spite`.
 - **Checked by**: tests/singleton_reads.
 
 ### A counted loop takes a singleton's lock once
@@ -983,7 +983,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Rule**: a counted `while` that calls only one singleton's functions and plain helpers, and reaches no wait,
   start or other lock, takes the lock once.
 - **Falls back**: a lock per call.
-- **Lives in**: `lowering/coarse_loops.spite`, `lowering/waits.spite`.
+- **Lives in**: `high_intermediary_representation/coarse_loops.spite` and `waits.spite`.
 - **Checked by**: tests/coarse_locks.
 
 ### A loop that starts no task tests for tasks once
@@ -1070,7 +1070,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Rule**: a function given to a `Concurrent` that can wait, and every waiting function it calls, gets a resumable
   copy.
 - **Falls back**: a wait the study does not see as such runs the event loop in place.
-- **Lives in**: `lowering/waits.spite`, `lowering/machine_writing.spite`.
+- **Lives in**: `high_intermediary_representation/waits.spite`, `lowering/machine_writing.spite`.
 - **Checked by**: tests/concurrent_waits, waits_never_hang, wait_order, wait_index_order, concurrent_wait_cycle,
   concurrent_wait_cycle_in_place, dropped_handle_waits.
 
