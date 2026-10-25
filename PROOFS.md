@@ -17,7 +17,7 @@ with it. Each section has the same parts:
 - **Falls back**: when it does not apply, what the compiler does and what the user writes.
 - **Lives in**: the pass or the file that makes it. A proof is a pass of its own (D1086), in `proofs/<name>/`; a
   proof still made inside a step or another pass says "embedded", and moving it out is a `TODO.md` line.
-- **Checked by**: the `../SpiteSpec` programs that pin it (`tests/` must run, `conformance/` must be refused).
+- **Checked by**: the `../spite_spec` programs that pin it (`tests/` must run, `conformance/` must be refused).
 
 Two kinds of proof run at two places (D1086, D1072). A proof that decides whether code is **accepted** runs on the
 high representation once it is built and before any optimisation pass, so what a program may say never depends on

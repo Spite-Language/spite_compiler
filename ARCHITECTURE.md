@@ -180,24 +180,29 @@ walks up through the frame pointers; without the file it prints only the fault l
 
 ## How the compiler is built
 
-The source is written to the language this compiler checks: its entry file loads `.spite/library/windows`, and
-every rule of [the specification](https://github.com/Spite-Language/spite_spec/blob/master/specs/README.md) holds in it. The old compiler (0.0.6) cannot build it, so a build from
-nothing is a chain, and `scripts/bootstrap.sh` runs all of it:
+The repositories sit side by side under one folder, as `gh repo clone` names them: this one as `spite_compiler`
+and [spite_standard_library](https://github.com/Spite-Language/spite_standard_library) beside it. The source is
+written to the language this compiler checks: its entry file loads `../spite_standard_library/windows`, and every
+rule of [the specification](https://github.com/Spite-Language/spite_spec/blob/master/specs/README.md) holds in it.
+Nothing else is needed: no link, no copied file, no older compiler. `bash scripts/bootstrap.sh --install` builds
+it from a fresh clone:
 
-1. **The seed.** Commit `47767ec` is the last source the old compiler builds. The old compiler builds it into
-   `.spite/bootstrap/spite_seed.exe`. Its executables reserve 1 MB of stack, too little for this compiler to
-   resolve its own source, so the script sets the seed's `SizeOfStackReserve` (offset 72 of the PE optional header)
-   to 256 MB. Only the seed is ever built by the old compiler.
-2. **The seed builds the source**, about five minutes (`--check` about three). `.spite/library` must be a junction
-   to [spite_standard_library](https://github.com/Spite-Language/spite_standard_library), since the entry file's `load` reaches it through `.spite/spite_compiler`.
-3. **The compiler builds itself** until two builds write the same bytes, about seventy seconds each; the compiler
-   the seed writes already rebuilds itself byte for byte. That fixed point is the compiler, and
-   `bash scripts/bootstrap.sh --install` puts it in `.spite/spite.exe`.
+1. **The seed.** Until 1.0 the seed is the last compiler this source built itself (D1071), published as a
+   prerelease of this repository (`SEED_TAG` in the script, `seed-2026-10-25` now). The script uses
+   `.spite/spite.exe` when it is there, and otherwise downloads the release's `spite.exe` and `spite.functions`
+   into `.spite/` (`SEED=path` names another compiler instead).
+2. **The seed builds the source**, about ten minutes, from the folder above this one (`spite_compiler` is the
+   program's folder, so the paths written into the compiler are the same in every checkout).
+3. **The compiler builds itself** until two builds write the same bytes. That fixed point is the compiler, and
+   `--install` puts it in `.spite/spite.exe`. A seed built from this same source is already the fixed point, so
+   its first build writes the seed's own bytes.
 
-Day to day nobody runs the chain: `.spite/spite.exe` builds the next compiler from the current source
-(`.spite/spite.exe .spite/spite_compiler --build --executable-path=.spite/spite_next.exe`), and the next one is
-kept when it rebuilds itself to the same bytes. A change the current compiler cannot build is built by the
-compiler of the commit before it.
+Day to day nobody runs the chain: from the folder above, `spite_compiler/.spite/spite.exe spite_compiler --build
+--executable-path=spite_compiler/.spite/spite_next.exe` builds the next compiler from the current source, and the
+next one is kept when it rebuilds itself to the same bytes. A change the current compiler cannot build (a rule
+it would apply to its own source, or a library it would not recognise) is built through a compiler that accepts
+both forms, and that change publishes a new seed: its fixed point as a new `seed-<date>` release, named in
+`SEED_TAG` in the same commit.
 
 ## The first error stops the run
 

@@ -44,7 +44,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 
 ## The language
-- From the old repository's programs (SpiteSpec `CORPUS.md`), still failing:
+- From the old repository's programs (spite_spec `CORPUS.md`), still failing:
   - a statement after a `return` is not refused (`conformance/after_return_error`)
   - the old `Nullable<T>` spelling is not refused with the error that names the `?` suffix (`conformance/old_nullable_spelling`)
   - the may-be-null error leaves out "but an Anything is needed" (`conformance/maybe_null_into_type`)
@@ -62,7 +62,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A function value of another object held in a local (`var hurt = troll.hurt`, then `describe(hurt)`) is still looked up by name in its class object's `.functions` (bound to the stand-in, not to `troll`), and halts for the entry class (D866)
 - `'<path>' is not a class known while compiling` is given for an attribute typed `Spite.Class` named as a type; a local or a parameter so named is still "unknown type" (D868)
 - Templates over `Spite.Attribute` and `Spite.Function`, bound to one object (D798, D815): a parameter of those types is still an ordinary parameter; and `Namespace.classes.each(walker)` unrolls only with a walker of one parameter named in the same class (D813)
-- SpiteSpec as the whole specification (D799): one program per rule and corner of every spec page, then the Markdown spec retired
+- spite_spec as the whole specification (D799): one program per rule and corner of every spec page, then the Markdown spec retired
 - Fixes instead of errors (D800, to discuss): the layout is fixed (D901); each other rule whose fix needs no choice, such as the declaration order, waits for Mortaro's choice in `mortaros_missing_decisions.md`
 - A cycle the program's code does not link as owner and back reference still leaks (D759): two objects stored in each other's attributes where neither was made in that function, one attribute pointing both ways (`partner`), a cycle through a union or a `type`, a non-nullable back attribute, or links made in two different functions; a leak no run reports until `--debug-memory` has its report (D244)
 - A back reference is read without a count (D760), so a call on it (`child.parent.leave()`) whose body lets the owner go runs on freed memory, and on two threads the check that its object lives races with the owner's last release

@@ -1,4 +1,4 @@
-# SpiteCompiler
+# spite_compiler
 
 The Spite compiler, written in Spite. It writes Windows machine code directly: no C anywhere. The language is
 specified in [spite_spec](https://github.com/Spite-Language/spite_spec) and [spite_documentation](https://github.com/Spite-Language/spite_documentation), the standard library is [spite_standard_library](https://github.com/Spite-Language/spite_standard_library), and the tests are
@@ -6,16 +6,22 @@ specified in [spite_spec](https://github.com/Spite-Language/spite_spec) and [spi
 
 ## Build it
 
-This compiler builds itself:
+Clone the repositories side by side under one folder, under their own names:
 
-    .spite/spite.exe .spite/spite_compiler --build --executable-path=.spite/spite_next.exe
+    gh repo clone Spite-Language/spite_compiler
+    gh repo clone Spite-Language/spite_standard_library
+    gh repo clone Spite-Language/spite_spec
+    bash spite_compiler/scripts/bootstrap.sh --install
 
-From nothing, `bash scripts/bootstrap.sh --install` builds it from the old compiler (0.0.6) through a seed
-(`ARCHITECTURE.md`, "How the compiler is built").
+The script downloads the seed compiler (the last one this source built itself) into `spite_compiler/.spite/`,
+builds the source with it until two builds write the same bytes, and installs that compiler as
+`spite_compiler/.spite/spite.exe` (`ARCHITECTURE.md`, "How the compiler is built"). After that the compiler
+builds itself, from the folder above this one:
 
-`.spite/spite_compiler` is a junction to this folder under a snake_case name. `.spite/library` is a junction to
-[spite_standard_library](https://github.com/Spite-Language/spite_standard_library). The compiler carries every class it adds to a program inside its own executable
-(`ARCHITECTURE.md`), so a release is `spite.exe` and `library/`.
+    spite_compiler/.spite/spite.exe spite_compiler --build --executable-path=spite_compiler/.spite/spite_next.exe
+
+The compiler carries every class it adds to a program inside its own executable (`ARCHITECTURE.md`), so a release
+is `spite.exe` and the library.
 
 ## Run it
 
@@ -25,17 +31,19 @@ From nothing, `bash scripts/bootstrap.sh --install` builds it from the old compi
 The executable goes to `<program>/.spite/build/<name>.exe`, and its exit code is what the entry constructor
 answers. `--high-ir` and `--low-ir` write each class's representation, one `.ir` file per class.
 
-A program names everything it loads in its first lines. There is no launcher and no library search:
+A program names everything it loads in its first lines, the standard library by its path from the program's
+folder. There is no launcher and no library search:
 
     func ExitCode(): Integer {
-        load "../../../SpiteCompiler/.spite/library/common"
+        load "../../../spite_standard_library/common"
 
 ## Test it
 
-From a checkout of [spite_spec](https://github.com/Spite-Language/spite_spec):
+From the clone of [spite_spec](https://github.com/Spite-Language/spite_spec) beside this one:
 
-    ../SpiteCompiler/.spite/spite-0.0.6-windows/spite.exe runner
-    ../SpiteCompiler/.spite/spite-0.0.6-windows/spite.exe runner tests/sum
+    ../spite_compiler/.spite/spite.exe runner --build
+    runner/.spite/build/runner.exe
+    runner/.spite/build/runner.exe tests/sum
 
 ## Read next
 

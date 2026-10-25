@@ -1,4 +1,4 @@
-# Working on SpiteCompiler
+# Working on spite_compiler
 
 Read `README.md`, then `ARCHITECTURE.md`, then `TODO.md`. Read a folder's `contract.md` before changing it.
 
