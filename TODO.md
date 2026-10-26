@@ -35,7 +35,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
 - A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
-- Leaks `--debug-memory` cannot be asked about: `tests/divisions`, `objects` and `receivers` declare a `Build` without `debug_memory`, so they are not swept (D1242, D1256); a reflection object made on two threads at once records itself on the list let go at exit without a lock
+- Leaks `--debug-memory` cannot be asked about: a reflection object made on two threads at once records itself on the list let go at exit without a lock
 
 ## The language
 - `Spite.Call` on a declaration known only at run time (D864, D1271): an argument filled twice is not refused (the second write replaces the first), an argument the function lacks halts only as "fills an argument ... does not have" without naming it, and a parameter that is nullable, a union or a `type` halts instead of being passed
@@ -111,13 +111,12 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ## The outputs
 
 - Crash reports
-- `--final-classes` (D1223): the printed folder does not run as the same program yet (its entry still loads the library by its path, and the library's classes are printed beside it), and the classes the compiler makes without a file (`Spite.Work`, the functions it writes) are not printed
-- Options a program's `build.spite` sets are read only for `final_classes`; `executable_path`, `optimization_report`, `check` and `build` are read from the command line alone
-- `--repl-port`; `--hot-reload` is refused until it swaps code (D1241): every part of `HOT_RELOAD.md` (slots, the reload library, the manifest, the file hashes, the watcher, moving live objects, `Reload` filled by each swap) is to build, and whether the reflection model can be the manifest; `--development` (D1243) makes singletons ordinary objects and turns off the passes an inspectable build skips, but still tree-shakes every function nothing reaches
-- `--repl` (D698 to D701): a singleton made with arguments (`Channel(1)`), `bytes <path>` and `memory`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes, `eval`, `run`, breakpoints and `reload`
+- `--final-classes` (D1223, D1389): the printed folder does not run as the same program yet: compiling it stops at the first class the compiler writes for itself (`spite/copy_table.spite`, `Spite.CopyTable` is internal to the standard library), the library's classes are printed beside the program as reopenings of the library its moved `load` still reads, and the generic templates its code names are not printed (only their instantiations, as `type`s); a class the compiler makes without a file is printed as a `type`, not as code that compiles
+- `--repl-port`; `--hot-reload` is refused until it swaps code (D1241): every part of `HOT_RELOAD.md` (slots, the reload library, the manifest, the file hashes, the watcher, moving live objects, `Reload` filled by each swap) is to build, and whether the reflection model can be the manifest
+- `--repl` (D698 to D701): a singleton made with arguments (`Channel(1)`), `bytes <path>`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes, `eval`, `run`, breakpoints and `reload`
 - `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
-- `--repl-port` (D1236): a command is answered only at a loop's check point and after the constructor returns, not where the program waits (`Program.sleep`, `Console.read_line`, a `File` or `Socket` call, a `Concurrent`'s value); a check point asks a flag a thread raises every 25 ms, not the REPL thread's handover, so an answer waits up to 25 ms; `exit` ends the program at once, not at the next wait or pass
-- `--repl` (D698 to D701, D1234, D1235, D1237): `memory` counts live allocations but not their bytes (`Program().live_allocations()` and `live_bytes()` are not in the library); a class of the standard library is walked by its attributes, and none of its functions can be called at the prompt; `eval`, `run`, breakpoints, `reload`, `last_reload`, `wait_reload` and a construction on the right of `=` only answer their refusal, since they need the `--hot-reload` machinery
+- `--repl-port` (D1236): a command is answered only at a loop's check point and after the constructor returns, not where the program waits (`Program.sleep`, `Console.read_line`, a `File` or `Socket` call, a `Concurrent`'s value); a check point asks a flag a thread raises every 25 ms, not the REPL thread's handover, so an answer waits up to 25 ms, and a remote `exit` ends the program at the first check point that runs after it (D1388), up to 25 ms after the next pass
+- `--repl` (D698 to D701, D1234, D1235, D1237): `eval`, `run`, breakpoints, `reload`, `last_reload`, `wait_reload` and a construction on the right of `=` only answer their refusal, since they need the `--hot-reload` machinery
 - Caches per step and per unit
 
 ## The compiler proves itself
