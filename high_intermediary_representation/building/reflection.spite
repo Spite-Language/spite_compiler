@@ -512,7 +512,9 @@ func called_on_value_of(
     var wanted = called_on_attribute.attribute_type.present()
     var parameter_type = wanted.parameters[0]
     crash parameter_type
-    var wrapper = calling_on_wrapper(model, declared, parameter_type)
+    var arguments_type = wanted.parameters[1]
+    crash arguments_type
+    var wrapper = calling_on_wrapper(model, declared, parameter_type, arguments_type)
     return HighIntermediaryRepresentation.Values.Function.Value(wanted, wrapper, receiver)
 }
 
@@ -520,6 +522,7 @@ func calling_on_wrapper(
     model: Model.ClassModel,
     declared: Model.FunctionModel,
     instance_type: Model.Type,
+    arguments_type: Model.Type,
 ): Model.FunctionModel {
     var name = "_call_{declared.name}_on"
     var known = model.function_named(name)
@@ -530,12 +533,15 @@ func calling_on_wrapper(
     made.is_synthetic = true
     var parameter = Model.ParameterModel("instance", instance_type, false)
     made.parameters.append(parameter)
+    var arguments_parameter = Model.ParameterModel("arguments", arguments_type, false)
+    made.parameters.append(arguments_parameter)
     model.declared_functions.append(made)
     var body = HighIntermediaryRepresentation.Statements.Block()
-    if declared.parameters.is_empty() {
-        called_on_its_instance(body, model, declared, instance_type)
+    var passed = first_unpassed_parameter(declared)
+    if passed.is_empty() {
+        called_on_its_instance(body, model, declared, instance_type, arguments_type)
     } else {
-        var message = "spite: call() cannot pass arguments to '{model.shown}.{declared.name}' when the call is known only at run time: build the call from a function named in the code, 'Spite.Call({model.shown}.functions['{declared.name}'], instance)'"
+        var message = "spite: call() cannot pass the argument '{passed}' of '{model.shown}.{declared.name}' when the call is known only at run time, since a value of its type is not told apart while the program runs: build the call from a function named in the code, 'Spite.Call({model.shown}.functions['{declared.name}'], instance)'"
         var refused = HighIntermediaryRepresentation.Statements.Stop(message)
         body.statements.append(refused)
     }
@@ -544,21 +550,45 @@ func calling_on_wrapper(
     return made
 }
 
+func first_unpassed_parameter(declared: Model.FunctionModel): String {
+    var index = 0
+    while index < declared.parameters.count() {
+        var parameter = declared.parameters[index]
+        var kind = parameter.parameter_type.kind
+        var is_told_apart = kind == 'scalar' or kind == 'enumeration' or kind == 'object'
+        if not is_told_apart or parameter.parameter_type.is_nullable {
+            return parameter.name
+        }
+        index = index + 1
+    }
+    return ""
+}
+
 func called_on_its_instance(
     body: HighIntermediaryRepresentation.Statements.Block,
     model: Model.ClassModel,
     declared: Model.FunctionModel,
     instance_type: Model.Type,
+    arguments_type: Model.Type,
 ) {
     context.need(declared)
     var own_type = model.type_of_an_instance()
     var instance = HighIntermediaryRepresentation.Values.LocalRead(instance_type, "instance")
     var tested = HighIntermediaryRepresentation.Values.Class.Test(instance, own_type)
     var narrowed = HighIntermediaryRepresentation.Values.Conversion(own_type, 'present', instance)
-    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
-    var call = HighIntermediaryRepresentation.Values.Call(declared, narrowed, no_arguments)
-    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(call)
     var running = HighIntermediaryRepresentation.Statements.Block()
+    var passed_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var shown = "{model.shown}.{declared.name}"
+    var index = 0
+    while index < declared.parameters.count() {
+        var parameter = declared.parameters[index]
+        var argument = passed_argument(running, parameter, arguments_type, shown)
+        passed_arguments.append(argument)
+        index = index + 1
+    }
+    refuse_an_argument_too_many(running, declared, arguments_type, shown)
+    var call = HighIntermediaryRepresentation.Values.Call(declared, narrowed, passed_arguments)
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(call)
     running.statements.append(evaluated)
     var message = "spite: call() runs '{declared.name}', declared by '{model.shown}', on an instance of another class: a call runs a declaration on an instance of its own class"
     var refused = HighIntermediaryRepresentation.Statements.Stop(message)
@@ -566,6 +596,87 @@ func called_on_its_instance(
     refusing.statements.append(refused)
     var branch = HighIntermediaryRepresentation.Statements.If(tested, running, refusing)
     body.statements.append(branch)
+}
+
+func passed_argument(
+    running: HighIntermediaryRepresentation.Statements.Block,
+    parameter: Model.ParameterModel,
+    arguments_type: Model.Type,
+    shown: String,
+): HighIntermediaryRepresentation.Values.Value {
+    var dictionary = context.class_of(arguments_type)
+    var reading = dictionary.function_named("get_at")
+    crash reading
+    context.need(reading)
+    var arguments = HighIntermediaryRepresentation.Values.LocalRead(arguments_type, "arguments")
+    var keys = List<HighIntermediaryRepresentation.Values.Value>()
+    var key = HighIntermediaryRepresentation.Values.TextConstant(parameter.name)
+    keys.append(key)
+    var read = HighIntermediaryRepresentation.Values.Call(reading, arguments, keys)
+    var present = HighIntermediaryRepresentation.Values.PresenceTest(read)
+    var missing = HighIntermediaryRepresentation.Values.Negation(present)
+    var unfilled = "spite: call() leaves the argument '{parameter.name}' of '{shown}' unfilled: set 'call.arguments['{parameter.name}']' before 'call()'"
+    stop_when(running, missing, unfilled)
+    var held_type = read.value_type.present()
+    var held = HighIntermediaryRepresentation.Values.Conversion(held_type, 'present', read)
+    var wanted = parameter.parameter_type
+    var fits = HighIntermediaryRepresentation.Values.Class.Test(held, wanted)
+    var misfit = HighIntermediaryRepresentation.Values.Negation(fits)
+    var wanted_shown = context.shown(wanted)
+    var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
+    var article = typing.article_of(wanted_shown)
+    var other = "spite: call() gives '{shown}' an argument '{parameter.name}' that is not {article} {wanted_shown}, the type it takes"
+    stop_when(running, misfit, other)
+    var again = HighIntermediaryRepresentation.Values.Call(reading, arguments, keys)
+    var again_type = again.value_type.present()
+    var again_held = HighIntermediaryRepresentation.Values.Conversion(again_type, 'present', again)
+    var kind = wanted.kind
+    if kind == 'scalar' or kind == 'enumeration' {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'unbox', again_held)
+    }
+    return HighIntermediaryRepresentation.Values.Conversion(wanted, 'present', again_held)
+}
+
+func refuse_an_argument_too_many(
+    running: HighIntermediaryRepresentation.Statements.Block,
+    declared: Model.FunctionModel,
+    arguments_type: Model.Type,
+    shown: String,
+) {
+    var dictionary = context.class_of(arguments_type)
+    var counting = dictionary.function_named("count")
+    crash counting
+    context.need(counting)
+    var arguments = HighIntermediaryRepresentation.Values.LocalRead(arguments_type, "arguments")
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var counted = HighIntermediaryRepresentation.Values.Call(counting, arguments, no_arguments)
+    var integer = context.scalar_type("Integer")
+    var taken: Long = declared.parameters.count()
+    var limit = HighIntermediaryRepresentation.Values.WholeNumber(integer, taken)
+    var boolean = context.boolean()
+    var too_many = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'greater', counted, limit)
+    var names = List<String>()
+    var index = 0
+    while index < declared.parameters.count() {
+        var parameter = declared.parameters[index]
+        names.append("'{parameter.name}'")
+        index = index + 1
+    }
+    var listed = names.join(", ")
+    var message = "spite: call() fills an argument '{shown}' does not have: it takes {listed}"
+    stop_when(running, too_many, message)
+}
+
+func stop_when(
+    running: HighIntermediaryRepresentation.Statements.Block,
+    condition: HighIntermediaryRepresentation.Values.Value,
+    message: String,
+) {
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+    var stopping = HighIntermediaryRepresentation.Statements.Block()
+    stopping.statements.append(stopped)
+    var branch = HighIntermediaryRepresentation.Statements.If(condition, stopping, null)
+    running.statements.append(branch)
 }
 
 func fact(
@@ -1361,7 +1472,18 @@ func made_anew(): Model.FunctionModel {
         body.statements.append(branch)
         key_index = key_index + 1
     }
-    var message = "spite: a class known only at run time makes an object only of a class of the program's own folder"
+    var plain_names = ["Boolean", "Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong", "Float", "Double", "String"]
+    var plain_index = 0
+    while plain_index < plain_names.count() {
+        var plain_name = plain_names[plain_index]
+        var plain_model = context.program.class_named(plain_name)
+        if plain_model {
+            var plain_branch = plain_making_branch(own, plain_model, anything)
+            body.statements.append(plain_branch)
+        }
+        plain_index = plain_index + 1
+    }
+    var message = "spite: a class known only at run time makes an object only of a class of the program's own folder, a number, a Boolean or a String"
     var refused = HighIntermediaryRepresentation.Statements.Stop(message)
     body.statements.append(refused)
     var function = HighIntermediaryRepresentation.HighFunction(made, body)
@@ -1400,6 +1522,28 @@ func making_branch(
         var answered = made_of_a_class(model, constructor, anything)
         making.statements.append(answered)
     }
+    return HighIntermediaryRepresentation.Statements.If(is_this_class, making, null)
+}
+
+func plain_making_branch(
+    own: HighIntermediaryRepresentation.Values.Value,
+    model: Model.ClassModel,
+    anything: Model.Type,
+): HighIntermediaryRepresentation.Statements.Statement {
+    var described = class_object(model.key)
+    var compared = List<HighIntermediaryRepresentation.Values.Value>()
+    compared.append(described)
+    var is_this_class = values.method_call(own, "equals", compared)
+    var plain_type = Model.Type('scalar', model.key)
+    if model.key == "String" {
+        plain_type = Model.Type('object', "String")
+    }
+    var made = values.default_of_a_type(plain_type)
+    crash made
+    var fitted = values.fitted(made, anything)
+    var answered = HighIntermediaryRepresentation.Statements.Return(fitted)
+    var making = HighIntermediaryRepresentation.Statements.Block()
+    making.statements.append(answered)
     return HighIntermediaryRepresentation.Statements.If(is_this_class, making, null)
 }
 
