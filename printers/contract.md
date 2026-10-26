@@ -26,8 +26,10 @@ owns it, not to a printer.
 | `high_intermediary_representation` | one `HighClass` | the class, its attributes and its functions, one statement a line (`--high-ir=folder`) |
 | `low_intermediary_representation` | the name of a class and its `LowFunction`s | each function and its instructions, one a line (`--low-ir=folder`) |
 
-To come: `spite` (a tree printed as Spite: the formatter, and `--final-classes`), `optimization_report` and
-`machine_code`.
+| `final_class` | a class's merged `SourceFile` and the link to each file that supplied a declaration | the class as Spite, each attribute and function under a `#` link to its file (`--final-classes=folder`) |
+| `instantiated_class` | one `ClassModel` of a generic instantiation | the instantiation as a `type` with the members it has |
+
+To come: `machine_code`.
 
 ## The format of the two representations
 
