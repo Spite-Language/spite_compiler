@@ -332,3 +332,14 @@ The thread that wins the claim on a slot (a compare-exchange of its state) makes
 the list the program lets go of at exit, newest first. Two threads can each be making a different one at the same
 moment, so the push is a compare-exchange on the list's head that reads the head again and retries when another
 push came between, instead of a plain store that would lose one of them.
+
+### Work a condition needs runs where the condition reaches it
+
+Building a value can need statements before it (a temporary that holds a call's answer once, an object literal's
+fields): the builder keeps them pending and writes them before the statement that reads the value. The right side
+of `and` and `or` is reached only when the left does not decide, so its work cannot be written before the whole
+condition: that would run a call the program skips (`shown and maybe_true()` asks `maybe_true` when `shown` is
+false) and read a temporary on a path where it was never set. When the right side needs work, the builder holds
+the answer in a `Boolean` local set to the left side and writes the right side's work, then the assignment of its
+answer, in an `if` that runs only when the left side did not decide. A `while` condition's work is done again at
+the end of each pass, that `if` with it.
