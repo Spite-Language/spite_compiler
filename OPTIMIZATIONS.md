@@ -1999,9 +1999,14 @@ between (and, for a load, no store, call, allocation or other write of memory in
 the count, at offset 8), copies the earlier answer instead. `a + b` and `b + a` are the same for `+`, `*` and the
 bit operations.
 
-Across blocks, the same holds for a computation whose registers, read and written, are each written once in the
-function: when it is made on every path to a block (found by following the blocks forward, keeping only what every
-path leading in made, and forgetting loads at every write of memory), a repeat in that block copies the answer.
+### Common subexpressions across blocks
+
+Across blocks, the same holds for a computation whose answer's register is written once in the function: when it
+is made on every path to a block (found by following the blocks forward, keeping only what every path leading in
+made, forgetting loads at every write of memory, and forgetting a computation wherever a register it reads is
+written again), a repeat in that block copies the answer. A computation over a loop's counter (written before the
+loop and on every pass) is shared between two blocks of one pass, since nothing writes the counter between them.
+When the following does not settle in 16 rounds over the blocks, nothing is shared across blocks.
 `list.count()` read before a loop and again in the loop's bound test is one load when the loop writes nothing.
 The sharing runs again after [what a loop does not change is computed before
 it](#what-a-loop-does-not-change-is-computed-before-it), so two loads of one singleton's slot moved out of a loop
@@ -2012,8 +2017,8 @@ register, not three); zero is left alone, since a whole `0` and a decimal `0.0` 
 a register neither kind can keep.
 
 It does not apply to checked arithmetic, a division or a comparison (which is better made again just before the
-branch that reads its flags), nor across blocks to a register written more than once or in a function of more than
-400 blocks. A load the compiler knows never changes (see [a singleton the entry class makes is never tested
+branch that reads its flags), nor across blocks to a computation whose answer's register is written more than once
+or in a function of more than 400 blocks. A load the compiler knows never changes (see [a singleton the entry class makes is never tested
 again](#a-singleton-the-entry-class-makes-is-never-tested-again)) is not forgotten at a write of memory or a call.
 
 ## A value stored is read back from its register
