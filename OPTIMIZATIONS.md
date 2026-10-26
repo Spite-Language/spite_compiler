@@ -3728,3 +3728,41 @@ func Totals() {
     console.print(first + first)
 }
 ```
+
+## Identical functions are folded into one
+
+Once every other low pass has run, the compiler compares the functions it is about to write, instruction by
+instruction and field by field, and keeps one of each group that is the same: two instances of a generic class over
+classes of the same layout (`Column<Position>` and `Column<Velocity>` when both hold the same attributes), two classes
+with the same helper, two versions of one package. Every call, function value and thread start then goes to the one
+kept, and the others are not written. A call compares by the function it reaches once folded, and a call of the
+function itself as "itself", so two functions that each call themselves fold together, and so do their callers in a
+second round.
+
+**When it applies:** to every function of an ordinary build. Where the executable reports places (a native fault's
+report or a crash's call lines), each function's place and each block's place are compared too, so only functions of
+one place (the instances of one generic function) fold.
+
+**When it does not:** a function that differs in an instruction, a constant, an offset, a data label or a class number
+is kept; so is a function that can be resumed, one a proof left facts on, and one the program names outside its
+instructions (the entry, a singleton's maker, the free functions, what runs before the entry). Two functions that only
+call each other do not fold (folding goes by rounds from functions that are equal already). A `--hot-reload` build and
+the REPL fold nothing, since each function there must be replaceable on its own.
+
+**What a user can observe:** nothing a program prints. Two function values of folded functions compare equal, and a
+debugger names the kept function. The executable is smaller.
+
+```spite
+var console = Console()
+var left = Left()
+var right = Right()
+
+func IdenticalFunctionsFold() {
+    var doubled = left.doubled(21)
+    var also_doubled = right.doubled(4)
+    console.print(doubled, also_doubled)
+}
+```
+
+with `Left` and `Right` each declaring the same `func doubled(number: Integer): Integer { return number * 2 }`: the
+executable holds one `doubled`, and both calls reach it (`tests/identical_functions_fold`).

@@ -1,0 +1,324 @@
+# ../../OPTIMIZATIONS.md#identical-functions-are-folded-into-one
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var kept_for = Dictionary<String, String>()
+var pinned = List<String>()
+var shows_places = false
+var first_of = Dictionary<String, String>()
+var folded_this_round = false
+var own_key = ""
+var pieces = List<String>()
+
+func Pass(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
+    program = starting_program
+}
+
+func transformed() {
+    assert not program.hot_reload and program.prompt_check_point.is_empty() and program.prompt_flag_label < 0
+    shows_places = program.place_table >= 0 or program.call_table >= 0
+    note_the_pinned()
+    folded_this_round = true
+    var rounds = 0
+    while folded_this_round and rounds < 16 {
+        folded_this_round = false
+        first_of = Dictionary<String, String>()
+        program.lowered_functions.each(note_a_pinned_signature)
+        program.lowered_functions.each(fold_if_seen)
+        rounds = rounds + 1
+    }
+    assert not kept_for.is_empty()
+    var left = List<LowIntermediaryRepresentation.LowFunction>()
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var function = program.lowered_functions[index]
+        if not kept_for.contains(function.key) {
+            redirect_the_calls_of(function)
+            left.append(function)
+        }
+        index = index + 1
+    }
+    program.lowered_functions = left
+}
+
+func note_the_pinned() {
+    pinned.append(program.entry)
+    pinned.append(program.prompt_check_point)
+    pinned.append(program.reload_check_point)
+    pin_every(program.singleton_makers)
+    pin_every(program.runs_before_the_entry)
+    pin_every(program.settled_keys)
+    pin_every(program.machine_keys)
+    pin_every(program.unguarded_keys)
+    pin_every(program.selected_keys)
+    var handed = program.handed_calls.keys()
+    pin_every(handed)
+    var frees = program.free_keys.keys()
+    var index = 0
+    while index < frees.count() {
+        var number = frees[index]
+        var key = program.free_keys[number]
+        crash key
+        pinned.append(key)
+        index = index + 1
+    }
+    var intrinsics = program.prompt_intrinsics.keys()
+    index = 0
+    while index < intrinsics.count() {
+        var name = intrinsics[index]
+        var key = program.prompt_intrinsics[name]
+        crash key
+        pinned.append(key)
+        index = index + 1
+    }
+}
+
+func pin_every(keys: List<String>) {
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        pinned.append(key)
+        index = index + 1
+    }
+}
+
+func note_a_pinned_signature(function: LowIntermediaryRepresentation.LowFunction) {
+    assert pinned.contains(function.key) and is_foldable(function)
+    var signature = signature_of(function)
+    if not first_of.contains(signature) {
+        first_of[signature] = function.key
+    }
+}
+
+func fold_if_seen(function: LowIntermediaryRepresentation.LowFunction) {
+    assert not pinned.contains(function.key) and not kept_for.contains(function.key) and is_foldable(function)
+    var signature = signature_of(function)
+    var kept = first_of[signature]
+    if kept {
+        if kept != function.key {
+            kept_for[function.key] = kept
+            folded_this_round = true
+        }
+    } else {
+        first_of[signature] = function.key
+    }
+}
+
+func is_foldable(function: LowIntermediaryRepresentation.LowFunction): Boolean {
+    if function.is_resumable or function.blocks.is_empty() {
+        return false
+    }
+    if function.placed_objects {
+        return false
+    }
+    if function.proven_tests {
+        return false
+    }
+    if function.register_ranges {
+        return false
+    }
+    return true
+}
+
+func kept_key(key: String): String {
+    var current = key
+    var rounds = 0
+    while kept_for.contains(current) and rounds < 64 {
+        var next = kept_for[current]
+        crash next
+        current = next
+        rounds = rounds + 1
+    }
+    return current
+}
+
+func callee_text(key: String): String {
+    var kept = kept_key(key)
+    var own = kept_key(own_key)
+    if kept == own {
+        return "itself"
+    }
+    return kept
+}
+
+# ../../OPTIMIZATIONS.md#identical-functions-are-folded-into-one
+func signature_of(function: LowIntermediaryRepresentation.LowFunction): String {
+    own_key = function.key
+    pieces = List<String>()
+    var decimal_sizes = numbers_text(function.parameter_decimal_sizes)
+    pieces.append("{function.parameter_count} {function.register_count} {function.ends_a_thread} {decimal_sizes} {function.answer_decimal_size}")
+    if shows_places {
+        pieces.append(function.place)
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        pieces.append("block")
+        if shows_places {
+            pieces.append(block.place)
+        }
+        block.instructions.each(add_an_instruction)
+        block_index = block_index + 1
+    }
+    return pieces.join("\n")
+}
+
+func add_an_instruction(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    var written = instruction_text(instruction)
+    pieces.append(written)
+}
+
+func instruction_text(instruction: LowIntermediaryRepresentation.Instructions.Instruction): String {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return "constant {instruction.target} {instruction.number}"
+        LowIntermediaryRepresentation.Instructions.Copy: return "copy {instruction.target} {instruction.source}"
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return arithmetic_text(instruction)
+        LowIntermediaryRepresentation.Instructions.Compare: return "compare {instruction.target} {instruction.comparison} {instruction.left} {instruction.right} {instruction.is_signed}"
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return "decimal {instruction.target} {instruction.operator} {instruction.left} {instruction.right} {instruction.is_double}"
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: return "decimal compare {instruction.target} {instruction.comparison} {instruction.left} {instruction.right} {instruction.is_double}"
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return "conversion {instruction.target} {instruction.source} {instruction.from_decimal_size} {instruction.to_decimal_size} {instruction.whole_is_signed} {instruction.whole_width}"
+        LowIntermediaryRepresentation.Instructions.Load: return "load {instruction.target} {instruction.address} {instruction.offset} {instruction.width} {instruction.is_signed} {instruction.is_swapped} {instruction.is_invariant} {instruction.cannot_fault} {instruction.region}"
+        LowIntermediaryRepresentation.Instructions.Store: return "store {instruction.address} {instruction.offset} {instruction.source} {instruction.width} {instruction.is_swapped} {instruction.region}"
+        LowIntermediaryRepresentation.Instructions.Call: return call_text(instruction)
+        LowIntermediaryRepresentation.Instructions.CallAt: return call_at_text(instruction)
+        LowIntermediaryRepresentation.Instructions.ForeignAddress: return "foreign {instruction.target} {instruction.library} {instruction.name}"
+        LowIntermediaryRepresentation.Instructions.DataAddress: return "data {instruction.target} {instruction.label}"
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return function_address_text(instruction)
+        LowIntermediaryRepresentation.Instructions.Allocate: return "allocate {instruction.target} {instruction.size} {instruction.class_id}"
+        LowIntermediaryRepresentation.Instructions.Retain: return "retain {instruction.object} {instruction.is_atomic}"
+        LowIntermediaryRepresentation.Instructions.Free: return "free {instruction.pointer}"
+        LowIntermediaryRepresentation.Instructions.Resize: return "resize {instruction.target} {instruction.pointer} {instruction.size}"
+        LowIntermediaryRepresentation.Instructions.CopyBytes: return "copy bytes {instruction.destination} {instruction.source} {instruction.count}"
+        LowIntermediaryRepresentation.Instructions.OpenLibrary: return "open {instruction.target} {instruction.name}"
+        LowIntermediaryRepresentation.Instructions.Jump: return "jump {instruction.block}"
+        LowIntermediaryRepresentation.Instructions.Branch: return "branch {instruction.condition} {instruction.when_true} {instruction.when_false}"
+        LowIntermediaryRepresentation.Instructions.Return: return "return {instruction.source} {instruction.presence} {instruction.is_a_suspension}"
+        LowIntermediaryRepresentation.Instructions.FrameAddress: return "frame {instruction.target}"
+        LowIntermediaryRepresentation.Instructions.ThreadIdentity: return "thread {instruction.target}"
+        LowIntermediaryRepresentation.Instructions.FrameRoom: return "room {instruction.target} {instruction.size} {instruction.slot}"
+        LowIntermediaryRepresentation.Instructions.StartThread: return start_thread_text(instruction)
+        LowIntermediaryRepresentation.Instructions.JoinThread: return "join {instruction.thread}"
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return "atomic add {instruction.target} {instruction.address} {instruction.offset} {instruction.amount}"
+        LowIntermediaryRepresentation.Instructions.ImportCall: return import_call_text(instruction)
+        LowIntermediaryRepresentation.Instructions.CompareExchange: return "exchange {instruction.target} {instruction.address} {instruction.offset} {instruction.expected} {instruction.desired} {instruction.width} {instruction.is_signed}"
+        LowIntermediaryRepresentation.Instructions.Stop: return stop_text(instruction)
+        LowIntermediaryRepresentation.Instructions.Exit: return "exit {instruction.code}"
+        LowIntermediaryRepresentation.Instructions.VectorLoop: return vector_loop_text(instruction)
+        LowIntermediaryRepresentation.Instructions.Select: return "select {instruction.target} {instruction.condition} {instruction.when_true} {instruction.when_false}"
+    }
+}
+
+func arithmetic_text(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): String {
+    return "arithmetic {arithmetic.target} {arithmetic.operator} {arithmetic.left} {arithmetic.right} {arithmetic.width} {arithmetic.is_signed} {arithmetic.is_checked} {arithmetic.wraps} {arithmetic.line} [{arithmetic.shown}] [{arithmetic.type_name}] [{arithmetic.path}] [{arithmetic.owner}]"
+}
+
+func call_text(call: LowIntermediaryRepresentation.Instructions.Call): String {
+    var arguments = numbers_text(call.arguments)
+    var frames = call.frames.join("\t")
+    var callee = callee_text(call.function)
+    return "call {call.target} {call.presence} {callee} {arguments} {call.line} [{frames}] {call.is_guarded} {call.hands_over} {call.counts_plainly}"
+}
+
+func call_at_text(call: LowIntermediaryRepresentation.Instructions.CallAt): String {
+    var arguments = numbers_text(call.arguments)
+    var sizes = numbers_text(call.decimal_sizes)
+    var frames = call.frames.join("\t")
+    return "call at {call.target} {call.address} {arguments} {call.answers_32_bits} {call.presence} {sizes} {call.answer_decimal_size} {call.line} [{frames}]"
+}
+
+func function_address_text(address: LowIntermediaryRepresentation.Instructions.FunctionAddress): String {
+    var callee = callee_text(address.function)
+    return "address {address.target} {callee}"
+}
+
+func start_thread_text(starting: LowIntermediaryRepresentation.Instructions.StartThread): String {
+    var callee = callee_text(starting.entry)
+    return "start {starting.target} {callee} {starting.block}"
+}
+
+func import_call_text(calling: LowIntermediaryRepresentation.Instructions.ImportCall): String {
+    var arguments = numbers_text(calling.arguments)
+    var sizes = numbers_text(calling.decimal_sizes)
+    return "import {calling.target} {calling.name} {arguments} [{calling.library}] {sizes} {calling.answer_decimal_size}"
+}
+
+func stop_text(stopping: LowIntermediaryRepresentation.Instructions.Stop): String {
+    var labels = numbers_text(stopping.labels)
+    var numbers = numbers_text(stopping.numbers)
+    var signed_numbers = numbers_text(stopping.signed_numbers)
+    return "stop {stopping.label} {labels} {numbers} {signed_numbers} {stopping.continues}"
+}
+
+func vector_loop_text(looping: LowIntermediaryRepresentation.Instructions.VectorLoop): String {
+    var written = List<String>()
+    var limits = numbers_text(looping.limits)
+    var accumulators = numbers_text(looping.accumulators)
+    var check_lanes = numbers_text(looping.check_lanes)
+    var bases = numbers_text(looping.disjoint_bases)
+    var offsets = numbers_text(looping.disjoint_offsets)
+    var sizes = numbers_text(looping.disjoint_sizes)
+    written.append("vector {looping.counter} {limits} {looping.lanes} {accumulators} {check_lanes} {bases} {offsets} {sizes} {looping.most_trips} {looping.counts_from_zero}")
+    var index = 0
+    while index < looping.accumulator_formats.count() {
+        var format = looping.accumulator_formats[index]
+        written.append("format {format}")
+        index = index + 1
+    }
+    index = 0
+    while index < looping.check_limits.count() {
+        var limit = looping.check_limits[index]
+        written.append("limit {limit}")
+        index = index + 1
+    }
+    index = 0
+    while index < looping.setup.count() {
+        var step = looping.setup[index]
+        var shown = step_text(step)
+        written.append("setup {shown}")
+        index = index + 1
+    }
+    index = 0
+    while index < looping.body.count() {
+        var step = looping.body[index]
+        var shown = step_text(step)
+        written.append("body {shown}")
+        index = index + 1
+    }
+    return written.join("\n")
+}
+
+func step_text(step: LowIntermediaryRepresentation.Vector.Step): String {
+    return "{step.operation} {step.target} {step.left} {step.right} {step.format} {step.from_format} {step.arithmetic} {step.comparison} {step.width} {step.base} {step.offset} {step.is_signed} {step.source} {step.number}"
+}
+
+func numbers_text(numbers: List<Integer>): String {
+    var written = List<String>()
+    var index = 0
+    while index < numbers.count() {
+        var number = numbers[index]
+        var shown = number.to_string()
+        written.append(shown)
+        index = index + 1
+    }
+    var joined = written.join(",")
+    return "({joined})"
+}
+
+func redirect_the_calls_of(function: LowIntermediaryRepresentation.LowFunction) {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(redirect)
+        block_index = block_index + 1
+    }
+}
+
+func redirect(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    if instruction == LowIntermediaryRepresentation.Instructions.Call {
+        instruction.function = kept_key(instruction.function)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.FunctionAddress {
+        instruction.function = kept_key(instruction.function)
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.StartThread {
+        instruction.entry = kept_key(instruction.entry)
+    }
+}

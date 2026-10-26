@@ -137,7 +137,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The whole-function evaluation (D1041 to D1046) makes three cases slower than before it: `the_thread_pool_only_where_a_parallel_is_made` 8.7 to 11.1 ms, `a_crashs_report_is_kept_out_of_the_way` 23.5 to 27.3 ms, `copies_that_cost_nothing` 48.9 to 53.1 ms; find which rewrite (an unrolled loop, a constant written before its instruction) costs them and keep it out there
 - A call is copied for its known arguments only when it passes a known closure (D1043): a callee given known numbers or a known object without a function in it is not copied, and a loop is unrolled only when no loop is nested in it
 - A binary schema is a constant (measured 2026-10-25: 2.1 ms against the old compiler's 1.2)
-- Identical functions are folded into one
+- Identical functions are folded into one (built as the low pass `identical_functions`, D1541; not built: functions that only call each other, and functions that differ only in which data label holds the same bytes)
 
 ### The memory, the placement and the copies
 
