@@ -2618,8 +2618,13 @@ func digits(value: Integer, base: Integer): Integer {
 
 `rest % base` and `rest / base` are one `idiv` on each pass. **What a program can observe:** nothing but time.
 
-**Not built:** a pair with another instruction between them, and a pair by a constant divisor (each is its own
-multiplication).
+The two need not be written one after the other: a pass before the generator moves the second of the pair up beside
+the first when both are in one block, nothing between them writes either number or the first's target, nothing
+between them reads or writes the second's target, and the second cannot halt on its own (it is unchecked, or the
+first is checked and halts on the same divisor first). `var digit = rest % base` then `total = total + digit` then
+`rest = rest / base` is one division too (SpiteSpec `tests/divisions_apart`).
+
+**Not built:** a pair in two blocks, and a pair by a constant divisor (each is its own multiplication).
 
 ## A proven divisor is not checked
 
