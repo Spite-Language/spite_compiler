@@ -2968,6 +2968,37 @@ whole program as written out).
 Which singletons keep a lock, and in which form, is decided by the high pass
 `high_optimization_passes/singleton_locks`, which records it for the lowering.
 
+## A singleton only function values of another shape reach takes no lock
+
+Which singletons the work of a `Parallel` reaches is found by following calls from each function it starts. A call
+through a function value could call any function the program takes as a value, so it is followed into every such
+function whose parameters and answer have the same types as the value called, not into all of them: a function
+taken as a value only for another shape of call (`amounts.filter(ledger.is_large)` takes a `func(Integer):
+Boolean`, while the work calls a `func(): Integer`) is not reached through it, and a singleton nothing else in the
+work reaches takes no lock. A call through a value whose shape no function taken so far has is followed into every
+function taken as a value.
+
+```spite
+var ledger = Ledger()
+
+func run(steps: List<func(): Integer>): Integer {
+    var total = 0
+    var index = 0
+    while index < steps.count() {
+        var step = steps[index]
+        crash step
+        total = total + step()
+        index = index + 1
+    }
+    var amounts = [4, 12, 30, 7]
+    var large = amounts.filter(ledger.is_large)
+    return total + large.count()
+}
+```
+
+**What a program can observe:** only the time. **Not built:** a call through a value is still followed into every
+function of its shape taken anywhere in the program, not only those that can flow to it.
+
 ## While no task runs, a singleton's lock is claimed with a plain store
 
 Every thread a `Parallel` (or a helper for a blocking call) starts is counted in one word from just before it

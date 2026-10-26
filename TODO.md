@@ -194,7 +194,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The small-block allocator (D794 to D796) finds a thread's lists through its thread slot on every allocation and free in a program with threads (two loads and two tests, D1419), where a `Parallel`'s own block could hand them over
 - Hidden async/await as compile-time state machines
 - Reads in a row overlap
-- A singleton no other thread reaches takes no lock: the walk is made only from what a `Parallel` starts, not again over the tree-shaken program
+- A singleton no other thread reaches takes no lock (built: a call through a function value reaches only the functions taken as values of its shape, D1574): such a call still reaches every function of its shape taken anywhere, not only those that can flow to it
 - A singleton's reading functions do not exclude each other: a counted loop of reads shares the lock (D988), but a single read outside such a loop still takes it alone
 - A loop of calls to one singleton tests for tasks once
 - Thread safety for singletons, the rest of the plan
