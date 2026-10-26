@@ -20,6 +20,9 @@ var state_size = 640
 var most_states = 1024
 var thread_slots = "78 14 00 00"
 var live_tag = 1527775232
+var table_lock_label = -1
+var tracked_allocating = -1
+var tracked_freeing = -1
 
 func SmallBlocks(
     starting_encoder: Encoder,
@@ -44,13 +47,12 @@ func emit_the_routines(starting_stop_routine: Integer) {
         }
         emit_the_allocating_routine()
         if program.counts_memory {
-            count_the_allocations()
+            emit_the_freeing_routine()
+            emit_the_tracking_routines()
+        } else {
+            emit_the_freeing_routine()
+            emit_the_resizing_routine()
         }
-        emit_the_freeing_routine()
-        if program.counts_memory {
-            count_the_frees()
-        }
-        emit_the_resizing_routine()
         if threaded {
             emit_the_releasing_routine()
         }
@@ -80,6 +82,12 @@ func allocates_with(instruction: LowIntermediaryRepresentation.Instructions.Inst
         LowIntermediaryRepresentation.Instructions.Resize: return true
         _: return false
     }
+}
+
+func name_the_allocation(class_id: Integer) {
+    assert program.counts_memory and class_id > 0
+    code("48 C7 40 F8")
+    encoder.dword(class_id)
 }
 
 func call_allocate() {
@@ -336,6 +344,127 @@ func emit_the_allocating_routine() {
     land(too_large)
     land(no_chunk)
     land(no_large)
+    code("31 C0")
+    leave()
+}
+
+func emit_the_tracking_routines() {
+    table_lock_label = zeroed_label(8)
+    emit_the_tracked_allocating_routine()
+    emit_the_tracked_freeing_routine()
+    allocating_routine = tracked_allocating
+    freeing_routine = tracked_freeing
+    count_the_allocations()
+    count_the_frees()
+    emit_the_tracked_resizing_routine()
+}
+
+func take_the_table_lock() {
+    var spinning = encoder.position()
+    code("B8 01 00 00 00")
+    at_label("48 87 05", table_lock_label)
+    code("48 85 C0")
+    var taken = encoder.jump_if(132)
+    code("F3 90")
+    back(spinning)
+    land(taken)
+}
+
+func give_the_table_lock_back() {
+    code("31 C0")
+    at_label("48 89 05", table_lock_label)
+}
+
+func emit_the_tracked_allocating_routine() {
+    var untracked = allocating_routine
+    tracked_allocating = encoder.position()
+    code("48 83 EC 38 48 89 4C 24 20 48 83 C1 20")
+    call_routine(untracked)
+    code("48 85 C0")
+    var failed = encoder.jump_if(132)
+    code("48 8B 4C 24 20 48 89 48 10 48 C7 40 18 00 00 00 00 48 89 44 24 28")
+    take_the_table_lock()
+    code("48 8B 44 24 28")
+    at_label("48 8B 0D", program.live_list_label)
+    code("48 89 08 48 C7 40 08 00 00 00 00 48 85 C9")
+    var no_head = encoder.jump_if(132)
+    code("48 89 41 08")
+    land(no_head)
+    at_label("48 89 05", program.live_list_label)
+    give_the_table_lock_back()
+    code("48 8B 44 24 28 48 83 C0 20")
+    leave()
+    land(failed)
+    code("31 C0")
+    leave()
+}
+
+func emit_the_tracked_freeing_routine() {
+    var untracked = freeing_routine
+    tracked_freeing = encoder.position()
+    code("48 85 C9")
+    var nothing = encoder.jump_if(132)
+    code("48 83 E9 20 8B 41 F8 8D 90 FF FF EF A4 83 FA 40")
+    var small_live = encoder.jump_if(130)
+    code("3D 00 00 30 5B")
+    var large_live = encoder.jump_if(132)
+    back(untracked)
+    land(small_live)
+    land(large_live)
+    code("48 83 EC 38 48 89 4C 24 20")
+    take_the_table_lock()
+    code("48 8B 4C 24 20 48 8B 01 48 8B 51 08 48 85 D2")
+    var first = encoder.jump_if(132)
+    code("48 89 02")
+    var linked = encoder.jump()
+    land(first)
+    at_label("48 89 05", program.live_list_label)
+    land(linked)
+    code("48 85 C0")
+    var last = encoder.jump_if(132)
+    code("48 89 50 08")
+    land(last)
+    give_the_table_lock_back()
+    code("48 8B 4C 24 20 48 83 C4 38")
+    back(untracked)
+    land(nothing)
+    code("31 C0 C3")
+}
+
+func emit_the_tracked_resizing_routine() {
+    resizing_routine = encoder.position()
+    code("48 85 C9")
+    var held = encoder.jump_if(133)
+    code("48 89 D1")
+    back(allocating_routine)
+    land(held)
+    code("48 83 EC 38 48 89 4C 24 20 48 89 54 24 28 8B 41 D8 8D 90 FF FF EF A4 83 FA 40")
+    var small_live = encoder.jump_if(130)
+    code("3D 00 00 30 5B")
+    var large_live = encoder.jump_if(132)
+    stop("the program resized memory it freed or never allocated")
+    land(small_live)
+    land(large_live)
+    code("48 8B 4C 24 28")
+    call_routine(tracked_allocating)
+    code("48 85 C0")
+    var no_room = encoder.jump_if(132)
+    code("48 89 44 24 30 48 8B 4C 24 20 48 8B 51 F0 4C 8B 44 24 28 4C 39 C2")
+    var keeps_all = encoder.jump_if(134)
+    code("4C 89 C2")
+    land(keeps_all)
+    code("45 31 C9")
+    var copying = encoder.position()
+    code("4C 39 CA")
+    var copied = encoder.jump_if(134)
+    code("46 8A 14 09 46 88 14 08 49 83 C1 01")
+    back(copying)
+    land(copied)
+    code("48 8B 4C 24 20 48 8B 51 F8 4C 8B 44 24 30 49 89 50 F8")
+    call_routine(tracked_freeing)
+    code("48 8B 44 24 30")
+    leave()
+    land(no_room)
     code("31 C0")
     leave()
 }
