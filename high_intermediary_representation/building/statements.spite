@@ -25,7 +25,6 @@ var report_types = List<String>()
 var shown_count = 0
 var missing_conjuncts = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
 var missing_links = List<AbstractSyntaxTree.Shapes.Expressions.Expression>()
-var statement_count = 0
 var last_check = ""
 var last_check_at = -1
 var last_check_line = 0
@@ -263,7 +262,6 @@ func add_pending(statement: HighIntermediaryRepresentation.Statements.Statement)
 
 func build(statement: AbstractSyntaxTree.Shapes.Statements.Statement) {
     context.line = statement.line
-    statement_count = statement_count + 1
     switch statement {
         AbstractSyntaxTree.Shapes.Statements.VariableStatement: build_variable(statement)
         AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: build_assignment(statement)
@@ -535,7 +533,12 @@ func note_a_proven_read_check(condition: AbstractSyntaxTree.Shapes.Expressions.E
         if innermost {
             since = innermost
         }
-        site.is_narrowed_outside = context.scope.frame_of(written) < since
+        var called_since = context.scope.stamp_of(written) < context.logged_calls.count()
+        var is_a_loop_proof = false
+        if site.check {
+            is_a_loop_proof = site.check.starts_with("the loop condition ")
+        }
+        site.is_narrowed_outside = context.scope.frame_of(written) < since or called_since and not is_a_loop_proof
         context.note_a_check_site(site)
     }
 }
@@ -546,12 +549,16 @@ func checking_text(keyword: String, condition: AbstractSyntaxTree.Shapes.Express
     if tested == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression and tested.operator == 'not' {
         tested = tested.operand
     }
-    if is_a_bare_path(tested) {
-        var printer = Printers.Spite.ExpressionPrinter(condition)
-        var written = printer.text()
-        return "'{keyword} {written}' on line {line}"
+    var is_joined = false
+    if tested == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        is_joined = tested.operator == 'and' or tested.operator == 'or'
     }
-    return "the '{keyword}' on line {line}"
+    if is_joined {
+        return "the '{keyword}' on line {line}"
+    }
+    var printer = Printers.Spite.ExpressionPrinter(condition)
+    var written = printer.text()
+    return "'{keyword} {written}' on line {line}"
 }
 
 func notes_with(paths: List<String>, notes: List<String>, check: String): List<String> {
@@ -608,11 +615,17 @@ func note_a_repeated_check(condition: AbstractSyntaxTree.Shapes.Expressions.Expr
     var written = printer.text()
     var function = context.current_function
     var depth = context.scope.narrowed.count()
-    var block = "{function.owner}.{function.name}|{context.scope.entered}|{depth}"
-    var follows = statement_count == last_check_at + 1 and block == last_check_block and written == last_check
+    var opening_line = 0
+    var opening = context.block_statements.first()
+    if opening {
+        opening_line = opening.line
+    }
+    var statement_total = context.block_statements.count()
+    var block = "{function.owner}.{function.name}|{depth}|{statement_total}|{opening_line}"
+    var follows = context.block_index == last_check_at + 1 and block == last_check_block and written == last_check
     var earlier_line = last_check_line
     last_check = written
-    last_check_at = statement_count
+    last_check_at = context.block_index
     last_check_line = line
     last_check_block = block
     assert follows and not holds_a_call(condition)
