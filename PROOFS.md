@@ -185,7 +185,7 @@ as when each was refused while building.
 
 ### Proving what is proven is an error
 
-- **Status**: built (D1446, D1447).
+- **Status**: built (D1445 to D1447).
 - **Rule**: a check of a `T?` already narrowed (by an `assert`, a `crash`, the `if`, `while` or `switch` around
   it), a `[]` read already proven (by a bound, a count or an earlier check), a divisor already proven (`name != 0`
   after `name != 0` or `name > 0`, `name > 0` after `name > 0`), a class test the type already answers, the same
@@ -198,8 +198,8 @@ as when each was refused while building.
   pass unproven. A narrowed `Boolean` is not refused when tested again, since an `if` on it tests its value. The
   class test and the folded `assert` are refused only outside a generic class and a walk, where they fold per
   instance, and outside the library and the compiler's generated files. A local is plain when its value cannot be
-  null, whatever made it, outside a generic class and a walk; there only a written type or a construction makes it
-  plain. The plain-value refusal judges a local by the type it is declared with (written, or the type of its first
+  null and it has a written type, is made by a construction, or, outside a generic class and a walk, holds a call's
+  answer; a local holding a `[]` read is not, since a proven read and an unproven one are written alike. The plain-value refusal judges a local by the type it is declared with (written, or the type of its first
   value), so a local declared `T?` and narrowed since is refused as narrowed instead.
 - **Falls back**: the redundant check is refused; a check the compiler cannot prove redundant (two equal checks
   with a statement between, a condition with a call, a stronger check after a weaker one) stays.
@@ -1389,7 +1389,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### A member template fits
 
-- **Status**: built (D1443).
+- **Status**: built (D1441, D1443).
 - **Rule**: the member a template names exists and has the right kind (a Boolean for `filter_`, a number for
   `sum_`), and a passed function takes the element
   ([collections.md](../SpiteLanguage/specs/collections.md#standard-library-metaprogramming)).
