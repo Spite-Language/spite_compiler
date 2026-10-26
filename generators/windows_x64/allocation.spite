@@ -59,6 +59,9 @@ var value_block_starts = List<List<Integer>>()
 var value_block_ends = List<List<Integer>>()
 var vector_positions = List<Integer>()
 var vector_operands = List<List<Integer>>()
+var joined_lefts = List<Integer>()
+var joined_positions = List<Integer>()
+var joined_blocks = List<Integer>()
 
 func Allocation(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
@@ -101,6 +104,7 @@ func allocate() {
     find_the_fused_compares()
     find_the_addresses()
     number_the_positions()
+    find_the_joined()
     find_the_vector_loops()
     find_the_edges()
     find_the_depths()
@@ -1237,6 +1241,7 @@ func scan_the_intervals() {
 func place(register: Integer) {
     var decimal_size = decimal_sizes[register]
     crash decimal_size
+    assert not joins_its_left(register)
     assert decimal_size <= 0 or not placed_in_a_decimal(register)
     assert decimal_size <= 0 or not took_a_constants_decimal(register)
     assert not takes_a_whole_volatile(register, true, 1)
@@ -1253,6 +1258,156 @@ func place(register: Integer) {
     assert not takes_a_whole_volatile(register, true, 3)
     assert not takes_a_split_volatile(register)
     spill_the_cheapest(register)
+}
+
+# ../../OPTIMIZATIONS.md#a-result-takes-the-register-of-the-operand-it-ends
+func find_the_joined() {
+    fill_with_numbers(joined_lefts, register_total, -1)
+    fill_with_numbers(joined_positions, register_total, -1)
+    fill_with_numbers(joined_blocks, register_total, -1)
+    var layout_index = 0
+    while layout_index < layout.count() {
+        var block_index = layout[layout_index]
+        crash block_index
+        var block = function.blocks[block_index]
+        crash block
+        var head = block_heads[block_index]
+        crash head
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if reachable[block_index] == true and not is_elided(instruction) {
+                note_a_joining(instruction, block_index, head + 1 + index)
+            }
+            index = index + 1
+        }
+        layout_index = layout_index + 1
+    }
+}
+
+func note_a_joining(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    block_index: Integer,
+    position: Integer,
+) {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Copy: note_a_joined(instruction.target, instruction.source, block_index, position)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: note_a_joined_arithmetic(instruction, block_index, position)
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: note_a_joined(instruction.target, instruction.left, block_index, position)
+        _: return
+    }
+}
+
+func note_a_joined_arithmetic(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    block_index: Integer,
+    position: Integer,
+) {
+    var divides = arithmetic.operator == 'divide' or arithmetic.operator == 'remainder'
+    if not divides {
+        note_a_joined(arithmetic.target, arithmetic.left, block_index, position)
+    }
+}
+
+func note_a_joined(target: Integer, left: Integer, block_index: Integer, position: Integer) {
+    assert target >= function.parameter_count and target < register_total and left >= 0 and left != target
+    assert left < register_total
+    var count = definitions[target]
+    crash count
+    assert count == 1
+    joined_lefts[target] = left
+    joined_positions[target] = position
+    joined_blocks[target] = block_index
+}
+
+func joins_its_left(register: Integer): Boolean {
+    var left = joined_lefts[register]
+    var position = joined_positions[register]
+    var block_index = joined_blocks[register]
+    crash left
+    crash position
+    crash block_index
+    if left < 0 or constant_of(left) or is_fused(left) or is_fused(register) or is_split[left] == true {
+        return false
+    }
+    var physical = homes[left]
+    crash physical
+    var end = ends[left]
+    crash end
+    if physical < 0 or end != position or live_out_keys[key_of(left, block_index)] == true {
+        return false
+    }
+    var decimal_size = decimal_sizes[register]
+    var left_size = decimal_sizes[left]
+    crash decimal_size
+    crash left_size
+    if decimal_size != left_size {
+        return false
+    }
+    if physical >= 16 {
+        var usable = physical >= 22 or not clobbered_in_a_segment(register)
+        if not usable or crosses_a_vector_loop(register) {
+            return false
+        }
+    } else if is_a_volatile_home(physical) and (not may_hold(physical, register) or clobbered_in_a_segment(register)) {
+        return false
+    }
+    if not is_free_beside(physical, register, left, position) {
+        return false
+    }
+    give(physical, register)
+    return true
+}
+
+func is_free_beside(physical: Integer, register: Integer, left: Integer, position: Integer): Boolean {
+    var holding = assigned[physical]
+    crash holding
+    var index = 0
+    while index < holding.count() {
+        var other = holding[index]
+        crash other
+        if other == left {
+            if overlaps_beyond(left, register, position) {
+                return false
+            }
+        } else if overlaps(other, register) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func overlaps_beyond(left: Integer, register: Integer, position: Integer): Boolean {
+    var first_starts = segment_starts[left]
+    var first_ends = segment_ends[left]
+    var second_starts = segment_starts[register]
+    var second_ends = segment_ends[register]
+    crash first_starts
+    crash first_ends
+    crash second_starts
+    crash second_ends
+    var first_index = 0
+    while first_index < first_starts.count() {
+        var first_start = first_starts[first_index]
+        var first_end = first_ends[first_index]
+        crash first_start
+        crash first_end
+        var second_index = 0
+        while second_index < second_starts.count() {
+            var second_start = second_starts[second_index]
+            var second_end = second_ends[second_index]
+            crash second_start
+            crash second_end
+            var meets = first_end == position and second_start == position
+            if first_start <= second_end and second_start <= first_end and not meets {
+                return true
+            }
+            second_index = second_index + 1
+        }
+        first_index = first_index + 1
+    }
+    return false
 }
 
 func may_hold(physical: Integer, register: Integer): Boolean {
@@ -1605,6 +1760,7 @@ func spill_the_cheapest(register: Integer) {
     }
     if cheapest_physical < 0 {
         homes[register] = -1
+        assert not takes_a_loop_split(register)
         return
     }
     homes[cheapest_other] = -1
@@ -1621,6 +1777,107 @@ func spill_the_cheapest(register: Integer) {
     give(cheapest_physical, register)
     assert not takes_a_whole_volatile(cheapest_other, false, 3)
     assert not takes_a_split_volatile(cheapest_other)
+    assert not takes_a_loop_split(cheapest_other)
+}
+
+# ../../OPTIMIZATIONS.md#a-value-spilled-outside-a-loop-lives-in-a-register-inside-it
+func takes_a_loop_split(register: Integer): Boolean {
+    var decimal_size = decimal_sizes[register]
+    crash decimal_size
+    if decimal_size > 0 or crosses_a_vector_loop(register) {
+        return false
+    }
+    var deepest = deepest_use_of(register)
+    if deepest < 1 {
+        return false
+    }
+    var slot_blocks = shallower_blocks(register, deepest)
+    if slot_blocks.is_empty() or not split_pays(register, slot_blocks) {
+        return false
+    }
+    var kept_starts = List<Integer>()
+    var kept_ends = List<Integer>()
+    keep_the_stretches(register, slot_blocks, kept_starts, kept_ends)
+    if kept_starts.is_empty() {
+        return false
+    }
+    var index = 0
+    while index < keeping.count() {
+        var candidate = keeping[index]
+        crash candidate
+        if is_free_over(candidate, kept_starts, kept_ends) {
+            split_around(register, slot_blocks, kept_starts, kept_ends)
+            give(candidate, register)
+            return true
+        }
+        index = index + 1
+    }
+    if stretches_clobbered(kept_starts, kept_ends) {
+        return false
+    }
+    index = 0
+    while index < volatile_homes.count() {
+        var candidate = volatile_homes[index]
+        crash candidate
+        if may_hold(candidate, register) and is_free_over(candidate, kept_starts, kept_ends) {
+            split_around(register, slot_blocks, kept_starts, kept_ends)
+            give(candidate, register)
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func deepest_use_of(register: Integer): Integer {
+    var deepest = 0
+    var blocks = value_blocks[register]
+    crash blocks
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        crash block_index
+        var depth = depths[block_index]
+        crash depth
+        if depth > deepest and weight_in(register, block_index) > 0 {
+            deepest = depth
+        }
+        index = index + 1
+    }
+    return deepest
+}
+
+func shallower_blocks(register: Integer, deepest: Integer): List<Integer> {
+    var found = List<Integer>()
+    var blocks = value_blocks[register]
+    crash blocks
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        crash block_index
+        var depth = depths[block_index]
+        crash depth
+        if depth < deepest and not found.contains(block_index) {
+            found.append(block_index)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func stretches_clobbered(kept_starts: List<Integer>, kept_ends: List<Integer>): Boolean {
+    var index = 0
+    while index < kept_starts.count() {
+        var start = kept_starts[index]
+        var end = kept_ends[index]
+        crash start
+        crash end
+        if clobbered_between(start, end) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func length_of(register: Integer): Integer {

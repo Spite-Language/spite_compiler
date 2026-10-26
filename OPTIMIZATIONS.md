@@ -1886,6 +1886,10 @@ The sharing runs again after [what a loop does not change is computed before
 it](#what-a-loop-does-not-change-is-computed-before-it), so two loads of one singleton's slot moved out of a loop
 from two inlined calls are one register, not two.
 
+A constant other than zero repeated in a block is one register too (a `Vector3`'s three `0.016` are one decimal
+register, not three); zero is left alone, since a whole `0` and a decimal `0.0` share its bits and would then share
+a register neither kind can keep.
+
 It does not apply to checked arithmetic, a division or a comparison (which is better made again just before the
 branch that reads its flags), nor across blocks to a register written more than once or in a function of more than
 400 blocks. A load the compiler knows never changes (see [a singleton the entry class makes is never tested
@@ -1897,7 +1901,8 @@ A store `[a + k] = v` stands, for what follows, for a load of the same width and
 that repeats it, with no write of memory, call or allocation in between and neither `a` nor `v` written again, copies
 `v` instead, in a block and across blocks under the same rules as a repeated load. A 64-bit store stands for both a
 signed and an unsigned load; a 32-bit store only when `v` is known to fit what the load would give back: a checked
-32-bit addition or subtraction of that signedness, a 32-bit load of that signedness, or a constant in range.
+32-bit addition or subtraction of that signedness, a 32-bit load of that signedness, a constant in range, or (for
+an unsigned load, which gives back the same 32 bits with nothing above them) a `Float` that decimal maths made.
 
 ```spite
 var running = 0
@@ -1915,6 +1920,27 @@ chain where every addition waited for the store before it to come back from memo
 
 **What a program can observe:** only the time. Every store is still made, so another thread or a later read sees
 the same memory.
+
+## A write to one attribute keeps what was read from another
+
+A load or store of an object's attribute carries the attribute it reaches (its region), and two different
+attributes are never the same memory. A store to one attribute therefore forgets, of what the block (or every path
+into it) has already read or stored, only the loads of that same attribute and the loads that carry no attribute;
+what was read from or stored into every other attribute stays known. A call, an allocation, a free, a copy of bytes
+or a store that carries no attribute still forgets every load.
+
+```spite
+func step() {
+    velocity_y = velocity_y - 9.8 * 0.016
+    position_x = position_x + velocity_x * 0.016
+    position_y = position_y + velocity_y * 0.016
+}
+```
+
+`velocity_y` is read once: the store to `position_x` between its store and its second read no longer forgets it,
+so the second read is the register the subtraction made.
+
+**What a program can observe:** only the time. Every store is still made.
 
 ## An attribute a loop updates lives in a register until the loop ends
 
@@ -2128,6 +2154,35 @@ previous conversion, before it starts. The register is cleared first (`xorps`), 
 and which ends that wait: a loop that turns its counter into decimals several times (`step % 4` into a `Float`)
 no longer runs its conversions one after another across passes.
 
+## A value spilled outside a loop lives in a register inside it
+
+A value no register is free for over its whole life, so that it would live in its frame slot everywhere, is split
+by loop depth instead: it takes a register (a kept one, or a scratch one when nothing in those stretches calls) in
+the blocks of the deepest loop where it is read or written, and its slot everywhere shallower. Where a path enters
+those blocks the slot is loaded into the register, and where it leaves them the register is stored back, with the
+moves placed as for [a value that leaves a scratch register around a
+call](#a-value-leaves-a-scratch-register-only-around-a-call). It applies when the uses and writes the register
+saves in the loop weigh more than the moves on its edges (each weighed as 32 to the power of the loops that hold
+it), and not to a decimal or to a value live across a vector loop. A counter of an outer loop read in an inner
+loop full of other values then costs one load at the inner loop's entry instead of one per use in each pass.
+
+**What a program can observe:** only the time; a crash report reads each number from where it lives in the block
+the check was in.
+
+## A result takes the register of the operand it ends
+
+A copy, a whole-number arithmetic other than a division, or a decimal arithmetic, that writes a register written
+only there and reads, as its left operand, a value whose life ends at that instruction (nothing reads it after, on
+any path), takes that operand's register when nothing else holding the register is live with it. The operation is
+then made in place (`subss xmm6, xmm3` instead of `movaps xmm7, xmm6` and `subss xmm7, xmm3`, `add rbx, 1` instead
+of a move first, a copy that is no instruction at all), and one register fewer is live at that point. It does not
+apply to an operand that is a constant, an operand split between a register and its slot, a value and an operand of
+different kinds (a decimal and a whole number), or a scratch register over a stretch that calls. A checked
+arithmetic made in place that overflows takes its operand back before the crash report reads it, as it did when
+the two were one value.
+
+**What a program can observe:** only the time.
+
 ## A decimal constant gives up its register to a value
 
 A decimal constant (`0.001`, a `Vector3`'s `1.0`) lives in a decimal register like any decimal. When a value needs a
@@ -2174,8 +2229,44 @@ registers, and the item is moved in once.
 
 **What a program can observe:** nothing but time; a crash report reads a decimal from wherever it lives.
 
-**Not built:** a load or store of a decimal straight between memory and its decimal register (it passes through
-`rax`), and a decimal constant read from the program's data.
+**Not built:** a decimal constant read from the program's data.
+
+## A decimal is read and written straight from memory
+
+A load whose value lives in a decimal register is one `movss` (or `movsd`) from memory into that register, and a
+store of a value in a decimal register is one `movss` (or `movsd`) into memory, instead of a move through `rax` and
+a `movd` on the way. It applies to a 32-bit load into a `Float`, a 64-bit load into either, a 32-bit store of
+either (the low 32 bits) and a 64-bit store of a `Double`, which are exactly the bits the move through `rax` gave;
+a byte-swapped load or store still passes through `rax`. In `particles` each attribute read and written in a pass
+is one instruction instead of two, and the value never crosses between the two register files.
+
+**What a program can observe:** only the time.
+
+## A test a dominating test already made is not made again
+
+A branch on a comparison of two registers each written once (or a parameter), whose writes come before an earlier
+branch that compared the same two registers the same way or the opposite way, is decided while compiling when
+every path to it went through one side of that earlier branch: the block that side enters has no other way in and
+dominates the later branch. The later branch becomes a jump to the side the earlier answer gives (`<` true means
+`>=` false), and the comparison is left unread and goes.
+
+```spite
+func read_twice(values: List<Integer>, at: Integer): Integer {
+    crash values[at]
+    return values[at] * 2
+}
+```
+
+The read in the `return` tests `at` against the count again only if the count was read again in between; when it is
+the same register (nothing wrote the list), the second test is the first one's answer and is not made.
+
+It does not apply to a register written twice (a loop's counter: its value at the later test may be another pass's),
+to a comparison made in another block than its branch, to a decimal comparison, or to a function of more than 2000
+blocks.
+
+**What a program can observe:** only the time; the crash the first test makes is the same.
+
+The proof is [in PROOFS.md](PROOFS.md#a-test-a-dominating-test-already-made-is-answered).
 
 ## A bound a signed test already proved is not tested again
 
