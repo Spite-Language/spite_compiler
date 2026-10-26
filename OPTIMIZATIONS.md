@@ -3593,12 +3593,16 @@ program: the value given on the command line (`--serve`, `--workers=3`), or else
 condition on it is decided while compiling, so only the branch that applies is built, and nothing is read when the
 program runs.
 
-**When it applies:** to a `Boolean`, whole-number or `String` field whose value is a literal, read through a `Build`
-binding (`var build = Build()`), in every build but a `--hot-reload`, `--repl`, `--repl-port` or `--development` one,
-where the program reads the field while it runs, so that a reload can change it.
+**When it applies:** to a `Boolean`, number or `String` field, read through a `Build` binding
+(`var build = Build()`), whose value is given on the command line or whose default is a literal or arithmetic on
+literals (`-3`, `0.5`, `2 * 60`, D1406), in every build but a `--hot-reload`, `--repl`, `--repl-port` or
+`--development` one, where the program reads the field while it runs, so that a reload can change it. A default
+written as arithmetic is the expression itself in place of the read, which the evaluation of constants folds.
 
-**When it does not apply:** a field whose default is not a literal is read from the singleton as before. Writing a
-field is refused ("'build.serve' is a setting decided while compiling ..."), since a read would never see the write.
+**When it does not apply:** a field whose default reads anything else (a call, another field) is read from the
+singleton as before, since evaluating it at each read could run it more than once. Writing a field is refused
+("'build.serve' is a setting decided while compiling ..."), since a read would never see the write
+(`tests/build_constant_defaults`).
 
 **What a program can observe:** only time and size: the branch not taken is not in the executable
 (`tests/build_folding`).
@@ -3625,9 +3629,13 @@ in an Integer, the class of its left side, and its right side is a Double, which
 answer is a `Number` again (a `Boolean` for a comparison). A parameter typed `Number` is still compiled once per class
 that reaches it, with no test at all; only a value whose class is known only while the program runs is tested.
 
+The same test runs a number class's other functions that take nothing (`absolute()`, `to_string()`,
+`to_integer()` and the rest every number class declares, D1405): the answer is a `Number` when each class answers its
+own class (`absolute()`), and that type when every class answers the same one (`to_string()` is a `String`).
+
 **What a program can observe:** only time: one test per number class before the class that matches. A `Number` filled
 by a program's own class that declares the operators halts, naming the operation, since its function is not chosen
-while the program runs (`tests/number_values`).
+while the program runs (`tests/number_values`, `tests/number_value_functions`).
 
 ```spite
 var console = Console()

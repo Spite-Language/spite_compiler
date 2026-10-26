@@ -448,17 +448,56 @@ func function_object_in_place(
     need_the_making(function_type)
     var argument_type = reflection_type("Spite.Argument")
     need_the_making(argument_type)
-    declares_in_scope = true
-    stand_in = receiver
-    var local = function_object(declared, model, false, true)
-    var index = 0
-    while index < statements.count() {
-        var statement = statements[index]
-        context.pending.append(statement)
-        index = index + 1
+    var describer = describer_of(declared, model, function_type)
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    return HighIntermediaryRepresentation.Values.Call(describer, receiver, no_arguments)
+}
+
+# ../../../spite_spec/specs/metaprogramming.md#calls-built-before-they-run
+func describer_of(
+    declared: Model.FunctionModel,
+    model: Model.ClassModel,
+    function_type: Model.Type,
+): Model.FunctionModel {
+    var name = "_described_{declared.name}"
+    var known = model.function_named(name)
+    if known {
+        return known
     }
+    var made = Model.FunctionModel(name, model.key)
+    made.is_synthetic = true
+    made.answer = function_type
+    model.declared_functions.append(made)
+    var body = describing_body(declared, model)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    context.describers.append(function)
+    context.described_functions.append(declared)
+    return made
+}
+
+func describing_body(declared: Model.FunctionModel, model: Model.ClassModel): HighIntermediaryRepresentation.Statements.Block {
+    var outer = statements
     statements = List<HighIntermediaryRepresentation.Statements.Statement>()
-    return local
+    var own_type = model.type_of_an_instance()
+    stand_in = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var local = function_object(declared, model, false, true)
+    var answered = HighIntermediaryRepresentation.Statements.Return(local)
+    statements.append(answered)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements = statements
+    statements = outer
+    return body
+}
+
+func redescribe(index: Integer) {
+    var function = context.describers[index]
+    var declared = context.described_functions[index]
+    crash function
+    crash declared
+    var model = context.program.class_named(declared.owner)
+    crash model
+    function.body = describing_body(declared, model)
 }
 
 func function_object(
@@ -555,8 +594,9 @@ func first_unpassed_parameter(declared: Model.FunctionModel): String {
     while index < declared.parameters.count() {
         var parameter = declared.parameters[index]
         var kind = parameter.parameter_type.kind
-        var is_told_apart = kind == 'scalar' or kind == 'enumeration' or kind == 'object'
-        if not is_told_apart or parameter.parameter_type.is_nullable {
+        var is_held = kind == 'scalar' or kind == 'enumeration' or kind == 'object'
+        var is_told_apart = is_held or kind == 'union' or kind == 'shape'
+        if not is_told_apart {
             return parameter.name
         }
         index = index + 1
@@ -619,8 +659,9 @@ func passed_argument(
     stop_when(running, missing, unfilled)
     var held_type = read.value_type.present()
     var held = HighIntermediaryRepresentation.Values.Conversion(held_type, 'present', read)
-    var wanted = parameter.parameter_type
-    var fits = HighIntermediaryRepresentation.Values.Class.Test(held, wanted)
+    var written = parameter.parameter_type
+    var wanted = written.present()
+    var fits = class_test_of(held, wanted)
     var misfit = HighIntermediaryRepresentation.Values.Negation(fits)
     var wanted_shown = context.shown(wanted)
     var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
@@ -631,10 +672,41 @@ func passed_argument(
     var again_type = again.value_type.present()
     var again_held = HighIntermediaryRepresentation.Values.Conversion(again_type, 'present', again)
     var kind = wanted.kind
+    var conversion: HighIntermediaryRepresentation.Values.ConversionKind = 'present'
     if kind == 'scalar' or kind == 'enumeration' {
-        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'unbox', again_held)
+        conversion = 'unbox'
     }
-    return HighIntermediaryRepresentation.Values.Conversion(wanted, 'present', again_held)
+    var passed = HighIntermediaryRepresentation.Values.Conversion(wanted, conversion, again_held)
+    if written.is_nullable {
+        return HighIntermediaryRepresentation.Values.Conversion(written, 'nullable', passed)
+    }
+    return passed
+}
+
+# ../../../spite_spec/specs/metaprogramming.md#calls-built-before-they-run
+func class_test_of(
+    held: HighIntermediaryRepresentation.Values.Value,
+    wanted: Model.Type,
+): HighIntermediaryRepresentation.Values.Value {
+    if wanted.kind != 'union' {
+        return HighIntermediaryRepresentation.Values.Class.Test(held, wanted)
+    }
+    var united = values.union_model_of(wanted)
+    var boolean = context.boolean()
+    var tested: HighIntermediaryRepresentation.Values.Value? = null
+    var index = 0
+    while index < united.members.count() {
+        var member = united.members[index]
+        var member_test = class_test_of(held, member)
+        if tested {
+            tested = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'or', tested, member_test)
+        } else {
+            tested = member_test
+        }
+        index = index + 1
+    }
+    crash tested
+    return tested
 }
 
 func refuse_an_argument_too_many(
@@ -1449,6 +1521,37 @@ func made_anew(): Model.FunctionModel {
     made.is_synthetic = true
     made.answer = anything
     class_model.declared_functions.append(made)
+    var body = making_body(class_type, anything)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    context.made_anew = function
+    return made
+}
+
+# ../../../spite_spec/specs/metaprogramming.md#calls-built-before-they-run
+func remake_the_making() {
+    assert context.made_anew
+    var described = described_class_count()
+    assert described != context.made_anew_classes
+    var class_type = reflection_type("Spite.Class")
+    var anything = context.resolver.type_of_a_name("Anything")
+    context.made_anew.body = making_body(class_type, anything)
+}
+
+func described_class_count(): Integer {
+    var count = 0
+    var index = 0
+    while index < context.reflected.count() {
+        var known = context.reflected[index]
+        if known.starts_with("Spite.Class:") {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    return count
+}
+
+func making_body(class_type: Model.Type, anything: Model.Type): HighIntermediaryRepresentation.Statements.Block {
     var entry = context.program.class_named(context.program.entry)
     crash entry
     var folder = folder_of(entry.file.path)
@@ -1463,6 +1566,18 @@ func made_anew(): Model.FunctionModel {
         }
         index = index + 1
     }
+    var plain_names = ["Boolean", "Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong", "Float", "Double", "String"]
+    var others = List<String>()
+    var reflected_index = 0
+    while reflected_index < context.reflected.count() {
+        var reflected = context.reflected[reflected_index]
+        var other = described_library_class(reflected, keys, plain_names)
+        if other {
+            insert_in_order(others, other)
+        }
+        reflected_index = reflected_index + 1
+    }
+    context.made_anew_classes = described_class_count()
     var body = HighIntermediaryRepresentation.Statements.Block()
     var own = HighIntermediaryRepresentation.Values.ThisRead(class_type)
     var key_index = 0
@@ -1472,7 +1587,13 @@ func made_anew(): Model.FunctionModel {
         body.statements.append(branch)
         key_index = key_index + 1
     }
-    var plain_names = ["Boolean", "Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong", "Float", "Double", "String"]
+    var other_index = 0
+    while other_index < others.count() {
+        var other_key = others[other_index]
+        var other_branch = making_branch(own, other_key, anything)
+        body.statements.append(other_branch)
+        other_index = other_index + 1
+    }
     var plain_index = 0
     while plain_index < plain_names.count() {
         var plain_name = plain_names[plain_index]
@@ -1483,12 +1604,25 @@ func made_anew(): Model.FunctionModel {
         }
         plain_index = plain_index + 1
     }
-    var message = "spite: a class known only at run time makes an object only of a class of the program's own folder, a number, a Boolean or a String"
+    var message = "spite: a class known only at run time makes an object only of a class that is not a singleton, a generic class, an enum or a union"
     var refused = HighIntermediaryRepresentation.Statements.Stop(message)
     body.statements.append(refused)
-    var function = HighIntermediaryRepresentation.HighFunction(made, body)
-    context.synthetic_functions.append(function)
-    return made
+    return body
+}
+
+func described_library_class(reflected: String, keys: List<String>, plain_names: List<String>): String? {
+    var prefix = "Spite.Class:"
+    assert reflected.starts_with(prefix)
+    var prefix_length = prefix.length()
+    var reflected_length = reflected.length()
+    var key = reflected.slice(prefix_length, reflected_length)
+    assert not keys.contains(key) and not plain_names.contains(key)
+    var model = context.program.class_named(key)
+    assert model
+    var bound = model.bound_types.keys()
+    var is_a_template = context.resolver.is_a_template(model.file)
+    assert not model.is_singleton and bound.is_empty() and not is_a_template
+    return key
 }
 
 func making_branch(

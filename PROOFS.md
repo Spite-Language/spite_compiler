@@ -794,19 +794,42 @@ as when each was refused while building.
   `function_lowering.spite` (`held_back`).
 - **Checked by**: tests/back_reference_calls, tests/back_reference_gone, tests/parent_back_reference.
 
+### A back reference is picked from how the program links its objects
+
+- **Status**: partly built (D759, D1396).
+- **Rule**: an attribute `a: T?` of a class `C` holds no count when one function both sets `c.a = t` and stores `c`
+  into `t`'s attribute `f`, which holds a `C` ([memory.md](../SpiteLanguage/specs/memory.md)); never from the class
+  graph alone, since taking an owning reference for a back one would free an object the program still holds.
+- **How**: each function of the program is read for the stores it makes: `x.a = y`, `x.f.append(y)` (and
+  `insert`, `prepend`, `add`, `set_at`), `x.f[k] = y`, and a constructor that keeps its argument in an attribute. A
+  call of a program function whose name only one class declares adds that function's own stores, with `this` and
+  its parameters replaced by the call's receiver and arguments, so `team.sign(player)` beside `player.join(team)`
+  links the two as `team.players.append(player)` beside `player.team = team` would (D1396). A link found in one
+  function decides the attribute for the whole program.
+- **Missing**: a link through a function named by two classes, a call two levels deep, two objects neither of which
+  the function made linked directly (not through a collection), one attribute pointing both ways (`partner`), a
+  cycle through a union or a `type`, and a back attribute that cannot be null: each keeps its counts and leaks,
+  which `--debug-memory` names at exit.
+- **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
+- **Lives in**: `model/back_references.spite`, asked by `ProgramModel.holds_no_count`.
+- **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls.
+
 ### A deep copy copies a graph with its shape
 
-- **Status**: partly built (D724, D1252).
+- **Status**: partly built (D724, D1252, D1397).
 - **Rule**: a class whose attributes can reach itself, or reach a back reference, is copied through a table made
   for the call, so a cycle is copied once per object
   ([memory.md](../SpiteLanguage/specs/memory.md)).
 - **How**: a class reaches another through an object attribute, a bound type, or a union attribute (each member of
   the union); a union attribute inside a table copy is copied through its member's `_deep_copy_in`, dispatched on
-  the class it holds, with the same table.
-- **Missing**: a cycle through a `type` attribute; `List.deep_copy()` gives each item a table of its own.
-- **Falls back**: copied plainly, which recurses around a cycle through a `type` until the stack runs out.
-- **Lives in**: embedded, `high_intermediary_representation/building/copying.spite` (`uses_a_table`, `copy_in_call`).
-- **Checked by**: conformance/deep_copy_graphs, tests/deep_copy_union_cycles.
+  the class it holds, with the same table. A class that reaches a `type` attribute is copied through a table
+  whatever fills it, since the classes that fill a `type` are known only once the whole program is built (D1397),
+  and the `type` value is copied through `_deep_copy_in` with the same table.
+- **Missing**: `List.deep_copy()` gives each item a table of its own.
+- **Falls back**: a class that reaches a `type` pays for a table even when no filler reaches it back.
+- **Lives in**: embedded, `high_intermediary_representation/building/copying.spite` (`uses_a_table`, `holds_a_type`,
+  `copy_in_call`).
+- **Checked by**: conformance/deep_copy_graphs, tests/deep_copy_union_cycles, tests/deep_copy_type_cycles.
 
 ### A singleton made at the start is never tested again
 
@@ -846,16 +869,20 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 ### No borrowed read past a resize
 
-- **Status**: partly built (D730, D1140); **fails silently** (the rule goes unenforced, memory stays safe).
+- **Status**: partly built (D730, D1140, D1399).
 - **Rule**: a borrowed name is not read after anything that may resize its collection, followed through calls; a
   resize anywhere in a loop ends the borrow for the loop
   ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)). Assigning the collection again,
-  a local as well as an attribute, is a resize, and so is assigning an object whose attribute holds it (one level:
-  `holder = Holder()` ends what was borrowed from `holder.velocities`).
-- **Missing**: an object two levels up the path; library functions are not followed; a value of unknown type fans
-  out to every function of the name; a callee's effects computed under the recursion guard are cached short.
+  a local as well as an attribute, is a resize, and so is assigning an object that holds it at any depth, through
+  the program's classes and the items of the library's collections (`world = World()` ends what was borrowed from
+  `world.holder.velocities`), and so is a library call that removes items (`remove_at`, `remove_first`,
+  `remove_last`, `remove_swapping`, `truncate`, `clear`, `remove`, `remove_where...`) from a collection whose items
+  hold one (D1399).
+- **How**: a function's effects found while another call of it is still being followed (a recursion) are kept only
+  for that one question, not cached, so a later question follows it whole (D1399).
+- **Missing**: a value of unknown type fans out to every function of the name (strict, not silent).
 - **Falls back**: refused, "'...' is borrowed from '...', and '...' on line ... may move the items ...".
-- **Checked by**: conformance/vector_borrow_call_grows, vector_borrow_loop, vector_borrow_removed, vector_borrow_local_assigned, vector_borrow_holder_assigned,
+- **Checked by**: conformance/vector_borrow_call_grows, vector_borrow_loop, vector_borrow_removed, vector_borrow_local_assigned, vector_borrow_holder_assigned, vector_borrow_owner_assigned,
   vector_borrow_swap, vector_reserve_borrows, dispatched_resizes, found_item_borrows, items_borrow_remove_swapping;
   tests/queued_borrows.
 
@@ -888,15 +915,19 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 ### An item lent to a call
 
-- **Status**: partly built; **fails silently** (the rule goes unenforced).
+- **Status**: partly built (D1400).
 - **Rule**: a borrowed item passed to a program function called by name is lent for the call; the callee is
   compiled under the borrow rules, the call may not resize the source, and lending to a library function, a union
   or an unnamed expression is an error ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)).
+  A constructor called by its class's name is followed like any function; lending to a function the compiler
+  cannot follow (a function value, a function of a value typed by a `type` or known only while the program runs)
+  is "'...' is borrowed from '...', and '...' is not a function the compiler follows while compiling ...", and to
+  a variadic position "... gathers it into the list of its variadic arguments, which holds its own values and is
+  never lent an item ..." (D1400).
 - **How**: a lent parameter the callee passes on by name to a program function called by name is lent to that
   function too, for the call, and its body is judged the same way, through any depth of calls (D1141).
-- **Missing**: the uncounted argument; passing on through a receiver whose class the study cannot tell, or to a
-  library function; a row's attribute is not lent; the unnamed expression refusal; lending to a local function
-  value; variadic positions.
+- **Missing**: the uncounted argument; inside the callee, passing on through a receiver whose class the study
+  cannot tell, or to a library function; a row's attribute is not lent; the unnamed expression refusal.
 - **Falls back**: refused, "'...' is borrowed from '...' and lent to '...' for its call ...".
 - **Lives in**: the proof `proofs/borrowed_items` refuses a resizing, library or union lend and records each lent
   call in the context (`borrows.spite`, `check_the_lent_body`); the proof `proofs/lent_parameters`, after it, judges
@@ -1347,8 +1378,10 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   (D1136). A member whose type is a union is filled by the same union or by one of its classes; one whose type is a
   `type` by the same `type`, or by a class or a union whose classes each have the `type`'s members; one whose type
   is a function value by a function value with the same parameter types and answer (D1255).
-- **Missing**: a `$T`'s constraint (`constraints.spite`, `is_filled`) still checks only that each member exists; a
-  `type` member is compared by its members' names, not their types.
+- **How, for a `$T`**: the class a `$T` is given is compared with its constraint the same way, each member's types
+  as well as its name (D1398), and a `type` member's own members are compared by type too, a pair of class and
+  `type` already being compared counting as fitting so a `type` that names itself ends.
+- **Missing**: nothing known.
 - **Falls back**: refused, "'...' does not fit type '...': it has no function '...'", "... it has no attribute
   '...'", "... attribute 'size' is a String, but the type needs an Integer", "... its 'render' returns an Integer,
   but the type needs a String", "... argument 1 of its 'scaled' is a String, but the type needs an Integer", "... its
@@ -1356,7 +1389,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Lives in**: embedded, `values.spite` (`filled_shape`, `fits_as_a_class`), `constraints.spite`.
 - **Checked by**: conformance/shape_mismatch, shape_function_mismatch, shape_attribute_type_mismatch,
   shape_return_type_mismatch, shape_parameter_type_mismatch, generic_constraints, generic_constraint_nullable,
-  generic_constraint_not_a_type, shape_operator_without_function.
+  generic_constraint_not_a_type, shape_operator_without_function, generic_constraint_mistyped.
 
 ### A member template fits
 
