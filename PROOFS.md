@@ -647,7 +647,8 @@ as when each was refused while building.
   an `Items<T>` holds such items by reference.
 - **Lives in**: the proof `proofs/vector_fit` refuses a `Vector` of a class that does not fit, judging every
   `Vector` the builder recorded making (`context.vector_sites`); the test itself, `constraints.spite`
-  (`fits_a_vector`, with `uses_this_as_a_value`), is still asked while building by `values.spite`, `borrows.spite`
+  (`fits_a_vector`, with `uses_this_as_a_value`, and `is_kept_inline` for each attribute, which the proof asks
+  too, so its refusal and the answer an `Items<T>` folds never disagree), is still asked while building by `values.spite`, `borrows.spite`
   and `reflection.spite`, which choose the form of what they build from it.
 - **Checked by**: tests/items_columns, tests/folded_checks, tests/folded_lends, tests/lent_list_elements,
   tests/reflection_objects; conformance/folded_crash.
@@ -1337,9 +1338,13 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: a write to a local only this function holds (a constructor's result, a copy, an always-new result),
   never read after it, is refused ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  A write inside a branch of an `if` or a `switch` to a local an outer block made is judged the same way, when
+  nothing after it in any block around it names the local and nothing from the declaration to the write (the
+  conditions and the other branches included) can let the object go; a loop between them stops the search, since
+  its next pass may read the write.
 - **Falls back**: not refused where the always-new answer comes from another class.
 - **Lives in**: the proof `proofs/lost_writes`, judging every assignment the builder recorded (a `StatementSite`).
-- **Checked by**: conformance/lost_writes.
+- **Checked by**: conformance/lost_writes, conformance/lost_write_in_a_branch.
 
 ### A name read from a list, assigned and never read, is an error
 
@@ -1537,7 +1542,9 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   refuses the reload, naming the class and the attributes that are new or gone, since the objects the program holds
   would be read through attributes they do not have; an enum whose values change other than by new ones added last
   refuses it too, since a value the program holds keeps its number. Class ids are seeded from the manifest, so a
-  class keeps the id its objects carry.
+  class keeps the id its objects carry. Object literals of one layout in one function are told apart only by their
+  place among each other (`Object_<layout>_<n>`), so a reload that changes how many a function writes is refused:
+  the running objects of one would take the other's class.
 - **What it buys**: no reloaded function ever reads a live object through a layout it was not made with: the reload
   is refused instead, and the program keeps all of its code.
 - **When it does not apply**: a build without `--hot-reload` has no reload. Moving the objects to the new layout,

@@ -27,14 +27,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The scheduler's crash lines name the program's frames only where the walk reaches them: a halt inside a `Concurrent`'s state machine prints no `spite.frame` line, since its frame lives on the heap (`concurrent_wait_cycle_in_place`)
 
 ## Faults found
-- Adding an object literal with the same layout before another in the same function still shifts the second literal's class id (`Object_<digest>_<n>`, D1496), so a hot reload can give a running object the other literal's class
 
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D748)
-- A getter or setter called by its bare name inside its own class (`set_rotation(rotation)` in `Matrix4`) is not refused (D752 refuses `point.set_height(4)`), and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
-- A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
-- A fault inside reloaded code names its place (D1497), but its `spite.function` and `spite.caller` lines come from `<program>.functions`, which knows only the executable's code, so they print no key for a reloaded frame, and `at=` gives the bare address instead of the reload library
-- A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
+- A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk: waits on Mortaro's answer to "a `switch` case that names several values" in `mortaros_missing_decisions.md`
 
 
 ## The language
@@ -43,28 +39,20 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - spite_spec as the whole specification (D799): one program per rule and corner of every spec page, then the Markdown spec retired
 - Fixes instead of errors (D800, to discuss): the layout is fixed (D901); each other rule whose fix needs no choice, such as the declaration order, waits for Mortaro's choice in `mortaros_missing_decisions.md`
 - A cycle the program's code does not link as owner and back reference still leaks (D759, D1396), named only by `--debug-memory` at exit (D244): two objects stored directly in each other's attributes where the function made neither, one attribute pointing both ways (`partner`), a cycle through a union or a `type`, a back attribute that cannot be null, and links made through a function two classes name or a call two levels deep
-- A back reference is read without a count (D760), so a call on it (`child.parent.leave()`) whose body lets the owner go runs on freed memory, and on two threads the check that its object lives races with the owner's last release
 - A pinned `load` (D839, D1270, D1407): a URL git cannot clone is refused without git's own first line (the library's `Process` reads only the standard output); a relative pin inside a fetched package is resolved from the copy, not from the repository it came from; and two versions of one repository are read as one
-- The compiler's generated files (the REPL's `Spite.Prompt`, the copy table) are still exempt from three rules (D838, D1274): a case of two statements, an `if` that only holds an `if`, and `crash` on a value that cannot be null
-- A lone hole in an untyped `var` knows a text only from a local or parameter declared with text (D836); a reopening's attribute type is compared only between two written types or two literals (D840)
-- The library and the compiler's generated files break three rules they are exempt from for now (D838): a case of two statements (`Duration.part`), an `if` that only holds an `if` (`ZoneRules.transition_offset_seconds_at`), and `crash` on a value that cannot be null (`Spite.Prompt`, the generated REPL)
+- The library and the compiler's generated files (the REPL's `Spite.Prompt`, the copy table) break three rules they are exempt from for now (D838, D1274): a case of two statements (`Duration.part`), an `if` that only holds an `if` (`ZoneRules.transition_offset_seconds_at`), and `crash` on a value that cannot be null (`Spite.Prompt`, the generated REPL)
 - An `assert`/`crash` on a value that cannot be null is refused only on a parameter or an attribute, not on a local; a lone hole in an untyped `var` knows a text only from a local or parameter declared with text (D836); a reopening's attribute type is compared only between two written types or two literals (D840)
 - The unread-attribute check counts a read of any attribute of the same name in any class of the program's own folder (reads by name, not per class, D878); in a folder the program loads it checks only singleton bindings, counting reads from that folder
-- The spec pages in [the specification](https://github.com/Spite-Language/spite_spec/blob/master/specs/README.md) still describe `String.Inflection`, `Weak`, getters by name beside an attribute, and `argument_count` answering 0: update them with D750 to D756
 
 - The runtime the library needs, as machine code: console, files, directories, clock, sockets, processes, dynamic library
 - A serializer's `keys` map is folded only when it is written out where it is set (D893): a map made at run time (the spec's key table filled once per attribute) is refused, not built
 - Calling a `Spite.Class` known only at run time (D865, D1272, D1403): `kind()` through an attribute or a member (`argument.class()` on a run-time argument) is not built
 - `Color("#ffffff")` with a literal is not specialised per literal: the format tests run at run time unless the lowered program's evaluation (D784) folds the whole call (D807)
 - `File.lock()` waits in place: inside a `Concurrent` it does not return to the scheduler while another process holds the lock
-- A header's prototype casts each foreign argument to its C type's number (D848), but a prototype written over several lines, or with a `typedef`'d parameter type, is not read, so its arguments pass as written
-- `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
+- `whole_library` (a test that reads every class of the library) is not a spite_spec test yet
 - `--debug-memory` (D883, D1242): fresh memory is zero, not `0xA5`, since the generated code relies on zeroed memory: write those zeros explicitly, then fill (the places found so far: `TextJoins.whole_text`, every text the lowering makes whole, writes the header, the flags, the storage and the capacity but leaves the `Buffer`'s count, the `String`'s other attributes and the end byte to the allocator; `Resize` growing a `Buffer`'s or a list's storage copies only the old bytes, so the tail and a text's new end byte are the allocator's zeros; `make_object_with` writes the id, the count and the back count and leaves every attribute its defaults function does not write, and the padding, as zeros; the 65 `Allocate` and `Resize` sites of the lowering and the low passes, `compile_time_evaluation`'s placed objects and `known_headers` among them, are not all read yet); an object the compile-time evaluation writes out whole is counted but not named in the leaked-object summary; the counts a pass proves unneeded are still written
-- `whole_library` (a test that reads every class of the library) returns once text builds
-- `--debug-memory` prints its counts (D883), but not the leaked-object summary by class name, and fresh memory is zeroed, not filled with `0xA5`; the counts a pass proves unneeded are still written
 - Chains of member templates as one loop beyond `filter_` and `map_` steps on a `List` (D876, D945: a `filter_` or `find_by_` after a `map_`, a passed function `filter(f)`, a chain on a `Dictionary`'s values or an `Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
-- A decimal too large for a `Long` prints a wrong number in its range-stop message
 - Crash reports (D908, D913 to D920): a call the condition may skip (the right side of an `and`, or of an `or` that passed) or one after a read it could change is not reported; a reported call's answer is let go at the end of the function, not after the check; a function holding a `crash` is never inlined, since its report is written in line; halts other than `crash` (overflow, a missing item) and native faults print neither the ring nor the frames; the `.crashes` map gives each part's line only through the site's line (the tree keeps no column per expression); `Color(text)` prints its own `spite:` line naming the text and exits 1 instead of crashing, an `assert` of several parts keeps one site for all of them, the ring allocates its 32 lines as they first fill, a crash line carries no site id, and the map leaves out the asserts in `library/` (D881)
 - A number's room is a `Buffer` made on every read of `_buffer` (D659): fold a read at a known position of a fresh room into the number itself
 
@@ -84,29 +72,26 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ## Faults found while porting
 
 
-- `Vector<T>` refuses a class holding a singleton attribute (`Date._time_text`), while `Items<T>` and `is_fixed_size` count it inline: the two answers of "fits a Vector" disagree (D877)
 
 
 
 
-- The fault handler runs before any library's own exception handling, so a C library that catches its own faults inside a foreign call would be stopped
 
 
 - Class objects are filled from a worklist once compiling ends, but every read of a constant one still reads the run-time object: fold the constant ones while compiling (the 64 MB main stack reserve raised for the nested fills can come back down)
 
-- A program can still name a `Spite.Internal` class, or one of the classes the compiler adds (`Spite.Fault`, `Spite.Asserts`, `Spite.CopyTable`, `Spite.Prompt`, `Spite.PromptPath`), in a text, or in a `type` member's or union's written type: only expressions and written types are refused
 - The fault and crash reports and the assert ring are Spite source the compiler holds as text (D936): they become low functions writing the site texts from one table of data labels, with `cut` and the value texts as synthetic high functions
 - The library breaks three rules it is exempt from for now (D680): singletons bound as locals (`Arguments`, `Environment._setting`, `Spite.Internal.Fault.report`), locals that only copy a path to narrow it (`BinaryCursor._buffer`, `BinaryWriterCursor`, `JsonReader`, `JsonWriter`), and a terminal `if` (`Dictionary.remove_at`)
 
-- Lost writes: a local holding an item that a program function answers (`lookup.of(0)`, "'found' holds 'values[row]' of 'Column'") and an assignment in the branches of a last `if` or `switch` are not judged; a write is judged only to a local the block made with a constructor, `copy()` or an own function that always answers one
+- The fault handler is a vectored handler, so it runs before any library's own exception handling, and a C library that catches its own faults inside a foreign call would be stopped; the unhandled-exception filter the spec names is never reached, since the generated code carries no unwind data (`.pdata`) for the system's frame walk
+- Lost writes: a write is judged only to a local made with a constructor, `copy()` or an own function that always answers one, and a write inside a loop to a local made outside it is not judged
 
-- A singleton circle closed at run time halts with the message for one singleton; it should name the chain (`singleton 'Registry' binds 'Catalog', which binds 'Registry'`). The compile-time check follows only a singleton binding another directly, not a circle through an object that is not one (`Metronome` binds a `Tick` that binds `Metronome`)
 
 
 ## The outputs
 
 - Crash reports
-- `--final-classes` (D1223, D1389): the printed folder does not run as the same program yet: compiling it stops at the first class the compiler writes for itself (`spite/copy_table.spite`, `Spite.CopyTable` is internal to the standard library), the library's classes are printed beside the program as reopenings of the library its moved `load` still reads, and the generic templates its code names are not printed (only their instantiations, as `type`s); a class the compiler makes without a file is printed as a `type`, not as code that compiles
+- `--final-classes` (D1223, D1389): the printed folder does not run as the same program yet: the classes the compiler writes for itself from text (`Spite.CopyTable`, `Spite.Prompt`) are left out, since compiling the folder writes them again, but the library's classes are printed beside the program as reopenings of the library its moved `load` still reads, and the generic templates its code names are not printed (only their instantiations, as `type`s); a class the compiler makes without a file is printed as a `type`, not as code that compiles
 - `--repl-port`; `--hot-reload` (D1361 to D1369) swaps changed functions in, but does not yet move live objects to a new layout (a reload that changes a class's attributes is refused), compile on a helper thread (the compile runs at the check point that finds the save, so the program waits for it), hold a reload while a `Concurrent` waits inside a function it swaps, or swap reflection (`<Class>___functions`) so the REPL lists a function a reload added; whether the reflection model can be the manifest is open
 - `--repl` (D698 to D701): a singleton made with arguments (`Channel(1)`), `bytes <path>`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes
 - `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
