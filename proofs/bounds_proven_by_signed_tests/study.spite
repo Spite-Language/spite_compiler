@@ -9,6 +9,12 @@ var copied_from = List<Integer>()
 var constant_values = List<Long>()
 var is_constant = List<Boolean>()
 var never_negative = List<Boolean>()
+var added_to = List<Integer>()
+var added_by = List<Integer>()
+var defined_in = List<Integer>()
+var defined_at = List<Integer>()
+var reading_block = 0
+var reading_at = 0
 var largest_function = 400
 var deepest_chain = 8
 
@@ -39,6 +45,10 @@ func read_the_definitions() {
     constant_values.clear()
     is_constant.clear()
     never_negative.clear()
+    added_to.clear()
+    added_by.clear()
+    defined_in.clear()
+    defined_at.clear()
     var index = 0
     while index < register_total {
         var implicit = 0
@@ -50,11 +60,17 @@ func read_the_definitions() {
         constant_values.append(0)
         is_constant.append(false)
         never_negative.append(index >= function.parameter_count)
+        added_to.append(-1)
+        added_by.append(-1)
+        defined_in.append(-1)
+        defined_at.append(-1)
         index = index + 1
     }
     var block_index = 0
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
+        reading_block = block_index
+        reading_at = 0
         block.instructions.each(read_a_definition)
         block_index = block_index + 1
     }
@@ -71,7 +87,14 @@ func read_a_definition(instruction: LowIntermediaryRepresentation.Instructions.I
         if not keeps_the_sign(instruction) {
             never_negative[defined] = false
         }
+        defined_in[defined] = reading_block
+        defined_at[defined] = reading_at
         index = index + 1
+    }
+    reading_at = reading_at + 1
+    if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic and adds_without_wrapping(instruction) {
+        added_to[instruction.target] = instruction.left
+        added_by[instruction.target] = instruction.right
     }
     if instruction == LowIntermediaryRepresentation.Instructions.Copy {
         copied_from[instruction.target] = instruction.source
@@ -229,16 +252,21 @@ func decide_the_bound(block_index: Integer) {
     facts.proven_branches.append(block_index)
 }
 
+# ../../PROOFS.md#a-counted-loop-reads-its-items-unchecked
 func proven_by_a_signed_test(block_index: Integer, before: Integer, left: Integer, right: Integer): Boolean {
     var same_left = same_value_of(left)
+    var base = base_of(same_left)
+    var offset = offset_of(same_left)
     var same_right = same_value_of(right)
+    var chain = List<Integer>()
     var current = block_index
     var end = before
     var steps = 0
     while steps < deepest_chain {
-        if writes_either(current, end, same_left, same_right) {
+        if writes_either(current, end, base, same_right) {
             return false
         }
+        chain.append(current)
         var coming = flow.predecessors_of(current)
         if coming.count() != 1 {
             return false
@@ -250,7 +278,11 @@ func proven_by_a_signed_test(block_index: Integer, before: Integer, left: Intege
         var earlier_count = earlier.instructions.count()
         var ending = earlier.instructions.last()
         if ending == LowIntermediaryRepresentation.Instructions.Branch and not facts.is_proven(predecessor) {
-            return proven_at_the_branch(predecessor, ending, current, same_left, same_right)
+            if offset > 0 and not is_made_in_the_chain(same_left, chain, block_index, before) {
+                return false
+            }
+            var tested = TestedIndex(same_left, base, offset, same_right)
+            return proven_at_the_branch(predecessor, ending, current, tested)
         }
         current = predecessor
         end = earlier_count
@@ -259,12 +291,58 @@ func proven_by_a_signed_test(block_index: Integer, before: Integer, left: Intege
     return false
 }
 
+func is_made_in_the_chain(register: Integer, chain: List<Integer>, block_index: Integer, before: Integer): Boolean {
+    var made_in = defined_in[register]
+    var made_at = defined_at[register]
+    crash made_in
+    crash made_at
+    if not chain.contains(made_in) {
+        return false
+    }
+    return made_in != block_index or made_at < before
+}
+
+func is_a_step(register: Integer): Boolean {
+    if register < function.parameter_count or register >= register_total or definitions[register] != 1 {
+        return false
+    }
+    var to = added_to[register]
+    var by = added_by[register]
+    crash to
+    crash by
+    if to < 0 or by < 0 or by >= register_total or definitions[by] != 1 {
+        return false
+    }
+    var step = constant_values[by]
+    crash step
+    return is_constant[by] == true and step >= 0
+}
+
+func base_of(register: Integer): Integer {
+    if not is_a_step(register) {
+        return register
+    }
+    var left = added_to[register]
+    crash left
+    return same_value_of(left)
+}
+
+func offset_of(register: Integer): Long {
+    if not is_a_step(register) {
+        return 0
+    }
+    var by = added_by[register]
+    crash by
+    var step = constant_values[by]
+    crash step
+    return step
+}
+
 func proven_at_the_branch(
     predecessor: Integer,
     ending: LowIntermediaryRepresentation.Instructions.Branch,
     current: Integer,
-    same_left: Integer,
-    same_right: Integer,
+    tested: TestedIndex,
 ): Boolean {
     if ending.when_true == ending.when_false {
         return false
@@ -277,26 +355,136 @@ func proven_at_the_branch(
     }
     var compared = earlier.instructions[count - 2]
     crash compared
-    if compared == LowIntermediaryRepresentation.Instructions.Compare and not facts.is_decided(predecessor, count - 2) {
-        var same_operands = same_value_of(compared.left) == same_left and same_value_of(compared.right) == same_right
-        var is_tested = compared.target == ending.condition and same_operands
-        return is_tested and proves_below(compared, ending, current)
+    if compared == LowIntermediaryRepresentation.Instructions.Compare {
+        var on_true = ending.when_true == current
+        return proven_by_the_branch_test(predecessor, count - 2, compared, ending.condition, on_true, tested)
     }
     return false
 }
 
-func proves_below(
+func proven_by_the_branch_test(
+    predecessor: Integer,
+    at: Integer,
     compared: LowIntermediaryRepresentation.Instructions.Compare,
-    ending: LowIntermediaryRepresentation.Instructions.Branch,
-    current: Integer,
+    condition: Integer,
+    on_true: Boolean,
+    tested: TestedIndex,
 ): Boolean {
-    var on_true = ending.when_true == current
+    if facts.is_decided(predecessor, at) or compared.target != condition {
+        return false
+    }
+    if is_a_zero_test(compared) {
+        return proven_through_a_zero_test(predecessor, compared, on_true, tested)
+    }
+    return proven_by_the_compare(predecessor, at, compared, on_true, tested)
+}
+
+# ../../PROOFS.md#a-counted-loop-reads-its-items-unchecked
+func is_a_zero_test(compared: LowIntermediaryRepresentation.Instructions.Compare): Boolean {
+    var equality = compared.comparison == 'equal' or compared.comparison == 'not_equal'
+    return equality and is_the_constant(compared.right, 0) and compared.left != compared.right
+}
+
+func proven_through_a_zero_test(
+    predecessor: Integer,
+    zero_test: LowIntermediaryRepresentation.Instructions.Compare,
+    on_true: Boolean,
+    tested: TestedIndex,
+): Boolean {
+    var answer = zero_test.left
+    if answer < function.parameter_count or answer >= register_total or definitions[answer] != 1 {
+        return false
+    }
+    var made_in = defined_in[answer]
+    var made_at = defined_at[answer]
+    crash made_in
+    crash made_at
+    if made_in != predecessor {
+        return false
+    }
+    var earlier = function.blocks[predecessor]
+    crash earlier
+    var inner = earlier.instructions[made_at]
+    crash inner
+    var inner_true = on_true
+    if zero_test.comparison == 'equal' {
+        inner_true = not on_true
+    }
+    if inner == LowIntermediaryRepresentation.Instructions.Compare and not facts.is_decided(predecessor, made_at) {
+        return inner.target == answer and proven_by_the_compare(predecessor, made_at, inner, inner_true, tested)
+    }
+    return false
+}
+
+func proven_by_the_compare(
+    predecessor: Integer,
+    at: Integer,
+    compared: LowIntermediaryRepresentation.Instructions.Compare,
+    on_true: Boolean,
+    tested: TestedIndex,
+): Boolean {
+    var earlier = function.blocks[predecessor]
+    crash earlier
+    var count = earlier.instructions.count()
+    if writes_between(predecessor, at, count, tested.base, tested.count) {
+        return false
+    }
+    var compared_left = same_value_of(compared.left)
+    var compared_right = same_value_of(compared.right)
+    var compared_base = base_of(compared_left)
+    if compared_right != tested.count or compared_base != tested.base {
+        return false
+    }
+    var compared_offset = offset_of(compared_left)
+    if compared_offset < tested.offset {
+        return false
+    }
+    if compared_offset > 0 and not is_made_before(compared_left, predecessor, at, tested.base) {
+        return false
+    }
+    if compared_offset > tested.offset and not is_never_negative(tested.index) {
+        return false
+    }
+    return proves_below(compared, on_true, tested.index)
+}
+
+# ../../PROOFS.md#a-counted-loop-reads-its-items-unchecked
+func is_made_before(register: Integer, predecessor: Integer, at: Integer, base: Integer): Boolean {
+    var made_in = defined_in[register]
+    var made_at = defined_at[register]
+    crash made_in
+    crash made_at
+    if made_in != predecessor or made_at >= at {
+        return false
+    }
+    var next = made_at + 1
+    return not writes_between(predecessor, next, at, base, base)
+}
+
+func proves_below(compared: LowIntermediaryRepresentation.Instructions.Compare, on_true: Boolean, index: Integer): Boolean {
     var is_below = compared.comparison == 'less' and on_true
     var is_not_at_least = compared.comparison == 'greater_or_equal' and not on_true
+    var holds = is_below or is_not_at_least
     if compared.is_signed {
-        return is_below and is_never_negative(compared.left)
+        return holds and is_never_negative(index)
     }
-    return is_below or is_not_at_least
+    return holds
+}
+
+func writes_between(block_index: Integer, start: Integer, end: Integer, first: Integer, second: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var index = start
+    while index < end and index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        operands.read(instruction)
+        var written = operands.defines
+        if written.contains(first) or written.contains(second) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func writes_either(block_index: Integer, end: Integer, same_left: Integer, same_right: Integer): Boolean {

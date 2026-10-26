@@ -371,10 +371,13 @@ as when each was refused while building.
 - **Status**: partly built (done differently).
 - **Rule**: inside `while index < values.count()` with the counter stepped last, the count is read once and the
   items with no test; a second list indexed by the counter is tested once before the loop
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)). A window read
+  `values[at + k]` is proven by a test of `at + m` against the same count on the one way into it, `k <= m`, with
+  `at` never negative and not written in between, so `while at + 2 < values.count()` proves `values[at]`,
+  `values[at + 1]` and `values[at + 2]`; and a test of a compare's answer against zero (what `crash values[pick]`
+  writes) proves as the compare does, its sides turned around.
 - **Buys**: a tight loop over numbers costs a load per item.
-- **Missing**: in the scalar loop a second list keeps its test on every pass (only the vector loop tests once); a
-  window read (`values[index + k]`) loses its test only when the registers line up with the loop test.
+- **Missing**: in the scalar loop a second list keeps its test on every pass (only the vector loop tests once).
 - **Falls back**: each read keeps its unsigned test.
 - **Lives in**: the low proof `proofs/bounds_proven_by_signed_tests`, run on the low representation before the
   pass `low_optimization_passes/proven_bounds` twice in each cleaning (once early, and once after the loop's
@@ -384,7 +387,7 @@ as when each was refused while building.
   never negative value decides; the pass only writes what
   it recorded. With `lowering/list_reads.spite`, `low_optimization_passes/loop_invariants` and
   `low_optimization_passes/vector_loops`.
-- **Checked by**: tests/counted_loops, tests/strided_counted_loops, tests/decided_comparisons.
+- **Checked by**: tests/counted_loops, tests/strided_counted_loops, tests/decided_comparisons, tests/window_reads_one_test.
 
 ### A proven divisor is not checked
 
@@ -441,6 +444,32 @@ as when each was refused while building.
 - **Lives in**: the proof `proofs/ranges`, a speed proof run after the acceptance proofs, over every function built from
   the source; it records its fact on each operation (`proves_no_ranges`, the unchecked arithmetic) for the lowering.
 - **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room.
+
+### The range of a register
+
+- **Status**: built.
+- **Rule**: on the low representation, after inlining, every register gets the bounds its writes prove, the union
+  over all its writes when it has several: a constant its value; a comparison 0 to 1; a load of 8, 16 or 32 bits
+  the range of that width; a `Float` operation or a conversion to `Float` 0 to 2^32 - 1 (its bits, with nothing
+  above them); a copy and a pick (`select`) their sources' bounds; a sum, difference, product, quotient, shift,
+  `bits_and`, `bits_or` or `bits_xor` of bounded operands the bounds of the result, when it fits its width; a
+  remainder at most the divisor's size less one, with the dividend's sign; and a checked operation at most its
+  width's range, since it halts otherwise. A register written from itself (a loop's counter, a running total)
+  gets none. At the start of a block, a register written once (or a parameter never written) is bounded too by
+  every test on the one way into it: the branches of the blocks before it, as long as each has one predecessor
+  (eight at most), each test of the register against another register's bounds (signed: `<`, `<=`, `>`, `>=`,
+  `==`; unsigned `<` and `<=` against a count never negative, from 0), and through a test of such an answer
+  against zero (`crash` and `assert` write that). A write of the register inside those blocks drops what the test
+  proved. A write's bounds are worked out with what holds in the block it is in, so a number tested to be between
+  0 and 65 535 and then taken apart gives parts that are never negative.
+- **Buys**: arithmetic left unchecked ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#arithmetic-whose-operands-bounds-prove-it-fits-is-not-checked)),
+  tests answered while compiling, and divisions by powers of two that are shifts
+  ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-number-never-negative-divided-by-a-power-of-two-is-a-shift)).
+- **Falls back**: a register with no bounds keeps every check and every test, and its divisions round toward zero
+  with the sign correction.
+- **Lives in**: the low proof `proofs/register_ranges`, recorded on each function (`LowFunction.register_ranges`)
+  right before the passes `checked_ranges` and `power_divisions` in each cleaning; `power_divisions` clears it.
+- **Checked by**: tests/proven_ranges, tests/half_precision, tests/divisions, tests/divisions_by_powers.
 
 ### A wider operand is written first
 

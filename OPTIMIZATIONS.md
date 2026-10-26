@@ -298,16 +298,13 @@ code may run between two steps. What a user can observe: `--optimization-report`
 
 [Ranges](#arithmetic-a-range-proves-is-not-checked) are proved on the high representation, before inlining, so
 arithmetic a function receives from an inlined callee (`value * 2 + 3` in `score`, given `index % 100`) is checked
-again in the caller. After inlining, every register written once gets the bounds its one write proves: a constant
-its value, a comparison 0 to 1, a load of a narrow width the range of that width, a remainder by a positive
-constant `k` from `-(k - 1)` to `k - 1` (from 0 when the dividend is never negative), a `bits_and` with a constant
-mask that a value of its width can hold as a positive number from 0 to the mask (these two hold for the library's
-wrapping arithmetic too), a copy its source's bounds, and a sum, difference or product of bounded operands that fits
-its width the bounds of the result. A checked sum, difference or product whose bounds fit its width is not
-checked: it can never overflow.
+again in the caller. After inlining, the proof [the range of a register](PROOFS.md#the-range-of-a-register) gives
+every register the bounds its writes prove, and the pass `checked_ranges` reads them: a checked sum, difference or
+product whose operands' bounds (at 2^31 or less on each side) prove it fits its width is not checked, since it can
+never overflow.
 
-It does not follow a register written more than once (a loop's counter), nor bounds wider than 2^31 on either
-operand, and it never unchecks a division.
+It does not follow a register written from itself (a loop's counter, `total = total + item`), nor bounds wider than
+2^31 on either operand of what it unchecks, and it never unchecks a division.
 
 ```spite
 func score(value: Integer): Integer {
@@ -1052,7 +1049,35 @@ is inlined into its caller as a compare, a branch to `checked_half$cold0(value)`
 the same: the cold function's calls carry no frame line of their own, and the call to it carries the guard's line,
 so `spite.frame` lines name the guard's function and its callers as before.
 
-## Small functions are inlined
+## A crash's condition lives beside the executable
+
+The text of a `crash` or `assert` (its condition, `values[pick]`, `index >= 0 and index < _length`) is not in the
+executable: every site is a number, and `<program>.crashes`, written beside the executable, maps each number to the
+site's file, line, column, class, function, kind, condition and the names and types of the values its report
+prints (`# spite crashes 1`, then one line per site, tab separated). The executable keeps only what the report
+prints as the program halts: the place and each value with its name.
+
+```spite
+func half_of(value: Integer): Integer {
+    crash value >= 0
+    return value / 2
+}
+```
+
+holds no `value >= 0` in the executable; `grep` of the site's number in the `.crashes` file gives it. When it
+applies: every `crash` and `assert` site, in every build. What a user can observe: the report reads as it would
+with the text inside, and an executable moved without its `.crashes` file still prints the place and the values.
+
+## The fault handler is in every program
+
+A native fault (a null read inside a foreign library, a stack overflow) can happen in any program, and a silent end
+is a bug, so every program installs the handler `Spite.Fault` at its start, from the compiler's own source
+(`symbols/machinery_text.spite`), whatever else it uses. Nothing of it runs until a fault: it is fixed code, not a
+runtime. The names of the functions it reports are not in the executable either: they are in
+`<program>.functions` beside it ([ARCHITECTURE.md](ARCHITECTURE.md#what-the-compiler-writes-itself)), which the
+report reads when the fault happens. What a user can observe: a fault prints a report instead of nothing, and every
+executable carries the handler's code.
+
 
 A call to a function that waits for nothing and holds at most 24 instructions (an accessor, a list's `get_at` and
 `set_at`, a tiny helper, a read of a singleton), at most 24 when it calls other functions too, at most 40 when it
@@ -2062,6 +2087,11 @@ Called from a counted loop that [holds `Tally`'s lock](#a-counted-loop-of-calls-
 (`a_counted_loop_of_calls_to_one_singleton_takes_its_lock_once` went from 42 ms to 22 ms,
 `thread_safety_for_singletons_the_cheapest_safe_form` from 8.4 ms to 2.1 ms).
 
+The same holds when the object is the receiver of a function value the loop calls: a function value's function and
+receiver are read and written as places of their own (`Spite.FunctionValue.address`, `Spite.FunctionValue.receiver`),
+which no attribute shares, so `values.each(tally.count_value)` reads `tally` once before the loop and keeps
+`tally.total` and `tally.large` in registers.
+
 **What a program can observe:** only the time. A loop that stops the program halfway (a crash, an addition that does
 not fit) leaves the attribute as it was before the loop, which nothing can read afterwards.
 
@@ -2277,7 +2307,10 @@ two such values that cannot wrap (checked, or proven not to overflow; the librar
 signed `index >= 0` or `index < 0` of such an index is decided too (a `List.set_at`'s own check). The same holds
 after an unsigned test of the same two values that already passed: the true side of an unsigned `index < count`, or
 the false side of an unsigned `index >= count` (the test a `crash values[pick]` makes before the read it proves),
-whatever the sign of the index, so `crash values[pick]` then `values[pick]` tests the index once.
+whatever the sign of the index, so `crash values[pick]` then `values[pick]` tests the index once, also when the
+branch reads that test's answer compared with zero. A read `values[at + k]` is proven the same way by a test of
+`at + m` against the count, `k <= m`, with `at` never negative and not written in between: in
+`while at + 2 < values.count()`, `values[at]`, `values[at + 1]` and `values[at + 2]` are read with no test.
 
 The tests are looked for twice in each round of cleaning: once early, and once more after the loop's invariant loads
 have moved out of it and equal loads have been merged, since a loop's count read in its test and again in the read
@@ -2375,6 +2408,28 @@ func Sums(): Long {
 ```
 
 `index % 7` is no `idiv`: a multiplication, two shifts, two additions and a subtraction.
+
+## A number never negative divided by a power of two is a shift
+
+A signed division by a power of two must round toward zero, so a shift alone is wrong for a negative number: the
+generator writes four instructions where the sign is not known (and a real division for 2^31 and above). Where
+[the range of a register](PROOFS.md#the-range-of-a-register) proves the number divided is never negative, the
+pass `power_divisions` writes the division as one shift right and the remainder as one `and` with the power less
+one, for every power from 2 to 2^62, with no check (neither can fail).
+
+```spite
+func half_of(value: Float): UnsignedShort {
+    return value.to_half_precision()
+}
+```
+
+`to_half_precision` takes the float's bits apart with `/` and `%` by powers of two: the bits of a `Float` are
+never negative, and the parts are tested against their ranges before the later divisions, so each one is a shift
+or a mask, and `pattern / 2147483648` is a shift instead of a 64-bit `idiv`.
+
+When it does not apply: a number whose bounds are not known where it is divided (a parameter no test bounds, a
+`Long` loaded from memory, a difference the bounds cannot keep above zero), or a power above 2^62. What a program can observe:
+nothing but time (`tests/divisions_by_powers` pins the answers, negative numbers' among them).
 
 ## A division and a remainder of the same two numbers are one division
 

@@ -182,13 +182,12 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A slice shares its source's bytes where the source outlives it and neither changes (texts can change in place through `append_code` and an append, so it needs that proven first)
 - Short symbols are inline text
 - A foreign name is never copied
-- Crash text out of the binary
-- A number's bits are read in place (built for a read at offset 0 of the number's own width, D786, D791 and D805; not built: a read of part of a number's bytes, or at another offset)
+- A number's bits are read in place (built for a read at offset 0 of the number's own width, D786, D791 and D805, and the parts `to_half_precision` takes apart with `/` and `%` by powers of two are shifts and masks, D1323: 264 ms to 170 ms; not built: a read of part of a number's bytes, or at another offset; what is left of the case is the machine code: the alignment padding at every join, the moves between registers, and a magnitude whose subnormal path the bounds cannot follow, so the `UnsignedShort` narrowing keeps its two tests)
 - A decimal literal beside a `Float` is a `Float` (built: the literal is a `Float` and decimals live in decimal registers, D971; not built: a sum of decimals in a loop is never reassociated or vectorised, which needs a proof that every partial sum is exact, so `a_decimal_literal_beside_a_float_is_a_float` waits on one addition after another, about 16 times expert C)
-- Arithmetic is checked in every build (measured 2026-10-25: 38.6 ms against the old compiler's 19.8)
+- Arithmetic is checked in every build (measured 2026-10-25: 38.6 ms against the old compiler's 19.8): the loop is three checked 32-bit operations in a chain, each written by the generator as a move, the operation, a jump on overflow and a sign extension; nothing bounds `values[index]`, so the checks stay, and what is left is the machine code (`backend`)
 - Arithmetic a range proves is not checked (built in the proof `proofs/ranges`; not built: a total that adds at most one term a pass, a counter stepped down under `>` or `>=`, a loop local other than a counter keeping the range of what it is assigned, a `-` in front reported as a negation)
 - A loop over plain values reads its count once and its items unchecked (built: the count and the storage read once before the loop when it writes only number items, and the bound test dropped under the loop's own signed test, D972, D973; not built: a `set_at` into another list still tests that list's count each pass, and the loop is never vectorised nor fused with the next loop over the same list)
-- A proven read tests only its bounds (built for a library `List` of numbers or objects; not built: `Vector`, `Items`, a list of `T?` items, unions or function values)
+- A proven read tests only its bounds (built for a library `List` of numbers or objects, and for a window `values[at + k]` under `at + m < count`, D1321, which leaves `a_proven_read_tests_only_its_bounds` with no bound test but its time unchanged: its loop waits on a chain of checked 32-bit sums, see the line above; not built: `Vector`, `Items`, a list of `T?` items, unions or function values)
 - A walked `crash` line's read is the row's read (measured 2026-10-25: 92 ms against the old compiler's 50)
 - Boxing only where a value travels as a shape (measured 2026-10-25: 57 ms against the old compiler's 17: each `to_string()` through `Printable` makes its text)
 - A function value describes its arguments when asked (built: a function value made and called in one loop is a direct call, inlined, D1052; not built: a function value passed in from outside the function, or one of several functions, is still called through its address)
@@ -216,9 +215,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - REPL, live reload and debug machinery only in those builds
 - A reload compiles only the classes that changed
 - What a `--hot-reload` build carries so its objects can move
-- The fault handler is in every program
-- A crash's report is kept out of the way (measured 2026-10-25: 27.7 ms against the old compiler's 13.4): after `crash values[pick]` the read `values[pick]` still tests its bound again, though the proof `bounds_proven_by_signed_tests` now takes a passed unsigned test of the same values as proof; find which round of the cleaning sees the two tests apart
-- Smaller ones (measured 2026-10-25: 45 ms against the old compiler's 26)
+- A crash's report is kept out of the way (27.1 ms to 20.4 ms since the read after `crash values[pick]` tests its index once, D1321, against the old compiler's 13.4): the hot path still jumps over the cold call on every pass (the block layout puts the call right after the test) and keeps the checked `picks[index] + round`
+- Smaller ones (45.8 ms to 29.1 ms since a loop calling a function value keeps its receiver's attributes in registers, D1324, against the old compiler's 26)
+- `a_word_inflected_while_compiling` runs about 10% slower (65 ms to 72 ms) since the register bounds (D1322) left ten checks of `String._plural_by_ending` and two of `String._inflected` out: fewer instructions, so the cause is in the generated code's layout, not yet found
 - Other optimisations
 
 ### The machine code (D771 to D775 are built)
