@@ -2479,6 +2479,9 @@ pass.
 
 ends each pass with `cmp index, count` and a `jl` back to the sum. **When it does not apply:** a head that computes
 (arithmetic, a call) or that moves a value between registers on its edges still jumps back to the test at the top.
+The block written right after such a head and entered from it (the body the copied test jumps back to) starts on a
+16-byte boundary, as the head starts on a 32-byte one, so the jump that closes each pass lands at the start of a
+fetch block; the padding runs once, on the way in from the head.
 **What a program can observe:** the time, and an executable a few bytes larger per loop.
 
 ## A block that only stops the program is written after the function
