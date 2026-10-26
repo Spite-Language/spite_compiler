@@ -264,7 +264,6 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 - A text's length known while compiling proves its `code_at`: a `String` attribute holding a literal that nothing changes keeps its literal's length, so `alphabet.code_at(value.bits_and(63))` on a 64-letter alphabet needs no test; today only the test below 0 is left out, and the one against the length stays (D1211)
 - An index built from loop counters is proven by one guard: the reads of a width at a cell (D1449 proves the reads by index)
 - A counted loop reads its items unchecked: a second list indexed by the counter keeps its test on every pass outside the vector loop, and a window read loses its test only when the registers line up
-- A proven divisor is not checked: an attribute or member path as the divisor
 - Arithmetic that does not fit halts: a `Long` counter whose bound has no range keeps its check
 - A range proves arithmetic fits (built, D768; not built: `absolute`, the counters stepped down, the loop locals other than counters, see the optimisation's line)
 

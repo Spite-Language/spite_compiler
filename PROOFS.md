@@ -433,18 +433,22 @@ as when each was refused while building.
 
 ### A proven divisor is not checked
 
-- **Status**: partly built (by ranges, wider than the old rule).
+- **Status**: built (by ranges, wider than the old rule).
 - **Rule**: a divisor that is a non-zero constant, or whose range leaves out 0 (and -1 when the dividend may be the
   smallest value), is divided with no test ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#numeric-types)).
   A local tested `!= 0` (`crash parts != 0`, `if parts == 0 { return }`, the block of `if parts != 0 { }`) is not zero
   until it is assigned, which a range cannot say, so the ranges keep it as a fact beside the range (D1450); it is
   divided with no test when its range also leaves out -1 or the dividend's range leaves out the smallest value.
+  An attribute path through locals and `this` (`parts`, `config.parts`) tested `!= 0`, `> 0` or `< 0` is not zero
+  in the same way until any attribute is assigned, a local it starts at is assigned, anything is called or made,
+  a wait, or a loop's next pass; a call on the right of an `and` undoes what its left side proved (D1514).
 - **Buys**: no zero test on a division.
-- **Missing**: a divisor that is an attribute or a member path.
+- **Missing**: nothing.
 - **Falls back**: the test stays, "spite: '...' divided by zero, at ...".
 - **Lives in**: the proof `proofs/ranges` (`prove_the_divisor`, `prove_a_divisor_not_zero`), a speed proof run after
   the acceptance proofs, whose fact the lowering reads (`is_divisor_proven`).
-- **Checked by**: tests/division_by_zero, tests/divisions, tests/smallest_divided, tests/divisor_not_zero.
+- **Checked by**: tests/division_by_zero, tests/divisions, tests/smallest_divided, tests/divisor_not_zero,
+  tests/divisor_attribute_proven.
 
 ### A divisor written as zero is an error
 

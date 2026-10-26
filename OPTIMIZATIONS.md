@@ -2627,7 +2627,9 @@ multiplication).
 A division or remainder whose divisor's [range](#arithmetic-a-range-proves-is-not-checked) holds neither 0 nor -1
 (`crash parts > 0` before `amount / parts`) is lowered unchecked: the generator writes no zero test and no -1 path,
 only the division. A division of 32-bit numbers divides in 32 bits (`cdq` and `idiv ecx`), which is faster than the
-64-bit `idiv`, whether it is checked or not.
+64-bit `idiv`, whether it is checked or not. A divisor that is an attribute (`self.count`, `config.parts`) tested
+not zero is lowered unchecked too, until anything is called, any attribute assigned or a loop's next pass, which
+could change it (`crash count > 0` then `total / count`).
 
 What a user can observe: only time; a divisor the range cannot prove is tested as before and halts with the same
 report.
