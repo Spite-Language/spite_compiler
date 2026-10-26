@@ -648,7 +648,7 @@ as when each was refused while building.
 
 ### A reload compiles only the changed classes
 
-- **Status**: missing (no reload).
+- **Status**: missing (no reload: the compiler refuses `--hot-reload`, so no build can swap stale code in).
 - **Rule**: a `--hot-reload` build records every fact one class took from another; a reload replays them, compiles
   the changed classes, and falls back to a whole compile, saying why, when a fact differs
   ([repl.md](../SpiteLanguage/specs/repl.md)).
@@ -657,7 +657,7 @@ as when each was refused while building.
 
 ### A reload reaches every object whose attributes it changes
 
-- **Status**: missing (no reload).
+- **Status**: missing (no reload: the compiler refuses `--hot-reload`, so no object can be left on an old layout).
 - **Rule**: every live object of a program class is reachable by the reload, which moves it to the new layout, and
   a function that cannot be re-pointed refuses the reload by name ([repl.md](../SpiteLanguage/specs/repl.md)).
 - **Lives in**: none.

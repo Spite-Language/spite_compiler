@@ -35,10 +35,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
 - A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
+- Leaks `--debug-memory` names in the spec tests (D1242; 91 of 736 leak, run with `--debug-memory` added): the reflection objects (`Spite.Class`, `Spite.Function`, `Spite.Argument`, `Spite.AttributeDeclaration`, and the `String`, `Buffer`, `File`, `DynamicLibrary` and lists they hold) are never let go in every test that reflects; one `ReadEvaluatePrintLoop` in each `interactive_*` test; a `Circle` and a `Square` in `union_identity`; two blocks that are not objects in `foreign_callbacks`
 
 ## The language
-- From the old repository's programs (spite_spec `CORPUS.md`), still failing:
-  - the library has no `Reload` singleton for hot reload (`tests/recooking`): a new library class, waiting for Mortaro's yes
 - `Spite.Call` on a declaration known only at run time (D864, D1271): an argument filled twice is not refused (the second write replaces the first), an argument the function lacks halts only as "fills an argument ... does not have" without naming it, and a parameter that is nullable, a union or a `type` halts instead of being passed
 - A function value of another object held in a local (`var roar = troll.roar`, then `run(roar)`) is still looked up by name in its class object's `.functions`, bound to the stand-in and not to `troll`, so its `call_function()` runs on the stand-in (D866): describing it in place, bound to its object, loses its `accesses`, which are filled only after the program's functions are built
 - Templates over `Spite.Attribute` and `Spite.Function`, bound to one object (D798, D815): a parameter of those types is still an ordinary parameter; and `Namespace.classes.each(walker)` unrolls only with a walker of one parameter named in the same class (D813)
@@ -59,7 +58,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `File.lock()` waits in place: inside a `Concurrent` it does not return to the scheduler while another process holds the lock
 - A header's prototype casts each foreign argument to its C type's number (D848), but a prototype written over several lines, or with a `typedef`'d parameter type, is not read, so its arguments pass as written
 - `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
-- `--debug-memory` prints its counts (D883), but not the leaked-object summary by class name, and fresh memory is zeroed, not filled with `0xA5`; the counts a pass proves unneeded are still written
+- `--debug-memory` (D883, D1242): fresh memory is zero, not `0xA5`, since the generated code relies on zeroed memory (a text's end byte, a `Buffer`'s inline room): write those zeros explicitly, then fill; an object the compile-time evaluation writes out whole is counted but not named in the leaked-object summary; the counts a pass proves unneeded are still written
 - Chains of member templates as one loop beyond `filter_` and `map_` steps on a `List` (D876, D945: a `filter_` or `find_by_` after a `map_`, a passed function `filter(f)`, a chain on a `Dictionary`'s values or an `Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
 - A decimal too large for a `Long` prints a wrong number in its range-stop message
@@ -111,7 +110,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Crash reports
 - `--final-classes` (D1223): the printed folder does not run as the same program yet (its entry still loads the library by its path, and the library's classes are printed beside it), and the classes the compiler makes without a file (`Spite.Work`, the functions it writes) are not printed
 - Options a program's `build.spite` sets are read only for `final_classes`; `executable_path`, `optimization_report`, `check` and `build` are read from the command line alone
-- `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
+- `--repl-port`; `--hot-reload` is refused until it swaps code (D1241): every part of `HOT_RELOAD.md` (slots, the reload library, the manifest, the file hashes, the watcher, moving live objects, `Reload` filled by each swap) is to build, and whether the reflection model can be the manifest; `--development` (D1243) makes singletons ordinary objects and turns off the passes an inspectable build skips, but still tree-shakes every function nothing reaches
 - `--repl` (D698 to D701): a singleton made with arguments (`Channel(1)`), `bytes <path>` and `memory`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes, `eval`, `run`, breakpoints and `reload`
 - Caches per step and per unit
 
