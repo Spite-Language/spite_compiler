@@ -195,7 +195,9 @@ as when each was refused while building.
 - **Buys**: no dead checks in the source.
 - **How**: inside a `while`, only a proof made inside that loop makes a check redundant (the frame of the scope the
   path was narrowed in is compared with the loop's), since an assignment later in the loop would leave the next
-  pass unproven. A narrowed `Boolean` is not refused when tested again, since an `if` on it tests its value. The
+  pass unproven. A narrowed `Boolean` is not refused when tested again, since an `if` on it tests its value. A folded
+  `assert` is one that asks a compile-time question (a call such as `has_function`, or a `Build` field); a presence
+  check that folds is judged as a plain value or a proven read instead. The
   class test and the folded `assert` are refused only outside a generic class and a walk, where they fold per
   instance, and outside the library and the compiler's generated files. A local is plain when its value cannot be
   null and it has a written type, is made by a construction, or, outside a generic class and a walk, holds a call's
