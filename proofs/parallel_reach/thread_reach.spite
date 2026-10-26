@@ -26,7 +26,7 @@ func reach(context: HighIntermediaryRepresentation.Building.Context, model: Mode
     var index = 0
     while index < walk.expressions.count() {
         var found = walk.expressions[index]
-        follow(context, model, walk, found.expression)
+        follow(context, model, function, walk, found.expression)
         index = index + 1
     }
 }
@@ -34,17 +34,19 @@ func reach(context: HighIntermediaryRepresentation.Building.Context, model: Mode
 func follow(
     context: HighIntermediaryRepresentation.Building.Context,
     model: Model.ClassModel,
+    function: Model.FunctionModel,
     walk: AbstractSyntaxTree.Walk.Walk,
     expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
 ) {
     if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
-        follow_a_call(context, model, walk, expression)
+        follow_a_call(context, model, function, walk, expression)
     }
 }
 
 func follow_a_call(
     context: HighIntermediaryRepresentation.Building.Context,
     model: Model.ClassModel,
+    function: Model.FunctionModel,
     walk: AbstractSyntaxTree.Walk.Walk,
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
 ) {
@@ -53,43 +55,144 @@ func follow_a_call(
         follow_a_named_call(context, model, callee.name)
     }
     if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
-        follow_a_member_call(context, model, walk, callee)
+        follow_a_member_call(context, model, function, walk, callee)
     }
 }
 
 func follow_a_named_call(context: HighIntermediaryRepresentation.Building.Context, model: Model.ClassModel, name: String) {
     var function = model.function_named(name)
-    assert function
-    reach(context, model, function)
+    if function {
+        follow_into(context, model, name)
+        return
+    }
+    var made = context.program.class_named(name)
+    assert made
+    var plain = plain_name(name)
+    follow_into(context, made, plain)
 }
 
 func follow_a_member_call(
     context: HighIntermediaryRepresentation.Building.Context,
     model: Model.ClassModel,
+    function: Model.FunctionModel,
     walk: AbstractSyntaxTree.Walk.Walk,
     callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ) {
-    var receiver = callee.target
-    if receiver == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        var target_class = class_of_a_name(context, model, walk, receiver.name)
-        if target_class {
-            follow_into(context, target_class, callee.name)
-        }
-    }
+    var target_class = class_of_an_expression(context, model, function, walk, callee.target, 0)
+    assert target_class
+    follow_into(context, target_class, callee.name)
 }
 
 func follow_into(context: HighIntermediaryRepresentation.Building.Context, target_class: Model.ClassModel, name: String) {
+    var library = Validators.LibraryFile()
+    assert not library.holds(target_class.file.path)
     var function = target_class.function_named(name)
     assert function
+    var key = "{target_class.key}.{function.name}"
+    assert not reached_keys.contains(key)
     reach(context, target_class, function)
+}
+
+func class_of_an_expression(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    expression: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    depth: Integer,
+): Model.ClassModel? {
+    assert depth <= 16
+    if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return class_of_a_name(context, model, function, walk, expression.name)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return class_of_a_member(context, model, function, walk, expression, depth)
+    }
+    if expression == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return class_of_an_answer(context, model, function, walk, expression, depth)
+    }
+    return null
+}
+
+func class_of_a_member(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    depth: Integer,
+): Model.ClassModel? {
+    var holder = class_of_an_expression(context, model, function, walk, member.target, depth + 1)
+    assert holder
+    var attribute = holder.attribute_named(member.name)
+    if attribute {
+        return class_of_a_type(context, attribute.attribute_type)
+    }
+    return null
+}
+
+func class_of_an_answer(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    depth: Integer,
+): Model.ClassModel? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return class_of_a_named_answer(context, model, callee.name)
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var holder = class_of_an_expression(context, model, function, walk, callee.target, depth + 1)
+        if holder {
+            return class_of_a_function_answer(context, holder, callee.name)
+        }
+    }
+    return null
+}
+
+func class_of_a_named_answer(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    name: String,
+): Model.ClassModel? {
+    var made = context.program.class_named(name)
+    if made {
+        return made
+    }
+    return class_of_a_function_answer(context, model, name)
+}
+
+func class_of_a_function_answer(
+    context: HighIntermediaryRepresentation.Building.Context,
+    holder: Model.ClassModel,
+    name: String,
+): Model.ClassModel? {
+    var called = holder.function_named(name)
+    assert called
+    assert called.answer
+    return class_of_a_type(context, called.answer)
 }
 
 func class_of_a_name(
     context: HighIntermediaryRepresentation.Building.Context,
     model: Model.ClassModel,
+    function: Model.FunctionModel,
     walk: AbstractSyntaxTree.Walk.Walk,
     name: String,
 ): Model.ClassModel? {
+    if name == "this" {
+        return model
+    }
+    var parameter_index = 0
+    while parameter_index < function.parameters.count() {
+        var parameter = function.parameters[parameter_index]
+        if parameter.name == name {
+            return class_of_a_type(context, parameter.parameter_type)
+        }
+        parameter_index = parameter_index + 1
+    }
     var attribute = model.attribute_named(name)
     if attribute {
         return class_of_a_type(context, attribute.attribute_type)
@@ -97,7 +200,7 @@ func class_of_a_name(
     var index = 0
     while index < walk.statements.count() {
         var found = walk.statements[index]
-        var made = made_class_of(context, found.statement, name)
+        var made = made_class_of(context, model, function, walk, found.statement, name)
         if made {
             return made
         }
@@ -108,20 +211,16 @@ func class_of_a_name(
 
 func made_class_of(
     context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    walk: AbstractSyntaxTree.Walk.Walk,
     statement: AbstractSyntaxTree.Shapes.Statements.Statement?,
     name: String,
 ): Model.ClassModel? {
     if statement == AbstractSyntaxTree.Shapes.Statements.VariableStatement and statement.name == name {
-        return constructed_class(context, statement.value)
-    }
-    return null
-}
-
-func constructed_class(context: HighIntermediaryRepresentation.Building.Context, value: AbstractSyntaxTree.Shapes.Expressions.Expression?): Model.ClassModel? {
-    if value == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
-        var callee = value.callee
-        if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-            return context.program.class_named(callee.name)
+        var value = statement.value
+        if value == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            return class_of_an_answer(context, model, function, walk, value, 1)
         }
     }
     return null

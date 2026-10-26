@@ -2495,17 +2495,29 @@ the lock that guards the list of loops.
 writes `_scheduler_start` and `_scheduler_wait_for` for this program, and `Spite.Work_of_Integer._settled` for the
 join; `--low-ir` shows them.
 
-## A thread is started only where a `Parallel` is made
+## A `Parallel` runs on a thread the program keeps
 
-A program starts a thread only at a `Parallel` (or a banded loop's pass): the compiler writes the thread's entry
-function and its start there, and nowhere else. There is no pool made at the start and no worker waiting for work, so
-a program that makes no `Parallel` starts no thread, imports no thread function and allocates nothing for one.
+A `Parallel` (and so each band of a banded loop and each piece of a `parallel_each_`, which are `Parallel`s of the
+library) hands its work to the program's thread pool, which the lowering writes as three low functions
+(`low_intermediary_representation/lowering/pool_writing.spite`): `_pool_submit` queues the work's block for a thread
+of the pool that waits for work and wakes it, or, when no thread waits, starts a new one with the block;
+`_pool_worker` is every pool thread's entry, which runs a block's work, marks it done, wakes the joiners, and then
+takes the next queued block or waits for one; `_pool_join` waits until a block is done. The pool is one zeroed
+block of the program's data (its lock, its two conditions, the count of waiting threads and the queue), so it is
+made by nothing: it is empty until the first `Parallel`, and a program that makes no `Parallel` (and no helper
+thread for a blocking call) carries none of it, imports no thread function and allocates nothing for one.
 
     var total = Parallel(sum_of_squares)
     var answer: Long = total
 
-starts one thread, at the `Parallel`, and joins it where `total` is read. **What a program can observe:** the time; a
-`Parallel` pays for starting its thread each time it is made.
+hands `sum_of_squares` to a waiting pool thread (or starts the first one), and joins it where `total` is read. The
+pool grows instead of being a fixed size, so work never waits for a thread to come free: a `Parallel` that joins
+another, or one that waits on a socket for good, cannot keep the rest from running. A pool thread keeps its
+small-block lists between works, so the blocks one work frees serve the next.
+
+**What a program can observe:** the time. A `Parallel` costs a lock, a queue entry and a wake when a pool thread is
+waiting, and the start of a thread only when none is; the threads the pool started wait until the program ends.
+A thread that cannot be started stops the program, naming `CreateThread`.
 
 ## A singleton is made on first use, by a function of its own
 
@@ -2776,7 +2788,8 @@ func advance() {
 first band and waits for the others, so whatever comes after the loop (`orbits.sum_turns()`) runs after every pass,
 as written.
 
-**When it pays.** Starting a band costs a thread, so the compiler weighs the pass while compiling: each statement 1,
+**When it pays.** A band costs handing it to a thread of the [pool](#a-parallel-runs-on-a-thread-the-program-keeps)
+(the start of one the first time), so the compiler weighs the pass while compiling: each statement 1,
 a loop's body times its bound (the literal it is counted to, or 8), a call what its function weighs. A pass that
 weighs less than 256 never runs in bands (it is bound by memory, not by the processor). For a heavier pass the
 compiler writes the smallest count at which the bands pay, the count times the weight reaching a million; the loop

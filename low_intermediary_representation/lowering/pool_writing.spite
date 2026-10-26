@@ -1,0 +1,157 @@
+var no_program = Model.ProgramModel()
+var no_layout = HighIntermediaryRepresentation.Layout(no_program)
+var no_low = LowIntermediaryRepresentation.LoweredProgram()
+var no_slots = Dictionary<String, Integer>()
+var lowering = FunctionLowering(no_layout, no_low, no_slots)
+var machine = MachineWriting(lowering)
+var start_text = "spite: the program stopped: the system could not start a thread for a Parallel (CreateThread failed)\n"
+var forever: Long = 4294967295
+
+func PoolWriting(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+    machine = MachineWriting(starting_lowering)
+}
+
+# ../../OPTIMIZATIONS.md#a-parallel-runs-on-a-thread-the-program-keeps
+func write_the_pool() {
+    assert not machine.is_written("_pool_submit")
+    lowering.program.pool_state = machine.zeroed_label(48)
+    write_submit()
+    write_worker()
+    write_join()
+}
+
+func state(): Integer {
+    return machine.data_at(lowering.program.pool_state)
+}
+
+func lock(pool: Integer) {
+    var locking = machine.one_listed(pool)
+    machine.imported("AcquireSRWLockExclusive", locking)
+}
+
+func unlock(pool: Integer) {
+    var locking = machine.one_listed(pool)
+    machine.imported("ReleaseSRWLockExclusive", locking)
+}
+
+func sleep_on(pool: Integer, offset: Integer) {
+    var condition = machine.plus_number(pool, offset)
+    var timeout = machine.constant_of(forever)
+    var exclusive = machine.constant_of(0)
+    var sleeping = machine.three_listed(condition, pool, timeout)
+    sleeping.append(exclusive)
+    machine.imported("SleepConditionVariableSRW", sleeping)
+}
+
+func wake_all_on(pool: Integer, offset: Integer) {
+    var condition = machine.plus_number(pool, offset)
+    var waking = machine.one_listed(condition)
+    machine.imported("WakeAllConditionVariable", waking)
+}
+
+func wake_one_on(pool: Integer, offset: Integer) {
+    var condition = machine.plus_number(pool, offset)
+    var waking = machine.one_listed(condition)
+    machine.imported("WakeConditionVariable", waking)
+}
+
+func write_submit() {
+    machine.begin("_pool_submit", 1)
+    var pool = state()
+    lock(pool)
+    var idle = machine.loaded(pool, 16)
+    var has_idle = machine.compared_to('greater', idle, 0)
+    var none_idle = machine.opened_when(has_idle)
+    var fewer = machine.plus_number(idle, -1)
+    machine.stored(pool, 16, fewer)
+    machine.stored_number(0, 32, 0)
+    var tail = machine.loaded(pool, 32)
+    var is_empty = machine.is_zero(tail)
+    var queued_after = machine.opened_when(is_empty)
+    machine.stored(pool, 24, 0)
+    machine.closed(queued_after)
+    var was_empty = machine.opened_unless(is_empty)
+    machine.stored(tail, 32, 0)
+    machine.closed(was_empty)
+    machine.stored(pool, 32, 0)
+    wake_one_on(pool, 8)
+    unlock(pool)
+    machine.answered_nothing()
+    machine.closed(none_idle)
+    unlock(pool)
+    var thread = machine.writing.new_register()
+    var starting = LowIntermediaryRepresentation.Instructions.StartThread(thread, "_pool_worker", 0)
+    machine.writing.emit(starting)
+    var failed = machine.is_zero(thread)
+    var started = machine.opened_when(failed)
+    machine.halted(start_text)
+    machine.closed(started)
+    var closing = machine.one_listed(thread)
+    machine.imported("CloseHandle", closing)
+    machine.answered_nothing()
+    machine.finish()
+}
+
+func write_worker() {
+    machine.begin("_pool_worker", 1)
+    machine.writing.function.ends_a_thread = true
+    var pool = state()
+    var current = machine.kept(0)
+    var top = machine.loop_top()
+    var entry = machine.loaded(current, 0)
+    var running = machine.one_listed(current)
+    var ran = LowIntermediaryRepresentation.Instructions.CallAt(-1, entry, running)
+    machine.writing.emit(ran)
+    lock(pool)
+    machine.stored_number(current, 8, 1)
+    wake_all_on(pool, 40)
+    var counted = machine.variable(0)
+    var waiting = machine.loop_top()
+    var head = machine.loaded(pool, 24)
+    var nothing_queued = machine.is_zero(head)
+    var taken = machine.loop_while(nothing_queued)
+    var uncounted = machine.is_zero(counted)
+    var already = machine.opened_when(uncounted)
+    var idle = machine.loaded(pool, 16)
+    var more = machine.plus_number(idle, 1)
+    machine.stored(pool, 16, more)
+    var one = machine.constant_of(1)
+    machine.copied(counted, one)
+    machine.closed(already)
+    sleep_on(pool, 8)
+    machine.loop_back(waiting, taken)
+    var next = machine.loaded(head, 32)
+    machine.stored(pool, 24, next)
+    var last = machine.is_zero(next)
+    var more_queued = machine.opened_when(last)
+    machine.stored_number(pool, 32, 0)
+    machine.closed(more_queued)
+    unlock(pool)
+    machine.copied(current, head)
+    machine.writing.jump_to(top)
+    var after = machine.writing.new_block()
+    machine.writing.switch_to(after)
+    var zero = machine.constant_of(0)
+    machine.answered(zero)
+    machine.finish()
+}
+
+func write_join() {
+    machine.begin("_pool_join", 1)
+    var done = machine.loaded(0, 8)
+    var running = machine.opened_when(done)
+    machine.answered_nothing()
+    machine.closed(running)
+    var pool = state()
+    lock(pool)
+    var top = machine.loop_top()
+    var finished = machine.loaded(0, 8)
+    var unfinished = machine.is_zero(finished)
+    var ended = machine.loop_while(unfinished)
+    sleep_on(pool, 40)
+    machine.loop_back(top, ended)
+    unlock(pool)
+    machine.answered_nothing()
+    machine.finish()
+}

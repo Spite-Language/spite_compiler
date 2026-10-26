@@ -60,9 +60,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A serializer's `keys` map is folded only when it is written out where it is set (D893): a map made at run time (the spec's key table filled once per attribute) is refused, not built
 - Calling a `Spite.Class` known only at run time makes only a class of the program's own folder (D865): a library class (`Integer`, `String`) halts, and `kind()` through an attribute or a member (`argument.class()` on a run-time argument) is not built
 - `Color("#ffffff")` with a literal is not specialised per literal: the format tests run at run time unless the lowered program's evaluation (D784) folds the whole call (D807)
-- `File.lock()` waits in place: inside a `Concurrent` it does not return to the scheduler while another process holds the lock
-- A header's prototype casts each foreign argument to its C type's number (D848), but a prototype written over several lines, or with a `typedef`'d parameter type, is not read, so its arguments pass as written
-- `DynamicLibrary.close_library` frees nothing yet; `whole_library` (a test that reads every class of the library) returns once text builds
+- `whole_library` (a test that reads every class of the library) returns once text builds
 - `--debug-memory` prints its counts (D883), but not the leaked-object summary by class name, and fresh memory is zeroed, not filled with `0xA5`; the counts a pass proves unneeded are still written
 - Chains of member templates as one loop beyond `filter_` and `map_` steps on a `List` (D876, D945: a `filter_` or `find_by_` after a `map_`, a passed function `filter(f)`, a chain on a `Dictionary`'s values or an `Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A dictionary keyed by hashing instead of a walk of its keys
@@ -77,19 +75,15 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `deep_copy()` of a graph (D724): a class that reaches itself only through a union or a `type` attribute is not seen as one and is copied plainly, so a cycle through one still recurses until the stack runs out; `List.deep_copy()` gives each item a table of its own, so items that hold each other are copied twice; a `Dictionary`, `Items` or `Vector` reached inside a table copy is copied by its own `deep_copy()`, without the table; the table finds a copy by walking its keys (it waits for a hashed `Dictionary`); and a `deep_copy()` through a shape some number, text, enum or singleton fills (refused as not fitting); a walked row declared `var row: $row_type = null` when `$row_type` is a `type`
 - Vector and Items keep their items inline: today each write stores a copy of the item by reference (one allocation and one copy per write, and every move inside the library copies again), not its attributes in the block
 - Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`, `Spite.Access`), filled in by the compiler and folded where constant (D663, D673 to D678): still missing are folding of constant reads (a constant list's `[]`, `filter` and member templates, so `hurt.arguments[1]` needs no run-time check and a filter's predicate runs while compiling, D676; an `each` unrolled over `C.functions` or a known function's `arguments` (D896) still reads each item at run time and checks its name, and it is unrolled only when its walker needs the item known), the `if` on a late answer (`function_waits`, `function_writes_parameter`) dropping its other branch, enums as classes, `Symbol<Spite.Class>` and the `Spite` namespace by name (`class_walk`), stand-ins for singletons, a function value known only at run time answering its `Spite.Function` (a parameter given a function the compiler knows is compiled once for it, and one the compiler knows is looked up by name), `is_stateful` following the singletons a class binds, and a reflection argument other than `Class.attributes['name']` compiled once for its constant (`attribute.class()` and `Spite.Debug<attribute.class>` on an attribute known only at run time)
-- A `Parallel`'s reach (`ThreadReach`) follows calls only to the work's own class, attributes and locals made by a constructor; work that never finishes counts as never waiting only when it calls nothing but the console; a locked singleton's lock is taken by every function of its own that reads `this`, and not by another class reading or writing its attributes
-- `Parallel` starts a thread of its own for each handle (and `parallel_each_<function>()` one per piece): the thread pool behind it, the race rule of `parallel_each_` as a compile check, and the console's buffer shared by threads that print at once (D662)
-- `Concurrent` does not return to the scheduler where a handle it holds is let go while its work runs: a handle, an object or a list holding handles dropped at its scope's end, a handle or an attribute holding one assigned again, and a list of handles cleared all wait in place for the work instead (`waits_never_hang`, `dropped_handle_waits`); file writes block instead of running on a helper thread; a blocking call outside a `Concurrent` (a file read, a socket or console read) always runs on a helper thread and polls the scheduler, even where no `Concurrent` is alive and the spec blocks in place (D721); a thread finds its scheduler loop by its id under a lock instead of through a `ThreadLocal` (D719); `run_ready()` and `resume_only_when_asked()`
-- A wait in a frame does not hold the frame: the check that no carried value is written back skips the library's own functions (D717)
-- `ForeignCallback` (D725 to D728): the singletons a handed-over function reaches are not made safe for threads yet (only the counts become atomic), the check of what a context callback reaches reads the function's own body and not the functions of its class it calls, and a callback arriving on another thread may reach the scheduler
-- A function value passed to one foreign call keeps it in a slot of its call site with the thread that made the call (D726), not a thread-local one, so two threads calling C through one site at once stop the program as if the function had been called on another thread
-- `foreign_callbacks` and `ipv6_addresses` still use `Memory.Address` and `Memory.Heap`: rewrite them with `Buffer` when foreign callbacks and sockets come (D662)
+- A `Parallel`'s reach (`ThreadReach`) does not follow a call through a function value, a `type` or a union (D1289); work that never finishes counts as never waiting only when it calls nothing but the console; a locked singleton's lock is taken by every function of its own that reads `this`
+- The race rule of `parallel_each_` as a compile check (D662)
+- A blocking call outside a `Concurrent` (a file read or write, a socket or console read, a file lock) always runs on a helper thread and polls the scheduler, even where no `Concurrent` is alive and the spec blocks in place (D721, D1288); a thread finds its scheduler loop by its id under a lock instead of through a thread slot (D719); `run_ready()` and `resume_only_when_asked()`
+- `ForeignCallback` (D725 to D728): the check of what a context callback reaches reads the function's own body and not the functions of its class it calls, and a callback arriving on another thread may reach the scheduler
 - Allocation tests (frame objects, lent buffers, kept buffer addresses, the memory floor) come back as `--debug-memory` counts with the passes that place memory (D661)
 
 ## Faults found while porting
 
 
-- A file write (`File.write`, `File.append`, `File.write_bytes`, `File.append_bytes`) answers `function_waits` true (D873) but blocks its thread inside a `Concurrent`: the helper-thread wait for file writes is not built
 - `Vector<T>` refuses a class holding a singleton attribute (`Date._time_text`), while `Items<T>` and `is_fixed_size` count it inline: the two answers of "fits a Vector" disagree (D877)
 
 - At the prompt, a singleton the program has not made yet is made when a path names it (`Tick()`), where `specs/repl.md` refuses it: the generated `bind_<n>` constructs it, since nothing reads a singleton's slot without making it (a silent change of the program's state under D244)
@@ -200,7 +194,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ### The threads
 
 - The small-block allocator (D794 to D796) has no inline fast path in a program with threads (every allocation and free there is a call), and a thread's lists are found through a thread slot where a `Parallel`'s own block could hand them over
-- Concurrency machinery only where it is used
 - Hidden async/await as compile-time state machines
 - Reads in a row overlap
 - Thread safety for singletons, the cheapest safe form (built: unreached, never changing, atomic and locked, D780 to D783): a read or write of a locked singleton's attribute from another class takes no lock yet
@@ -211,7 +204,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Thread safety for singletons, the rest of the plan
 - Calls in a row run at once
 - A loop over a list of different classes runs them at once
-- A loop whose passes write only their own item runs in bands (built for `each_` on a `List` of a class of the program, D975; not built: a `Vector`, a `filter_` chain before it, a pass that calls a member of another object or of a number, and a pool of threads kept between loops (each band starts a thread; a counted loop of one banded pass starts them once, D978, but any other loop starts them on every pass))
+- A loop whose passes write only their own item runs in bands (built for `each_` on a `List` of a class of the program, D975; not built: a `Vector`, a `filter_` chain before it, a pass that calls a member of another object or of a number)
 
 ### The compiler's own machinery
 
@@ -319,7 +312,7 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 - What a `Parallel` may reach: reach is followed only through the work's own class
 - Calls that share nothing written
 - Classes in a list that share nothing written
-- Passes that write only their own item: `Vector`, writes other than number and enum attributes, other calls, a kept thread pool
+- Passes that write only their own item: `Vector`, writes other than number and enum attributes, other calls
 - An object made for its owner is told apart
 - No other thread counts a class
 - What one of the calls run at once counts

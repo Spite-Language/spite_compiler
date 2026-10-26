@@ -1112,8 +1112,13 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: partly built.
 - **Rule**: a `while true` with no `return`, `assert` or `crash` that calls nothing is refused; in `Parallel` work
-  it is refused when nothing in it waits.
-- **Missing**: in `Parallel` work "waits" is "calls nothing but the console", not the waits fact.
+  it is refused when nothing in it waits. The work's functions are followed through every call whose class is known
+  while compiling: a function of its own class, of `this`, of a parameter's or an attribute's class, of a path of
+  attributes, of a local made by a constructor or answered by a call whose answer's class is known, and a
+  constructor called by its class's name; a class of the library is not followed. A singleton reached that way is
+  read for a lock held around an endless loop, and for a call back into a lock its caller holds.
+- **Missing**: in `Parallel` work "waits" is "calls nothing but the console", not the waits fact; a call through a
+  function value, a `type` or a union is not followed.
 - **Falls back**: refused, "this 'while true' never ends: ...".
 - **Lives in**: `validators/abstract_syntax_tree/spinning_loop`, and the proof `proofs/parallel_reach`
   (`thread_reach.spite`: `refuse_endless_work`).
