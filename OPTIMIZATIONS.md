@@ -3319,8 +3319,11 @@ does nothing (`low_optimization_passes/unread_objects/pass.spite`).
 **When it applies:** to an object whose class frees nothing but its own memory (no `drop()`, no attribute it lets
 go), when every register that may hold it, along every path from where it is made, is only copied, retained,
 tested for null by a release, counted down and freed by that release, or passed to `_release`, and nothing but its
-class and count is written into it. A read of any attribute, a store of it anywhere, a comparison with anything
-but null, a call that is passed it, or an answer of it keeps it made. **What a program can observe:** fewer
+class, its count and its attributes is written into it. An attribute may be written only through the register the
+object was made in, written once, with a value that is not the object itself: those writes are left out with it,
+since nothing reads them (a default object whose constructor sets numbers is never made either). A read of any
+attribute, a store of it anywhere, a comparison with anything but null, a call that is passed it, or an answer of it
+keeps it made. **What a program can observe:** fewer
 allocations under `--debug-memory`, and time.
 
 ## An object that outlives the function is not counted in it
