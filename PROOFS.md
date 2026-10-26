@@ -486,12 +486,13 @@ as when each was refused while building.
   count passes; a total holds at most `passes` terms
   ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#a-range-proves-a-check-unneeded)).
 - **Buys**: an operation the ranges prove carries no overflow check.
-- **Missing**: `absolute` gives no range; a counter stepped down keeps no floor and counts no passes; loop locals
-  other than counters; types wider than 4 bytes only where a value gives a range.
+- **Missing**: loop locals other than counters; types wider than 4 bytes only where a value gives a range.
+  `absolute` bounds its answer by its receiver's range, and a counter only stepped down by constants under `>` or
+  `>=` keeps a floor and counts its passes like one stepped up (D1515).
 - **Falls back**: the check stays and is listed by `--optimization-report`.
 - **Lives in**: the proof `proofs/ranges`, a speed proof run after the acceptance proofs, over every function built from
   the source; it records its fact on each operation (`proves_no_ranges`, the unchecked arithmetic) for the lowering.
-- **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room.
+- **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room, tests/down_counter_ranges.
 
 ### The range of a register
 

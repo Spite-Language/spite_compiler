@@ -265,7 +265,7 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 - An index built from loop counters is proven by one guard: the reads of a width at a cell (D1449 proves the reads by index)
 - A counted loop reads its items unchecked: a second list indexed by the counter keeps its test on every pass outside the vector loop, and a window read loses its test only when the registers line up
 - Arithmetic that does not fit halts: a `Long` counter whose bound has no range keeps its check
-- A range proves arithmetic fits (built, D768; not built: `absolute`, the counters stepped down, the loop locals other than counters, see the optimisation's line)
+- A range proves arithmetic fits (built, D768; not built: the loop locals other than counters, see the optimisation's line)
 
 ### Compile-time questions
 

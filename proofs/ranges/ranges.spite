@@ -60,9 +60,8 @@ func prove_statement(statement: HighIntermediaryRepresentation.Statements.Statem
 
 func prove_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
     prove_both(evaluated.value, evaluated.waited)
-    if evaluated.waited {
-        forget_the_paths("")
-    }
+    assert evaluated.waited
+    forget_the_paths("")
 }
 
 func prove_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
@@ -282,7 +281,9 @@ func passes_counted_by(loop: HighIntermediaryRepresentation.Statements.While, na
     var entry = ranges[name]
     assert entry
     var step = single_step_of(loop.body, name)
-    assert step > 0
+    if step <= 0 {
+        return passes_counted_down(loop, name, entry)
+    }
     var bound = loop_bound_of(loop.condition, name, loop)
     assert bound
     var widest: Long = 4294967296
@@ -295,6 +296,55 @@ func passes_counted_by(loop: HighIntermediaryRepresentation.Statements.While, na
         passes = reach / step + 1
     }
     return NumberRange(passes, passes)
+}
+
+# ../../PROOFS.md#a-range-proves-arithmetic-fits
+func passes_counted_down(
+    loop: HighIntermediaryRepresentation.Statements.While,
+    name: String,
+    entry: NumberRange,
+): NumberRange? {
+    var written = assignments_of(loop.body, name)
+    assert written == 1
+    var step = top_level_down_step(loop.body, name)
+    assert step > 0
+    var floor = loop_floor_of(loop.condition, name, loop)
+    assert floor
+    var widest: Long = 4294967296
+    var high_size = magnitude(entry.highest)
+    var low_size = magnitude(floor.lowest)
+    assert low_size < widest and high_size < widest
+    var passes: Long = 0
+    var reach: Long = entry.highest - floor.lowest
+    if reach >= 0 {
+        passes = reach / step + 1
+    }
+    return NumberRange(passes, passes)
+}
+
+func top_level_down_step(body: HighIntermediaryRepresentation.Statements.Block, name: String): Long {
+    var step: Long = -1
+    var index = 0
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        if statement == HighIntermediaryRepresentation.Statements.Assign.Assign {
+            step = down_step_of_the_assignment(statement, name, step)
+        }
+        index = index + 1
+    }
+    return step
+}
+
+func down_step_of_the_assignment(
+    assignment: HighIntermediaryRepresentation.Statements.Assign.Assign,
+    name: String,
+    step: Long,
+): Long {
+    var found = step
+    if assignment.name == name {
+        found = down_step_of(assignment.value, name)
+    }
+    return found
 }
 
 func single_step_of(body: HighIntermediaryRepresentation.Statements.Block, name: String): Long {
@@ -560,6 +610,9 @@ func counter_range(loop: HighIntermediaryRepresentation.Statements.While, name: 
     steps.name = name
     steps_in_block(loop.body, steps, false)
     assert steps.is_a_counter and steps.total > 0
+    if steps.is_down {
+        return down_counter_range(loop, name, named_type, entry, steps)
+    }
     var ceiling = type_highest(named_type)
     var has_a_ceiling = is_bounded(named_type)
     if not steps.is_nested {
@@ -573,6 +626,69 @@ func counter_range(loop: HighIntermediaryRepresentation.Statements.While, name: 
     assert has_a_ceiling and ceiling < limit
     var counted = NumberRange(entry.lowest, ceiling)
     return cut_to(counted, named_type)
+}
+
+# ../../PROOFS.md#a-range-proves-arithmetic-fits
+func down_counter_range(
+    loop: HighIntermediaryRepresentation.Statements.While,
+    name: String,
+    named_type: Model.Type,
+    entry: NumberRange,
+    steps: CounterSteps,
+): NumberRange? {
+    var floor = type_lowest(named_type)
+    var has_a_floor = is_bounded(named_type)
+    var zero: Long = 0
+    var negative_limit: Long = zero - limit
+    var is_steady = steps.total < limit and entry.lowest > negative_limit
+    if not steps.is_nested and is_steady {
+        var bound = loop_floor_of(loop.condition, name, loop)
+        if bound {
+            var stepped: Long = bound.lowest - steps.total
+            floor = smaller(entry.lowest, stepped)
+            has_a_floor = true
+        }
+    }
+    assert has_a_floor and floor > negative_limit
+    var counted = NumberRange(floor, entry.highest)
+    return cut_to(counted, named_type)
+}
+
+func loop_floor_of(
+    condition: HighIntermediaryRepresentation.Values.Value?,
+    name: String,
+    loop: HighIntermediaryRepresentation.Statements.While,
+): NumberRange? {
+    if condition == HighIntermediaryRepresentation.Values.MachineOperation {
+        return loop_floor_of_an_operation(condition, name, loop)
+    }
+    return null
+}
+
+func loop_floor_of_an_operation(
+    condition: HighIntermediaryRepresentation.Values.MachineOperation,
+    name: String,
+    loop: HighIntermediaryRepresentation.Statements.While,
+): NumberRange? {
+    if condition.operator == 'and' {
+        var on_the_left = loop_floor_of(condition.left, name, loop)
+        if on_the_left {
+            return on_the_left
+        }
+        return loop_floor_of(condition.right, name, loop)
+    }
+    var above = condition.operator == 'greater'
+    var at_least = condition.operator == 'greater_or_equal'
+    assert above or at_least
+    var read_name = local_name_of(condition.left)
+    assert read_name == name
+    var bound = bound_range_of(condition.right, loop)
+    assert bound
+    var lowest: Long = bound.lowest
+    if above {
+        lowest = lowest + 1
+    }
+    return NumberRange(lowest, lowest)
 }
 
 func steps_in_block(block: HighIntermediaryRepresentation.Statements.Block?, steps: CounterSteps, nested: Boolean) {
@@ -614,7 +730,13 @@ func steps_in_an_assignment(
 ) {
     assert assignment.name == steps.name
     var step = step_of(assignment.value, steps.name)
-    if step < 0 {
+    if step >= 0 {
+        steps.is_up = true
+    } else {
+        step = down_step_of(assignment.value, steps.name)
+        steps.is_down = true
+    }
+    if step < 0 or steps.is_up and steps.is_down {
         steps.is_a_counter = false
         return
     }
@@ -629,6 +751,21 @@ func step_of(value: HighIntermediaryRepresentation.Values.Value?, name: String):
         return step_of_an_operation(value, name)
     }
     return -1
+}
+
+# ../../PROOFS.md#a-range-proves-arithmetic-fits
+func down_step_of(value: HighIntermediaryRepresentation.Values.Value?, name: String): Long {
+    if value == HighIntermediaryRepresentation.Values.MachineOperation {
+        return down_step_of_an_operation(value, name)
+    }
+    return -1
+}
+
+func down_step_of_an_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation, name: String): Long {
+    if operation.operator != 'subtract' {
+        return -1
+    }
+    return constant_beside(operation.left, operation.right, name)
 }
 
 func step_of_an_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation, name: String): Long {
@@ -1338,6 +1475,9 @@ func number_function_range(call: HighIntermediaryRepresentation.Values.Call): Nu
     if name == "to_long" or name == "to_integer" {
         return receiver
     }
+    if name == "absolute" {
+        return absolute_of(receiver)
+    }
     var first = argument_range(call, 0)
     assert first
     switch name {
@@ -1346,6 +1486,22 @@ func number_function_range(call: HighIntermediaryRepresentation.Values.Call): Nu
         "clamp": return clamped(call, first)
         _: return null
     }
+}
+
+# ../../PROOFS.md#a-range-proves-arithmetic-fits
+func absolute_of(found: NumberRange): NumberRange {
+    var low_size = magnitude(found.lowest)
+    var high_size = magnitude(found.highest)
+    var high = larger(low_size, high_size)
+    var zero: Long = 0
+    var low = zero
+    if found.lowest >= 0 {
+        low = found.lowest
+    }
+    if found.highest <= 0 {
+        low = high_size
+    }
+    return NumberRange(low, high)
 }
 
 func smallest_of(first: NumberRange, second: NumberRange): NumberRange {
