@@ -1399,6 +1399,14 @@ func lower_assign_attribute(assign: HighIntermediaryRepresentation.Statements.As
     }
 }
 
+# ../../PROOFS.md#no-attribute-is-read-past-the-lock
+func count_inside_the_lock(loaded: Lowered, attribute: Model.AttributeModel) {
+    var attribute_type = attribute.attribute_type
+    assert is_a_pointer(attribute_type) and not loaded.owned
+    retain_counted(loaded.value, attribute_type)
+    loaded.owned = true
+}
+
 func reads_a_changing_attribute(attribute: Model.AttributeModel): Boolean {
     crash waits
     return waits.is_assigned_after_making(attribute)
@@ -2026,7 +2034,11 @@ func lower_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead):
     }
     var loaded = load_attribute_in(object.value, read.attribute, region)
     if takes_the_lock {
+        count_inside_the_lock(loaded, read.attribute)
         unlock_a_singleton(owner_key)
+    }
+    if layout.is_back(read.attribute) and not read.value_type.is_nullable {
+        stop_if_gone(loaded, "{read.attribute.owner}.{read.attribute.name}")
     }
     var is_a_temporary = is_a_pointer(read.object.value_type) and object.owned
     if gathers_for_the_statement and is_a_temporary {
@@ -2152,13 +2164,14 @@ func rebuilt_in_place(object: Integer, rebuilder: Model.FunctionModel): Lowered 
     return single(target)
 }
 
+# ../../PROOFS.md#a-back-reference-read-holds-its-object
 func held_back(object: Integer): Lowered {
     var held = new_register()
     var arguments = List<Integer>()
     arguments.append(object)
-    var called = LowIntermediaryRepresentation.Instructions.Call(held, "_back_if_alive", arguments)
+    var called = LowIntermediaryRepresentation.Instructions.Call(held, "_back_counted", arguments)
     emit(called)
-    return single(held)
+    return owned(held)
 }
 
 func lower_text(text: HighIntermediaryRepresentation.Values.TextConstant): Lowered {
@@ -2676,6 +2689,10 @@ func halt_on_state(slot: Integer, state: Integer, message: String) {
 }
 
 func record_the_making(slot: Integer, class_key: String) {
+    record_with(slot, "_destroy_{class_key}")
+}
+
+func record_with(slot: Integer, destroy_name: String) {
     var head_label = made_singletons_label()
     var head = new_register()
     var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(head, head_label)
@@ -2686,7 +2703,7 @@ func record_the_making(slot: Integer, class_key: String) {
     var linked = LowIntermediaryRepresentation.Instructions.Store(slot, 8, newest, 'bits_64')
     emit(linked)
     var destroy = new_register()
-    var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(destroy, "_destroy_{class_key}")
+    var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(destroy, destroy_name)
     emit(found)
     var kept_destroy = LowIntermediaryRepresentation.Instructions.Store(slot, 24, destroy, 'bits_64')
     emit(kept_destroy)
@@ -3152,6 +3169,9 @@ func lower_operation(operation: HighIntermediaryRepresentation.Values.MachineOpe
         var compared = LowIntermediaryRepresentation.Instructions.Compare(target, comparison, left.value, right.value)
         compared.is_signed = is_signed(operand_type)
         emit(compared)
+        discard(left, operand_type)
+        crash operation.right
+        discard(right, operation.right.value_type)
         return single(target)
     }
     var arithmetic_operator = arithmetic_of(operation.operator)
@@ -3435,7 +3455,35 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
     if conversion.kind == 'narrow' {
         check_the_range(converted.value, from_type, conversion.value_type)
     }
+    if conversion.kind == 'present' {
+        stop_if_a_back_reference_is_gone(conversion.converted, converted)
+    }
     return carried(converted)
+}
+
+# ../../PROOFS.md#a-back-reference-read-holds-its-object
+func stop_if_a_back_reference_is_gone(value: HighIntermediaryRepresentation.Values.Value?, read: Lowered) {
+    assert value == HighIntermediaryRepresentation.Values.AttributeRead
+    assert layout.is_back(value.attribute)
+    stop_if_gone(read, "{value.attribute.owner}.{value.attribute.name}")
+}
+
+func stop_if_gone(read: Lowered, shown: String) {
+    var zero = constant(0)
+    var present = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(present, 'not_equal', read.value, zero)
+    emit(compared)
+    var stopping = new_block()
+    var after = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(present, after, stopping)
+    emit(test)
+    switch_to(stopping)
+    var label = text_label(
+        "spite: '{shown}' was proven present, but its object was freed since, and a back reference holds no count: prove it again after the call that lets it go, at {path}:{line} in {function.key}\n",
+    )
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    emit(stopped)
+    switch_to(after)
 }
 
 func carried(converted: Lowered): Lowered {
@@ -3490,6 +3538,11 @@ func lower_class_object(object: HighIntermediaryRepresentation.Values.Class.Obje
     emit(loaded)
     jump_to(after)
     switch_to(making)
+    halt_on_state(
+        slot,
+        3,
+        "spite: a drop() at exit read the {kind} of {object.described} after it was let go: reflection objects are let go at exit, newest first, after the singletons made after them\n",
+    )
     var thread = new_register()
     var no_arguments = List<Integer>()
     var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
@@ -3538,6 +3591,7 @@ func lower_class_object(object: HighIntermediaryRepresentation.Values.Class.Obje
     release(name.value)
     var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 0, fresh, 'bits_64')
     emit(stored)
+    record_with(slot, "_let_go_of_reflected_{kind}")
     var fill_arguments = List<Integer>()
     fill_arguments.append(fresh)
     var filling = LowIntermediaryRepresentation.Instructions.Call(-1, "{kind}._fill_{object.described}", fill_arguments)
