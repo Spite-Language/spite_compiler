@@ -5,7 +5,6 @@ var no_slots = Dictionary<String, Integer>()
 var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
 var slots = List<Integer>()
 var old_values = List<Integer>()
-var old_threads = List<Integer>()
 
 func Callbacks(starting_lowering: FunctionLowering) {
     lowering = starting_lowering
@@ -14,34 +13,99 @@ func Callbacks(starting_lowering: FunctionLowering) {
 func handed_for_the_call(argument: HighIntermediaryRepresentation.Values.Value): Integer {
     var value = lowering.lower_value(argument)
     lowering.release_later(value, argument.value_type)
-    var room = zeroed(16)
+    var room = zeroed(8)
     var label = lowering.data_label(room)
     var name = passed_name(argument)
     var source = lowering.path
     var line = lowering.line
     var message = "spite: C called '{name}' ({source}:{line}) after the foreign call that handed it over had returned, or on another thread: a function C keeps, or calls from a thread of its own, is handed over as a ForeignCallback the program keeps for as long as C may call it\n"
     var key = call_trampoline(argument.value_type, label, message)
-    var slot = lowering.new_register()
-    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
-    lowering.emit(addressed)
+    var index = thread_slot_of(label)
+    var asking = List<Integer>()
+    asking.append(index)
     var old_value = lowering.new_register()
-    var loaded_value = LowIntermediaryRepresentation.Instructions.Load(old_value, slot, 0, 'bits_64')
-    lowering.emit(loaded_value)
-    var old_thread = lowering.new_register()
-    var loaded_thread = LowIntermediaryRepresentation.Instructions.Load(old_thread, slot, 8, 'bits_64')
-    lowering.emit(loaded_thread)
-    var thread = current_thread()
-    var stored_value = LowIntermediaryRepresentation.Instructions.Store(slot, 0, value.value, 'bits_64')
-    lowering.emit(stored_value)
-    var stored_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 8, thread, 'bits_64')
-    lowering.emit(stored_thread)
-    slots.append(slot)
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(old_value, "TlsGetValue", asking)
+    lowering.emit(asked)
+    set_the_thread_slot(lowering, index, value.value)
+    slots.append(index)
     old_values.append(old_value)
-    old_threads.append(old_thread)
     var address = lowering.new_register()
     var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(address, key)
     lowering.emit(found)
     return address
+}
+
+func set_the_thread_slot(making: FunctionLowering, index: Integer, value: Integer) {
+    var setting = List<Integer>()
+    setting.append(index)
+    setting.append(value)
+    var set = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "TlsSetValue", setting)
+    making.emit(set)
+}
+
+func thread_slot_of(label: Integer): Integer {
+    var room = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(room, label)
+    lowering.emit(addressed)
+    var kept = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(kept, room, 0, 'bits_64')
+    lowering.emit(loaded)
+    var zero = lowering.constant(0)
+    var is_new = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_new, 'equal', kept, zero)
+    lowering.emit(compared)
+    var claiming = lowering.new_block()
+    var known = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_new, claiming, known)
+    lowering.emit(test)
+    lowering.switch_to(claiming)
+    var no_arguments = List<Integer>()
+    var made = lowering.new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.ImportCall(made, "TlsAlloc", no_arguments)
+    lowering.emit(allocated)
+    var none_left = lowering.constant(4294967295)
+    var failed = lowering.new_register()
+    var compared_failed = LowIntermediaryRepresentation.Instructions.Compare(failed, 'equal', made, none_left)
+    lowering.emit(compared_failed)
+    var stopping = lowering.new_block()
+    var claimed = lowering.new_block()
+    var failed_test = LowIntermediaryRepresentation.Instructions.Branch(failed, stopping, claimed)
+    lowering.emit(failed_test)
+    stop_in(lowering, stopping, "spite: the program stopped: the system had no thread slot left for a function handed to C (TlsAlloc failed)\n")
+    lowering.switch_to(claimed)
+    var one = lowering.constant(1)
+    var counted = lowering.new_register()
+    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(counted, 'add', made, one)
+    added.is_checked = false
+    lowering.emit(added)
+    var before = lowering.new_register()
+    var exchanged = LowIntermediaryRepresentation.Instructions.CompareExchange(before, room, 0, zero, counted)
+    lowering.emit(exchanged)
+    var lost = lowering.new_register()
+    var compared_lost = LowIntermediaryRepresentation.Instructions.Compare(lost, 'not_equal', before, zero)
+    lowering.emit(compared_lost)
+    var giving_back = lowering.new_block()
+    var won = lowering.new_block()
+    var lost_test = LowIntermediaryRepresentation.Instructions.Branch(lost, giving_back, won)
+    lowering.emit(lost_test)
+    lowering.switch_to(giving_back)
+    var freeing = List<Integer>()
+    freeing.append(made)
+    var freed = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "TlsFree", freeing)
+    lowering.emit(freed)
+    var took_theirs = LowIntermediaryRepresentation.Instructions.Copy(kept, before)
+    lowering.emit(took_theirs)
+    lowering.jump_to(known)
+    lowering.switch_to(won)
+    var took_mine = LowIntermediaryRepresentation.Instructions.Copy(kept, counted)
+    lowering.emit(took_mine)
+    lowering.jump_to(known)
+    lowering.switch_to(known)
+    var index = lowering.new_register()
+    var taken = LowIntermediaryRepresentation.Instructions.Arithmetic(index, 'subtract', kept, one)
+    taken.is_checked = false
+    lowering.emit(taken)
+    return index
 }
 
 func restore() {
@@ -49,13 +113,9 @@ func restore() {
     while index < slots.count() {
         var slot = slots[index]
         var old_value = old_values[index]
-        var old_thread = old_threads[index]
+        crash slot
         crash old_value
-        crash old_thread
-        var stored_value = LowIntermediaryRepresentation.Instructions.Store(slot, 0, old_value, 'bits_64')
-        lowering.emit(stored_value)
-        var stored_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 8, old_thread, 'bits_64')
-        lowering.emit(stored_thread)
+        set_the_thread_slot(lowering, slot, old_value)
         index = index + 1
     }
 }
@@ -80,42 +140,33 @@ func zeroed(size: Integer): Buffer {
     return room
 }
 
-func current_thread(): Integer {
-    var thread = lowering.new_register()
-    var no_arguments = List<Integer>()
-    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
-    lowering.emit(asked)
-    return thread
-}
-
 func call_trampoline(function_type: Model.Type, label: Integer, message: String): String {
     var key = trampoline_key()
     var making = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
     making.start(key)
     var parameters = take_the_c_parameters(making, function_type.parameters, -1)
-    var slot = making.new_register()
-    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    var room = making.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(room, label)
     making.emit(addressed)
-    var value = making.new_register()
-    var loaded = LowIntermediaryRepresentation.Instructions.Load(value, slot, 0, 'bits_64')
+    var kept = making.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(kept, room, 0, 'bits_64')
     making.emit(loaded)
     var checking = making.new_block()
     var stopping = making.new_block()
     var calling = making.new_block()
-    stop_when_zero(making, value, stopping, checking)
+    stop_when_zero(making, kept, stopping, checking)
     making.switch_to(checking)
-    var kept_thread = making.new_register()
-    var loaded_thread = LowIntermediaryRepresentation.Instructions.Load(kept_thread, slot, 8, 'bits_64')
-    making.emit(loaded_thread)
-    var thread = making.new_register()
-    var no_arguments = List<Integer>()
-    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
+    var one = making.constant(1)
+    var index = making.new_register()
+    var taken = LowIntermediaryRepresentation.Instructions.Arithmetic(index, 'subtract', kept, one)
+    taken.is_checked = false
+    making.emit(taken)
+    var asking = List<Integer>()
+    asking.append(index)
+    var value = making.new_register()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(value, "TlsGetValue", asking)
     making.emit(asked)
-    var same = making.new_register()
-    var compared = LowIntermediaryRepresentation.Instructions.Compare(same, 'equal', kept_thread, thread)
-    making.emit(compared)
-    var test = LowIntermediaryRepresentation.Instructions.Branch(same, calling, stopping)
-    making.emit(test)
+    stop_when_zero(making, value, stopping, calling)
     stop_in(making, stopping, message)
     making.switch_to(calling)
     call_through(making, value, parameters, function_type)
