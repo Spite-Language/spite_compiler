@@ -1,0 +1,420 @@
+# ../../HOT_RELOAD.md#the-parts
+var no_program = LowIntermediaryRepresentation.LoweredProgram()
+var emitter = Emitter(no_program)
+var no_code = Buffer(0)
+var spans = FunctionSpans(emitter, no_code)
+var code = Buffer(0)
+var host = Model.ReloadHost()
+var address: Long = 0
+var image = Buffer(0)
+var copied_keys = List<String>()
+var copy_starts = Dictionary<String, Integer>()
+var copy_deltas = Dictionary<String, Integer>()
+var new_keys = List<String>()
+var changed_keys = List<String>()
+var placed_labels = Dictionary<Integer, Integer>()
+var placed_sites = Dictionary<Integer, Integer>()
+var new_states = Dictionary<String, Integer>()
+var slot_writes = List<Long>()
+var code_room = 0
+var data = Buffer(0)
+var answer = List<String>()
+var bytes = Buffer(0)
+var refusing = Validators.HotReload.Validator()
+
+func ReloadLibrary(starting_spans: FunctionSpans, starting_host: Model.ReloadHost, starting_address: Long) {
+    spans = starting_spans
+    emitter = starting_spans.emitter
+    code = starting_spans.code
+    host = starting_host
+    address = starting_address
+}
+
+func written(): Boolean {
+    if spans.routines_digest != host.routines {
+        refusing.refuse(
+            "the routines every function shares (allocating, freeing, stopping) are compiled differently now, which a reload cannot swap under the running program: start the program again",
+        )
+    }
+    choose_the_functions()
+    note_the_removed()
+    if copied_keys.is_empty() {
+        answer.append("no code the program runs changed, so nothing was rebuilt")
+        return false
+    }
+    copy_the_code()
+    copied_keys.each(relocate)
+    write_the_slots()
+    write_the_library()
+    update_the_host()
+    name_the_rebuilt()
+    return true
+}
+
+func choose_the_functions() {
+    var index = 0
+    while index < spans.keys.count() {
+        var key = spans.keys[index]
+        crash key
+        if key != "_start" {
+            choose(key)
+        }
+        index = index + 1
+    }
+}
+
+func choose(key: String) {
+    var digest = spans.digests[key]
+    crash digest
+    var known = host.digests[key]
+    if not known {
+        new_keys.append(key)
+        copied_keys.append(key)
+        return
+    }
+    if known != digest {
+        changed_keys.append(key)
+        copied_keys.append(key)
+    }
+}
+
+func note_the_removed() {
+    var index = 0
+    while index < host.function_keys.count() {
+        var key = host.function_keys[index]
+        crash key
+        var is_shown = not key.starts_with("_") and not key.contains("$")
+        var found = spans.span_of(key)
+        if is_shown and not found {
+            answer.append("removed {key}")
+        }
+        index = index + 1
+    }
+}
+
+func copy_the_code() {
+    var index = 0
+    while index < copied_keys.count() {
+        var key = copied_keys[index]
+        crash key
+        var span = spans.span_of(key)
+        crash span
+        var start = spans.starts[span]
+        var end = spans.ends[span]
+        crash start
+        crash end
+        if changed_keys.contains(key) {
+            var body = emitter.body_offsets[key]
+            crash body
+            start = body
+        }
+        while image.count() % 32 != 0 {
+            image.append(204)
+        }
+        var placed = image.count()
+        copy_starts[key] = placed
+        copy_deltas[key] = placed - start
+        var at = start
+        while at < end {
+            var read = code[at]
+            crash read
+            image.append(read)
+            at = at + 1
+        }
+        index = index + 1
+    }
+    while image.count() % 16 != 0 {
+        image.append(204)
+    }
+    code_room = image.count()
+}
+
+func relocate(key: String) {
+    var span = spans.span_of(key)
+    crash span
+    var found = spans.references[span]
+    var delta = copy_deltas[key]
+    var placed = copy_starts[key]
+    crash found
+    crash delta
+    crash placed
+    var index = 0
+    while index < found.count() {
+        var reference = found[index]
+        crash reference
+        var position = reference.at + delta
+        if position >= placed {
+            var target = target_of(reference, key)
+            var next: Long = address + position + 4
+            var distance = target - next
+            var fits = distance >= -2147483648 and distance <= 2147483647
+            if not fits {
+                refusing.refuse("the new code of '{key}' lands too far from the program to reach it")
+            }
+            var near = distance.to_integer()
+            image.write_integer_little_endian_at(position, near)
+        }
+        index = index + 1
+    }
+}
+
+func target_of(reference: Reference, key: String): Long {
+    switch reference.kind {
+        'call': return function_address(reference.target, key)
+        'import': return imported(host.imports, reference.target, key)
+        'library': return imported(host.library_imports, reference.target, key)
+        'data': return data_address(reference.index, key)
+        'foreign': return foreign_address(reference)
+        'routine': return host.text_base + reference.index
+    }
+}
+
+func function_address(callee: String, caller: String): Long {
+    var stub = host.stubs[callee]
+    if stub {
+        return stub
+    }
+    var placed = copy_starts[callee]
+    if not placed {
+        refusing.refuse("'{caller}' calls '{callee}', which neither the running program nor the new code has")
+    }
+    crash placed
+    return address + placed
+}
+
+func imported(table: Dictionary<String, Long>, name: String, key: String): Long {
+    var found = table[name]
+    if not found {
+        refusing.refuse(
+            "the new code of '{key}' calls '{name}' of the system, which the running program never imports: start the program again to take it",
+        )
+    }
+    crash found
+    return found
+}
+
+func data_address(label: Integer, key: String): Long {
+    var name = emitter.program.state_names[label]
+    if name {
+        return state_address(label, name, key)
+    }
+    if not emitter.program.constant_labels.contains(label) {
+        refusing.refuse(
+            "the new code of '{key}' reaches data the compiler did not name, so the reload cannot tell whether the running program holds it already: start the program again",
+        )
+    }
+    var placed = placed_label(label)
+    return address + placed
+}
+
+func state_address(label: Integer, name: String, key: String): Long {
+    if name.is_empty() {
+        refusing.refuse(
+            "the new code of '{key}' reaches state the compiler did not name, so it cannot be matched to the running program's: start the program again",
+        )
+    }
+    var running = host.states[name]
+    if running {
+        return running
+    }
+    var placed = placed_label(label)
+    new_states[name] = placed
+    return address + placed
+}
+
+func placed_label(label: Integer): Integer {
+    var known = placed_labels[label]
+    if known {
+        return known
+    }
+    var held = emitter.program.data[label]
+    crash held
+    while data.count() % 8 != 0 {
+        data.append(0)
+    }
+    var placed = code_room + data.count()
+    var held_count = held.count()
+    var index = 0
+    while index < held_count {
+        var read = held[index]
+        crash read
+        data.append(read)
+        index = index + 1
+    }
+    if held_count == 0 {
+        data.append(0)
+    }
+    placed_labels[label] = placed
+    return placed
+}
+
+func foreign_address(reference: Reference): Long {
+    var placed = placed_site(reference.index)
+    if reference.target == "owner" {
+        return address + placed + 8
+    }
+    if reference.target == "name" {
+        return address + placed + 16
+    }
+    return address + placed
+}
+
+func placed_site(site: Integer): Integer {
+    var known = placed_sites[site]
+    if known {
+        return known
+    }
+    var name = emitter.foreign_names[site]
+    crash name
+    while data.count() % 8 != 0 {
+        data.append(0)
+    }
+    var placed = code_room + data.count()
+    var index = 0
+    while index < 16 {
+        data.append(0)
+        index = index + 1
+    }
+    var name_bytes = name.to_bytes()
+    var name_count = name_bytes.count()
+    index = 0
+    while index < name_count {
+        var read = name_bytes[index]
+        crash read
+        data.append(read)
+        index = index + 1
+    }
+    data.append(0)
+    placed_sites[site] = placed
+    return placed
+}
+
+func write_the_slots() {
+    var index = 0
+    while index < changed_keys.count() {
+        var key = changed_keys[index]
+        crash key
+        var slot = host.slots[key]
+        var placed = copy_starts[key]
+        crash slot
+        crash placed
+        slot_writes.append(slot)
+        slot_writes.append(address + placed)
+        index = index + 1
+    }
+    index = 0
+    while index < new_keys.count() {
+        var key = new_keys[index]
+        crash key
+        var body = body_in_the_image(key)
+        var label = emitter.slot_labels[key]
+        crash label
+        var placed = placed_labels[label]
+        crash placed
+        var place_in_data = placed - code_room
+        var value: Long = address + body
+        data.write_long_little_endian_at(place_in_data, value)
+        index = index + 1
+    }
+}
+
+func body_in_the_image(key: String): Integer {
+    var body = emitter.body_offsets[key]
+    var delta = copy_deltas[key]
+    crash body
+    crash delta
+    return body + delta
+}
+
+func write_the_library() {
+    var size = code_room + data.count()
+    var slot_count = slot_writes.count() / 2
+    bytes.append_long_little_endian(address)
+    bytes.append_integer_little_endian(size)
+    bytes.append_integer_little_endian(slot_count)
+    var index = 0
+    while index < image.count() {
+        var read = image[index]
+        crash read
+        bytes.append(read)
+        index = index + 1
+    }
+    index = 0
+    while index < data.count() {
+        var read = data[index]
+        crash read
+        bytes.append(read)
+        index = index + 1
+    }
+    index = 0
+    while index < slot_writes.count() {
+        var written_long = slot_writes[index]
+        crash written_long
+        bytes.append_long_little_endian(written_long)
+        index = index + 1
+    }
+}
+
+func update_the_host() {
+    host.generation = host.generation + 1
+    var index = 0
+    while index < copied_keys.count() {
+        var key = copied_keys[index]
+        crash key
+        var digest = spans.digests[key]
+        crash digest
+        var owner = spans.owner_of(key)
+        if changed_keys.contains(key) {
+            var stub = host.stubs[key]
+            var slot = host.slots[key]
+            crash stub
+            crash slot
+            host.add_a_function(key, stub, slot, digest, owner)
+        } else {
+            add_a_new_function(key, digest, owner)
+        }
+        index = index + 1
+    }
+    var names = new_states.keys()
+    index = 0
+    while index < names.count() {
+        var name = names[index]
+        var placed = new_states[name]
+        crash placed
+        host.add_a_state(name, address + placed)
+        index = index + 1
+    }
+}
+
+func add_a_new_function(key: String, digest: String, owner: String) {
+    var placed = copy_starts[key]
+    var label = emitter.slot_labels[key]
+    crash placed
+    crash label
+    var slot_placed = placed_labels[label]
+    crash slot_placed
+    var stub: Long = address + placed
+    var slot: Long = address + slot_placed
+    host.add_a_function(key, stub, slot, digest, owner)
+}
+
+func name_the_rebuilt() {
+    var owners = List<String>()
+    var index = 0
+    while index < copied_keys.count() {
+        var key = copied_keys[index]
+        crash key
+        var owner = spans.owner_of(key)
+        var is_machinery = owner.starts_with("Spite.") or owner == "ReadEvaluatePrintLoop"
+        var is_shown = not owner.is_empty() and not is_machinery
+        if is_shown and not owners.contains(owner) {
+            owners.append(owner)
+        }
+        index = index + 1
+    }
+    if owners.is_empty() {
+        owners.append("the compiler's own functions")
+    }
+    var joined = owners.join(", ")
+    answer.insert(0, "rebuilt {joined}")
+}

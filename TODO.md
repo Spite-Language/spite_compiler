@@ -37,6 +37,9 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 - Leaks `--debug-memory` cannot be asked about: `tests/divisions`, `objects` and `receivers` declare a `Build` without `debug_memory`, so they are not swept (D1242, D1256); a reflection object made on two threads at once records itself on the list let go at exit without a lock
 
+- A crash inside code a reload swapped in is looked up in the executable's place table, which knows only the executable's code, so its report does not name the reloaded function (D1362)
+- An object-literal class is named by its place among the program's literals (`Object3`), so a reload that adds a literal before another gives the running program's class id to a different literal; a class test between the two answers wrongly when their layouts agree
+
 ## The language
 - `Spite.Call` on a declaration known only at run time (D864, D1271): an argument filled twice is not refused (the second write replaces the first), an argument the function lacks halts only as "fills an argument ... does not have" without naming it, and a parameter that is nullable, a union or a `type` halts instead of being passed
 - A function value of another object held in a local (`var roar = troll.roar`, then `run(roar)`) is still looked up by name in its class object's `.functions`, bound to the stand-in and not to `troll`, so its `call_function()` runs on the stand-in (D866): describing it in place, bound to its object, loses its `accesses`, which are filled only after the program's functions are built
@@ -113,11 +116,11 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Crash reports
 - `--final-classes` (D1223): the printed folder does not run as the same program yet (its entry still loads the library by its path, and the library's classes are printed beside it), and the classes the compiler makes without a file (`Spite.Work`, the functions it writes) are not printed
 - Options a program's `build.spite` sets are read only for `final_classes`; `executable_path`, `optimization_report`, `check` and `build` are read from the command line alone
-- `--repl-port`; `--hot-reload` is refused until it swaps code (D1241): every part of `HOT_RELOAD.md` (slots, the reload library, the manifest, the file hashes, the watcher, moving live objects, `Reload` filled by each swap) is to build, and whether the reflection model can be the manifest; `--development` (D1243) makes singletons ordinary objects and turns off the passes an inspectable build skips, but still tree-shakes every function nothing reaches
-- `--repl` (D698 to D701): a singleton made with arguments (`Channel(1)`), `bytes <path>` and `memory`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes, `eval`, `run`, breakpoints and `reload`
+- `--repl-port`; `--hot-reload` (D1361 to D1369) swaps changed functions in, but does not yet move live objects to a new layout (a reload that changes a class's attributes is refused), compile on a helper thread (the compile runs at the check point that finds the save, so the program waits for it), hold a reload while a `Concurrent` waits inside a function it swaps, swap reflection (`<Class>___functions`) so the REPL lists a function a reload added, or name the place of a crash inside reloaded code; whether the reflection model can be the manifest is open; `--development` (D1243) makes singletons ordinary objects and turns off the passes an inspectable build skips, but still tree-shakes every function nothing reaches
+- `--repl` (D698 to D701): a singleton made with arguments (`Channel(1)`), `bytes <path>` and `memory`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes, `eval`, `run` and breakpoints
 - `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
 - `--repl-port` (D1236): a command is answered only at a loop's check point and after the constructor returns, not where the program waits (`Program.sleep`, `Console.read_line`, a `File` or `Socket` call, a `Concurrent`'s value); a check point asks a flag a thread raises every 25 ms, not the REPL thread's handover, so an answer waits up to 25 ms; `exit` ends the program at once, not at the next wait or pass
-- `--repl` (D698 to D701, D1234, D1235, D1237): `memory` counts live allocations but not their bytes (`Program().live_allocations()` and `live_bytes()` are not in the library); a class of the standard library is walked by its attributes, and none of its functions can be called at the prompt; `eval`, `run`, breakpoints, `reload`, `last_reload`, `wait_reload` and a construction on the right of `=` only answer their refusal, since they need the `--hot-reload` machinery
+- `--repl` (D698 to D701, D1234, D1235, D1237): `memory` counts live allocations but not their bytes (`Program().live_allocations()` and `live_bytes()` are not in the library); a class of the standard library is walked by its attributes, and none of its functions can be called at the prompt; `eval`, `run`, breakpoints, `reload` with a map of renamed attributes and a construction on the right of `=` only answer their refusal, since they need code compiled into the running program and called through reflection that follows a reload (`reload`, `last_reload` and `wait_reload` answer in a `--hot-reload` build)
 - Caches per step and per unit
 
 ## The compiler proves itself
@@ -212,8 +215,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ### The compiler's own machinery
 
 - REPL, live reload and debug machinery only in those builds
-- A reload compiles only the classes that changed
-- What a `--hot-reload` build carries so its objects can move
+- A reload compiles only the classes that changed: the proof finds them and a save that changed nothing answers `unchanged` (D1368), but the whole program is still lowered and emitted to find the functions whose code changed
+- What a `--hot-reload` build carries so its objects can move (the hidden `spite_moved` and `spite_live` words, `<Class>___fields`)
 - A crash's report is kept out of the way (27.1 ms to 20.4 ms since the read after `crash values[pick]` tests its index once, D1321, against the old compiler's 13.4): the hot path still jumps over the cold call on every pass (the block layout puts the call right after the test) and keeps the checked `picks[index] + round`
 - Smaller ones (45.8 ms to 29.1 ms since a loop calling a function value keeps its receiver's attributes in registers, D1324, against the old compiler's 26)
 - `a_word_inflected_while_compiling` runs about 10% slower (65 ms to 72 ms) since the register bounds (D1322) left ten checks of `String._plural_by_ending` and two of `String._inflected` out: fewer instructions, so the cause is in the generated code's layout, not yet found
@@ -280,7 +283,7 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 - Whether a class keeps state: the answer is a filled value, not a folded constant
 - Conditions decided while compiling: `function_waits` and `function_writes_parameter` are late (D673), a codegen number against a literal, a function taking a `type` copied per class, `x and false` and `x or true` whose `x` calls something
 - Tree shaking: nothing is shaken after lowering, inlining or late folding; a function nobody calls is not type-checked; no inspectable build keeps everything
-- A reload compiles only the changed classes, and reaches every object whose attributes it changes (no reload yet)
+- A reload compiles only the changed classes (it finds them, D1368, and compiles the whole program), and reaches every object whose attributes it changes (it refuses the reload instead, D1365, until objects move)
 
 ### Memory
 

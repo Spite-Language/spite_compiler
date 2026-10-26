@@ -1148,6 +1148,10 @@ costs little beside the loop, and the loop is
 where it stands), to a call outside every loop, or when the caller already holds 4000 instructions or has inlined
 64 calls.
 
+A `--hot-reload` build inlines nothing, and neither evaluates calls while compiling nor writes a copy of a callee
+for a call: every call goes through the callee's slot, so a loop that is running when a reload swaps a function
+calls the new code at its next pass ([HOT_RELOAD.md](HOT_RELOAD.md#the-parts)).
+
 What a user can observe: nothing in the output. The executable holds the callee once per call site.
 
 ```spite
