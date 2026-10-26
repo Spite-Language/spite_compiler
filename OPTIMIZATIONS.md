@@ -260,7 +260,8 @@ arithmetic a function receives from an inlined callee (`value * 2 + 3` in `score
 again in the caller. After inlining, every register written once gets the bounds its one write proves: a constant
 its value, a comparison 0 to 1, a load of a narrow width the range of that width, a remainder by a positive
 constant `k` from `-(k - 1)` to `k - 1` (from 0 when the dividend is never negative), a `bits_and` with a constant
-mask from 0 to the mask, a copy its source's bounds, and a sum, difference or product of bounded operands that fits
+mask that a value of its width can hold as a positive number from 0 to the mask (these two hold for the library's
+wrapping arithmetic too), a copy its source's bounds, and a sum, difference or product of bounded operands that fits
 its width the bounds of the result. A checked sum, difference or product whose bounds fit its width is not
 checked: it can never overflow.
 
@@ -275,6 +276,30 @@ func score(value: Integer): Integer {
 
 Inlined where `value` is `index % 100` and `bonus` is the constant 3, `value * 2` lies between -198 and 198 and the
 sum between -195 and 201: neither is checked.
+
+## A test its operands' bounds decide is answered while compiling
+
+The same bounds answer comparisons. A comparison of two registers, each written once with known bounds, whose answer
+is the same for every pair of values in them is replaced by that answer. A block's last branch on a register whose
+last write in the block is a constant (directly or through copies) becomes a jump, even when the register is
+written elsewhere too (a test joined with `and` writes one register twice): a
+`bits_and` with 63 is never below 0, a byte read is never above 255, and a value below 10 is never equal to 20. An
+unsigned comparison is answered only when neither side can be negative. A register written more than once (a loop's
+counter) has no bounds here, so its tests stay; [a bound a signed test already
+proved](#a-bound-a-signed-test-already-proved-is-not-tested-again) covers a loop's counter.
+
+```spite
+func digit_of(alphabet: String, group: Integer, shift: Integer): Integer {
+    var value = group.shifted_right(shift).bits_and(63)
+    return alphabet.code_at(value)
+}
+```
+
+`code_at` halts on an index outside the text: here only `value < alphabet.length()` is tested, since `value >= 0`
+holds for every value a mask with 63 can give.
+
+**What a program can observe:** nothing but time; a test the bounds do not decide still runs and still halts with
+the same report.
 
 ## A proven read tests only its bounds
 
@@ -2164,6 +2189,10 @@ signed `index >= 0` or `index < 0` of such an index is decided too (a `List.set_
 after an unsigned test of the same two values that already passed: the true side of an unsigned `index < count`, or
 the false side of an unsigned `index >= count` (the test a `crash values[pick]` makes before the read it proves),
 whatever the sign of the index, so `crash values[pick]` then `values[pick]` tests the index once.
+
+The tests are looked for twice in each round of cleaning: once early, and once more after the loop's invariant loads
+have moved out of it and equal loads have been merged, since a loop's count read in its test and again in the read
+(`bucket.count()` and `bucket[at]`) are two loads until then.
 
 ```spite
 func add_up(values: List<Float>): Float {

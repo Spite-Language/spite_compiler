@@ -49,6 +49,8 @@ func transformed(): LowIntermediaryRepresentation.LowFunction {
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
         block.instructions.each(uncheck_when_it_fits)
+        answer_the_decided_compares(block)
+        take_the_decided_branch(block)
         block_index = block_index + 1
     }
     return function
@@ -139,7 +141,7 @@ func learn_a_width(target: Integer, span: Long, is_signed: Boolean) {
 }
 
 func learn_an_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
-    assert not arithmetic.wraps and written_once(arithmetic.target) and not is_known(arithmetic.target)
+    assert written_once(arithmetic.target) and not is_known(arithmetic.target)
     if arithmetic.operator == 'remainder' {
         learn_a_remainder(arithmetic)
         return
@@ -148,7 +150,7 @@ func learn_an_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.
         learn_a_mask(arithmetic)
         return
     }
-    assert is_known(arithmetic.left) and is_known(arithmetic.right) and fits_its_width(arithmetic)
+    assert not arithmetic.wraps and is_known(arithmetic.left) and is_known(arithmetic.right) and fits_its_width(arithmetic)
     var low = result_low(arithmetic)
     var high = result_high(arithmetic)
     assert low <= high
@@ -171,12 +173,25 @@ func learn_a_remainder(arithmetic: LowIntermediaryRepresentation.Instructions.Ar
 func learn_a_mask(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
     if is_known(arithmetic.right) and low_of(arithmetic.right) >= 0 and low_of(arithmetic.right) == high_of(arithmetic.right) {
         var mask = high_of(arithmetic.right)
+        var span = span_of(arithmetic.width)
+        assert fits_between(true, 0, mask, span)
         learn(arithmetic.target, 0, mask)
         return
     }
     assert is_known(arithmetic.left) and low_of(arithmetic.left) >= 0 and low_of(arithmetic.left) == high_of(arithmetic.left)
     var left_mask = high_of(arithmetic.left)
+    var left_span = span_of(arithmetic.width)
+    assert fits_between(true, 0, left_mask, left_span)
     learn(arithmetic.target, 0, left_mask)
+}
+
+func span_of(width: LowIntermediaryRepresentation.Width): Long {
+    switch width {
+        'bits_8': return 256
+        'bits_16': return 65536
+        'bits_32': return 4294967296
+        'bits_64': return largest_bound
+    }
 }
 
 func is_small(register: Integer): Boolean {
@@ -281,4 +296,140 @@ func uncheck_an_arithmetic(arithmetic: LowIntermediaryRepresentation.Instruction
     assert arithmetic.is_checked and not arithmetic.wraps
     assert is_known(arithmetic.left) and is_known(arithmetic.right) and fits_its_width(arithmetic)
     arithmetic.is_checked = false
+}
+
+# ../../OPTIMIZATIONS.md#a-test-its-operands-bounds-decide-is-answered-while-compiling
+func answer_the_decided_compares(block: LowIntermediaryRepresentation.LowBlock) {
+    var at = 0
+    while at < block.instructions.count() {
+        var instruction = block.instructions[at]
+        crash instruction
+        if instruction == LowIntermediaryRepresentation.Instructions.Compare {
+            answer_a_decided_compare(block, at, instruction)
+        }
+        at = at + 1
+    }
+}
+
+func answer_a_decided_compare(
+    block: LowIntermediaryRepresentation.LowBlock,
+    at: Integer,
+    compared: LowIntermediaryRepresentation.Instructions.Compare,
+) {
+    assert is_known(compared.left) and is_known(compared.right)
+    var left_low = low_of(compared.left)
+    var left_high = high_of(compared.left)
+    var right_low = low_of(compared.right)
+    var right_high = high_of(compared.right)
+    assert compared.is_signed or left_low >= 0 and right_low >= 0
+    var answer = decided_answer(compared.comparison, left_low, left_high, right_low, right_high)
+    assert answer >= 0
+    block.instructions[at] = LowIntermediaryRepresentation.Instructions.Constant(compared.target, answer)
+}
+
+func take_the_decided_branch(block: LowIntermediaryRepresentation.LowBlock) {
+    var count = block.instructions.count()
+    assert count >= 2
+    var last = block.instructions[count - 1]
+    crash last
+    assert last == LowIntermediaryRepresentation.Instructions.Branch
+    var held = List<Integer>()
+    var values = List<Long>()
+    var at = 0
+    while at < count - 1 {
+        var instruction = block.instructions[at]
+        crash instruction
+        follow_a_constant(instruction, held, values)
+        at = at + 1
+    }
+    var found = position_of(held, last.condition)
+    assert found >= 0
+    var value = values[found]
+    crash value
+    var taken = last.when_true
+    if value == 0 {
+        taken = last.when_false
+    }
+    block.instructions[count - 1] = LowIntermediaryRepresentation.Instructions.Jump(taken)
+}
+
+func follow_a_constant(
+    instruction: LowIntermediaryRepresentation.Instructions.Instruction,
+    held: List<Integer>,
+    values: List<Long>,
+) {
+    var known_value: Long = 0
+    var is_known_value = false
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+        known_value = instruction.number
+        is_known_value = true
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Copy {
+        var source_at = position_of(held, instruction.source)
+        if source_at >= 0 {
+            var copied = values[source_at]
+            crash copied
+            known_value = copied
+            is_known_value = true
+        }
+    }
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var defined = operands.defines[index]
+        crash defined
+        forget(defined, held, values)
+        if is_known_value {
+            held.append(defined)
+            values.append(known_value)
+        }
+        index = index + 1
+    }
+}
+
+func forget(register: Integer, held: List<Integer>, values: List<Long>) {
+    var found = position_of(held, register)
+    assert found >= 0
+    held.remove_at(found)
+    values.remove_at(found)
+}
+
+func decided_answer(
+    comparison: LowIntermediaryRepresentation.Comparison,
+    left_low: Long,
+    left_high: Long,
+    right_low: Long,
+    right_high: Long,
+): Long {
+    var both_one_value = left_low == left_high and right_low == right_high and left_low == right_low
+    var apart = left_high < right_low or right_high < left_low
+    switch comparison {
+        'less': return decided(left_high < right_low, left_low >= right_high)
+        'less_or_equal': return decided(left_high <= right_low, left_low > right_high)
+        'greater': return decided(left_low > right_high, left_high <= right_low)
+        'greater_or_equal': return decided(left_low >= right_high, left_high < right_low)
+        'equal': return decided(both_one_value, apart)
+        'not_equal': return decided(apart, both_one_value)
+    }
+}
+
+func decided(always: Boolean, never: Boolean): Long {
+    if always {
+        return 1
+    }
+    if never {
+        return 0
+    }
+    return 0 - 1
+}
+
+func position_of(held: List<Integer>, register: Integer): Integer {
+    var index = 0
+    while index < held.count() {
+        if held[index] == register {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
 }

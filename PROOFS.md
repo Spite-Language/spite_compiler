@@ -377,12 +377,14 @@ as when each was refused while building.
   window read (`values[index + k]`) loses its test only when the registers line up with the loop test.
 - **Falls back**: each read keeps its unsigned test.
 - **Lives in**: the low proof `proofs/bounds_proven_by_signed_tests`, run on the low representation before the
-  pass `low_optimization_passes/proven_bounds` in each cleaning, which records on each function the unsigned bound
+  pass `low_optimization_passes/proven_bounds` twice in each cleaning (once early, and once after the loop's
+  invariant loads have moved out and equal loads are merged, when the count read by the loop's test and by the read
+  have become one register), which records on each function the unsigned bound
   tests a signed test, or an unsigned test of the same values that passed, already proved and the sign tests a
   never negative value decides; the pass only writes what
   it recorded. With `lowering/list_reads.spite`, `low_optimization_passes/loop_invariants` and
   `low_optimization_passes/vector_loops`.
-- **Checked by**: tests/counted_loops, tests/strided_counted_loops.
+- **Checked by**: tests/counted_loops, tests/strided_counted_loops, tests/decided_comparisons.
 
 ### A proven divisor is not checked
 

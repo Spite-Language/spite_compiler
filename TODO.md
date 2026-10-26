@@ -271,6 +271,7 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 
 - A proven count or bound proves a read: `<=` bounds; count facts in a `while`; undoing a proof inside the loop that read it is not refused; a shrinking call inside an assignment or argument does not undo it
 - A proven count or bound proves a read of a width (`read_<number>_at`), and a position known not to be negative drops the low test
+- A text's length known while compiling proves its `code_at`: a `String` attribute holding a literal that nothing changes keeps its literal's length, so `alphabet.code_at(value.bits_and(63))` on a 64-letter alphabet needs no test; today only the test below 0 is left out, and the one against the length stays (D1211)
 - An index built from loop counters is proven by one guard (`rows * stride <= list.count()`)
 - An index offset by a base is proven by one guard (`base + bound <= list.count()`)
 - A counted loop reads its items unchecked: a second list indexed by the counter keeps its test on every pass outside the vector loop, and a window read loses its test only when the registers line up
