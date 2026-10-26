@@ -32,6 +32,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A getter or setter called by its bare name inside its own class (`set_rotation(rotation)` in `Matrix4`) is not refused (D752 refuses `point.set_height(4)`), and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
 - A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
+- A fault inside reloaded code names its place (D1497), but its `spite.function` and `spite.caller` lines come from `<program>.functions`, which knows only the executable's code, so they print no key for a reloaded frame, and `at=` gives the bare address instead of the reload library
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
 
 
