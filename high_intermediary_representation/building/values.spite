@@ -466,7 +466,6 @@ func refuse_a_mistyped_function(
     var index = 0
     while index < wanted_count {
         var wanted_parameter = member.parameters[index]
-        crash wanted_parameter
         var found_parameter = function.parameters[index]
         crash found_parameter
         var found_type = found_parameter.parameter_type
@@ -724,7 +723,23 @@ func decimal_value(written: String, expected: Model.Type?): HighIntermediaryRepr
     if expected and expected.name == "Double" {
         decimal_type = context.scalar_type("Double")
     }
+    refuse_a_decimal_too_large(written, decimal_type.name)
     return HighIntermediaryRepresentation.Values.DecimalNumber(decimal_type, written)
+}
+
+func refuse_a_decimal_too_large(written: String, type_name: String) {
+    var parsed = written.to_double()
+    crash parsed
+    var doubled = parsed + parsed
+    var is_too_large = parsed > 1.0 and doubled == parsed
+    var largest_written = "1.7976931348623157e+308"
+    if type_name == "Float" {
+        var largest_float: Double = 340282346638528859811704183484516925440.0
+        is_too_large = parsed > largest_float
+        largest_written = "3.4028235e+38"
+    }
+    assert is_too_large
+    typing.refuse_a_decimal_too_large(context, written, type_name, largest_written)
 }
 
 func boolean_value(number: Long): HighIntermediaryRepresentation.Values.Value {
@@ -1256,6 +1271,10 @@ func member_value(
         return handle_member(written_target, member.name)
     }
     var target = written_target
+    var folded_setting = folded_build_read(target, member.name)
+    if folded_setting {
+        return folded_setting
+    }
     if target.value_type.kind == 'function' {
         return function_value_member(member, target)
     }
@@ -1798,6 +1817,70 @@ func bound_class_object(function: Model.FunctionModel): HighIntermediaryRepresen
         return reflection.class_object("{function.bound_member_type.name}?")
     }
     return reflection.class_object(function.bound_member_type.name)
+}
+
+# ../../OPTIMIZATIONS.md#build-settings-are-constants
+func folded_build_read(target: HighIntermediaryRepresentation.Values.Value, name: String): HighIntermediaryRepresentation.Values.Value? {
+    var held = target.value_type
+    assert held.kind == 'object' and held.name == "Build" and not held.is_nullable
+    var flags = context.build_flags
+    var is_live = flags.contains("hot_reload") or flags.contains("repl") or flags.contains("development")
+    assert not is_live
+    var settings = context.program.class_named("Build")
+    assert settings
+    var field = settings.attribute_named(name)
+    assert field
+    var field_type = field.attribute_type
+    assert field_type.kind == 'scalar' or field_type.kind == 'object' and field_type.name == "String"
+    var given = flags[name]
+    if given {
+        return build_value_of(given, field_type)
+    }
+    assert field.declaration
+    var written = field.declaration.value
+    return build_default_of(written, field_type)
+}
+
+func build_value_of(given: String, field_type: Model.Type): HighIntermediaryRepresentation.Values.Value? {
+    if field_type.name == "String" {
+        return described_text(given)
+    }
+    if field_type.name == "Boolean" {
+        var flag = 0
+        if given == "true" {
+            flag = 1
+        }
+        var boolean = context.boolean()
+        return HighIntermediaryRepresentation.Values.WholeNumber(boolean, flag)
+    }
+    assert field_type.name == "Integer" or field_type.name == "Long"
+    var number = given.to_long()
+    assert number
+    return HighIntermediaryRepresentation.Values.WholeNumber(field_type, number)
+}
+
+func build_default_of(
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    field_type: Model.Type,
+): HighIntermediaryRepresentation.Values.Value? {
+    if written == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        assert field_type.name == "String" and written.pieces.count() <= 1
+        var piece = written.pieces.first()
+        if not piece {
+            return described_text("")
+        }
+        assert not piece.hole
+        return described_text(piece.text)
+    }
+    assert written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression
+    if written.kind == 'keyword_true' {
+        return build_value_of("true", field_type)
+    }
+    if written.kind == 'keyword_false' {
+        return build_value_of("false", field_type)
+    }
+    assert written.kind == 'integer_literal'
+    return build_value_of(written.text, field_type)
 }
 
 func described_text(written: String): HighIntermediaryRepresentation.Values.Value {
@@ -2865,6 +2948,7 @@ func own_call(
     if passed_on {
         return passed_on
     }
+    refuse_a_bare_operator_call(call, function)
     var own = this_value()
     return called(function, own, call.arguments)
 }
@@ -3155,11 +3239,19 @@ func member_call(
     if receiver.value_type.kind == 'function' and callee.name == "call_function" {
         return value_call_of(receiver, call.arguments)
     }
+    var converted_number = number_conversion_call(receiver, callee.name, call.arguments)
+    if converted_number {
+        return converted_number
+    }
     if receiver.value_type.kind == 'shape' {
+        var typed = context.program.shape_keyed(receiver.value_type.name)
+        crash typed
+        refuse_an_operator_call_through_a_shape(callee, call, typed)
         return shape_call(receiver, callee.name, call.arguments)
     }
     if receiver.value_type.kind == 'union' {
         var through = union_shape_of(receiver.value_type, callee.name)
+        refuse_an_operator_call_through_a_shape(callee, call, through)
         var as_shape = Model.Type('shape', through.key)
         var shaped = HighIntermediaryRepresentation.Values.Conversion(as_shape, 'proven', receiver)
         return shape_call(shaped, callee.name, call.arguments)
@@ -3390,27 +3482,56 @@ func refuse_an_operator_call(
     function: Model.FunctionModel,
     receiver: HighIntermediaryRepresentation.Values.Value,
 ) {
-    var path = context.path()
-    assert not context.resolver.symbols.generated_texts[path]
     var receiver_kind = receiver.value_type.kind
     assert receiver_kind == 'object' or receiver_kind == 'scalar'
     var owner = present_class_of(receiver)
-    var name = callee.name
+    var is_its_own = owner.key == context.current_class.key and context.current_function.name == callee.name
+    assert not is_its_own
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    refuse_an_operator_by_name(call, callee.name, function, receiver_text, receiver_kind == 'scalar')
+}
+
+func refuse_an_operator_call_through_a_shape(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    shape: Model.ShapeModel,
+) {
+    var member = shape.member_named(callee.name)
+    assert member and context.current_function.name != callee.name
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    refuse_an_operator_by_name(call, callee.name, member, receiver_text, false)
+}
+
+func refuse_a_bare_operator_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, function: Model.FunctionModel) {
+    var indexes = function.name == "get_at" or function.name == "set_at"
+    assert context.current_function.name != function.name and not indexes
+    var is_a_number = scalars.is_a_scalar(context.current_class.key)
+    refuse_an_operator_by_name(call, function.name, function, "this", is_a_number)
+}
+
+func refuse_an_operator_by_name(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+    function: Model.FunctionModel,
+    receiver_text: String,
+    is_on_a_number: Boolean,
+) {
+    var path = context.path()
+    assert not context.resolver.symbols.generated_texts[path]
     var written_count = call.arguments.count()
     assert function.name == name and function.parameters.count() == written_count
     var operator = operator_written(name, written_count)
     assert not operator.is_empty()
-    var is_its_own = owner.key == context.current_class.key and context.current_function.name == name
-    assert not is_its_own
     var first_parameter = function.parameters.first()
     if first_parameter {
         var parameter_kind = first_parameter.parameter_type.kind
         assert parameter_kind != 'function'
-        assert name != "equals" or parameter_kind == 'object' or receiver_kind == 'scalar'
+        assert name != "equals" or parameter_kind == 'object' or is_on_a_number
     }
-    crash callee.target
-    var printer = Printers.Spite.ExpressionPrinter(callee.target)
-    var receiver_text = printer.text()
     var written_arguments = List<String>()
     var index = 0
     while index < call.arguments.count() {
@@ -5601,7 +5722,6 @@ func copy_an_inline_item(function: Model.FunctionModel, arguments: List<HighInte
     crash copying
     need(copying)
     var item = arguments[1]
-    crash item
     var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
     var copied = HighIntermediaryRepresentation.Values.Call(copying, item, no_arguments)
     arguments[1] = copied
@@ -6881,6 +7001,9 @@ func binary_value(
         refuse_a_constant_overflow(made)
         return made
     }
+    if is_the_number_shape(left.value_type) {
+        return number_dispatch(binary, operator, left, right)
+    }
     refuse_an_operator_on_a_shape(binary, operator, left)
     var answered = operator_call(operator, left, right)
     var printed = Printers.Spite.ExpressionPrinter(binary)
@@ -7489,6 +7612,205 @@ func operator_of(kind: AbstractSyntaxTree.Tokens.TokenKind): HighIntermediaryRep
         'and': return 'and'
         _: return 'or'
     }
+}
+
+# ../../OPTIMIZATIONS.md#operators-on-a-number-find-its-class-while-the-program-runs
+func number_dispatch(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.Value {
+    var printer = Printers.Spite.ExpressionPrinter(binary)
+    var shown = printer.text()
+    var number_type = left.value_type
+    var answer_type = answer_type_of(operator, number_type)
+    var held_left = held_operand(left)
+    var held_right = held_operand(right)
+    var start = number_start(answer_type)
+    temporary_count = temporary_count + 1
+    var name = context.scope.declare("number_{temporary_count}", answer_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, answer_type, start)
+    declared.line = context.line
+    context.pending.append(declared)
+    var path = context.path()
+    var function = context.current_function
+    var place = "at {path}:{context.line} in {function.owner}.{function.name}"
+    var other = "spite: '{shown}' reaches a Number of a class that is not a number class, whose operators are not chosen while the program runs, {place}"
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(other)
+    var chain = HighIntermediaryRepresentation.Statements.Block()
+    chain.statements.append(stopped)
+    var names = number_class_names()
+    var index = names.count() - 1
+    while index >= 0 {
+        var class_name = names[index]
+        crash class_name
+        var left_class = context.scalar_type(class_name)
+        var tested = HighIntermediaryRepresentation.Values.Class.Test(held_left, left_class)
+        var unboxed = HighIntermediaryRepresentation.Values.Conversion(left_class, 'unbox', held_left)
+        var branch = number_branch(operator, unboxed, held_right, name, answer_type, shown, place)
+        var otherwise = chain
+        chain = HighIntermediaryRepresentation.Statements.Block()
+        var test = HighIntermediaryRepresentation.Statements.If(tested, branch, otherwise)
+        chain.statements.append(test)
+        index = index - 1
+    }
+    var first = chain.statements[0]
+    crash first
+    context.pending.append(first)
+    return HighIntermediaryRepresentation.Values.LocalRead(answer_type, name)
+}
+
+func number_conversion_call(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+): HighIntermediaryRepresentation.Values.Value? {
+    assert is_the_number_shape(receiver.value_type) and written.is_empty()
+    assert name == "to_long" or name == "to_double"
+    var answer_type = context.scalar_type("Long")
+    if name == "to_double" {
+        answer_type = context.scalar_type("Double")
+    }
+    var held = held_operand(receiver)
+    var start = default_of_a_type(answer_type)
+    crash start
+    temporary_count = temporary_count + 1
+    var local_name = context.scope.declare("number_{temporary_count}", answer_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(local_name, answer_type, start)
+    declared.line = context.line
+    context.pending.append(declared)
+    var path = context.path()
+    var function = context.current_function
+    var other = "spite: '{name}()' reaches a Number of a class that is not a number class, whose functions are not chosen while the program runs, at {path}:{context.line} in {function.owner}.{function.name}"
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(other)
+    var chain = HighIntermediaryRepresentation.Statements.Block()
+    chain.statements.append(stopped)
+    var names = number_class_names()
+    var index = names.count() - 1
+    while index >= 0 {
+        var class_name = names[index]
+        crash class_name
+        var held_class = context.scalar_type(class_name)
+        var tested = HighIntermediaryRepresentation.Values.Class.Test(held, held_class)
+        var unboxed = HighIntermediaryRepresentation.Values.Conversion(held_class, 'unbox', held)
+        var converted = fitted(unboxed, answer_type)
+        var assigned = HighIntermediaryRepresentation.Statements.Assign.Assign(local_name, converted)
+        assigned.line = context.line
+        var branch = HighIntermediaryRepresentation.Statements.Block()
+        branch.statements.append(assigned)
+        var otherwise = chain
+        chain = HighIntermediaryRepresentation.Statements.Block()
+        var test = HighIntermediaryRepresentation.Statements.If(tested, branch, otherwise)
+        chain.statements.append(test)
+        index = index - 1
+    }
+    var first = chain.statements[0]
+    crash first
+    context.pending.append(first)
+    return HighIntermediaryRepresentation.Values.LocalRead(answer_type, local_name)
+}
+
+func number_start(answer_type: Model.Type): HighIntermediaryRepresentation.Values.Value {
+    if answer_type.kind == 'scalar' {
+        return HighIntermediaryRepresentation.Values.WholeNumber(answer_type, 0)
+    }
+    var integer = context.scalar_type("Integer")
+    var zero = HighIntermediaryRepresentation.Values.WholeNumber(integer, 0)
+    return fitted(zero, answer_type)
+}
+
+func held_operand(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
+    var is_plain = value == HighIntermediaryRepresentation.Values.LocalRead or value == HighIntermediaryRepresentation.Values.WholeNumber
+    if is_plain or value == HighIntermediaryRepresentation.Values.DecimalNumber {
+        return value
+    }
+    temporary_count = temporary_count + 1
+    var name = context.scope.declare("operand_{temporary_count}", value.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, value.value_type, value)
+    declared.line = context.line
+    context.pending.append(declared)
+    return HighIntermediaryRepresentation.Values.LocalRead(value.value_type, name)
+}
+
+func number_class_names(): List<String> {
+    return ["Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong", "Float", "Double"]
+}
+
+func number_branch(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    answer_type: Model.Type,
+    shown: String,
+    place: String,
+): HighIntermediaryRepresentation.Statements.Block {
+    var branch = HighIntermediaryRepresentation.Statements.Block()
+    if not is_the_number_shape(right.value_type) {
+        var made = number_operation(operator, left, right, name, answer_type, shown, place)
+        branch.statements.append(made)
+        return branch
+    }
+    var other = "spite: '{shown}' reaches a Number of a class that is not a number class on its right side, whose operators are not chosen while the program runs, {place}"
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(other)
+    var chain = HighIntermediaryRepresentation.Statements.Block()
+    chain.statements.append(stopped)
+    var names = number_class_names()
+    var index = names.count() - 1
+    while index >= 0 {
+        var class_name = names[index]
+        crash class_name
+        var right_class = context.scalar_type(class_name)
+        var tested = HighIntermediaryRepresentation.Values.Class.Test(right, right_class)
+        var unboxed = HighIntermediaryRepresentation.Values.Conversion(right_class, 'unbox', right)
+        var made_right = number_operation(operator, left, unboxed, name, answer_type, shown, place)
+        var inner = HighIntermediaryRepresentation.Statements.Block()
+        inner.statements.append(made_right)
+        var otherwise = chain
+        chain = HighIntermediaryRepresentation.Statements.Block()
+        var test = HighIntermediaryRepresentation.Statements.If(tested, inner, otherwise)
+        chain.statements.append(test)
+        index = index - 1
+    }
+    return chain
+}
+
+func number_operation(
+    operator: HighIntermediaryRepresentation.Values.Operator,
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+    answer_type: Model.Type,
+    shown: String,
+    place: String,
+): HighIntermediaryRepresentation.Statements.Statement {
+    var left_type = left.value_type
+    var right_type = right.value_type
+    var fitted_right = right
+    if left_type.name != right_type.name {
+        fitted_right = fitted(right, left_type)
+    }
+    var cuts = false
+    if fitted_right == HighIntermediaryRepresentation.Values.Conversion {
+        var kind = fitted_right.kind
+        cuts = kind == 'narrow' or kind == 'narrow_decimal' or kind == 'to_whole'
+    }
+    if cuts {
+        var left_article = article_for(left_type.name)
+        var right_article = article_for(right_type.name)
+        var message = "spite: '{shown}' works in {left_article} {left_type.name}, the class of its left side, and its right side is {right_article} {right_type.name}, which would be cut to fit, {place}"
+        var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+        stopped.line = context.line
+        return stopped
+    }
+    var operation_type = answer_type_of(operator, left_type)
+    var made = HighIntermediaryRepresentation.Values.MachineOperation(operation_type, operator, left, fitted_right)
+    made.shown = shown
+    var answered = fitted(made, answer_type)
+    var assigned = HighIntermediaryRepresentation.Statements.Assign.Assign(name, answered)
+    assigned.line = context.line
+    return assigned
 }
 
 func operator_call(

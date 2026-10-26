@@ -193,13 +193,16 @@ as when each was refused while building.
 - **Buys**: no dead checks in the source.
 - **Missing**: a re-check inside the `if`, `while` or `switch` that narrowed gets the "a condition is a Boolean"
   text instead; `[]` reads proven by a count or an earlier check are not refused; a divisor re-proven, a class test
-  already answered, the repeated next-line check and an `assert` that folds true are not refused; the plain-value
-  refusal covers parameters and attributes, not locals.
+  already answered, the repeated next-line check and an `assert` that folds true are not refused. The plain-value
+  refusal judges a local by the type it is declared with (written, or the type of its first value), so a local
+  declared `T?` and narrowed since is not refused by it; the library is held to it too, and only the compiler's
+  generated files (under `.spite/`) are not.
 - **Falls back**: the redundant check is kept as a run-time test (harmless), or refused with a less precise text.
 - **Lives in**: the proof `proofs/proven_checks`, judging what `statements.spite` recorded
   (`note_a_proven_check`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`, `note_the_checks`).
 - **Checked by**: conformance/check_proves_nothing, conformance/known_fact_checked, conformance/proven_element,
-  conformance/proven_index_check, conformance/assert_on_plain_value, conformance/leaving_if_proves_nothing.
+  conformance/proven_index_check, conformance/assert_on_plain_value, conformance/leaving_if_proves_nothing,
+  conformance/crash_on_plain_local.
 
 ### A copy made to narrow is an error
 

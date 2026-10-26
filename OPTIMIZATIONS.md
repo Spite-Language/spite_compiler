@@ -3494,3 +3494,59 @@ func scaled_sum(values: List<Float>, shift: Float): Float {
 
 With `values` filled by `(index % 64) * 0.25` and `shift` a whole number below 8, every term is a multiple of `0.125`
 no larger than `34.375`, so up to 61007 passes run in lanes and every partial total is exact.
+
+## Build settings are constants
+
+A read of a `Build` field (`build.serve`, `build.target_operating_system`) is the field's value written into the
+program: the value given on the command line (`--serve`, `--workers=3`), or else the field's declared default. A
+condition on it is decided while compiling, so only the branch that applies is built, and nothing is read when the
+program runs.
+
+**When it applies:** to a `Boolean`, whole-number or `String` field whose value is a literal, read through a `Build`
+binding (`var build = Build()`), in every build but a `--hot-reload`, `--repl`, `--repl-port` or `--development` one,
+where the program reads the field while it runs, so that a reload can change it.
+
+**When it does not apply:** a field whose default is not a literal is read from the singleton as before. Writing a
+field is refused ("'build.serve' is a setting decided while compiling ..."), since a read would never see the write.
+
+**What a program can observe:** only time and size: the branch not taken is not in the executable
+(`tests/build_folding`).
+
+```spite
+var console = Console()
+var build = Build()
+
+func Serve() {
+    if build.optimized {
+        console.print("an optimized build")
+    } else {
+        console.print("an ordinary build")
+    }
+}
+```
+
+## Operators on a Number find its class while the program runs
+
+`+`, `-`, `*`, `/`, `%`, `<`, `>`, `<=` and `>=` on a value typed `Number` that is not a parameter (an item of a
+`List<Number>`, an attribute) test the class the value holds, in the order of the number classes, and run that
+class's own arithmetic, with its rules: a right side of a class that would be cut to fit halts, "spite: 'a + b' works
+in an Integer, the class of its left side, and its right side is a Double, which would be cut to fit, at ...". The
+answer is a `Number` again (a `Boolean` for a comparison). A parameter typed `Number` is still compiled once per class
+that reaches it, with no test at all; only a value whose class is known only while the program runs is tested.
+
+**What a program can observe:** only time: one test per number class before the class that matches. A `Number` filled
+by a program's own class that declares the operators halts, naming the operation, since its function is not chosen
+while the program runs (`tests/number_values`).
+
+```spite
+var console = Console()
+
+func Totals() {
+    var numbers = List<Number>()
+    numbers.append(3)
+    numbers.append(2.5)
+    var first = numbers[0]
+    crash first
+    console.print(first + first)
+}
+```

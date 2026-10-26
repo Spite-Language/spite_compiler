@@ -225,7 +225,6 @@ func extend_the_reads_over_the_loop(log_start: Integer, reads_start: Integer) {
     var index = reads_start
     while index < context.narrowed_reads.count() {
         var read = context.narrowed_reads[index]
-        crash read
         if read.start < log_start {
             read.loop_end = context.logged_calls.count()
         }
@@ -292,6 +291,7 @@ func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
     var known_walks = KnownWalks(context, values)
     known_walks.note_a_function_list(name, statement.name, statement.value)
     note_a_function_local(name, statement.name, value)
+    note_a_plain_local(name, statement, local_type)
     note_a_null_local(name, statement.name, value)
     note_a_text_local(name, statement.name, value)
     note_a_copy(statement, name, local_type)
@@ -683,6 +683,11 @@ func assign_a_member(
     var owner = values.present_class_of(object)
     var attribute = owner.attribute_named(target.name)
     var is_outside = owner.key != context.current_class.key
+    var file_path = context.path()
+    var is_generated = file_path.contains("/.spite/")
+    if owner.key == "Build" and attribute and not is_generated {
+        typing.refuse_a_build_write(context, target.name)
+    }
     var setter = owner.function_named("set_{target.name}")
     if not setter and is_outside {
         setter = values.member_template_of(owner, "set_{target.name}")
@@ -1187,12 +1192,54 @@ func note_a_check_of_a_plain_name(
     condition: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
     keyword: String,
 ) {
+    var is_a_member = is_a_parameter(condition.name) or context.current_class.attribute_named(condition.name)
+    var local_name = context.scope.internal_name_of(condition.name)
+    if local_name and not is_a_member {
+        note_a_check_of_a_plain_local(local_name, keyword)
+        return
+    }
     var is_declared_plainly = is_a_parameter(condition.name) or context.current_class.attribute_named(condition.name)
     assert is_declared_plainly
     var written_value = values.value_of(condition, null)
     var site = CheckSite("plain value", context)
     site.is_converted = written_value == HighIntermediaryRepresentation.Values.Conversion
     site.checked_type = written_value.value_type
+    site.keyword = keyword
+    context.note_a_check_site(site)
+}
+
+func note_a_plain_local(
+    name: String,
+    statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
+    local_type: Model.Type,
+) {
+    assert not local_type.is_nullable
+    var written = statement.value
+    var is_made = false
+    if written == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        is_made = names_a_class(written.callee)
+    }
+    assert statement.declared_type or is_made
+    context.plain_locals.append(name)
+}
+
+func names_a_class(callee: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var first = callee.name.code_at(0)
+        return first >= 65 and first <= 90
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return callee.is_a_class_name
+    }
+    return false
+}
+
+func note_a_check_of_a_plain_local(local_name: String, keyword: String) {
+    assert context.plain_locals.contains(local_name)
+    var declared_type = context.scope.types[local_name]
+    assert declared_type
+    var site = CheckSite("plain value", context)
+    site.checked_type = declared_type
     site.keyword = keyword
     context.note_a_check_site(site)
 }
