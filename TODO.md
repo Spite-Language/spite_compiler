@@ -205,7 +205,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The compiler's own machinery
 
-- REPL, live reload and debug machinery only in those builds
 - A reload compiles only the classes that changed: the proof finds them and a save that changed nothing answers `unchanged` (D1368), but the whole program is still lowered and emitted to find the functions whose code changed
 - What a `--hot-reload` build carries so its objects can move (the hidden `spite_moved` and `spite_live` words, `<Class>___fields`)
 - A crash's report is kept out of the way (27.1 ms to 20.4 ms since the read after `crash values[pick]` tests its index once, D1321, against the old compiler's 13.4): the hot path still jumps over the cold call on every pass (the block layout puts the call right after the test) and keeps the checked `picks[index] + round`

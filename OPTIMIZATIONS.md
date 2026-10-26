@@ -3788,3 +3788,27 @@ func ForeignNames() {
     console.print("asked", tick > 0, running > 0)
 }
 ```
+
+## The REPL, live reload and debug machinery are only in those builds
+
+Everything that exists to look inside a running program is compiled only into the build that asks for it:
+
+- `--repl` and `--repl-port`: the classes of the prompt (`Spite.Prompt`, `Spite.PromptPath`, and the socket's
+  `listen`, `serve` and `check_point` for `--repl-port`) are written by the compiler for that build only, with the
+  allocation counts the prompt reads.
+- `--hot-reload` (or `hot_reload = true` in `build.spite`): `Spite.HotReload` and `Spite.ReloadPoint`, a slot per
+  function that its first instruction jumps through, functions aligned to 32 bytes, the manifest's names of the data,
+  and the check point at the end of each loop's pass.
+- `--debug-memory`: the four counts of allocations, frees and live objects and bytes, and the report of what leaked.
+  An ordinary build keeps the counts only when the program reads `live_allocations()` or `live_bytes()`.
+
+**When it applies:** always: it is the inspecting itself, present only where it is asked for. **What a user can
+observe:** an ordinary build's executable holds none of it, and runs as if those flags did not exist.
+
+```spite
+var console = Console()
+
+func Plain() {
+    console.print("no prompt, no reload slots, no allocation table")
+}
+```
