@@ -27,7 +27,7 @@ anything themselves. A proof on the low representation is a `LowProof`, in its o
 proof, registered among the low passes right before the pass that reads its facts. `ARCHITECTURE.md` lists the
 order.
 
-Of the 92 proofs the old compiler made, 33 are built, 38 are partly built and 21 are missing (audit of
+Of the 92 proofs the old compiler made, 34 are built, 37 are partly built and 21 are missing (audit of
 2026-10-24, with what was built since). Where a proof is partly built and what is missing could let a wrong program through, the section says
 **fails silently**: that is a D244 bug and its `TODO.md` line comes first.
 
@@ -936,12 +936,18 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 - **Status**: partly built.
 - **Rule**: an object attribute of a singleton assigned by no function but its constructor is read from other
-  classes as its address, with no count and no lock.
-- **Missing**: the per-attribute fact: a singleton is steady only when all its attributes are plain.
-- **Falls back**: a counted read.
+  classes as its address, with no count and no lock. Attribute by attribute: a number, `Boolean`, enum or object
+  attribute (not a text, not nullable, not embedded, lent or a back reference) that nothing assigns after its
+  singleton is made, and of a class no `type` writes through, holds the same value for the rest of the program, so
+  its load through a singleton made at the start is the same everywhere and is moved out of loops and shared.
+- **Missing**: the read with no count for an object attribute of a singleton that has other attributes that change.
+- **Falls back**: a counted read, loaded where it is written.
 - **Lives in**: `high_intermediary_representation/singleton_forms.spite`, the low proof
-  `proofs/singletons_made_at_start` (the next section), the passes `made_singletons` and `unread_objects`.
-- **Checked by**: tests/singleton_attribute_reads.
+  `proofs/singletons_made_at_start` (the next section), the passes `made_singletons` and `unread_objects`; the
+  attributes by the proof `proofs/steady_singleton_attributes`, the last of the high passes
+  (`HighProgram.steady_singleton_attributes`), which `made_singletons` reads to mark the loads. Not in the
+  inspectable builds.
+- **Checked by**: tests/singleton_attribute_reads, tests/steady_singleton_reads (output only).
 
 ### A list's templates read their elements uncounted
 
@@ -958,10 +964,13 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 - **Status**: partly built.
 - **Rule**: between `var item = list[index]` and `list[index] = item`, with nothing between that may change the
   name, the index, the path or the list, the write-back is not written and the read is uncounted.
-- **Missing**: a write-back nested in a block, and lists other than a library `List` of numbers or objects.
+  A write-back nested in an `if`, a `while` or a block after the read is the slot too, when the index never moves in
+  the rest of the block and nothing else there can change the name, the path or the list.
+- **Missing**: lists other than a library `List` of numbers or objects.
 - **Falls back**: a counted read and the write-back written.
-- **Lives in**: the lowering, `function_lowering.spite` (`write_back_of`, `is_a_write_back`).
-- **Checked by**: tests/slot_write_backs.
+- **Lives in**: the lowering, `function_lowering.spite` (`write_back_of`, `is_a_write_back`,
+  `leaves_alone_but_a_nested_write_back`).
+- **Checked by**: tests/slot_write_backs, tests/nested_write_backs.
 
 ### A value followed through calls is the slot it was read from
 
@@ -1145,24 +1154,37 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### Read-only and atomic singletons
 
-- **Status**: partly built.
+- **Status**: built.
 - **Rule**: a singleton nothing changes after it is made takes no lock; one whose changing attributes are numbers
-  touched once per function, outside loops, is atomic.
-- **Missing**: one lone atomic attribute inside a locked singleton.
-- **Falls back**: the whole singleton takes its lock.
-- **Lives in**: `high_intermediary_representation/singleton_forms.spite` and `waits.spite`, recorded by the high pass `singleton_locks`.
-- **Checked by**: tests/singleton_forms, tests/singleton_lock_calls, tests/lone_atomic_counter.
+  touched once per function, outside loops, is atomic. In a singleton that keeps its lock, a whole number or `Boolean`
+  attribute that each of its functions writes at most once, outside loops, not again through another of its
+  functions and not beside a call through a function value or a `type`, is atomic on its own: it is never seen half
+  changed, so a read of it from another class takes no lock.
+- **Buys**: no lock for the singleton, or for each read of an attribute atomic on its own from another class.
+- **Falls back**: the whole singleton takes its lock; a write from another class to an attribute atomic on its own
+  still takes it, around the whole statement.
+- **Lives in**: `high_intermediary_representation/singleton_forms.spite` and `waits.spite`, recorded by the high pass
+  `singleton_locks`; the attributes atomic on their own by the proof `proofs/lone_atomic_attributes`, registered among
+  the high passes right after `singleton_locks` (`HighProgram.lone_atomic_attributes`), read by the lowering
+  (`function_lowering.spite`, `reads_under_the_lock`). Not in the inspectable builds.
+- **Checked by**: tests/singleton_forms, tests/singleton_lock_calls, tests/lone_atomic_counter,
+  tests/steady_singleton_reads (output only).
 
 ### A function that touches no changing state takes no lock
 
 - **Status**: partly built.
 - **Rule**: a function that reads or writes no changing attribute, and calls nothing that does, runs unlocked; a
   call from a locked function to another of the same singleton goes to its unlocked body.
-- **Missing**: it tests "never reads `this`", so reading an attribute nothing changes still locks; a call between
-  two locked functions takes the lock again.
-- **Falls back**: the lock, taken again by its owner.
-- **Lives in**: `high_intermediary_representation/waits.spite`, `function_lowering.spite`.
-- **Checked by**: tests/singleton_stateless_calls, tests/singleton_function_values.
+  A read of a number, `Boolean` or enum attribute of its own that nothing assigns after the singleton is made is no
+  touch: it holds the same value for the rest of the program.
+- **Missing**: a call between two locked functions takes the lock again.
+- **Falls back**: the lock, taken again by its owner. A lock that would wait forever is still judged by the
+  attributes a function names (`proofs/parallel_reach`), so a function naming an attribute nothing changes is
+  refused there as before.
+- **Lives in**: `high_intermediary_representation/waits.spite` (`touch_what_reads_a_changing_attribute`),
+  `function_lowering.spite`.
+- **Checked by**: tests/singleton_stateless_calls, tests/singleton_function_values, tests/steady_singleton_reads
+  (output only).
 
 ### Reading functions share the lock
 
@@ -1220,12 +1242,17 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   attributes, of a local made by a constructor or answered by a call whose answer's class is known, and a
   constructor called by its class's name; a class of the library is not followed. A singleton reached that way is
   read for a lock held around an endless loop, and for a call back into a lock its caller holds.
-- **Missing**: in `Parallel` work "waits" is "calls nothing but the console", not the waits fact; a call through a
-  function value, a `type` or a union is not followed.
+  In `Parallel` work a loop is refused when the function holding it never waits, by the waits fact (a sleep, a
+  blocking read or write, a join, through every call): a loop that calls only the console is refused while the site
+  is judged, and one that calls anything else is refused once the whole program is built, when the waits are known.
+- **Missing**: a call through a function value, a `type` or a union is not followed.
 - **Falls back**: refused, "this 'while true' never ends: ...".
-- **Lives in**: `validators/abstract_syntax_tree/spinning_loop`, and the proof `proofs/parallel_reach`
-  (`thread_reach.spite`: `refuse_endless_work`).
-- **Checked by**: conformance/spinning_loop, conformance/endless_parallel_work; tests/parallel_loop_that_leaves.
+- **Lives in**: `validators/abstract_syntax_tree/spinning_loop`, the proof `proofs/parallel_reach`
+  (`thread_reach.spite`: `refuse_endless_work`, which refuses a loop that only prints and records the others in the
+  context, `context.endless_work`), and the proof `proofs/endless_parallel_work`, right after the recorded sites,
+  which asks `HighIntermediaryRepresentation.Waits` whether each recorded function waits.
+- **Checked by**: conformance/spinning_loop, conformance/endless_parallel_work, conformance/endless_parallel_work_calls;
+  tests/parallel_loop_that_leaves.
 
 ### A poll that nothing steps is an error
 

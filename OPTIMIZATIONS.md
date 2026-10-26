@@ -2894,8 +2894,12 @@ functions do. A singleton no such work reaches gets none of them, and a program 
    does not fit halts before anything is written and no two threads lose an update. A singleton a counted loop in
    the work would [hold for the whole loop](#a-counted-loop-of-calls-to-one-singleton-takes-its-lock-once) takes
    the third form instead.
-3. **Its own lock, otherwise.** Each function of the singleton that reads `this` takes the singleton's lock for its
-   whole call. The lock is a word in the singleton's slot holding the thread that owns it, with a count of how
+3. **Its own lock, otherwise.** Each function of the singleton that touches its changing state takes the
+   singleton's lock for its whole call: one that reads only numbers, `Boolean`s and enums of its own that nothing
+   assigns after the singleton is made, and calls nothing that touches more, runs unlocked. A whole number or
+   `Boolean` attribute that each of the singleton's functions writes at most once, outside loops and not again
+   through another of them, is never seen half changed, so another class reads it with no lock (its writes from
+   another class still take the lock). The lock is a word in the singleton's slot holding the thread that owns it, with a count of how
    deep that thread holds it: a call by the owning thread only adds one to the count, a free lock is claimed with
    one compare-exchange, and a held one is retried after giving the processor up. The thread is read from the
    thread's own block (`gs:[0x48]`), not asked of the system.
@@ -2923,9 +2927,9 @@ With `Settings` only set in its constructor and `HitCounter.record` a single `hi
 the step in place and adds with one compare-exchange, where every call took two locks before. Measured on
 `thread_safety_for_singletons_the_cheapest_safe_form` (four `Parallel`s running `run`).
 
-**Not built:** the readers' side shared by functions that change nothing, a read of a locked singleton's attribute
-from another class taking the lock, and the walk made again after tree shaking (form 1 decided over the whole
-program as written out).
+**Not built:** the readers' side shared by functions that change nothing outside a counted loop, a call between
+two locked functions going to the unlocked body, and the walk made again after tree shaking (form 1 decided over the
+whole program as written out).
 
 Which singletons keep a lock, and in which form, is decided by the high pass
 `high_optimization_passes/singleton_locks`, which records it for the lowering.
@@ -3141,7 +3145,9 @@ The entry class's attribute defaults run before any other code of the program: a
 cannot run before those defaults end reads such a singleton's slot without testing that it is made, and the load of
 the slot is known never to change, so it moves out of loops and is shared across calls and writes. When the
 singleton never changes after it is made (no function but its constructor assigns its attributes), the loads of its
-attributes are known never to change too.
+attributes are known never to change too; so is the load of any one attribute nothing assigns after its singleton is
+made (a number, `Boolean`, enum or object, not a text), however its other attributes change, so `settings.limit` in
+a loop that also calls `settings.add(...)` is read once before the loop.
 
 The functions that may run before the defaults end are found by following calls and function addresses from what
 the program's start calls up to and including the defaults, the fault handler and every singleton's destroy at
@@ -3420,10 +3426,11 @@ changes the list's length or its items. The loop above reads two numbers, adds t
 (`an_item_written_back_to_its_own_slot_is_not_written`: 99 ms before, 29 ms after).
 
 **When it applies:** to `list[index] = name` (`set_at` of the library's `List`) after `var name = list[index]`
-proven by a `crash`, in the same block, with the list read from a name not assigned again, `this` or attributes, the
+proven by a `crash`, in the same block or nested in an `if`, a `while` or a block after it (the index then never
+assigned in the rest of the block), with the list read from a name not assigned again, `this` or attributes, the
 index a name or a whole number, and nothing in the block after the read (but that write) that may write an item of
-a list of that class, its length or an attribute on the list's path. **When it does not:** a write in another
-block, through another path or index, of another value, or after something that may write the list; then the write
+a list of that class, its length or an attribute on the list's path. **When it does not:** a write outside the
+read's block, through another path or index, of another value, or after something that may write the list; then the write
 is made, comparing what the slot holds as before.
 
 **What a program can observe:** only the time.
