@@ -508,7 +508,7 @@ as when each was refused while building.
 
 ### Whether a function waits
 
-- **Status**: partly built; **fails silently** (one case).
+- **Status**: built (D1134, D1253).
 - **Rule**: waiting spreads from `sleep`, console, file and socket reads and joins, through calls, function values
   (to every function taken as a value with the same signature) and `type` dispatch, to a fixed point; letting go of
   a `Concurrent` waits; where it cannot tell, the answer is true
@@ -521,8 +521,8 @@ as when each was refused while building.
   for every handle). A call through a function value the study
   cannot name reaches every function taken as a value anywhere in the program with as many parameters as the call
   passes: the first such call reads every body once.
-- **Missing**: a local holding a `Concurrent` let go at the end of its scope (the study cannot yet tell it from one
-  moved into a list or an attribute, which must not count).
+  A local whose value may hold a `Concurrent` waits when it is let go at the end of its scope, unless the function
+  hands it on: passes it as an argument, stores it in an attribute, names it again or returns it (D1253).
 - **Falls back**: refused when the answer would decide itself, "whether '...' can wait was answered ... before the
   functions that ask 'function_waits' were compiled ...".
 - **Lives in**: the proof `proofs/compile_time_facts`, which answers every question asked while building and
@@ -717,6 +717,42 @@ as when each was refused while building.
   known closure directly) and the low proof `proofs/objects_in_the_frame` (a closure object the inlined callee only
   calls never leaves the caller).
 - **Checked by**: tests/function_value_in_frame, tests/held_value_functions, tests/function_values.
+
+### A back reference read holds its object
+
+- **Status**: built (D1251).
+- **Rule**: a back reference (the attribute of a cycle the compiler picks to hold no count,
+  [memory.md](../SpiteLanguage/specs/memory.md)) answers `null` once its object is freed, and a read of it holds its
+  object for as long as the value read is used, so `child.parent.leave()` whose body lets the parent's owner go
+  still runs on a live parent, and frees it when the call returns.
+- **How**: the read calls `_back_counted`, which answers `null` when the object's count is zero and otherwise
+  raises the count by one and answers the object; the value read is then an owned temporary, let go like a call's
+  result. In a program with threads the test and the raise are one compare-and-exchange, retried when another
+  thread changed the count between them, so a read never revives an object whose last release has begun.
+  A back reference proven present (`crash child.parent`) is proven only up to the next call: any call may let its
+  object go, so a read of it after a call is refused, "'child.parent' was proven before line 9, but 'parent' is a
+  back reference, which holds no count, and 'leave(...)' may let its object go, so this read could find it gone:
+  prove 'child.parent' again after that line" (`proofs/narrowings_kept_across_calls`).
+- **Buys**: no read of a back reference runs on freed memory, on one thread or on two.
+- **Costs**: a call, a count up and a count down per read of a back reference; a program with no back reference
+  carries nothing.
+- **Lives in**: `low_intermediary_representation/lowering/freeing.spite` (`lower_the_back_counted`),
+  `function_lowering.spite` (`held_back`).
+- **Checked by**: tests/back_reference_calls, tests/parent_back_reference; conformance/back_reference_past_a_call.
+
+### A deep copy copies a graph with its shape
+
+- **Status**: partly built (D724, D1252).
+- **Rule**: a class whose attributes can reach itself, or reach a back reference, is copied through a table made
+  for the call, so a cycle is copied once per object
+  ([memory.md](../SpiteLanguage/specs/memory.md)).
+- **How**: a class reaches another through an object attribute, a bound type, or a union attribute (each member of
+  the union); a union attribute inside a table copy is copied through its member's `_deep_copy_in`, dispatched on
+  the class it holds, with the same table.
+- **Missing**: a cycle through a `type` attribute; `List.deep_copy()` gives each item a table of its own.
+- **Falls back**: copied plainly, which recurses around a cycle through a `type` until the stack runs out.
+- **Lives in**: embedded, `high_intermediary_representation/building/copying.spite` (`uses_a_table`, `copy_in_call`).
+- **Checked by**: conformance/deep_copy_graphs, tests/deep_copy_union_cycles.
 
 ### A singleton made at the start is never tested again
 
@@ -1083,16 +1119,16 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### No attribute is read past the lock
 
-- **Status**: partly built (D1138).
+- **Status**: partly built (D1138, D1254).
 - **Rule**: no attribute of a locked singleton is read or written directly from another class, except a lone atomic
   one, without its lock.
 - **How**: the lowering takes the singleton's lock (re-entered by the thread that holds it) around a load of a
   locked singleton's attribute from a function of another class, and around the whole statement that assigns one,
   so `tally.total = tally.total + 1` from another class adds once per run. An attribute nothing assigns after the singleton is
   made (outside its constructor and defaults) is read with no lock, since it holds the same value for the rest of
-  the program.
-- **Missing**: a counted attribute (an object, a list, a text) read this way is counted after the lock is let go;
-  the old compiler's plain attributes under the lock and atomic attributes are not built.
+  the program. A counted attribute (an object, a list, a text) read this way is counted before the lock is let go,
+  so a write on another thread cannot let it go between the load and the count (D1254).
+- **Missing**: the old compiler's plain attributes under the lock and atomic attributes are not built.
 - **Lives in**: `low_intermediary_representation/lowering/function_lowering.spite` (`locks_from_outside`), reading
   `waits.spite` (`is_a_locked_class`).
 - **Checked by**: tests/singleton_outside_writes.
@@ -1236,9 +1272,11 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   not-null ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#inline-types-and-duck-typing-in-full)).
 - **How**: a class passed as a `type` must have each attribute with the type's type, and each function with as many
   parameters, the same parameter types and the same answer, the type's own name standing for the class that fits
-  (D1136).
-- **Missing**: a member whose type is itself a `type`, a union or a function value is not compared; a `$T`'s
-  constraint (`constraints.spite`, `is_filled`) still checks only that each member exists.
+  (D1136). A member whose type is a union is filled by the same union or by one of its classes; one whose type is a
+  `type` by the same `type`, or by a class or a union whose classes each have the `type`'s members; one whose type
+  is a function value by a function value with the same parameter types and answer (D1255).
+- **Missing**: a `$T`'s constraint (`constraints.spite`, `is_filled`) still checks only that each member exists; a
+  `type` member is compared by its members' names, not their types.
 - **Falls back**: refused, "'...' does not fit type '...': it has no function '...'", "... it has no attribute
   '...'", "... attribute 'size' is a String, but the type needs an Integer", "... its 'render' returns an Integer,
   but the type needs a String", "... argument 1 of its 'scaled' is a String, but the type needs an Integer", "... its
