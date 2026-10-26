@@ -4,6 +4,12 @@ Save a file of a running program: its classes are compiled again into a small li
 loads it and swaps the new functions in. Objects and singletons stay. What a reload may change is the language's
 rule, in [`repl.md`](https://github.com/Spite-Language/spite_documentation/blob/master/repl.md) ("What a reload can change").
 
+None of it is built yet, so the compiler refuses `--hot-reload` with `'--hot-reload' cannot be built by this
+compiler: ...`: a build that took the flag and swapped nothing would let a saved file change nothing without a
+word. The flag still implies `--development` (an inspectable build), so the refusal is the only difference.
+The library's `Reload` answers `generation()` 0 and `rebuilt_since` an empty list in every build, both folded on
+`Build.hot_reload`; a swap appends the classes it rebuilt to `Reload.rebuilt`, one list per generation.
+
 Target: a changed function reloads in well under 0.1 s (the original: 1.7 s, most of it a C compiler run).
 
 ## The parts

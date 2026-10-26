@@ -608,8 +608,15 @@ threads the number of the thread that owns it.
   never handed out stops with `the program freed memory it never allocated` (or `resized`), a size past 2^40 bytes
   stops with `the program ran out of memory`, and so does a failed chunk.
 
-Nothing counts the blocks: no counter is kept beside an allocation or a free, and only a `--debug-memory` build
-keeps the two counts it reports at exit.
+Nothing counts the blocks: no counter is kept beside an allocation or a free. Only a `--debug-memory` build
+keeps the two counts it reports at exit, and it puts 32 bytes in front of every block: the next and previous live
+blocks (one list of every live block, under a lock of its own), the size asked for and the class of the object
+made in it (0 for memory that is not an object). Fresh memory is zero there as in every build, since the code this
+compiler writes relies on it (the end byte after a text's bytes, the room inside a `Buffer`), and its resize moves
+the bytes it keeps into a new block whose new bytes are zero. At exit, when the allocations and frees differ, it walks the list
+once and prints `spite: --debug-memory: N allocation(s) leaked` and a `  <Class>: N leaked object(s)` line for
+each class with objects still live, before `allocations: N frees: N`. None of it is in any other build: the
+routines, the list and the report function are written only for `--debug-memory`.
 
 **When it does not apply:** a program that allocates nothing carries none of it; blocks above 1016 bytes are the
 system heap's; in a program with threads every allocation and free is a call (no inline fast path yet).
@@ -2645,8 +2652,8 @@ The high pass `high_optimization_passes/static_singletons` records the classes (
 and the lowering writes the object once per class in the data and its address wherever one is made.
 
 **When it does not apply:** a singleton with an attribute (even one only its defaults set), a `drop()`, a
-constructor that takes arguments or has any statement, the entry class, and every singleton in a `--repl`,
-`--repl-port` or `--hot-reload` build, which is made on first use as before.
+constructor that takes arguments or has any statement, the entry class, and every singleton in a `--development`,
+`--repl`, `--repl-port` or `--hot-reload` build, which is made on first use as before.
 
 **What a program can observe:** one allocation fewer under `--debug-memory` for each such singleton the program
 uses. Nothing else: making it did nothing a program sees, and it is never let go.
