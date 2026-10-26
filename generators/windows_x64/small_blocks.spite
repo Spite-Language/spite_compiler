@@ -2,6 +2,7 @@ var encoder = Encoder()
 var program = LowIntermediaryRepresentation.LoweredProgram()
 var data_fixups = List<Fixup>()
 var import_fixups = List<Fixup>()
+var routine_fixups = List<Fixup>()
 var stop_routine = 0
 var threaded = false
 var allocates = false
@@ -112,17 +113,27 @@ func call_routine(routine: Integer) {
     assert routine >= 0
     var at = encoder.call_relative()
     encoder.patch_dword(at, routine - (at + 4))
+    if program.hot_reload {
+        var fixup = Fixup(at, "", routine)
+        routine_fixups.append(fixup)
+    }
 }
 
 func lay_out_the_state() {
     if threaded {
         slot_label = zeroed_label(8)
+        program.name_state(slot_label, "blocks.slot")
         table_label = zeroed_label(8 * most_states)
+        program.name_state(table_label, "blocks.table")
         count_label = zeroed_label(8)
+        program.name_state(count_label, "blocks.count")
         pool_label = zeroed_label(8)
+        program.name_state(pool_label, "blocks.pool")
         lock_label = zeroed_label(8)
+        program.name_state(lock_label, "blocks.lock")
     } else {
         state_label = zeroed_label(state_size)
+        program.name_state(state_label, "blocks.state")
     }
 }
 
@@ -192,6 +203,7 @@ func stop(text: String) {
     var bytes = message.to_bytes()
     program.data.append(bytes)
     var label = program.data.count() - 1
+    program.constant_labels.append(label)
     at_label("48 8D 0D", label)
     var length = bytes.count()
     encoder.move_small_immediate(encoder.rdx, length)
@@ -607,14 +619,16 @@ func emit_the_releasing_routine() {
 }
 
 func inlines_size(size: Long): Boolean {
-    return not threaded and not program.counts_memory and size >= 0 and size <= 120
+    return not program.counts_memory and size >= 0 and size <= 120
 }
 
+# ../../OPTIMIZATIONS.md#small-blocks-come-from-the-compilers-own-free-lists
 func allocate_inline(size: Long) {
     var small_size = size.to_integer()
     var size_class = (small_size + 23) / 16
     var head = 64 + 8 * size_class
-    at_label("4C 8D 1D", state_label)
+    var no_state = List<Integer>()
+    find_the_state_inline(no_state)
     code("49 8B 83")
     encoder.dword(head)
     code("48 85 C0")
@@ -632,26 +646,51 @@ func allocate_inline(size: Long) {
     }
     var done = encoder.jump()
     land(empty)
+    no_state.each(land)
     encoder.move_small_immediate(encoder.rcx, size)
     call_allocate()
     land(done)
 }
 
-func free_inline() {
-    if threaded or program.counts_memory {
-        call_free()
-    } else {
-        code("48 85 C9")
-        var nothing = encoder.jump_if(132)
-        code("8B 41 F8 8D 90 FF FF EF A4 83 FA 40")
-        var not_small = encoder.jump_if(131)
-        code("05 00 00 10 00 89 41 F8")
+# ../../OPTIMIZATIONS.md#small-blocks-come-from-the-compilers-own-free-lists
+func find_the_state_inline(no_state: List<Integer>) {
+    if not threaded {
         at_label("4C 8D 1D", state_label)
-        code("4D 8B 44 D3 48 4C 89 01 49 89 4C D3 48")
-        var done = encoder.jump()
-        land(not_small)
-        call_free()
-        land(nothing)
-        land(done)
+        return
     }
+    at_label("48 8B 05", slot_label)
+    code("48 85 C0")
+    var no_slot = encoder.jump_if(132)
+    no_state.append(no_slot)
+    code("65 4C 8B 1C C5 {thread_slots}")
+    code("4D 85 DB")
+    var unmade = encoder.jump_if(132)
+    no_state.append(unmade)
+}
+
+func free_inline() {
+    if program.counts_memory {
+        call_free()
+        return
+    }
+    code("48 85 C9")
+    var nothing = encoder.jump_if(132)
+    code("8B 41 F8 8D 90 FF FF EF A4 83 FA 40")
+    var not_small = encoder.jump_if(131)
+    var called = List<Integer>()
+    find_the_state_inline(called)
+    if threaded {
+        code("44 8B 41 FC 45 3B 43 18")
+        var elsewhere = encoder.jump_if(133)
+        called.append(elsewhere)
+        code("8B 41 F8")
+    }
+    code("05 00 00 10 00 89 41 F8")
+    code("4D 8B 44 D3 48 4C 89 01 49 89 4C D3 48")
+    var done = encoder.jump()
+    land(not_small)
+    called.each(land)
+    call_free()
+    land(nothing)
+    land(done)
 }

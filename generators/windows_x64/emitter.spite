@@ -62,6 +62,11 @@ var current_ends_a_thread = false
 var span_keys = List<String>()
 var span_starts = List<Integer>()
 var code_end = 0
+var body_offsets = Dictionary<String, Integer>()
+var function_ends = Dictionary<String, Integer>()
+var slot_labels = Dictionary<String, Integer>()
+var routine_fixups = List<Fixup>()
+var routines_end = 0
 
 func Emitter(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
     program = starting_program
@@ -81,6 +86,7 @@ func emitted(): Buffer {
     if program.vector_loops > 0 {
         kernels.emit_the_detection()
     }
+    routines_end = encoder.position()
     program.lowered_functions.each(emit_function)
     code_end = encoder.position()
     if program.place_table >= 0 {
@@ -362,6 +368,10 @@ func emit_the_writing_tail() {
 func call_routine(routine: Integer) {
     var at = encoder.call_relative()
     encoder.patch_dword(at, routine - (at + 4))
+    if program.hot_reload {
+        var fixup = Fixup(at, "", routine)
+        routine_fixups.append(fixup)
+    }
 }
 
 func write_a_label(label: Integer) {
@@ -426,7 +436,9 @@ func keep_the_numbers(numbers: List<Integer>) {
 func label_of_text(text: String): Integer {
     var bytes = text.to_bytes()
     program.data.append(bytes)
-    return program.data.count() - 1
+    var label = program.data.count() - 1
+    program.constant_labels.append(label)
+    return label
 }
 
 func article_of(name: String): String {
@@ -446,7 +458,11 @@ func call_import(name: String) {
 
 func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     current_key = function.key
-    encoder.align_to(16)
+    if program.hot_reload {
+        encoder.align_to(32)
+    } else {
+        encoder.align_to(16)
+    }
     function_offsets[function.key] = encoder.position()
     span_keys.append(function.key)
     var span_start = encoder.position()
@@ -458,6 +474,9 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
         shown_place = "-\t-\t-"
     }
     note_the_place(start, shown_place)
+    if program.hot_reload {
+        jump_through_the_slot(function.key)
+    }
     block_fixups = List<Fixup>()
     allocation = Allocation(function)
     allocation.allocate()
@@ -514,6 +533,28 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     emit_the_cold_stops()
     emit_the_edge_stubs()
     block_fixups.each(fix_a_block)
+    function_ends[function.key] = encoder.position()
+}
+
+# ../../HOT_RELOAD.md#the-parts
+func jump_through_the_slot(key: String) {
+    var room = Buffer(0)
+    var index = 0
+    while index < 8 {
+        room.append(0)
+        index = index + 1
+    }
+    program.data.append(room)
+    var label = program.data.count() - 1
+    program.name_state(label, "slot.{key}")
+    slot_labels[key] = label
+    encoder.byte(255)
+    encoder.byte(37)
+    var at = encoder.position()
+    encoder.dword(0)
+    var fixup = Fixup(at, "", label)
+    data_fixups.append(fixup)
+    body_offsets[key] = encoder.position()
 }
 
 # ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
@@ -1011,48 +1052,109 @@ func emitted_narrow(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
     if not immediate {
         source = register_of(arithmetic.right, encoder.rcx)
     }
-    read_into(encoder.rax, arithmetic.left)
+    var home = allocation.home_of(arithmetic.target)
+    var working = narrow_working_register(arithmetic, home, source, immediate)
+    var kind = 0
+    var overwrites_left = allocation.home_of(arithmetic.left) == working
+    if working != encoder.rax and overwrites_left and not allocation.constant_of(arithmetic.left) {
+        kind = 3
+    }
+    read_into(working, arithmetic.left)
     if immediate {
         var value = allocation.value_of(arithmetic.right)
-        emit_narrow_with_an_immediate(arithmetic, value)
+        emit_narrow_with_an_immediate(arithmetic, working, value)
     } else {
-        emit_narrow_registers(arithmetic, source)
+        emit_narrow_registers(arithmetic, working, source)
     }
     var condition = 130
     if arithmetic.is_signed {
         condition = 128
     }
-    defer_a_stop(condition, arithmetic, 0, 0, 0, false)
-    var home = allocation.home_of(arithmetic.target)
-    var widened = encoder.rax
-    if home >= 0 {
-        widened = home
-    }
+    defer_a_stop(condition, arithmetic, kind, working, source, immediate)
     if arithmetic.is_signed {
-        encoder.sign_extend_double_word(widened, encoder.rax)
-    } else if widened != encoder.rax {
-        encoder.move_double_word(widened, encoder.rax)
+        encoder.sign_extend_double_word(working, working)
     }
-    if home < 0 {
+    if working != encoder.rax {
+        return true
+    }
+    if home >= 0 {
+        encoder.move_register(home, encoder.rax)
+    } else {
         write_from(arithmetic.target, encoder.rax)
     }
     return true
 }
 
-func emit_narrow_with_an_immediate(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, value: Long) {
+func emit_narrow_with_an_immediate(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    working: Integer,
+    value: Long,
+) {
     switch arithmetic.operator {
-        'add': encoder.operation_immediate_narrow(0, encoder.rax, value)
-        'subtract': encoder.operation_immediate_narrow(5, encoder.rax, value)
-        _: encoder.multiply_immediate_narrow(encoder.rax, encoder.rax, value)
+        'add': encoder.operation_immediate_narrow(0, working, value)
+        'subtract': encoder.operation_immediate_narrow(5, working, value)
+        _: encoder.multiply_immediate_narrow(working, working, value)
     }
 }
 
-func emit_narrow_registers(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, source: Integer) {
+func emit_narrow_registers(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    working: Integer,
+    source: Integer,
+) {
     switch arithmetic.operator {
-        'add': encoder.register_operation_narrow(1, encoder.rax, source)
-        'subtract': encoder.register_operation_narrow(41, encoder.rax, source)
-        _: encoder.multiply_registers_narrow(encoder.rax, source)
+        'add': encoder.register_operation_narrow(1, working, source)
+        'subtract': encoder.register_operation_narrow(41, working, source)
+        _: encoder.multiply_registers_narrow(working, source)
     }
+}
+
+func undo_narrow_by(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, target: Integer, value: Long) {
+    if arithmetic.operator == 'add' {
+        encoder.operation_immediate_narrow(5, target, value)
+    } else {
+        encoder.operation_immediate_narrow(0, target, value)
+    }
+}
+
+func undo_narrow_in_place(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    target: Integer,
+    source: Integer,
+    immediate: Boolean,
+) {
+    if immediate {
+        var value = allocation.value_of(arithmetic.right)
+        undo_narrow_by(arithmetic, target, value)
+    } else if arithmetic.operator == 'add' {
+        encoder.register_operation_narrow(41, target, source)
+    } else {
+        encoder.register_operation_narrow(1, target, source)
+    }
+    if arithmetic.is_signed {
+        encoder.sign_extend_double_word(target, target)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-checked-32-bit-sum-works-in-its-targets-register
+func narrow_working_register(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    home: Integer,
+    source: Integer,
+    immediate: Boolean,
+): Integer {
+    if home < 0 or not immediate and source == home {
+        return encoder.rax
+    }
+    var left_home = allocation.home_of(arithmetic.left)
+    if allocation.constant_of(arithmetic.left) {
+        left_home = -1
+    }
+    var invertible = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
+    if left_home == home and not invertible {
+        return encoder.rax
+    }
+    return home
 }
 
 func is_wide_unsigned(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
@@ -1345,6 +1447,9 @@ func emit_a_cold_stop(
     }
     if kind == 1 {
         undo_in_place(arithmetic, target, source, immediate)
+    }
+    if kind == 3 {
+        undo_narrow_in_place(arithmetic, target, source, immediate)
     }
     stop_not_fitting(arithmetic)
 }
@@ -1999,6 +2104,7 @@ func stop_with(text: String, line: Integer) {
     var bytes = message.to_bytes()
     program.data.append(bytes)
     var label = program.data.count() - 1
+    program.constant_labels.append(label)
     load_message(label)
 }
 
@@ -2405,7 +2511,87 @@ func stop_naming_the_library(name: Integer) {
 }
 
 func emit_jump(jump: LowIntermediaryRepresentation.Instructions.Jump) {
-    go_to_block(jump.block)
+    if rotates_into(jump.block) {
+        emit_the_test_of(jump.block)
+    } else {
+        go_to_block(jump.block)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-loop-tests-its-condition-at-the-bottom
+func rotates_into(head: Integer): Boolean {
+    var head_position = allocation.layout_positions[head]
+    crash head_position
+    if head_position < 0 or head_position > current_block {
+        return false
+    }
+    if loop_heads[head] != true or moves_at_the_tail(head) or allocation.moves_at_the_head(head) {
+        return false
+    }
+    var block = allocation.function.blocks[head]
+    crash block
+    var count = block.instructions.count()
+    if count < 1 or count > 4 {
+        return false
+    }
+    var last = block.instructions.last()
+    crash last
+    if last == LowIntermediaryRepresentation.Instructions.Branch {
+        return tests_and_leaves(head, last, block)
+    }
+    return false
+}
+
+func tests_and_leaves(
+    head: Integer,
+    branch: LowIntermediaryRepresentation.Instructions.Branch,
+    block: LowIntermediaryRepresentation.LowBlock,
+): Boolean {
+    if branch.when_true == head or branch.when_false == head {
+        return false
+    }
+    var true_moves = allocation.moves_on_the_edge(head, branch.when_true)
+    var false_moves = allocation.moves_on_the_edge(head, branch.when_false)
+    if true_moves or false_moves {
+        return false
+    }
+    var index = 0
+    while index + 1 < block.instructions.count() {
+        var instruction = block.instructions[index]
+        crash instruction
+        if not repeats_freely(instruction) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func repeats_freely(instruction: LowIntermediaryRepresentation.Instructions.Instruction): Boolean {
+    var compares = instruction == LowIntermediaryRepresentation.Instructions.Compare
+    var decimal_compares = instruction == LowIntermediaryRepresentation.Instructions.Decimal.Compare
+    var loads = instruction == LowIntermediaryRepresentation.Instructions.Load
+    var copies = instruction == LowIntermediaryRepresentation.Instructions.Copy
+    return compares or decimal_compares or loads or copies
+}
+
+func emit_the_test_of(head: Integer) {
+    var block = allocation.function.blocks[head]
+    crash block
+    var latch = current_block_index
+    var kept_instructions = current_instructions
+    var kept_position = instruction_position
+    current_block_index = head
+    allocation.current_block = head
+    flags_register = -1
+    current_instructions = block.instructions
+    instruction_position = 0
+    block.instructions.each(emit_instruction)
+    current_instructions = kept_instructions
+    instruction_position = kept_position
+    current_block_index = latch
+    allocation.current_block = latch
+    flags_register = -1
 }
 
 func jump_when_unordered(branch: LowIntermediaryRepresentation.Instructions.Branch) {

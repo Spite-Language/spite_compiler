@@ -1,0 +1,207 @@
+# ../../HOT_RELOAD.md#the-manifest
+var no_program = LowIntermediaryRepresentation.LoweredProgram()
+var emitter = Emitter(no_program)
+var code = Buffer(0)
+var keys = List<String>()
+var starts = List<Integer>()
+var ends = List<Integer>()
+var references = List<List<Reference>>()
+var routine_references = List<Reference>()
+var digests = Dictionary<String, String>()
+var routines_digest = ""
+
+func FunctionSpans(starting_emitter: Emitter, starting_code: Buffer) {
+    emitter = starting_emitter
+    code = starting_code
+    emitter.program.lowered_functions.each(add_a_span)
+    gather_the_references()
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        var start = starts[index]
+        var end = ends[index]
+        var found = references[index]
+        crash key
+        crash start
+        crash end
+        crash found
+        digests[key] = digest_of(start, end, found)
+        index = index + 1
+    }
+    routines_digest = digest_of(0, emitter.routines_end, routine_references)
+}
+
+func add_a_span(function: LowIntermediaryRepresentation.LowFunction) {
+    var start = emitter.function_offsets[function.key]
+    var end = emitter.function_ends[function.key]
+    crash start
+    crash end
+    keys.append(function.key)
+    starts.append(start)
+    ends.append(end)
+    var none_yet = List<Reference>()
+    references.append(none_yet)
+}
+
+func gather_the_references() {
+    emitter.call_fixups.each(add_a_call)
+    emitter.import_fixups.each(add_an_import)
+    emitter.library_fixups.each(add_a_library_import)
+    emitter.data_fixups.each(add_a_data_reference)
+    emitter.slot_fixups.each(add_a_foreign_reference)
+    emitter.stop_fixups.each(add_a_stop)
+    emitter.routine_fixups.each(add_a_routine_call)
+    emitter.small_blocks.routine_fixups.each(add_a_routine_call)
+    emitter.kernels.routine_fixups.each(add_a_routine_call)
+}
+
+func add_a_call(fixup: Fixup) {
+    var made = Reference(fixup.at, 'call', fixup.target, 0)
+    place(made)
+}
+
+func add_an_import(fixup: Fixup) {
+    var made = Reference(fixup.at, 'import', fixup.target, 0)
+    place(made)
+}
+
+func add_a_library_import(fixup: Fixup) {
+    var made = Reference(fixup.at, 'library', fixup.target, 0)
+    place(made)
+}
+
+func add_a_data_reference(fixup: Fixup) {
+    var made = Reference(fixup.at, 'data', "", fixup.index)
+    place(made)
+}
+
+func add_a_foreign_reference(fixup: Fixup) {
+    var made = Reference(fixup.at, 'foreign', fixup.target, fixup.index)
+    place(made)
+}
+
+func add_a_stop(fixup: Fixup) {
+    var made = Reference(fixup.at, 'routine', "", emitter.stop_routine)
+    place(made)
+}
+
+func add_a_routine_call(fixup: Fixup) {
+    var made = Reference(fixup.at, 'routine', "", fixup.index)
+    place(made)
+}
+
+func place(reference: Reference) {
+    if reference.at < emitter.routines_end {
+        routine_references.append(reference)
+        return
+    }
+    var found = span_holding(reference.at)
+    var held = references[found]
+    crash held
+    held.append(reference)
+}
+
+func span_holding(at: Integer): Integer {
+    var low = 0
+    var high = keys.count() - 1
+    while low < high {
+        var middle = (low + high + 1) / 2
+        var middle_start = starts[middle]
+        crash middle_start
+        if middle_start <= at {
+            low = middle
+        } else {
+            high = middle - 1
+        }
+    }
+    var end = ends[low]
+    crash end
+    crash at < end
+    return low
+}
+
+func digest_of(start: Integer, end: Integer, found: List<Reference>): String {
+    var copy = code.read_bytes_at(start, end - start)
+    crash copy
+    var index = 0
+    while index < found.count() {
+        var reference = found[index]
+        crash reference
+        copy.write_integer_little_endian_at(reference.at - start, 0)
+        index = index + 1
+    }
+    var digest = Model.Digest()
+    var copy_count = copy.count()
+    digest.add_bytes(copy, 0, copy_count)
+    index = 0
+    while index < found.count() {
+        var reference = found[index]
+        crash reference
+        var symbol = symbol_of(reference)
+        var offset = reference.at - start
+        digest.add_text("{offset} {symbol}")
+        index = index + 1
+    }
+    return digest.digest_text()
+}
+
+func symbol_of(reference: Reference): String {
+    switch reference.kind {
+        'call': return "call {reference.target}"
+        'import': return "import {reference.target}"
+        'library': return "library {reference.target}"
+        'data': return data_symbol(reference.index)
+        'foreign': return foreign_symbol(reference)
+        'routine': return "routine {reference.index}"
+    }
+}
+
+func data_symbol(label: Integer): String {
+    var name = emitter.program.state_names[label]
+    if name {
+        return "state {name}"
+    }
+    var bytes = emitter.program.data[label]
+    crash bytes
+    var digest = Model.Digest()
+    var bytes_count = bytes.count()
+    digest.add_bytes(bytes, 0, bytes_count)
+    var shown = digest.digest_text()
+    return "text {shown}"
+}
+
+func foreign_symbol(reference: Reference): String {
+    var name = emitter.foreign_names[reference.index]
+    crash name
+    return "foreign {name} {reference.target}"
+}
+
+func span_of(key: String): Integer? {
+    return keys.index_of(key)
+}
+
+func owner_of(key: String): String {
+    if key.starts_with("_") {
+        return ""
+    }
+    var depth = 0
+    var last = -1
+    var index = 0
+    while index < key.length() {
+        var character = key.character_at(index)
+        if character == "<" {
+            depth = depth + 1
+        } else if character == ">" {
+            depth = depth - 1
+        } else if character == "." and depth == 0 {
+            last = index
+        } else if character == "$" and depth == 0 {
+            index = key.length()
+        }
+        index = index + 1
+    }
+    if last < 0 {
+        return ""
+    }
+    return key.slice(0, last)
+}

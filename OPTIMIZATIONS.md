@@ -629,12 +629,15 @@ before. Each block carries 8 bytes in front of it: its class and whether it is l
 threads the number of the thread that owns it.
 
 - **The size class is worked out while compiling.** An allocation whose size is a constant (every object, every
-  box, every frame) of up to 120 bytes is written in place in a program without threads: a load of its class's list
-  head, a test, two moves to unlink the block, its tag, and the stores that clear it, with a call to the shared
-  routine only when the list is empty. A size known only at run time, and every allocation in a program with
-  threads, calls the shared routine, which works the class out from the size.
+  box, every frame) of up to 120 bytes is written in place: a load of its class's list head, a test, two moves to
+  unlink the block, its tag, and the stores that clear it, with a call to the shared routine only when the list is
+  empty. In a program with threads the place first finds the thread's own lists through its thread slot (two loads
+  and two tests), and calls the routine when the thread has none yet. A size known only at run time calls the
+  shared routine, which works the class out from the size.
 - **Freeing is a few instructions in place**: the block's tag gives its class, the block is marked free and pushed
-  on its list. A block of the system heap goes back to it.
+  on its list. In a program with threads the block is pushed in place only when it belongs to the thread freeing it
+  (the owner's number in its tag is the thread's own); a block of another thread's, or a thread with no lists yet,
+  calls the shared routine. A block of the system heap goes back to it.
 - **Threads**: in a program with threads every thread keeps its own lists in a block of its own, found through a
   thread slot read straight from the thread's own block (`gs:[0x1480]`), so no allocation takes a lock. A block
   freed on another thread than its owner's is pushed with one compare-exchange onto the owner's returned list,
@@ -657,7 +660,7 @@ each class with objects still live, before `allocations: N frees: N`. None of it
 routines, the list and the report function are written only for `--debug-memory`.
 
 **When it does not apply:** a program that allocates nothing carries none of it; blocks above 1016 bytes are the
-system heap's; in a program with threads every allocation and free is a call (no inline fast path yet).
+system heap's; a `--debug-memory` build calls its routines for every allocation and free.
 
 **What a user can observe:** only the time and the memory. Memory freed into a class stays with that class and
 with the program: chunks are never given back to the system, so a program's peak of small blocks of one size is
@@ -1147,6 +1150,10 @@ costs little beside the loop, and the loop is
 [run in lanes](#a-counted-loop-over-numbers-runs-eight-at-a-time) or [in bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands)
 where it stands), to a call outside every loop, or when the caller already holds 4000 instructions or has inlined
 64 calls.
+
+A `--hot-reload` build inlines nothing, and neither evaluates calls while compiling nor writes a copy of a callee
+for a call: every call goes through the callee's slot, so a loop that is running when a reload swaps a function
+calls the new code at its next pass ([HOT_RELOAD.md](HOT_RELOAD.md#the-parts)).
 
 What a user can observe: nothing in the output. The executable holds the callee once per call site.
 
@@ -2456,6 +2463,70 @@ fetched and decoded the same way whatever code comes before it, so a change else
 a hot loop across a fetch boundary and changes its time. The padding before a loop head runs once each time the loop
 is entered from above. **What a program can observe:** the time, and an executable a few bytes larger per loop.
 
+## A loop tests its condition at the bottom
+
+A loop's head that only tests (up to three comparisons, loads and copies, then the branch) is written a second time
+at the end of each block that jumps back to it, so a pass ends with the test and a jump straight to the body instead
+of a jump to the head and the test there: one taken jump per pass instead of two. The copy is made only where no
+value changes its register on the way into the head or out of it, and the head itself is still there for the first
+pass.
+
+    var index = 0
+    while index < count {
+        total = total + index
+        index = index + 1
+    }
+
+ends each pass with `cmp index, count` and a `jl` back to the sum. **When it does not apply:** a head that computes
+(arithmetic, a call) or that moves a value between registers on its edges still jumps back to the test at the top.
+**What a program can observe:** the time, and an executable a few bytes larger per loop.
+
+## A block that only stops the program is written after the function
+
+The generator lays the blocks out along the likely path (see [Blocks are laid out along the likely
+path](#blocks-are-laid-out-along-the-likely-path)), and a block that can only stop the program (the call to a
+crash's cold report and the stop after it) is never on it: when one side of a branch is such a block, the other side
+is written next, and every such block is written after all the others. The test that guards it is one branch that
+is not taken while the program runs on.
+
+    func round_total(values: List<Integer>, picks: List<Integer>, round: Integer): Long {
+        var total: Long = 0
+        var index = 0
+        while index < picks.count() {
+            var pick = picks[index] + round
+            crash values[pick]
+            total = total + values[pick]
+            index = index + 1
+        }
+        return total
+    }
+
+runs its loop as one straight run with the bound test of `values[pick]` jumping out to the report. **What a program
+can observe:** nothing but time.
+
+## A checked 32-bit sum works in its target's register
+
+A checked 32-bit `+`, `-` (signed or not) or signed `*` is made in 32 bits straight in its target's register, its
+overflow (or carry) flag is the check, and a signed result is then sign-extended in place; an unsigned one is
+already zero-extended by the 32-bit operation. No scratch register and no move are on the path. When the target's
+register held the left operand, the report's path undoes the operation (and extends the operand again) first, so
+the report prints the operands as they were.
+
+    var total = 0
+    var index = 0
+    while index < count {
+        total = total + values[index] - index
+        index = index + 1
+    }
+
+is `add r, value`, `jo`, `movsxd r, r` per operation. Making it in 64 bits and testing the low half beside the
+chain instead (an extension, a compare and a jump, off the chain) was measured: it halves the wait in a chain of
+sums (`arithmetic_is_checked_in_every_build` 37.8 to 31.1 ms) but costs an instruction more per operation, which
+made `a_proven_read_tests_only_its_bounds` 64.5 to 69.9 ms and `singletons_made_on_first_use_never_counted` 11.7 to
+13.3, so it is not built. **When it does not apply:** a 32-bit unsigned `*` uses the general form; a product whose
+target held its left operand, and a target with no register, are made in a scratch register and moved.
+**What a program can observe:** nothing but time.
+
 ## Constants are immediates, and a compare is the branch
 
 A register written once by a constant (and that is not a parameter) is never written: each use is the constant
@@ -2589,7 +2660,8 @@ of two sign-extended numbers. The library's wrapping sums (`_wrapping_sum`) are 
 Checked `+`, `-` and `*` jump on the overflow (or carry, unsigned) flag to the code that writes the report, which
 is written after the function's blocks, out of the path that runs. A 64-bit operation works in its target's
 register directly, undoing itself in the report's path when it overwrote an operand the report prints; a 32-bit one
-works in 32 bits and its overflow flag is the check. A division's zero check jumps out the same way.
+works in 32 bits in its target's register and its overflow flag is the check (see [A checked 32-bit sum works
+in its target's register](#a-checked-32-bit-sum-works-in-its-targets-register)). A division's zero check jumps out the same way.
 
 ## A dictionary hashes a key once, cheaply
 
