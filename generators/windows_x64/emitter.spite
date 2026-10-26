@@ -62,6 +62,11 @@ var current_ends_a_thread = false
 var span_keys = List<String>()
 var span_starts = List<Integer>()
 var code_end = 0
+var body_offsets = Dictionary<String, Integer>()
+var function_ends = Dictionary<String, Integer>()
+var slot_labels = Dictionary<String, Integer>()
+var routine_fixups = List<Fixup>()
+var routines_end = 0
 
 func Emitter(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
     program = starting_program
@@ -81,6 +86,7 @@ func emitted(): Buffer {
     if program.vector_loops > 0 {
         kernels.emit_the_detection()
     }
+    routines_end = encoder.position()
     program.lowered_functions.each(emit_function)
     code_end = encoder.position()
     if program.place_table >= 0 {
@@ -362,6 +368,10 @@ func emit_the_writing_tail() {
 func call_routine(routine: Integer) {
     var at = encoder.call_relative()
     encoder.patch_dword(at, routine - (at + 4))
+    if program.hot_reload {
+        var fixup = Fixup(at, "", routine)
+        routine_fixups.append(fixup)
+    }
 }
 
 func write_a_label(label: Integer) {
@@ -426,7 +436,9 @@ func keep_the_numbers(numbers: List<Integer>) {
 func label_of_text(text: String): Integer {
     var bytes = text.to_bytes()
     program.data.append(bytes)
-    return program.data.count() - 1
+    var label = program.data.count() - 1
+    program.constant_labels.append(label)
+    return label
 }
 
 func article_of(name: String): String {
@@ -446,7 +458,11 @@ func call_import(name: String) {
 
 func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     current_key = function.key
-    encoder.align_to(16)
+    if program.hot_reload {
+        encoder.align_to(32)
+    } else {
+        encoder.align_to(16)
+    }
     function_offsets[function.key] = encoder.position()
     span_keys.append(function.key)
     var span_start = encoder.position()
@@ -458,6 +474,9 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
         shown_place = "-\t-\t-"
     }
     note_the_place(start, shown_place)
+    if program.hot_reload {
+        jump_through_the_slot(function.key)
+    }
     block_fixups = List<Fixup>()
     allocation = Allocation(function)
     allocation.allocate()
@@ -514,6 +533,28 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     emit_the_cold_stops()
     emit_the_edge_stubs()
     block_fixups.each(fix_a_block)
+    function_ends[function.key] = encoder.position()
+}
+
+# ../../HOT_RELOAD.md#the-parts
+func jump_through_the_slot(key: String) {
+    var room = Buffer(0)
+    var index = 0
+    while index < 8 {
+        room.append(0)
+        index = index + 1
+    }
+    program.data.append(room)
+    var label = program.data.count() - 1
+    program.name_state(label, "slot.{key}")
+    slot_labels[key] = label
+    encoder.byte(255)
+    encoder.byte(37)
+    var at = encoder.position()
+    encoder.dword(0)
+    var fixup = Fixup(at, "", label)
+    data_fixups.append(fixup)
+    body_offsets[key] = encoder.position()
 }
 
 # ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
@@ -2063,6 +2104,7 @@ func stop_with(text: String, line: Integer) {
     var bytes = message.to_bytes()
     program.data.append(bytes)
     var label = program.data.count() - 1
+    program.constant_labels.append(label)
     load_message(label)
 }
 

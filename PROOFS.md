@@ -1431,3 +1431,38 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   `validators/abstract_syntax_tree/switch_chain`, `repeated_branch_call`, `switch_cases`, `lone_hole`.
 - **Checked by**: conformance/walk_with_function, argument_walk_without_function, repeated_branch_call,
   repeated_branch_call_chain, switch_chain, switch_chain_else_if, switch_chain_or, lone_hole and its variants.
+
+## Live reload
+
+### A reload compiles only the changed classes
+
+- **Status**: built in part: the proof finds what changed; the compile does not skip the rest yet.
+- **Rule**: a reload compile (`--reload-at`) compares a digest of each of the program's files with the one the
+  running program's manifest holds. No file changed, added or removed answers `unchanged` before anything is
+  lowered; otherwise the classes the changed files declare are the reload's changed classes
+  (`HighProgram.reload_changed_classes`), and a removed file counts as changed
+  ([repl.md](https://github.com/Spite-Language/spite_spec/blob/master/specs/repl.md#live-reload-in-detail)).
+- **What it buys**: a save that changed nothing answers at once, and the generator swaps in only the functions whose
+  machine code changed (their digests, [HOT_RELOAD.md](HOT_RELOAD.md#the-parts)), so an unchanged class's functions
+  keep the code the program runs.
+- **When it does not apply**: the whole program is still compiled to find which functions changed: compiling only
+  the changed classes against the manifest's facts is to build.
+- **Lives in**: `proofs/reload_changed_classes`.
+- **Checked by**: tests/hot_reload_swaps_a_function (a save that changed nothing answers `unchanged`), hot_reload_watches_saved_files.
+
+### A reload reaches every object whose attributes it changes
+
+- **Status**: built as a refusal: objects are not moved yet.
+- **Rule**: after the last high pass, every class the running program's manifest describes is compared with the
+  layout the reload compiled (its size, and each attribute's name, type and place). A class whose layout differs
+  refuses the reload, naming the class and the attributes that are new or gone, since the objects the program holds
+  would be read through attributes they do not have; an enum whose values change other than by new ones added last
+  refuses it too, since a value the program holds keeps its number. Class ids are seeded from the manifest, so a
+  class keeps the id its objects carry.
+- **What it buys**: no reloaded function ever reads a live object through a layout it was not made with: the reload
+  is refused instead, and the program keeps all of its code.
+- **When it does not apply**: a build without `--hot-reload` has no reload. Moving the objects to the new layout,
+  which the specification asks for, is to build.
+- **Lives in**: `proofs/reload_reaches_moved_objects`, registered after `lent_attributes` through
+  `HighOptimizationPasses.Proving`.
+- **Checked by**: tests/hot_reload_refuses_new_attributes.

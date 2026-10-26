@@ -1,0 +1,398 @@
+# ../../../../spite_spec/specs/repl.md#live-reload-in-detail
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var program = Program()
+var lines = List<String>()
+var watches = List<String>()
+var excluded_flags = [
+    "program"
+    "executable_path"
+    "build"
+    "check"
+    "high_ir"
+    "low_ir"
+    "optimization_report"
+    "final_classes"
+    "reload_at"
+]
+var room_start: Long = 6442450944
+var room_size: Long = 268435456
+
+func Source(starting_context: Context) {
+    context = starting_context
+}
+
+# ../../../HOT_RELOAD.md#the-parts
+func reloader_source(): String {
+    lines = List<String>()
+    var working = program.working_directory()
+    var working_folder = forward_literal(working)
+    var executable = program.executable_path()
+    var compiler = forward_literal(executable)
+    var arguments = arguments_text()
+    choose_the_watches()
+    add_the_first_part()
+    add_the_second_part(working_folder, compiler, arguments)
+    return lines.join("\n")
+}
+
+func point_source(): String {
+    lines = List<String>()
+    lines.append("var reloader = Spite.HotReload()")
+    lines.append("")
+    lines.append("func start() \{")
+    lines.append("    reloader.start()")
+    lines.append("}")
+    lines.append("")
+    lines.append("func check_point() \{")
+    lines.append("    reloader.check_point()")
+    lines.append("}")
+    return lines.join("\n")
+}
+
+func add_a_watch(path: String) {
+    lines.append("    watch(\"{path}\")")
+}
+
+func choose_the_watches() {
+    watches = List<String>()
+    var given = context.build_flags["program"]
+    var folder = absolute_of(given)
+    add_the_folder(folder)
+    var index = 0
+    while index < context.program.order.count() {
+        var model = context.program.order[index]
+        var path = model.file.path.replace("\\", "/")
+        var is_program_code = not path.is_empty() and not context.resolver.symbols.is_library_path(path)
+        if is_program_code and not path.starts_with("{folder}/") {
+            var cut = path.length()
+            var found = false
+            while cut > 0 and not found {
+                var before = path.character_at(cut - 1)
+                found = before == "/"
+                if not found {
+                    cut = cut - 1
+                }
+            }
+            if cut > 1 {
+                var holder = path.slice(0, cut - 1)
+                var absolute = absolute_of(holder)
+                add_the_folder(absolute)
+            }
+        }
+        index = index + 1
+    }
+}
+
+func add_the_folder(folder: String) {
+    var shown = forward_literal(folder)
+    if not watches.contains(shown) {
+        watches.append(shown)
+    }
+}
+
+func absolute_of(given: String?): String {
+    var directory = program.working_directory()
+    var working = directory.replace("\\", "/")
+    if not given {
+        return working
+    }
+    var forward = given.replace("\\", "/")
+    var is_absolute = forward.starts_with("/") or forward.index_of(":") == 1
+    if is_absolute {
+        return forward
+    }
+    if forward == "." {
+        return working
+    }
+    return "{working}/{forward}"
+}
+
+func arguments_text(): String {
+    var folder = context.build_flags["program"]
+    crash folder
+    var words = List<String>()
+    var quoted_folder = quoted(folder)
+    words.append(quoted_folder)
+    var names = context.build_flags.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var value = context.build_flags[name]
+        crash value
+        if not excluded_flags.contains(name) {
+            var flag = name.replace("_", "-")
+            if value == "true" {
+                words.append("--{flag}")
+            } else {
+                var quoted_value = quoted(value)
+                words.append("--{flag}={quoted_value}")
+            }
+        }
+        index = index + 1
+    }
+    words.append("--build")
+    return words.join(" ")
+}
+
+func quoted(text: String): String {
+    var literal = forward_literal(text)
+    return "\\\"{literal}\\\""
+}
+
+func forward_literal(text: String): String {
+    var forward = text.replace("\\", "/")
+    var quoted_marks = forward.replace("\"", "\\\"")
+    return quoted_marks.replace("\{", "\\\{")
+}
+
+func add_the_first_part() {
+    lines.append("singleton")
+    lines.append("")
+    lines.append("var kernel = DynamicLibrary(\"kernel32.dll\", 'identity', \"\")")
+    lines.append("var runtime = DynamicLibrary(\"ucrtbase.dll\", 'identity', \"\")")
+    lines.append("var console = Console()")
+    lines.append("var program = Program()")
+    lines.append("var reload = Reload()")
+    lines.append("var watcher = FileSystemWatcher()")
+    lines.append("var started = false")
+    lines.append("var next_address: Long = 0")
+    lines.append("var room_end: Long = 0")
+    lines.append("var compiler_output = \"\"")
+    lines.append("var last_answer = \"no reload has run yet: 'reload' compiles the saved files now\"")
+    lines.append("var lost_the_manifest = \"\"")
+    lines.append("var succeeded = true")
+    lines.append("")
+    lines.append("func start() \{")
+    lines.append("    assert not started")
+    lines.append("    started = true")
+    watches.each(add_a_watch)
+    lines.append("}")
+    lines.append("")
+    lines.append("func watch(path: String) \{")
+    lines.append("    var folder = Directory(path)")
+    lines.append("    var watched = watcher.watch_for_changes(folder)")
+    lines.append("    if not watched \{")
+    lines.append("        console.error(\"spite: the reload watcher cannot watch '\{path}', so a file saved there reloads only through 'reload'\")")
+    lines.append("    }")
+    lines.append("}")
+    lines.append("")
+    lines.append("func check_point() \{")
+    lines.append("    var changed = watcher.changes()")
+    lines.append("    if holds_saved_code(changed) \{")
+    lines.append("        reload_now()")
+    lines.append("    }")
+    lines.append("}")
+    lines.append("")
+    lines.append("func holds_saved_code(paths: List<String>): Boolean \{")
+    lines.append("    var index = 0")
+    lines.append("    while index < paths.count() \{")
+    lines.append("        var path = paths[index]")
+    lines.append("        crash path")
+    lines.append("        var forward = path.replace(\"\\\\\", \"/\")")
+    lines.append("        if forward.ends_with(\".spite\") and not forward.contains(\"/.spite/\") \{")
+    lines.append("            return true")
+    lines.append("        }")
+    lines.append("        index = index + 1")
+    lines.append("    }")
+    lines.append("    return false")
+    lines.append("}")
+    lines.append("")
+    lines.append("func answer_reload(word: String): String \{")
+    lines.append("    if word == \"last_reload\" \{")
+    lines.append("        return last_answer")
+    lines.append("    }")
+    lines.append("    if word == \"wait_reload\" \{")
+    lines.append("        return wait_reload()")
+    lines.append("    }")
+    lines.append("    return reload_now()")
+    lines.append("}")
+    lines.append("")
+    lines.append("func last_reload(): String \{")
+    lines.append("    return last_answer")
+    lines.append("}")
+    lines.append("")
+    lines.append("func wait_reload(): String \{")
+    lines.append("    var changed = watcher.changes()")
+    lines.append("    if holds_saved_code(changed) \{")
+    lines.append("        return reload_now()")
+    lines.append("    }")
+    lines.append("    return last_answer")
+    lines.append("}")
+    lines.append("")
+}
+
+func add_the_second_part(working_folder: String, compiler: String, arguments: String) {
+    lines.append("func reload_now(): String \{")
+    lines.append("    succeeded = true")
+    lines.append("    if not lost_the_manifest.is_empty() \{")
+    lines.append("        return refused(lost_the_manifest)")
+    lines.append("    }")
+    lines.append("    if not reserve_the_room() \{")
+    lines.append("        return refused(\"no room near the program could be reserved for the new code (VirtualAlloc at \{next_address})\")")
+    lines.append("    }")
+    lines.append("    var address = next_address")
+    lines.append("    var executable = program.executable_path()")
+    lines.append("    var line = \"cd /d \\\"{working_folder}\\\" && \\\"{compiler}\\\" {arguments} --executable-path=\\\"\{executable}\\\" --reload-at=\{address} 2>&1\"")
+    lines.append("    var status = run_the_compiler(line)")
+    lines.append("    var told = compiler_output.trim()")
+    lines.append("    if status != 0 \{")
+    lines.append("        if told.is_empty() \{")
+    lines.append("            told = \"the compiler stopped with \{status} and said nothing\"")
+    lines.append("        }")
+    lines.append("        return refused(told)")
+    lines.append("    }")
+    lines.append("    var library_path = \"\"")
+    lines.append("    var manifest_path = \"\"")
+    lines.append("    var rebuilt = List<String>()")
+    lines.append("    var said = List<String>()")
+    lines.append("    var told_lines = told.split(\"\\n\")")
+    lines.append("    var index = 0")
+    lines.append("    while index < told_lines.count() \{")
+    lines.append("        var told_line = told_lines[index]")
+    lines.append("        crash told_line")
+    lines.append("        var plain = told_line.trim()")
+    lines.append("        var plain_length = plain.length()")
+    lines.append("        if plain.starts_with(\"library \") \{")
+    lines.append("            library_path = plain.slice(8, plain_length)")
+    lines.append("        } else if plain.starts_with(\"manifest \") \{")
+    lines.append("            manifest_path = plain.slice(9, plain_length)")
+    lines.append("        } else if not plain.is_empty() \{")
+    lines.append("            said.append(plain)")
+    lines.append("        }")
+    lines.append("        if plain.starts_with(\"rebuilt \") \{")
+    lines.append("            var names = plain.slice(8, plain_length)")
+    lines.append("            var parts = names.split(\", \")")
+    lines.append("            parts.each(rebuilt.append)")
+    lines.append("        }")
+    lines.append("        index = index + 1")
+    lines.append("    }")
+    lines.append("    var answer = said.join(\"\\n\")")
+    lines.append("    if library_path.is_empty() \{")
+    lines.append("        last_answer = answer")
+    lines.append("        return last_answer")
+    lines.append("    }")
+    lines.append("    var swapped = swap_in(library_path, address)")
+    lines.append("    if not swapped.is_empty() \{")
+    lines.append("        return refused(swapped)")
+    lines.append("    }")
+    lines.append("    keep_the_manifest(manifest_path)")
+    lines.append("    reload.rebuilt.append(rebuilt)")
+    lines.append("    last_answer = answer")
+    lines.append("    console.error(\"spite: \{answer}\")")
+    lines.append("    return last_answer")
+    lines.append("}")
+    lines.append("")
+    lines.append("func keep_the_manifest(pending: String) \{")
+    lines.append("    var pending_length = pending.length()")
+    lines.append("    var stem_length = pending_length - 15")
+    lines.append("    var kept = false")
+    lines.append("    if stem_length > 0 and pending.ends_with(\".reload_pending\") \{")
+    lines.append("        var stem = pending.slice(0, stem_length)")
+    lines.append("        var host_path = \"\{stem}.reload_host\"")
+    lines.append("        var host = File(host_path)")
+    lines.append("        host.remove()")
+    lines.append("        var renamed = File(pending)")
+    lines.append("        kept = renamed.move_to(host_path)")
+    lines.append("    }")
+    lines.append("    if not kept \{")
+    lines.append("        lost_the_manifest = \"the new code is swapped in, but its manifest '\{pending}' could not take the place of the running program's, so a later reload would compile against code the program no longer runs: start the program again\"")
+    lines.append("        console.error(\"spite: \{lost_the_manifest}\")")
+    lines.append("    }")
+    lines.append("}")
+    lines.append("")
+    lines.append("func refused(why: String): String \{")
+    lines.append("    succeeded = false")
+    lines.append("    last_answer = why")
+    lines.append("    console.error(\"spite: \{why}\")")
+    lines.append("    return last_answer")
+    lines.append("}")
+    lines.append("")
+    lines.append("func reserve_the_room(): Boolean \{")
+    lines.append("    if next_address != 0 \{")
+    lines.append("        return true")
+    lines.append("    }")
+    lines.append("    var wanted: Long = {room_start}")
+    lines.append("    var size: Long = {room_size}")
+    lines.append("    var reserved = kernel.VirtualAlloc_as_long(wanted, size, 8192, 64)")
+    lines.append("    if reserved != wanted \{")
+    lines.append("        return false")
+    lines.append("    }")
+    lines.append("    next_address = wanted")
+    lines.append("    room_end = wanted + size")
+    lines.append("    return true")
+    lines.append("}")
+    lines.append("")
+    lines.append("func run_the_compiler(line: String): Integer \{")
+    lines.append("    compiler_output = \"\"")
+    lines.append("    var handle = runtime._popen_as_long(line, \"r\")")
+    lines.append("    if handle == 0 \{")
+    lines.append("        compiler_output = \"the compiler could not be started: \{line}\"")
+    lines.append("        return -1")
+    lines.append("    }")
+    lines.append("    var output_text = String()")
+    lines.append("    var chunk = Buffer(4096)")
+    lines.append("    var one: Long = 1")
+    lines.append("    var wanted: Long = 4096")
+    lines.append("    var got = runtime.fread_as_long(chunk, one, wanted, handle)")
+    lines.append("    while got > 0 \{")
+    lines.append("        var got_count = got.to_integer()")
+    lines.append("        chunk.take_written(got_count)")
+    lines.append("        var byte_index = 0")
+    lines.append("        while byte_index < got_count \{")
+    lines.append("            var held = chunk[byte_index]")
+    lines.append("            crash held")
+    lines.append("            output_text.append_code(held)")
+    lines.append("            byte_index = byte_index + 1")
+    lines.append("        }")
+    lines.append("        got = runtime.fread_as_long(chunk, one, wanted, handle)")
+    lines.append("    }")
+    lines.append("    compiler_output = output_text")
+    lines.append("    return runtime._pclose(handle)")
+    lines.append("}")
+    lines.append("")
+    lines.append("func swap_in(path: String, address: Long): String \{")
+    lines.append("    var file = File(path)")
+    lines.append("    var bytes = file.read_bytes()")
+    lines.append("    if not bytes \{")
+    lines.append("        return \"the new code '\{path}' cannot be read\"")
+    lines.append("    }")
+    lines.append("    var loaded_at = bytes.read_long_little_endian_at(0)")
+    lines.append("    var size = bytes.read_integer_little_endian_at(8)")
+    lines.append("    var slot_count = bytes.read_integer_little_endian_at(12)")
+    lines.append("    crash loaded_at")
+    lines.append("    crash size")
+    lines.append("    crash slot_count")
+    lines.append("    var end = address + size")
+    lines.append("    if loaded_at != address or end > room_end \{")
+    lines.append("        return \"the new code '\{path}' was compiled for another place than the room kept for it\"")
+    lines.append("    }")
+    lines.append("    var committed = kernel.VirtualAlloc_as_long(address, size, 4096, 64)")
+    lines.append("    if committed != address \{")
+    lines.append("        return \"the room for the new code could not be committed (VirtualAlloc at \{address} for \{size} bytes)\"")
+    lines.append("    }")
+    lines.append("    var image = bytes.read_bytes_at(16, size)")
+    lines.append("    crash image")
+    lines.append("    kernel.RtlMoveMemory(address, image, size)")
+    lines.append("    var process = kernel.GetCurrentProcess_as_long()")
+    lines.append("    kernel.FlushInstructionCache(process, address, size)")
+    lines.append("    var pair = 0")
+    lines.append("    while pair < slot_count \{")
+    lines.append("        var at = 16 + size + 16 * pair")
+    lines.append("        var slot = bytes.read_long_little_endian_at(at)")
+    lines.append("        var value = bytes.read_long_little_endian_at(at + 8)")
+    lines.append("        crash slot")
+    lines.append("        crash value")
+    lines.append("        var room = Buffer(8)")
+    lines.append("        room.append_long_little_endian(value)")
+    lines.append("        kernel.RtlMoveMemory(slot, room, 8)")
+    lines.append("        pair = pair + 1")
+    lines.append("    }")
+    lines.append("    var rounded = (size + 65535) / 65536 * 65536")
+    lines.append("    next_address = address + rounded")
+    lines.append("    return \"\"")
+    lines.append("}")
+}
