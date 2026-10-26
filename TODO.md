@@ -113,12 +113,11 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ## The outputs
 
-- `spite program` builds and runs (this compiler only builds, so a setting its `Environment` declares is checked and then unused, D842)
 - Crash reports
-- `--final-classes`
+- `--final-classes` (D1223): the printed folder does not run as the same program yet (its entry still loads the library by its path, and the library's classes are printed beside it), and the classes the compiler makes without a file (`Spite.Work`, the functions it writes) are not printed
+- Options a program's `build.spite` sets are read only for `final_classes`; `executable_path`, `optimization_report`, `check` and `build` are read from the command line alone
 - `--repl-port`, `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
 - `--repl` (D698 to D701): a singleton made with arguments (`Channel(1)`), `bytes <path>` and `memory`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes, `eval`, `run`, breakpoints and `reload`
-- The runner has no time limit, so a test that hangs stops the whole run; the suite runs tests one at a time: run them in parallel, and make one compile fast enough that a model can iterate on the language test by test
 - Caches per step and per unit
 
 ## The compiler proves itself
