@@ -33,7 +33,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
 - A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
-- Leaks `--debug-memory` cannot be asked about: a reflection object made on two threads at once records itself on the list let go at exit without a lock
 
 
 ## The language

@@ -323,3 +323,12 @@ pass that makes it, and the ones still made inside a step or a pass, with why.
   value that holds it, exactly `size` of them; every other buffer keeps a heap block that grows.
 - A class whose only memory is a room of at most 8 bytes, and nothing else, is a number: its value travels in a
   register (`Integer`, `Boolean`, ...), and its room is materialised in the frame when its bytes are read.
+
+### The list let go at exit
+
+A singleton and a reflection object each have a slot of state (`singleton.<class>`, `singleton.<kind>:<name>`): the
+object, the next slot on the list, whether it is made, its `drop()` or let-go function and the thread making it.
+The thread that wins the claim on a slot (a compare-exchange of its state) makes the object and pushes the slot on
+the list the program lets go of at exit, newest first. Two threads can each be making a different one at the same
+moment, so the push is a compare-exchange on the list's head that reads the head again and retries when another
+push came between, instead of a plain store that would lose one of them.
