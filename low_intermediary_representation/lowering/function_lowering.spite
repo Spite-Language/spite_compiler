@@ -50,6 +50,8 @@ var borrowed_sources = List<HighIntermediaryRepresentation.Values.Value>()
 var fresh_by_constructor = Dictionary<String, List<String>>()
 var fresh_attributes = List<String>()
 var lowering_name = ""
+var nested_back_statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+var nested_back_index = -1
 
 func FunctionLowering(
     starting_layout: HighIntermediaryRepresentation.Layout,
@@ -1147,7 +1149,10 @@ func leaves_alone_but_its_write_back(
     }
     var after = statement_index + 1
     var back = write_back_of(read, name, after)
-    if back < 0 or index_moves_before(index_value, after, back) {
+    if back < 0 {
+        return leaves_alone_but_a_nested_write_back(read, name, watched, index_value)
+    }
+    if index_moves_before(index_value, after, back) {
         return false
     }
     var rest = List<HighIntermediaryRepresentation.Statements.Statement>()
@@ -1165,6 +1170,82 @@ func leaves_alone_but_its_write_back(
     }
     block_statements[back] = HighIntermediaryRepresentation.Statements.Block()
     return true
+}
+
+# ../../PROOFS.md#an-item-written-back-to-its-own-slot-is-the-slot
+func leaves_alone_but_a_nested_write_back(
+    read: HighIntermediaryRepresentation.Values.Call,
+    name: String,
+    watched: List<String>,
+    index_value: HighIntermediaryRepresentation.Values.Value,
+): Boolean {
+    crash assignments
+    var after = statement_index + 1
+    nested_back_statements = List<HighIntermediaryRepresentation.Statements.Statement>()
+    nested_back_index = -1
+    var index = after
+    while index < block_statements.count() and nested_back_index < 0 {
+        var statement = block_statements[index]
+        find_a_nested_write_back(statement, read, name)
+        index = index + 1
+    }
+    var count = block_statements.count()
+    if nested_back_index < 0 or index_moves_before(index_value, after, count) {
+        return false
+    }
+    var written_back = nested_back_statements[nested_back_index]
+    crash written_back
+    var emptied = HighIntermediaryRepresentation.Statements.Block()
+    nested_back_statements[nested_back_index] = emptied
+    watched.append("{read.function.owner}._length")
+    if assignments.leaves_alone(block_statements, after, watched) {
+        return true
+    }
+    nested_back_statements[nested_back_index] = written_back
+    return false
+}
+
+func find_a_nested_write_back(
+    statement: HighIntermediaryRepresentation.Statements.Statement,
+    read: HighIntermediaryRepresentation.Values.Call,
+    name: String,
+) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.If: find_a_write_back_in_an_if(statement, read, name)
+        HighIntermediaryRepresentation.Statements.While: find_a_write_back_in(statement.body, read, name)
+        HighIntermediaryRepresentation.Statements.Block: find_a_write_back_in(statement, read, name)
+        _: return
+    }
+}
+
+func find_a_write_back_in_an_if(
+    branch: HighIntermediaryRepresentation.Statements.If,
+    read: HighIntermediaryRepresentation.Values.Call,
+    name: String,
+) {
+    find_a_write_back_in(branch.then_branch, read, name)
+    if nested_back_index < 0 {
+        find_a_write_back_in(branch.else_branch, read, name)
+    }
+}
+
+func find_a_write_back_in(
+    block: HighIntermediaryRepresentation.Statements.Block?,
+    read: HighIntermediaryRepresentation.Values.Call,
+    name: String,
+) {
+    assert block
+    var index = 0
+    while index < block.statements.count() and nested_back_index < 0 {
+        var statement = block.statements[index]
+        if is_a_write_back(statement, read, name) {
+            nested_back_statements = block.statements
+            nested_back_index = index
+        } else {
+            find_a_nested_write_back(statement, read, name)
+        }
+        index = index + 1
+    }
 }
 
 func write_back_of(read: HighIntermediaryRepresentation.Values.Call, name: String, after: Integer): Integer {
@@ -1410,6 +1491,14 @@ func count_inside_the_lock(loaded: Lowered, attribute: Model.AttributeModel) {
 func reads_a_changing_attribute(attribute: Model.AttributeModel): Boolean {
     crash waits
     return waits.is_assigned_after_making(attribute)
+}
+
+# ../../PROOFS.md#read-only-and-atomic-singletons
+func reads_under_the_lock(attribute: Model.AttributeModel): Boolean {
+    if program.lone_atomic_attributes.contains("{attribute.owner}.{attribute.name}") {
+        return false
+    }
+    return reads_a_changing_attribute(attribute)
 }
 
 func locks_from_outside(owner_key: String): Boolean {
@@ -2049,7 +2138,7 @@ func lower_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead):
     crash read.object
     var region = region_of(read.object.value_type, read.attribute)
     var owner_key = read.attribute.owner
-    var takes_the_lock = locks_from_outside(owner_key) and reads_a_changing_attribute(read.attribute)
+    var takes_the_lock = locks_from_outside(owner_key) and reads_under_the_lock(read.attribute)
     if takes_the_lock {
         lock_a_singleton(owner_key)
     }
@@ -3375,13 +3464,39 @@ func lower_class_test(test: HighIntermediaryRepresentation.Values.Class.Test): L
     var class_id = new_register()
     var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, tested.value, 0, 'bits_64')
     emit(loaded)
-    var wanted = layout.class_id_of(test.member.name)
-    var wanted_register = constant(wanted)
-    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'equal', class_id, wanted_register)
-    emit(compared)
+    if test.member.kind == 'shape' {
+        test_the_fillers(test.member, class_id, target)
+    } else {
+        var wanted = layout.class_id_of(test.member.name)
+        var wanted_register = constant(wanted)
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'equal', class_id, wanted_register)
+        emit(compared)
+    }
     jump_to(after)
     switch_to(after)
     return single(target)
+}
+
+func test_the_fillers(shape: Model.Type, class_id: Integer, target: Integer) {
+    var zero = constant(0)
+    var cleared = LowIntermediaryRepresentation.Instructions.Copy(target, zero)
+    emit(cleared)
+    var fillers = layout.program.fillers_of(shape.name)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        if filler.kind == 'object' and not filler.is_symbol {
+            var wanted = layout.class_id_of(filler.name)
+            var wanted_register = constant(wanted)
+            var matched = new_register()
+            var compared = LowIntermediaryRepresentation.Instructions.Compare(matched, 'equal', class_id, wanted_register)
+            emit(compared)
+            var joined = LowIntermediaryRepresentation.Instructions.Arithmetic(target, 'bits_or', target, matched)
+            joined.is_checked = false
+            emit(joined)
+        }
+        index = index + 1
+    }
 }
 
 func lower_presence_test(test: HighIntermediaryRepresentation.Values.PresenceTest): Lowered {

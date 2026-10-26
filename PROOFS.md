@@ -27,7 +27,7 @@ anything themselves. A proof on the low representation is a `LowProof`, in its o
 proof, registered among the low passes right before the pass that reads its facts. `ARCHITECTURE.md` lists the
 order.
 
-Of the 92 proofs the old compiler made, 39 are built, 33 are partly built and 20 are missing (audit of
+Of the 92 proofs the old compiler made, 40 are built, 32 are partly built and 20 are missing (audit of
 2026-10-24, with what was built since). Where a proof is partly built and what is missing could let a wrong program through, the section says
 **fails silently**: that is a D244 bug and its `TODO.md` line comes first.
 
@@ -821,19 +821,42 @@ as when each was refused while building.
   `function_lowering.spite` (`held_back`).
 - **Checked by**: tests/back_reference_calls, tests/back_reference_gone, tests/parent_back_reference.
 
+### A back reference is picked from how the program links its objects
+
+- **Status**: partly built (D759, D1396).
+- **Rule**: an attribute `a: T?` of a class `C` holds no count when one function both sets `c.a = t` and stores `c`
+  into `t`'s attribute `f`, which holds a `C` ([memory.md](../SpiteLanguage/specs/memory.md)); never from the class
+  graph alone, since taking an owning reference for a back one would free an object the program still holds.
+- **How**: each function of the program is read for the stores it makes: `x.a = y`, `x.f.append(y)` (and
+  `insert`, `prepend`, `add`, `set_at`), `x.f[k] = y`, and a constructor that keeps its argument in an attribute. A
+  call of a program function whose name only one class declares adds that function's own stores, with `this` and
+  its parameters replaced by the call's receiver and arguments, so `team.recruit(player)` beside `player.play_for(team)`
+  links the two as `team.players.append(player)` beside `player.team = team` would (D1396). A link found in one
+  function decides the attribute for the whole program.
+- **Missing**: a link through a function named by two classes (the library's included: a `join` is `String.join`'s name too), a call two levels deep, two objects neither of which
+  the function made linked directly (not through a collection), one attribute pointing both ways (`partner`), a
+  cycle through a union or a `type`, and a back attribute that cannot be null: each keeps its counts and leaks,
+  which `--debug-memory` names at exit.
+- **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
+- **Lives in**: `model/back_references.spite`, asked by `ProgramModel.holds_no_count`.
+- **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls.
+
 ### A deep copy copies a graph with its shape
 
-- **Status**: partly built (D724, D1252).
+- **Status**: partly built (D724, D1252, D1397).
 - **Rule**: a class whose attributes can reach itself, or reach a back reference, is copied through a table made
   for the call, so a cycle is copied once per object
   ([memory.md](../SpiteLanguage/specs/memory.md)).
 - **How**: a class reaches another through an object attribute, a bound type, or a union attribute (each member of
   the union); a union attribute inside a table copy is copied through its member's `_deep_copy_in`, dispatched on
-  the class it holds, with the same table.
-- **Missing**: a cycle through a `type` attribute; `List.deep_copy()` gives each item a table of its own.
-- **Falls back**: copied plainly, which recurses around a cycle through a `type` until the stack runs out.
-- **Lives in**: embedded, `high_intermediary_representation/building/copying.spite` (`uses_a_table`, `copy_in_call`).
-- **Checked by**: conformance/deep_copy_graphs, tests/deep_copy_union_cycles.
+  the class it holds, with the same table. A class that reaches a `type` attribute is copied through a table
+  whatever fills it, since the classes that fill a `type` are known only once the whole program is built (D1397),
+  and the `type` value is copied through `_deep_copy_in` with the same table.
+- **Missing**: `List.deep_copy()` gives each item a table of its own.
+- **Falls back**: a class that reaches a `type` pays for a table even when no filler reaches it back.
+- **Lives in**: embedded, `high_intermediary_representation/building/copying.spite` (`uses_a_table`, `holds_a_type`,
+  `copy_in_call`).
+- **Checked by**: conformance/deep_copy_graphs, tests/deep_copy_union_cycles, tests/deep_copy_type_cycles.
 
 ### A singleton made at the start is never tested again
 
@@ -873,16 +896,20 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 ### No borrowed read past a resize
 
-- **Status**: partly built (D730, D1140); **fails silently** (the rule goes unenforced, memory stays safe).
+- **Status**: partly built (D730, D1140, D1399).
 - **Rule**: a borrowed name is not read after anything that may resize its collection, followed through calls; a
   resize anywhere in a loop ends the borrow for the loop
   ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)). Assigning the collection again,
-  a local as well as an attribute, is a resize, and so is assigning an object whose attribute holds it (one level:
-  `holder = Holder()` ends what was borrowed from `holder.velocities`).
-- **Missing**: an object two levels up the path; library functions are not followed; a value of unknown type fans
-  out to every function of the name; a callee's effects computed under the recursion guard are cached short.
+  a local as well as an attribute, is a resize, and so is assigning an object that holds it at any depth, through
+  the program's classes and the items of the library's collections (`world = World()` ends what was borrowed from
+  `world.holder.velocities`), and so is a library call that removes items (`remove_at`, `remove_first`,
+  `remove_last`, `remove_swapping`, `truncate`, `clear`, `remove`, `remove_where...`) from a collection whose items
+  hold one (D1399).
+- **How**: a function's effects found while another call of it is still being followed (a recursion) are kept only
+  for that one question, not cached, so a later question follows it whole (D1399).
+- **Missing**: a value of unknown type fans out to every function of the name (strict, not silent).
 - **Falls back**: refused, "'...' is borrowed from '...', and '...' on line ... may move the items ...".
-- **Checked by**: conformance/vector_borrow_call_grows, vector_borrow_loop, vector_borrow_removed, vector_borrow_local_assigned, vector_borrow_holder_assigned,
+- **Checked by**: conformance/vector_borrow_call_grows, vector_borrow_loop, vector_borrow_removed, vector_borrow_local_assigned, vector_borrow_holder_assigned, vector_borrow_owner_assigned,
   vector_borrow_swap, vector_reserve_borrows, dispatched_resizes, found_item_borrows, items_borrow_remove_swapping;
   tests/queued_borrows.
 
@@ -915,15 +942,19 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 ### An item lent to a call
 
-- **Status**: partly built; **fails silently** (the rule goes unenforced).
+- **Status**: partly built (D1400).
 - **Rule**: a borrowed item passed to a program function called by name is lent for the call; the callee is
   compiled under the borrow rules, the call may not resize the source, and lending to a library function, a union
   or an unnamed expression is an error ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)).
+  A constructor called by its class's name is followed like any function; lending to a function the compiler
+  cannot follow (a function value, a function of a value typed by a `type` or known only while the program runs)
+  is "'...' is borrowed from '...', and '...' is not a function the compiler follows while compiling ...", and to
+  a variadic position of a program function "... gathers it into the list of its variadic arguments, which holds its own values and is
+  never lent an item ..." (D1400).
 - **How**: a lent parameter the callee passes on by name to a program function called by name is lent to that
   function too, for the call, and its body is judged the same way, through any depth of calls (D1141).
-- **Missing**: the uncounted argument; passing on through a receiver whose class the study cannot tell, or to a
-  library function; a row's attribute is not lent; the unnamed expression refusal; lending to a local function
-  value; variadic positions.
+- **Missing**: the uncounted argument; inside the callee, passing on through a receiver whose class the study
+  cannot tell, or to a library function; a row's attribute is not lent; the unnamed expression refusal.
 - **Falls back**: refused, "'...' is borrowed from '...' and lent to '...' for its call ...".
 - **Lives in**: the proof `proofs/borrowed_items` refuses a resizing, library or union lend and records each lent
   call in the context (`borrows.spite`, `check_the_lent_body`); the proof `proofs/lent_parameters`, after it, judges
@@ -963,12 +994,18 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 - **Status**: partly built.
 - **Rule**: an object attribute of a singleton assigned by no function but its constructor is read from other
-  classes as its address, with no count and no lock.
-- **Missing**: the per-attribute fact: a singleton is steady only when all its attributes are plain.
-- **Falls back**: a counted read.
+  classes as its address, with no count and no lock. Attribute by attribute: a number, `Boolean`, enum or object
+  attribute (not a text, not nullable, not embedded, lent or a back reference) that nothing assigns after its
+  singleton is made, and of a class no `type` writes through, holds the same value for the rest of the program, so
+  its load through a singleton made at the start is the same everywhere and is moved out of loops and shared.
+- **Missing**: the read with no count for an object attribute of a singleton that has other attributes that change.
+- **Falls back**: a counted read, loaded where it is written.
 - **Lives in**: `high_intermediary_representation/singleton_forms.spite`, the low proof
-  `proofs/singletons_made_at_start` (the next section), the passes `made_singletons` and `unread_objects`.
-- **Checked by**: tests/singleton_attribute_reads.
+  `proofs/singletons_made_at_start` (the next section), the passes `made_singletons` and `unread_objects`; the
+  attributes by the proof `proofs/steady_singleton_attributes`, the last of the high passes
+  (`HighProgram.steady_singleton_attributes`), which `made_singletons` reads to mark the loads. Not in the
+  inspectable builds.
+- **Checked by**: tests/singleton_attribute_reads, tests/steady_singleton_reads (output only).
 
 ### A list's templates read their elements uncounted
 
@@ -985,10 +1022,13 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 - **Status**: partly built.
 - **Rule**: between `var item = list[index]` and `list[index] = item`, with nothing between that may change the
   name, the index, the path or the list, the write-back is not written and the read is uncounted.
-- **Missing**: a write-back nested in a block, and lists other than a library `List` of numbers or objects.
+  A write-back nested in an `if`, a `while` or a block after the read is the slot too, when the index never moves in
+  the rest of the block and nothing else there can change the name, the path or the list.
+- **Missing**: lists other than a library `List` of numbers or objects.
 - **Falls back**: a counted read and the write-back written.
-- **Lives in**: the lowering, `function_lowering.spite` (`write_back_of`, `is_a_write_back`).
-- **Checked by**: tests/slot_write_backs.
+- **Lives in**: the lowering, `function_lowering.spite` (`write_back_of`, `is_a_write_back`,
+  `leaves_alone_but_a_nested_write_back`).
+- **Checked by**: tests/slot_write_backs, tests/nested_write_backs.
 
 ### A value followed through calls is the slot it was read from
 
@@ -1172,24 +1212,37 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### Read-only and atomic singletons
 
-- **Status**: partly built.
+- **Status**: built.
 - **Rule**: a singleton nothing changes after it is made takes no lock; one whose changing attributes are numbers
-  touched once per function, outside loops, is atomic.
-- **Missing**: one lone atomic attribute inside a locked singleton.
-- **Falls back**: the whole singleton takes its lock.
-- **Lives in**: `high_intermediary_representation/singleton_forms.spite` and `waits.spite`, recorded by the high pass `singleton_locks`.
-- **Checked by**: tests/singleton_forms, tests/singleton_lock_calls, tests/lone_atomic_counter.
+  touched once per function, outside loops, is atomic. In a singleton that keeps its lock, a whole number or `Boolean`
+  attribute that each of its functions writes at most once, outside loops, not again through another of its
+  functions and not beside a call through a function value or a `type`, is atomic on its own: it is never seen half
+  changed, so a read of it from another class takes no lock.
+- **Buys**: no lock for the singleton, or for each read of an attribute atomic on its own from another class.
+- **Falls back**: the whole singleton takes its lock; a write from another class to an attribute atomic on its own
+  still takes it, around the whole statement.
+- **Lives in**: `high_intermediary_representation/singleton_forms.spite` and `waits.spite`, recorded by the high pass
+  `singleton_locks`; the attributes atomic on their own by the proof `proofs/lone_atomic_attributes`, registered among
+  the high passes right after `singleton_locks` (`HighProgram.lone_atomic_attributes`), read by the lowering
+  (`function_lowering.spite`, `reads_under_the_lock`). Not in the inspectable builds.
+- **Checked by**: tests/singleton_forms, tests/singleton_lock_calls, tests/lone_atomic_counter,
+  tests/steady_singleton_reads (output only).
 
 ### A function that touches no changing state takes no lock
 
 - **Status**: partly built.
 - **Rule**: a function that reads or writes no changing attribute, and calls nothing that does, runs unlocked; a
   call from a locked function to another of the same singleton goes to its unlocked body.
-- **Missing**: it tests "never reads `this`", so reading an attribute nothing changes still locks; a call between
-  two locked functions takes the lock again.
-- **Falls back**: the lock, taken again by its owner.
-- **Lives in**: `high_intermediary_representation/waits.spite`, `function_lowering.spite`.
-- **Checked by**: tests/singleton_stateless_calls, tests/singleton_function_values.
+  A read of a number, `Boolean` or enum attribute of its own that nothing assigns after the singleton is made is no
+  touch: it holds the same value for the rest of the program.
+- **Missing**: a call between two locked functions takes the lock again.
+- **Falls back**: the lock, taken again by its owner. A lock that would wait forever is still judged by the
+  attributes a function names (`proofs/parallel_reach`), so a function naming an attribute nothing changes is
+  refused there as before.
+- **Lives in**: `high_intermediary_representation/waits.spite` (`touch_what_reads_a_changing_attribute`),
+  `function_lowering.spite`.
+- **Checked by**: tests/singleton_stateless_calls, tests/singleton_function_values, tests/steady_singleton_reads
+  (output only).
 
 ### Reading functions share the lock
 
@@ -1247,12 +1300,17 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   attributes, of a local made by a constructor or answered by a call whose answer's class is known, and a
   constructor called by its class's name; a class of the library is not followed. A singleton reached that way is
   read for a lock held around an endless loop, and for a call back into a lock its caller holds.
-- **Missing**: in `Parallel` work "waits" is "calls nothing but the console", not the waits fact; a call through a
-  function value, a `type` or a union is not followed.
+  In `Parallel` work a loop is refused when the function holding it never waits, by the waits fact (a sleep, a
+  blocking read or write, a join, through every call): a loop that calls only the console is refused while the site
+  is judged, and one that calls anything else is refused once the whole program is built, when the waits are known.
+- **Missing**: a call through a function value, a `type` or a union is not followed.
 - **Falls back**: refused, "this 'while true' never ends: ...".
-- **Lives in**: `validators/abstract_syntax_tree/spinning_loop`, and the proof `proofs/parallel_reach`
-  (`thread_reach.spite`: `refuse_endless_work`).
-- **Checked by**: conformance/spinning_loop, conformance/endless_parallel_work; tests/parallel_loop_that_leaves.
+- **Lives in**: `validators/abstract_syntax_tree/spinning_loop`, the proof `proofs/parallel_reach`
+  (`thread_reach.spite`: `refuse_endless_work`, which refuses a loop that only prints and records the others in the
+  context, `context.endless_work`), and the proof `proofs/endless_parallel_work`, right after the recorded sites,
+  which asks `HighIntermediaryRepresentation.Waits` whether each recorded function waits.
+- **Checked by**: conformance/spinning_loop, conformance/endless_parallel_work, conformance/endless_parallel_work_calls;
+  tests/parallel_loop_that_leaves.
 
 ### A poll that nothing steps is an error
 
@@ -1378,8 +1436,10 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   (D1136). A member whose type is a union is filled by the same union or by one of its classes; one whose type is a
   `type` by the same `type`, or by a class or a union whose classes each have the `type`'s members; one whose type
   is a function value by a function value with the same parameter types and answer (D1255).
-- **Missing**: a `$T`'s constraint (`constraints.spite`, `is_filled`) still checks only that each member exists; a
-  `type` member is compared by its members' names, not their types.
+- **How, for a `$T`**: the class a `$T` is given is compared with its constraint the same way, each member's types
+  as well as its name (D1398), and a `type` member's own members are compared by type too, a pair of class and
+  `type` already being compared counting as fitting so a `type` that names itself ends.
+- **Missing**: nothing known.
 - **Falls back**: refused, "'...' does not fit type '...': it has no function '...'", "... it has no attribute
   '...'", "... attribute 'size' is a String, but the type needs an Integer", "... its 'render' returns an Integer,
   but the type needs a String", "... argument 1 of its 'scaled' is a String, but the type needs an Integer", "... its
@@ -1387,7 +1447,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Lives in**: embedded, `values.spite` (`filled_shape`, `fits_as_a_class`), `constraints.spite`.
 - **Checked by**: conformance/shape_mismatch, shape_function_mismatch, shape_attribute_type_mismatch,
   shape_return_type_mismatch, shape_parameter_type_mismatch, generic_constraints, generic_constraint_nullable,
-  generic_constraint_not_a_type, shape_operator_without_function.
+  generic_constraint_not_a_type, shape_operator_without_function, generic_constraint_mistyped.
 
 ### A member template fits
 

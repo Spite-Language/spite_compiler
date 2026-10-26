@@ -83,7 +83,9 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    - `parallel_reach`: a `Parallel` work or a `parallel_each_` member reaches only what it may, and no lock waits
      forever.
    A refusal the builder still makes asks this walk first, so the earliest error is the one told.
-2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program.
+2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program. Then
+   `endless_parallel_work`: a `while true` that never leaves in a function a `Parallel` runs, recorded by
+   `parallel_reach`, is refused when that function never waits, which the waits of the whole built program tell.
 3. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.
 4. `vector_fit`: every `Vector` the builder recorded making holds a class that fits one.
 5. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
@@ -143,7 +145,9 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    that walk, records the classes another thread may count (`HighProgram.thread_counted_classes`); every other
    class is counted plainly. Then the proof `copies_nothing_changes`, registered the same way since it reads what
    each call may assign and the waits, marks each copy that nothing changes while it lives, and the pass
-   `shared_copies` declares each marked copy from its original.
+   `shared_copies` declares each marked copy from its original. Between `singleton_locks` and `no_thread_counts`,
+   the proof `lone_atomic_attributes` records the attributes of a locked singleton that are atomic on their own
+   (`HighProgram.lone_atomic_attributes`), which another class reads with no lock.
 11. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
    fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`, `fresh_by_constructor`).
 12. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
@@ -154,6 +158,8 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    Right after it, in a reload compile, the proof `reload_reaches_moved_objects`, registered through
    `HighOptimizationPasses.Proving` since it reads the final layout, refuses a reload whose layout of a class the
    running program holds, or whose numbers of an enum's values, differ from the manifest's.
+   Then the proof `steady_singleton_attributes` records the singleton attributes nothing assigns after their
+   singleton is made (`HighProgram.steady_singleton_attributes`), whose loads `made_singletons` marks invariant.
 
 Passes 2 to 15 run only when the program is lowered (not with `--check`). Passes 7 to 15 make the decisions the
 lowering reads, so the lowering only lowers; they read nothing a later high pass changes. The layout and the studies of calls

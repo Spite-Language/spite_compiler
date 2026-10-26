@@ -7,6 +7,7 @@ var scalars = Model.Scalars()
 var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
 var temporary_count = 0
 var spread_into: Model.FunctionModel? = null
+var members_being_compared = List<String>()
 
 func Values(starting_context: Context) {
     context = starting_context
@@ -224,6 +225,12 @@ func receiver_of_a_function(
     }
     if value == HighIntermediaryRepresentation.Values.LocalRead {
         var named = context.function_locals[value.name]
+        var held = context.function_receivers[value.name]
+        if named and held {
+            var held_type = context.scope.types[held]
+            crash held_type
+            return HighIntermediaryRepresentation.Values.LocalRead(held_type, held)
+        }
         if named and named.owner == context.current_class.key {
             return this_value()
         }
@@ -619,18 +626,81 @@ func has_the_members(found: Model.Type, shape: Model.ShapeModel): Boolean {
         return false
     }
     var model = context.class_of(found)
+    var pair = "{found.name}|{shape.key}"
+    if members_being_compared.contains(pair) {
+        return true
+    }
+    members_being_compared.append(pair)
+    var answer = has_each_member(found, model, shape)
+    members_being_compared.remove_last()
+    return answer
+}
+
+# ../../PROOFS.md#a-value-fits-a-type
+func has_each_member(found: Model.Type, model: Model.ClassModel, shape: Model.ShapeModel): Boolean {
     var index = 0
     while index < shape.members.count() {
         var member = shape.members[index]
-        var attribute = model.attribute_named(member.name)
-        var function = model.function_named(member.name)
-        var is_missing = not attribute and not function
-        if is_missing and is_a_written_member(member, shape) {
+        if is_a_written_member(member, shape) and not has_the_member(found, model, member, shape) {
             return false
         }
         index = index + 1
     }
     return true
+}
+
+func has_the_member(
+    found: Model.Type,
+    model: Model.ClassModel,
+    member: Model.FunctionModel,
+    shape: Model.ShapeModel,
+): Boolean {
+    var attribute = model.attribute_named(member.name)
+    if attribute and member.is_an_attribute {
+        if member.answer {
+            return fits_the_member_type(attribute.attribute_type, member.answer, found, shape)
+        }
+        return true
+    }
+    var function = model.function_named(member.name)
+    if function and not member.is_an_attribute {
+        return has_the_function_types(found, function, member, shape)
+    }
+    if attribute or function {
+        return true
+    }
+    return false
+}
+
+func has_the_function_types(
+    found: Model.Type,
+    function: Model.FunctionModel,
+    member: Model.FunctionModel,
+    shape: Model.ShapeModel,
+): Boolean {
+    if function.parameters.count() != member.parameters.count() {
+        return false
+    }
+    var index = 0
+    while index < member.parameters.count() {
+        var wanted_parameter = member.parameters[index]
+        var found_parameter = function.parameters[index]
+        crash found_parameter
+        if not fits_the_member_type(found_parameter.parameter_type, wanted_parameter.parameter_type, found, shape) {
+            return false
+        }
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    var wanted_answer = nothing
+    if member.answer {
+        wanted_answer = member.answer
+    }
+    var found_answer = nothing
+    if function.answer {
+        found_answer = function.answer
+    }
+    return fits_the_member_type(found_answer, wanted_answer, found, shape)
 }
 
 func shown_with_an_article(of_type: Model.Type): String {
@@ -1956,7 +2026,11 @@ func build_value_of(given: String, field_type: Model.Type): HighIntermediaryRepr
         var boolean = context.boolean()
         return HighIntermediaryRepresentation.Values.WholeNumber(boolean, flag)
     }
-    assert field_type.name == "Integer" or field_type.name == "Long"
+    var scalar = scalars.of(field_type.name)
+    assert scalar
+    if scalar.is_decimal {
+        return HighIntermediaryRepresentation.Values.DecimalNumber(field_type, given)
+    }
     var number = given.to_long()
     assert number
     return HighIntermediaryRepresentation.Values.WholeNumber(field_type, number)
@@ -1975,15 +2049,40 @@ func build_default_of(
         assert not piece.hole
         return described_text(piece.text)
     }
-    assert written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression
+    if written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return build_literal_of(written, field_type)
+    }
+    assert is_a_constant_default(written)
+    return fitted_value_of(written, field_type)
+}
+
+func build_literal_of(
+    written: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression,
+    field_type: Model.Type,
+): HighIntermediaryRepresentation.Values.Value? {
     if written.kind == 'keyword_true' {
         return build_value_of("true", field_type)
     }
     if written.kind == 'keyword_false' {
         return build_value_of("false", field_type)
     }
-    assert written.kind == 'integer_literal'
-    return build_value_of(written.text, field_type)
+    assert written.kind == 'integer_literal' or written.kind == 'decimal_literal'
+    return fitted_value_of(written, field_type)
+}
+
+# ../../OPTIMIZATIONS.md#build-settings-are-constants
+func is_a_constant_default(written: AbstractSyntaxTree.Shapes.Expressions.Expression?): Boolean {
+    if written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return written.kind == 'integer_literal' or written.kind == 'decimal_literal'
+    }
+    if written == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression {
+        return written.operator == 'minus' and is_a_constant_default(written.operand)
+    }
+    if written == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        var is_arithmetic = not is_a_comparison(written.operator)
+        return is_arithmetic and is_a_constant_default(written.left) and is_a_constant_default(written.right)
+    }
+    return false
 }
 
 func described_text(written: String): HighIntermediaryRepresentation.Values.Value {
@@ -5498,6 +5597,13 @@ func copy_member_of(shape: Model.ShapeModel, answer: Model.Type, name: String, s
     }
     var made = Model.FunctionModel(name, shape.key)
     made.answer = answer
+    if name == "_deep_copy_in" {
+        var copies = Copying(context, this)
+        var table_model = copies.copy_table()
+        var table_type = table_model.type_of_an_instance()
+        var parameter = Model.ParameterModel("table", table_type, false)
+        made.parameters.append(parameter)
+    }
     shape.members.append(made)
     var fillers = context.program.fillers_of(shape.key)
     var index = 0
@@ -6054,7 +6160,8 @@ func shape_method_call(
     crash shape
     var shown = context.shown(receiver.value_type)
     var member = shape.member_named(name)
-    if not member and is_a_copy_name(name) and arguments.is_empty() {
+    var is_copied_in = name == "_deep_copy_in" and arguments.count() == 1
+    if not member and is_a_copy_name(name) and (arguments.is_empty() or is_copied_in) {
         var own_type = receiver.value_type.present()
         member = copy_member_of(shape, own_type, name, shown)
     }
@@ -6233,6 +6340,8 @@ func arguments_for(
             refuse_a_passed_function(shown, argument, given.value_type, parameter.parameter_type)
         }
         var value = fitted(given, parameter.parameter_type)
+        var folded_keys = Folded.Keys(context, this)
+        folded_keys.refuse_a_passed_map(value, shown)
         arguments.append(value)
         index = index + 1
     }
@@ -7798,7 +7907,9 @@ func number_conversion_call(
     written: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ): HighIntermediaryRepresentation.Values.Value? {
     assert is_the_number_shape(receiver.value_type) and written.is_empty()
-    assert name == "to_long" or name == "to_double"
+    if name != "to_long" and name != "to_double" {
+        return number_function_call(receiver, name)
+    }
     var answer_type = context.scalar_type("Long")
     if name == "to_double" {
         answer_type = context.scalar_type("Double")
@@ -7840,6 +7951,92 @@ func number_conversion_call(
     crash first
     context.pending.append(first)
     return HighIntermediaryRepresentation.Values.LocalRead(answer_type, local_name)
+}
+
+# ../../OPTIMIZATIONS.md#operators-on-a-number-find-its-class-while-the-program-runs
+func number_function_call(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    name: String,
+): HighIntermediaryRepresentation.Values.Value? {
+    var answer_type = number_function_answer(receiver.value_type, name)
+    assert answer_type
+    var held = held_operand(receiver)
+    var start = default_of_a_type(answer_type)
+    if is_the_number_shape(answer_type) {
+        start = number_start(answer_type)
+    }
+    crash start
+    temporary_count = temporary_count + 1
+    var local_name = context.scope.declare("number_{temporary_count}", answer_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(local_name, answer_type, start)
+    declared.line = context.line
+    context.pending.append(declared)
+    var path = context.path()
+    var function = context.current_function
+    var other = "spite: '{name}()' reaches a Number of a class that is not a number class, whose functions are not chosen while the program runs, at {path}:{context.line} in {function.owner}.{function.name}"
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(other)
+    var chain = HighIntermediaryRepresentation.Statements.Block()
+    chain.statements.append(stopped)
+    var names = number_class_names()
+    var index = names.count() - 1
+    while index >= 0 {
+        var class_name = names[index]
+        crash class_name
+        var held_class = context.scalar_type(class_name)
+        var tested = HighIntermediaryRepresentation.Values.Class.Test(held, held_class)
+        var unboxed = HighIntermediaryRepresentation.Values.Conversion(held_class, 'unbox', held)
+        var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+        var answered = method_call(unboxed, name, no_arguments)
+        var converted = fitted(answered, answer_type)
+        var assigned = HighIntermediaryRepresentation.Statements.Assign.Assign(local_name, converted)
+        assigned.line = context.line
+        var branch = HighIntermediaryRepresentation.Statements.Block()
+        branch.statements.append(assigned)
+        var otherwise = chain
+        chain = HighIntermediaryRepresentation.Statements.Block()
+        var test = HighIntermediaryRepresentation.Statements.If(tested, branch, otherwise)
+        chain.statements.append(test)
+        index = index - 1
+    }
+    var first = chain.statements[0]
+    crash first
+    context.pending.append(first)
+    return HighIntermediaryRepresentation.Values.LocalRead(answer_type, local_name)
+}
+
+func number_function_answer(number_type: Model.Type, name: String): Model.Type? {
+    var shared: Model.Type? = null
+    var is_its_own = true
+    var is_shared = true
+    var names = number_class_names()
+    var index = 0
+    while index < names.count() {
+        var class_name = names[index]
+        crash class_name
+        var held_class = context.scalar_type(class_name)
+        var model = context.class_of(held_class)
+        var function = model.function_named(name)
+        assert function
+        assert function.parameters.is_empty()
+        assert function.answer
+        var answer: Model.Type = function.answer
+        if not answer.is_the_same_as(held_class) {
+            is_its_own = false
+        }
+        if shared {
+            if not answer.is_the_same_as(shared) {
+                is_shared = false
+            }
+        } else {
+            shared = answer
+        }
+        index = index + 1
+    }
+    if is_its_own {
+        return number_type
+    }
+    assert is_shared
+    return shared
 }
 
 func number_start(answer_type: Model.Type): HighIntermediaryRepresentation.Values.Value {

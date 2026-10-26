@@ -11,6 +11,7 @@ var held = List<BorrowedItem>()
 var next_is_a_loop = false
 var known_effects = Dictionary<String, List<String>>()
 var following = List<String>()
+var cut_short = 0
 var known_lends = Dictionary<String, Borrow.Source>()
 var lending_checked = List<String>()
 var block_ended = false
@@ -536,6 +537,11 @@ func is_resizing(name: String): Boolean {
     return resizing_names.contains(name) or name.starts_with("remove_where")
 }
 
+func is_removing(name: String): Boolean {
+    var removing = ["remove_at", "remove_first", "remove_last", "remove_swapping", "truncate", "clear", "remove"]
+    return removing.contains(name) or name.starts_with("remove_where")
+}
+
 func is_a_borrowing_collection(model: Model.ClassModel): Boolean {
     var namespace = model.file.namespace
     return namespace == "Vector" or namespace == "Items"
@@ -551,6 +557,9 @@ func effects_of_a_library_call(
     if is_a_borrowing_collection(model) and is_resizing(callee.name) {
         var key = key_of_collection(frame, callee.target)
         found.append("{key}|{model.key}")
+    } else if is_removing(callee.name) {
+        var seen = List<String>()
+        add_the_collections_reached_through(found, model, seen)
     }
     var function = model.function_named(callee.name)
     if not function {
@@ -747,6 +756,7 @@ func effects_of_function(model: Model.ClassModel, function: Model.FunctionModel)
     }
     var found = List<String>()
     if following.contains(key) {
+        cut_short = cut_short + 1
         return found
     }
     if not function.declaration {
@@ -757,6 +767,7 @@ func effects_of_function(model: Model.ClassModel, function: Model.FunctionModel)
         return found
     }
     following.append(key)
+    var cut_before = cut_short
     var frame = Borrow.Frame(model, function)
     var walk = AbstractSyntaxTree.Walk.Walk(no_file)
     walk.read_block(declaration.body)
@@ -776,7 +787,9 @@ func effects_of_function(model: Model.ClassModel, function: Model.FunctionModel)
         statement_index = statement_index + 1
     }
     following.remove_last()
-    known_effects[key] = found
+    if cut_short == cut_before or following.is_empty() {
+        known_effects[key] = found
+    }
     return found
 }
 
@@ -839,12 +852,42 @@ func assignment_effects(
 
 # ../../PROOFS.md#no-borrowed-read-past-a-resize
 func add_the_held_collections(found: List<String>, model: Model.ClassModel) {
+    var seen = List<String>()
+    add_the_collections_held_by(found, model, seen)
+}
+
+func add_the_collections_held_by(found: List<String>, model: Model.ClassModel, seen: List<String>) {
+    assert not seen.contains(model.key) and not model.is_singleton
+    seen.append(model.key)
     var index = 0
     while index < model.declared_attributes.count() {
         var attribute = model.declared_attributes[index]
-        var held = class_of_type(attribute.attribute_type)
+        var attribute_type = attribute.attribute_type.present()
+        var held = class_of_type(attribute_type)
         if held and is_a_borrowing_collection(held) {
             found.append("{model.key}.{attribute.name}|{held.key}")
+        } else if held {
+            add_the_collections_reached_through(found, held, seen)
+        }
+        index = index + 1
+    }
+}
+
+func add_the_collections_reached_through(found: List<String>, held: Model.ClassModel, seen: List<String>) {
+    if not library.holds(held.file.path) {
+        add_the_collections_held_by(found, held, seen)
+        return
+    }
+    var names = held.bound_types.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var bound = held.bound_types[name]
+        crash bound
+        var bound_present = bound.present()
+        var item = class_of_type(bound_present)
+        if item and not library.holds(item.file.path) {
+            add_the_collections_held_by(found, item, seen)
         }
         index = index + 1
     }
@@ -1234,16 +1277,50 @@ func called_class_of(
         return frame.model
     }
     if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        assert not callee.is_a_class_name
         return called_member_class_of(frame, callee)
     }
     return null
+}
+
+# ../../PROOFS.md#an-item-lent-to-a-call
+func lent_class_of(frame: Borrow.Frame, call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Model.ClassModel? {
+    if is_a_construction(call) {
+        var made = constructed_type(frame, call)
+        assert made
+        return class_of_type(made)
+    }
+    return called_class_of(frame, call)
+}
+
+func is_a_construction(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Boolean {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return callee.is_a_class_name
+    }
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return callee.is_a_class_name
+    }
+    return false
+}
+
+func lent_function_of(
+    frame: Borrow.Frame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): Model.FunctionModel? {
+    var model = lent_class_of(frame, call)
+    assert model
+    var name = called_name_of(call)
+    var function = model.function_named(name)
+    assert function
+    assert is_a_program_function(model, function)
+    return function
 }
 
 func called_member_class_of(
     frame: Borrow.Frame,
     callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): Model.ClassModel? {
-    assert not callee.is_a_class_name
     var owner = type_of(frame, callee.target)
     assert owner
     var present = owner.present()
@@ -1612,8 +1689,9 @@ func check_a_lent_argument(
     var first = sources[0]
     var lent_name = printed(argument)
     context.line = statement.line
+    refuse_an_unfollowed_lend(frame, call, position, lent_name, first)
     refuse_a_lend_not_made(frame, call, position, lent_name, first)
-    var function = called_function_of(frame, call)
+    var function = lent_function_of(frame, call)
     assert function
     var effects = effects_of_call(frame, call)
     var callee = printed(call.callee)
@@ -1627,10 +1705,37 @@ func check_a_lent_argument(
         }
         index = index + 1
     }
-    var model = called_class_of(frame, call)
+    var model = lent_class_of(frame, call)
     crash model
     var no_row = BorrowedItem("", 0, "")
     check_the_lent_body(model, function, position, statement.line, no_row)
+}
+
+# ../../PROOFS.md#an-item-lent-to-a-call
+func refuse_an_unfollowed_lend(
+    frame: Borrow.Frame,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    position: Integer,
+    name: String,
+    source: Borrow.Source,
+) {
+    var callee = printed(call.callee)
+    var model = lent_class_of(frame, call)
+    if not model {
+        refusals.refuse_an_unfollowed_lend(context, name, source, callee)
+    }
+    crash model
+    var called_name = called_name_of(call)
+    var function = model.function_named(called_name)
+    if not function {
+        refusals.refuse_an_unfollowed_lend(context, name, source, callee)
+    }
+    crash function
+    var parameter = parameter_at(function, position)
+    crash parameter
+    if parameter.is_variadic and is_a_program_function(model, function) {
+        refusals.refuse_a_gathered_lend(context, name, source, callee)
+    }
 }
 
 func refuse_a_lend_not_made(
@@ -1640,7 +1745,7 @@ func refuse_a_lend_not_made(
     name: String,
     source: Borrow.Source,
 ) {
-    var model = called_class_of(frame, call)
+    var model = lent_class_of(frame, call)
     assert model
     var called_name = called_name_of(call)
     var function = model.function_named(called_name)

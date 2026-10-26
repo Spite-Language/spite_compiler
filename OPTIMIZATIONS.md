@@ -2898,8 +2898,12 @@ functions do. A singleton no such work reaches gets none of them, and a program 
    does not fit halts before anything is written and no two threads lose an update. A singleton a counted loop in
    the work would [hold for the whole loop](#a-counted-loop-of-calls-to-one-singleton-takes-its-lock-once) takes
    the third form instead.
-3. **Its own lock, otherwise.** Each function of the singleton that reads `this` takes the singleton's lock for its
-   whole call. The lock is a word in the singleton's slot holding the thread that owns it, with a count of how
+3. **Its own lock, otherwise.** Each function of the singleton that touches its changing state takes the
+   singleton's lock for its whole call: one that reads only numbers, `Boolean`s and enums of its own that nothing
+   assigns after the singleton is made, and calls nothing that touches more, runs unlocked. A whole number or
+   `Boolean` attribute that each of the singleton's functions writes at most once, outside loops and not again
+   through another of them, is never seen half changed, so another class reads it with no lock (its writes from
+   another class still take the lock). The lock is a word in the singleton's slot holding the thread that owns it, with a count of how
    deep that thread holds it: a call by the owning thread only adds one to the count, a free lock is claimed with
    one compare-exchange, and a held one is retried after giving the processor up. The thread is read from the
    thread's own block (`gs:[0x48]`), not asked of the system.
@@ -2927,9 +2931,9 @@ With `Settings` only set in its constructor and `HitCounter.record` a single `hi
 the step in place and adds with one compare-exchange, where every call took two locks before. Measured on
 `thread_safety_for_singletons_the_cheapest_safe_form` (four `Parallel`s running `run`).
 
-**Not built:** the readers' side shared by functions that change nothing, a read of a locked singleton's attribute
-from another class taking the lock, and the walk made again after tree shaking (form 1 decided over the whole
-program as written out).
+**Not built:** the readers' side shared by functions that change nothing outside a counted loop, a call between
+two locked functions going to the unlocked body, and the walk made again after tree shaking (form 1 decided over the
+whole program as written out).
 
 Which singletons keep a lock, and in which form, is decided by the high pass
 `high_optimization_passes/singleton_locks`, which records it for the lowering.
@@ -3145,7 +3149,9 @@ The entry class's attribute defaults run before any other code of the program: a
 cannot run before those defaults end reads such a singleton's slot without testing that it is made, and the load of
 the slot is known never to change, so it moves out of loops and is shared across calls and writes. When the
 singleton never changes after it is made (no function but its constructor assigns its attributes), the loads of its
-attributes are known never to change too.
+attributes are known never to change too; so is the load of any one attribute nothing assigns after its singleton is
+made (a number, `Boolean`, enum or object, not a text), however its other attributes change, so `settings.limit` in
+a loop that also calls `settings.add(...)` is read once before the loop.
 
 The functions that may run before the defaults end are found by following calls and function addresses from what
 the program's start calls up to and including the defaults, the fault handler and every singleton's destroy at
@@ -3424,10 +3430,11 @@ changes the list's length or its items. The loop above reads two numbers, adds t
 (`an_item_written_back_to_its_own_slot_is_not_written`: 99 ms before, 29 ms after).
 
 **When it applies:** to `list[index] = name` (`set_at` of the library's `List`) after `var name = list[index]`
-proven by a `crash`, in the same block, with the list read from a name not assigned again, `this` or attributes, the
+proven by a `crash`, in the same block or nested in an `if`, a `while` or a block after it (the index then never
+assigned in the rest of the block), with the list read from a name not assigned again, `this` or attributes, the
 index a name or a whole number, and nothing in the block after the read (but that write) that may write an item of
-a list of that class, its length or an attribute on the list's path. **When it does not:** a write in another
-block, through another path or index, of another value, or after something that may write the list; then the write
+a list of that class, its length or an attribute on the list's path. **When it does not:** a write outside the
+read's block, through another path or index, of another value, or after something that may write the list; then the write
 is made, comparing what the slot holds as before.
 
 **What a program can observe:** only the time.
@@ -3665,12 +3672,16 @@ program: the value given on the command line (`--serve`, `--workers=3`), or else
 condition on it is decided while compiling, so only the branch that applies is built, and nothing is read when the
 program runs.
 
-**When it applies:** to a `Boolean`, whole-number or `String` field whose value is a literal, read through a `Build`
-binding (`var build = Build()`), in every build but a `--hot-reload`, `--repl`, `--repl-port` or `--development` one,
-where the program reads the field while it runs, so that a reload can change it.
+**When it applies:** to a `Boolean`, number or `String` field, read through a `Build` binding
+(`var build = Build()`), whose value is given on the command line or whose default is a literal or arithmetic on
+literals (`-3`, `0.5`, `2 * 60`, D1406), in every build but a `--hot-reload`, `--repl`, `--repl-port` or
+`--development` one, where the program reads the field while it runs, so that a reload can change it. A default
+written as arithmetic is the expression itself in place of the read, which the evaluation of constants folds.
 
-**When it does not apply:** a field whose default is not a literal is read from the singleton as before. Writing a
-field is refused ("'build.serve' is a setting decided while compiling ..."), since a read would never see the write.
+**When it does not apply:** a field whose default reads anything else (a call, another field) is read from the
+singleton as before, since evaluating it at each read could run it more than once. Writing a field is refused
+("'build.serve' is a setting decided while compiling ..."), since a read would never see the write
+(`tests/build_constant_defaults`).
 
 **What a program can observe:** only time and size: the branch not taken is not in the executable
 (`tests/build_folding`).
@@ -3697,9 +3708,13 @@ in an Integer, the class of its left side, and its right side is a Double, which
 answer is a `Number` again (a `Boolean` for a comparison). A parameter typed `Number` is still compiled once per class
 that reaches it, with no test at all; only a value whose class is known only while the program runs is tested.
 
+The same test runs a number class's other functions that take nothing (`absolute()`, `to_string()`,
+`to_integer()` and the rest every number class declares, D1405): the answer is a `Number` when each class answers its
+own class (`absolute()`), and that type when every class answers the same one (`to_string()` is a `String`).
+
 **What a program can observe:** only time: one test per number class before the class that matches. A `Number` filled
 by a program's own class that declares the operators halts, naming the operation, since its function is not chosen
-while the program runs (`tests/number_values`).
+while the program runs (`tests/number_values`, `tests/number_value_functions`).
 
 ```spite
 var console = Console()
