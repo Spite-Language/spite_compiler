@@ -859,7 +859,11 @@ as when each was refused while building.
   the class it holds, with the same table. A class that reaches a `type` attribute is copied through a table
   whatever fills it, since the classes that fill a `type` are known only once the whole program is built (D1397),
   and the `type` value is copied through `_deep_copy_in` with the same table.
-- **Missing**: `List.deep_copy()` gives each item a table of its own.
+  A `List`, `Dictionary` or `Items` whose items reach such a class (or a union or a `type`) is copied through one
+  table for all its items (`_deep_copy_through_a_table`, made when a `deep_copy()` of it is built), so items that
+  hold each other stay one graph; one reached inside a table copy uses that table (its `_deep_copy_in`)
+  (`tests/deep_copy_list_graph`). A collection whose items need no table copies them one by one and makes none.
+- **Missing**: a `Vector` copies its items as values; the table finds a copy through a `Dictionary<Long, Long>`.
 - **Falls back**: a class that reaches a `type` pays for a table even when no filler reaches it back.
 - **Lives in**: embedded, `high_intermediary_representation/building/copying.spite` (`uses_a_table`, `holds_a_type`,
   `copy_in_call`).
