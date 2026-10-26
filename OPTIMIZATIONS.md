@@ -3004,8 +3004,9 @@ func run(steps: List<func(): Integer>): Integer {
 }
 ```
 
-**What a program can observe:** only the time. **Not built:** a call through a value is still followed into every
-function of its shape taken anywhere in the program, not only those that can flow to it.
+**What a program can observe:** only the time (SpiteSpec `tests/unshared_ledger`). **Not built:** a call through a
+value is still followed into every function of its shape taken anywhere in the program, not only those that can flow
+to it.
 
 ## While no task runs, a singleton's lock is claimed with a plain store
 
