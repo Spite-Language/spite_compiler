@@ -81,7 +81,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ## Faults found while porting
 
 
-- `Vector<T>` refuses a class holding a singleton attribute (`Date._time_text`), while `Items<T>` and `is_fixed_size` count it inline: the two answers of "fits a Vector" disagree (D877)
 
 
 
