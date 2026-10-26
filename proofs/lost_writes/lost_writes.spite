@@ -53,7 +53,7 @@ func check_an_assignment(
         check_a_replaced_item(context, written, index, statement, target.name, enclosing)
     }
     if target == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
-        check_a_member_write(context, written, index, statement, target)
+        check_a_member_write(context, written, index, statement, target, enclosing)
     }
 }
 
@@ -566,10 +566,11 @@ func check_a_member_write(
     index: Integer,
     statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
     member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    enclosing: List<HighIntermediaryRepresentation.Building.EnclosingBlock>,
 ) {
     var holder = member.target
     if holder == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        check_a_held_write(context, written, index, statement, member, holder.name)
+        check_a_held_write(context, written, index, statement, member, holder.name, enclosing)
     }
 }
 
@@ -580,35 +581,133 @@ func check_a_held_write(
     statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
     member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
     name: String,
+    enclosing: List<HighIntermediaryRepresentation.Building.EnclosingBlock>,
 ) {
     var declared_at = declaration_of(written, index, name)
+    if declared_at < 0 {
+        check_an_enclosed_write(context, written, index, statement, member, name, enclosing)
+    }
     assert declared_at >= 0
     var declaration = written[declared_at]
     if declaration == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
         assert is_made_new(context, declaration.value, 0)
     }
-    var internal_name = view.internal_name_of(name)
-    assert internal_name
-    var held_type = view.declared_type_of(internal_name)
-    assert held_type
-    assert held_type.kind == 'object' and not held_type.is_nullable and context.has_a_class(held_type)
-    var model = context.class_of(held_type)
-    var library = Validators.LibraryFile()
-    assert not library.holds(model.file.path)
-    assert not model.function_named("drop")
-    assert not model.function_named("set_{member.name}")
-    var attribute = model.attribute_named(member.name)
-    assert attribute
-    assert attribute.attribute_type.kind != 'handle'
+    assert is_a_judged_attribute(context, member, name)
     var statement_count = written.count()
     var after = walk_of(written, index + 1, statement_count)
     assert not names_it(after, name)
     var between = walk_of(written, declared_at + 1, index)
     between.read_expression(statement.value)
     assert not lets_it_go(between, name)
+    refuse_the_lost_write(context, statement, member, name)
+}
+
+func is_a_judged_attribute(
+    context: HighIntermediaryRepresentation.Building.Context,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    name: String,
+): Boolean {
+    var internal_name = view.internal_name_of(name)
+    if not internal_name {
+        return false
+    }
+    var held_type = view.declared_type_of(internal_name)
+    if not held_type {
+        return false
+    }
+    var is_an_object = held_type.kind == 'object' and not held_type.is_nullable
+    if not is_an_object or not context.has_a_class(held_type) {
+        return false
+    }
+    var model = context.class_of(held_type)
+    var library = Validators.LibraryFile()
+    if library.holds(model.file.path) or model.function_named("drop") {
+        return false
+    }
+    if model.function_named("set_{member.name}") {
+        return false
+    }
+    var attribute = model.attribute_named(member.name)
+    if not attribute {
+        return false
+    }
+    return attribute.attribute_type.kind != 'handle'
+}
+
+func refuse_the_lost_write(
+    context: HighIntermediaryRepresentation.Building.Context,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    name: String,
+) {
+    var internal_name = view.internal_name_of(name)
+    crash internal_name
+    var held_type = view.declared_type_of(internal_name)
+    crash held_type
+    var model = context.class_of(held_type)
     context.line = statement.line
     var article = typing.article_of(model.shown)
     typing.refuse_lost_write(context, name, member.name, article, model.shown)
+}
+
+# A write inside a branch (of an `if` or a `switch`, not inside a loop, whose next pass may read it) to a local an
+# outer block made is lost when nothing after it, in its own block or in any block around it, names the local,
+# and nothing from the local's declaration up to the write (the conditions and the other branches of the blocks
+# around it included) can let the object go.
+func check_an_enclosed_write(
+    context: HighIntermediaryRepresentation.Building.Context,
+    written: List<AbstractSyntaxTree.Shapes.Statements.Statement>,
+    index: Integer,
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    name: String,
+    enclosing: List<HighIntermediaryRepresentation.Building.EnclosingBlock>,
+) {
+    var level = enclosing.count() - 1
+    var found_at = -1
+    var declared_at = -1
+    var searching = true
+    while level >= 0 and searching {
+        var outer = enclosing[level]
+        crash outer
+        var holder = outer.statements[outer.index]
+        if holder == AbstractSyntaxTree.Shapes.Statements.WhileStatement {
+            searching = false
+        }
+        var declared = declaration_of(outer.statements, outer.index, name)
+        if searching and declared >= 0 {
+            found_at = level
+            declared_at = declared
+            searching = false
+        }
+        level = level - 1
+    }
+    assert found_at >= 0
+    var outer_block = enclosing[found_at]
+    crash outer_block
+    var declaration = outer_block.statements[declared_at]
+    if declaration == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        assert is_made_new(context, declaration.value, 0)
+    }
+    assert is_a_judged_attribute(context, member, name)
+    var statement_count = written.count()
+    var after = walk_of(written, index + 1, statement_count)
+    assert not names_it(after, name)
+    assert not read_in_an_outer_block(enclosing, found_at, name)
+    var between = walk_of(outer_block.statements, declared_at + 1, outer_block.index + 1)
+    assert not lets_it_go(between, name)
+    var inner = found_at + 1
+    while inner < enclosing.count() {
+        var block = enclosing[inner]
+        crash block
+        var before_the_holder = walk_of(block.statements, 0, block.index + 1)
+        assert not lets_it_go(before_the_holder, name)
+        inner = inner + 1
+    }
+    var before_the_write = walk_of(written, 0, index)
+    before_the_write.read_expression(statement.value)
+    assert not lets_it_go(before_the_write, name)
+    refuse_the_lost_write(context, statement, member, name)
 }
 
 func lets_it_go(walk: AbstractSyntaxTree.Walk.Walk, name: String): Boolean {

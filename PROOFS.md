@@ -1327,9 +1327,13 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: a write to a local only this function holds (a constructor's result, a copy, an always-new result),
   never read after it, is refused ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  A write inside a branch of an `if` or a `switch` to a local an outer block made is judged the same way, when
+  nothing after it in any block around it names the local and nothing from the declaration to the write (the
+  conditions and the other branches included) can let the object go; a loop between them stops the search, since
+  its next pass may read the write.
 - **Falls back**: not refused where the always-new answer comes from another class.
 - **Lives in**: the proof `proofs/lost_writes`, judging every assignment the builder recorded (a `StatementSite`).
-- **Checked by**: conformance/lost_writes.
+- **Checked by**: conformance/lost_writes, conformance/lost_write_in_a_branch.
 
 ### A name read from a list, assigned and never read, is an error
 
