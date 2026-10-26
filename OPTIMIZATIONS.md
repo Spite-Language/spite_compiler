@@ -2624,7 +2624,27 @@ between them reads or writes the second's target, and the second cannot halt on 
 first is checked and halts on the same divisor first). `var digit = rest % base` then `total = total + digit` then
 `rest = rest / base` is one division too (SpiteSpec `tests/divisions_apart`).
 
-**Not built:** a pair in two blocks, and a pair by a constant divisor (each is its own multiplication).
+**Not built:** a pair in two blocks.
+
+## A remainder by a constant after its division is a multiplication back
+
+A division by a constant is a multiplication by its reciprocal and a shift, and so is a remainder, followed by a
+multiplication and a subtraction. When a division and a remainder of the same number by the same constant (neither 0
+nor -1, so neither can halt) are in one block, moved beside each other as in
+[the pair above](#a-division-and-a-remainder-of-the-same-two-numbers-are-one-division), the remainder is computed from
+the quotient: `value - quotient * divisor`, one multiplication and one subtraction, neither checked, since the
+product is never larger than the value and the difference is the exact remainder.
+
+```spite
+func clock(seconds: Integer): Integer {
+    var minutes = seconds / 60
+    var rest = seconds % 60
+    return minutes * 100 + rest
+}
+```
+
+`seconds % 60` is `seconds - minutes * 60`. **What a program can observe:** nothing but time (SpiteSpec
+`tests/divisions_apart`).
 
 ## A proven divisor is not checked
 

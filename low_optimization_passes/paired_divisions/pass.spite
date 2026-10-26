@@ -1,6 +1,9 @@
 # ../../OPTIMIZATIONS.md#a-division-and-a-remainder-of-the-same-two-numbers-are-one-division
 var function = LowIntermediaryRepresentation.LowFunction("", 0)
 var operands = LowOptimizationPasses.Operands()
+var definitions = List<Integer>()
+var constants = List<Long>()
+var next_register = 0
 
 func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
@@ -10,13 +13,84 @@ func transformed(): LowIntermediaryRepresentation.LowFunction {
     if function.is_resumable {
         return function
     }
+    next_register = operands.most_register_of(function)
+    if function.register_count > next_register {
+        next_register = function.register_count
+    }
+    find_the_constants()
     var block_index = 0
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
         pair_in_block(block)
         block_index = block_index + 1
     }
+    if next_register > function.register_count {
+        function.register_count = next_register
+    }
     return function
+}
+
+func find_the_constants() {
+    definitions.clear()
+    constants.clear()
+    while definitions.count() < next_register {
+        definitions.append(0)
+        constants.append(0)
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            count_the_definitions(instruction)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func count_the_definitions(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        if register < definitions.count() {
+            var count = definitions[register]
+            crash count
+            definitions[register] = count + 1
+        }
+        index = index + 1
+    }
+    if instruction == LowIntermediaryRepresentation.Instructions.Constant and instruction.target < constants.count() {
+        constants[instruction.target] = instruction.number
+    }
+}
+
+func is_constant(register: Integer): Boolean {
+    if register < function.parameter_count or register >= definitions.count() {
+        return false
+    }
+    var count = definitions[register]
+    crash count
+    return count == 1 and is_made_by_a_constant(register)
+}
+
+func is_made_by_a_constant(register: Integer): Boolean {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction == LowIntermediaryRepresentation.Instructions.Constant and instruction.target == register {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
 }
 
 func pair_in_block(block: LowIntermediaryRepresentation.LowBlock) {
@@ -42,7 +116,10 @@ func bring_its_pair_beside(
     while index < block.instructions.count() {
         var instruction = block.instructions[index]
         if instruction == LowIntermediaryRepresentation.Instructions.Arithmetic and pairs_with(arithmetic, instruction) {
-            move_beside(block, at, index, instruction)
+            var beside = move_beside(block, at, index, instruction)
+            if beside {
+                multiply_back_the_rest(block, at, arithmetic, instruction)
+            }
             return
         }
         operands.read(instruction)
@@ -67,7 +144,7 @@ func pairs_with(
     if not same_numbers or not same_kind or arithmetic.wraps != following.wraps {
         return false
     }
-    if following.is_checked and not arithmetic.is_checked {
+    if following.is_checked and not arithmetic.is_checked and not halts_never(arithmetic.right) {
         return false
     }
     return following.target != arithmetic.target
@@ -78,17 +155,21 @@ func move_beside(
     at: Integer,
     found: Integer,
     following: LowIntermediaryRepresentation.Instructions.Arithmetic,
-) {
+): Boolean {
     var target = following.target
     var index = at + 1
     while index < found {
         var between = block.instructions[index]
         crash between
         operands.read(between)
-        assert not operands.uses.contains(target) and not operands.defines.contains(target)
+        if operands.uses.contains(target) or operands.defines.contains(target) {
+            return false
+        }
         index = index + 1
     }
-    assert found > at + 1
+    if found == at + 1 {
+        return true
+    }
     var made = List<LowIntermediaryRepresentation.Instructions.Instruction>()
     index = 0
     while index < block.instructions.count() {
@@ -102,4 +183,76 @@ func move_beside(
         index = index + 1
     }
     block.instructions = made
+    return true
+}
+
+func halts_never(divisor: Integer): Boolean {
+    if not is_constant(divisor) {
+        return false
+    }
+    var value = constants[divisor]
+    crash value
+    return value != 0 and value != -1
+}
+
+# ../../OPTIMIZATIONS.md#a-remainder-by-a-constant-after-its-division-is-a-multiplication-back
+func multiply_back_the_rest(
+    block: LowIntermediaryRepresentation.LowBlock,
+    at: Integer,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    following: LowIntermediaryRepresentation.Instructions.Arithmetic,
+) {
+    assert halts_never(arithmetic.right)
+    var dividing = arithmetic
+    var resting = following
+    if arithmetic.operator == 'remainder' {
+        dividing = following
+        resting = arithmetic
+    }
+    assert dividing.target != dividing.left and dividing.target != dividing.right
+    var product = next_register
+    next_register = next_register + 1
+    var multiplying = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        product,
+        'multiply',
+        dividing.target,
+        dividing.right,
+    )
+    copy_the_kind(multiplying, resting)
+    var subtracting = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        resting.target,
+        'subtract',
+        dividing.left,
+        product,
+    )
+    copy_the_kind(subtracting, resting)
+    var made = List<LowIntermediaryRepresentation.Instructions.Instruction>()
+    var index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        if index == at {
+            made.append(dividing)
+            made.append(multiplying)
+            made.append(subtracting)
+        } else if index != at + 1 {
+            made.append(instruction)
+        }
+        index = index + 1
+    }
+    block.instructions = made
+}
+
+func copy_the_kind(
+    made: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    kind: LowIntermediaryRepresentation.Instructions.Arithmetic,
+) {
+    made.width = kind.width
+    made.is_signed = kind.is_signed
+    made.is_checked = false
+    made.wraps = false
+    made.line = kind.line
+    made.shown = kind.shown
+    made.type_name = kind.type_name
+    made.path = kind.path
+    made.owner = kind.owner
 }
