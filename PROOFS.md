@@ -729,16 +729,17 @@ as when each was refused while building.
   raises the count by one and answers the object; the value read is then an owned temporary, let go like a call's
   result. In a program with threads the test and the raise are one compare-and-exchange, retried when another
   thread changed the count between them, so a read never revives an object whose last release has begun.
-  A back reference proven present (`crash child.parent`) is proven only up to the next call: any call may let its
-  object go, so a read of it after a call is refused, "'child.parent' was proven before line 9, but 'parent' is a
-  back reference, which holds no count, and 'leave(...)' may let its object go, so this read could find it gone:
-  prove 'child.parent' again after that line" (`proofs/narrowings_kept_across_calls`).
+  A back reference proven present (`crash child.parent`) may still lose its object at any later call that lets the
+  owner go, so a read that relies on the proof tests the answer and halts on a freed object, "spite:
+  'Child.parent' was proven present, but its object was freed since, and a back reference holds no count: prove it
+  again after the call that lets it go, at ...", instead of using `null` as an object.
 - **Buys**: no read of a back reference runs on freed memory, on one thread or on two.
-- **Costs**: a call, a count up and a count down per read of a back reference; a program with no back reference
+- **Costs**: a call, a count up and a count down per read of a back reference, and a test of the answer where it
+  was proven present; a program with no back reference
   carries nothing.
 - **Lives in**: `low_intermediary_representation/lowering/freeing.spite` (`lower_the_back_counted`),
   `function_lowering.spite` (`held_back`).
-- **Checked by**: tests/back_reference_calls, tests/parent_back_reference; conformance/back_reference_past_a_call.
+- **Checked by**: tests/back_reference_calls, tests/back_reference_gone, tests/parent_back_reference.
 
 ### A deep copy copies a graph with its shape
 
