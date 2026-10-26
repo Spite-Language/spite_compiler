@@ -970,7 +970,7 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
   call in the context (`borrows.spite`, `check_the_lent_body`); the proof `proofs/lent_parameters`, after it, judges
   the callee's body.
 - **Checked by**: conformance/lent_to_calls, lent_call_alias, lent_call_function_value, lent_call_kept, lent_call_passed_on,
-  lent_call_library, lent_call_listed, lent_call_returned, lent_call_union, lent_call_passed_on_library,
+  lent_call_library, lent_call_listed, lent_call_returned, lent_call_union, lent_call_passed_on_unfollowed,
   lent_call_passed_on_union; tests/lent_to_calls, lent_arguments,
   lent_call_written_back, ignored_lent_argument.
 
