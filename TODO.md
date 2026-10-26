@@ -83,6 +83,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The fault and crash reports and the assert ring are Spite source the compiler holds as text (D936): they become low functions writing the site texts from one table of data labels, with `cut` and the value texts as synthetic high functions
 - The library breaks three rules it is exempt from for now (D680): singletons bound as locals (`Arguments`, `Environment._setting`, `Spite.Internal.Fault.report`), locals that only copy a path to narrow it (`BinaryCursor._buffer`, `BinaryWriterCursor`, `JsonReader`, `JsonWriter`), and a terminal `if` (`Dictionary.remove_at`)
 
+- The fault handler is a vectored handler, so it runs before any library's own exception handling, and a C library that catches its own faults inside a foreign call would be stopped; the unhandled-exception filter the spec names is never reached, since the generated code carries no unwind data (`.pdata`) for the system's frame walk
 - Lost writes: a write is judged only to a local made with a constructor, `copy()` or an own function that always answers one, and a write inside a loop to a local made outside it is not judged
 
 
