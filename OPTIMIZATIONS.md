@@ -3766,3 +3766,25 @@ func IdenticalFunctionsFold() {
 
 with `Left` and `Right` each declaring the same `func doubled(number: Integer): Integer { return number * 2 }`: the
 executable holds one `doubled`, and both calls reach it (`tests/identical_functions_fold`).
+
+## A foreign name is never copied
+
+The name of each function a program calls in a foreign library is known while compiling, so the generated code hands
+the system's lookup (`GetProcAddress`) a pointer to that name written into the executable, and keeps the address it
+answers in a slot of its own, looked up once. The library's file name is the bytes of the `String` the program passed,
+handed to `LoadLibraryA` as they are. Nothing is copied onto the heap to open a library or find a function in it, and
+a missing function stops the program naming it from the same constant text.
+
+**When it applies:** every foreign library a program opens, in every build. **What a user can observe:** nothing
+but the time (`tests/foreign_names`).
+
+```spite
+var console = Console()
+var kernel = DynamicLibrary("kernel32.dll", 'identity', "")
+
+func ForeignNames() {
+    var tick = kernel.GetTickCount64()
+    var running = kernel.GetCurrentProcessId()
+    console.print("asked", tick > 0, running > 0)
+}
+```

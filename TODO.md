@@ -176,7 +176,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Short text lives inside the `String` (D789): a text whose `String` keeps other attributes is still two allocations
 - A slice shares its source's bytes where the source outlives it and neither changes (texts can change in place through `append_code` and an append, so it needs that proven first)
 - Short symbols are inline text
-- A foreign name is never copied
 - A number's bits are read in place (built for a read at offset 0 of the number's own width, D786, D791 and D805, and the parts `to_half_precision` takes apart with `/` and `%` by powers of two are shifts and masks, D1323: 264 ms to 170 ms; not built: a read of part of a number's bytes, or at another offset; what is left of the case is the machine code: the alignment padding at every join, the moves between registers, and a magnitude whose subnormal path the bounds cannot follow, so the `UnsignedShort` narrowing keeps its two tests)
 - A decimal literal beside a `Float` is a `Float` (built: the literal is a `Float` and decimals live in decimal registers, D971; not built: a sum of decimals in a loop is never reassociated or vectorised, which needs a proof that every partial sum is exact, so `a_decimal_literal_beside_a_float_is_a_float` waits on one addition after another, about 16 times expert C)
 - Arithmetic is checked in every build (37.8 ms to 35.5 since a checked 32-bit operation works in its target's register, D1418, against the old compiler's 19.8): the loop is three checked 32-bit operations in a chain, each the operation, a jump on overflow and a sign extension, so the chain waits two cycles per operation; the 64-bit form tested beside the chain halves that wait but was slower elsewhere (D1418), and nothing bounds `values[index]`, so the checks stay
@@ -207,9 +206,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 ### The compiler's own machinery
 
 - REPL, live reload and debug machinery only in those builds
-- A reload compiles only the classes that changed
-- What a `--hot-reload` build carries so its objects can move
-- A crash's report is kept out of the way (20.1 ms to 14.1 since the report's block is written after the function and the loop tests at the bottom, D1416, D1417, against the old compiler's 13.4): the loop keeps the checked `picks[index] + round`
 - A reload compiles only the classes that changed: the proof finds them and a save that changed nothing answers `unchanged` (D1368), but the whole program is still lowered and emitted to find the functions whose code changed
 - What a `--hot-reload` build carries so its objects can move (the hidden `spite_moved` and `spite_live` words, `<Class>___fields`)
 - A crash's report is kept out of the way (27.1 ms to 20.4 ms since the read after `crash values[pick]` tests its index once, D1321, against the old compiler's 13.4): the hot path still jumps over the cold call on every pass (the block layout puts the call right after the test) and keeps the checked `picks[index] + round`
