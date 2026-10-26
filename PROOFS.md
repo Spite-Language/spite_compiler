@@ -371,10 +371,13 @@ as when each was refused while building.
 - **Status**: partly built (done differently).
 - **Rule**: inside `while index < values.count()` with the counter stepped last, the count is read once and the
   items with no test; a second list indexed by the counter is tested once before the loop
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)). A window read
+  `values[at + k]` is proven by a test of `at + m` against the same count on the one way into it, `k <= m`, with
+  `at` never negative and not written in between, so `while at + 2 < values.count()` proves `values[at]`,
+  `values[at + 1]` and `values[at + 2]`; and a test of a compare's answer against zero (what `crash values[pick]`
+  writes) proves as the compare does, its sides turned around.
 - **Buys**: a tight loop over numbers costs a load per item.
-- **Missing**: in the scalar loop a second list keeps its test on every pass (only the vector loop tests once); a
-  window read (`values[index + k]`) loses its test only when the registers line up with the loop test.
+- **Missing**: in the scalar loop a second list keeps its test on every pass (only the vector loop tests once).
 - **Falls back**: each read keeps its unsigned test.
 - **Lives in**: the low proof `proofs/bounds_proven_by_signed_tests`, run on the low representation before the
   pass `low_optimization_passes/proven_bounds` twice in each cleaning (once early, and once after the loop's
@@ -384,7 +387,7 @@ as when each was refused while building.
   never negative value decides; the pass only writes what
   it recorded. With `lowering/list_reads.spite`, `low_optimization_passes/loop_invariants` and
   `low_optimization_passes/vector_loops`.
-- **Checked by**: tests/counted_loops, tests/strided_counted_loops, tests/decided_comparisons.
+- **Checked by**: tests/counted_loops, tests/strided_counted_loops, tests/decided_comparisons, tests/window_reads_one_test.
 
 ### A proven divisor is not checked
 
@@ -466,7 +469,7 @@ as when each was refused while building.
   with the sign correction.
 - **Lives in**: the low proof `proofs/register_ranges`, recorded on each function (`LowFunction.register_ranges`)
   right before the passes `checked_ranges` and `power_divisions` in each cleaning; `power_divisions` clears it.
-- **Checked by**: tests/proven_ranges, tests/half_precision, tests/divisions.
+- **Checked by**: tests/proven_ranges, tests/half_precision, tests/divisions, tests/divisions_by_powers.
 
 ### A wider operand is written first
 

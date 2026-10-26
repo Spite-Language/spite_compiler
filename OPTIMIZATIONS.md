@@ -2218,7 +2218,10 @@ two such values that cannot wrap (checked, or proven not to overflow; the librar
 signed `index >= 0` or `index < 0` of such an index is decided too (a `List.set_at`'s own check). The same holds
 after an unsigned test of the same two values that already passed: the true side of an unsigned `index < count`, or
 the false side of an unsigned `index >= count` (the test a `crash values[pick]` makes before the read it proves),
-whatever the sign of the index, so `crash values[pick]` then `values[pick]` tests the index once.
+whatever the sign of the index, so `crash values[pick]` then `values[pick]` tests the index once, also when the
+branch reads that test's answer compared with zero. A read `values[at + k]` is proven the same way by a test of
+`at + m` against the count, `k <= m`, with `at` never negative and not written in between: in
+`while at + 2 < values.count()`, `values[at]`, `values[at + 1]` and `values[at + 2]` are read with no test.
 
 The tests are looked for twice in each round of cleaning: once early, and once more after the loop's invariant loads
 have moved out of it and equal loads have been merged, since a loop's count read in its test and again in the read
@@ -2336,8 +2339,8 @@ never negative, and the parts are tested against their ranges before the later d
 or a mask, and `pattern / 2147483648` is a shift instead of a 64-bit `idiv`.
 
 When it does not apply: a number whose bounds are not known where it is divided (a parameter no test bounds, a
-`Long` loaded from memory, a register written from itself), or a power above 2^62. What a program can observe:
-nothing but time.
+`Long` loaded from memory, a difference the bounds cannot keep above zero), or a power above 2^62. What a program can observe:
+nothing but time (`tests/divisions_by_powers` pins the answers, negative numbers' among them).
 
 ## A division and a remainder of the same two numbers are one division
 
