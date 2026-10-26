@@ -257,25 +257,20 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 ### Presence and control flow
 
 - A call keeps a proof it cannot change: a `[]` or count proof is undone only by a direct shrinking call, a bare call of the class's own function and a call on a `[]` receiver (its read still halts); a call inside a condition is ordered after the block it guards
-- An `if` that leaves proves the rest: a count side after `not found` proves no read
-- Proving what is proven is an error: a re-check inside the `if`/`while`/`switch` that narrowed gets the Boolean text; not refused: a `[]` read proven by a count or an earlier check, a divisor re-proven, a class test already answered, the same condition on the next line, an `assert` that folds true, and a check of a plain local
-- A copy made to narrow is an error: a copy narrowed by an `if not copy` whose block does not leave
 
 ### Indices and numbers
 
-- A proven count or bound proves a read: `<=` bounds; count facts in a `while`; undoing a proof inside the loop that read it is not refused; a shrinking call inside an assignment or argument does not undo it
+- A proven count or bound proves a read: undoing a proof inside the loop that read it is not refused; a shrinking call inside an assignment or argument does not undo it
 - A proven count or bound proves a read of a width (`read_<number>_at`), and a position known not to be negative drops the low test
 - A text's length known while compiling proves its `code_at`: a `String` attribute holding a literal that nothing changes keeps its literal's length, so `alphabet.code_at(value.bits_and(63))` on a 64-letter alphabet needs no test; today only the test below 0 is left out, and the one against the length stays (D1211)
-- An index built from loop counters is proven by one guard (`rows * stride <= list.count()`)
-- An index offset by a base is proven by one guard (`base + bound <= list.count()`)
+- An index built from loop counters is proven by one guard: the reads of a width at a cell (D1449 proves the reads by index)
 - A counted loop reads its items unchecked: a second list indexed by the counter keeps its test on every pass outside the vector loop, and a window read loses its test only when the registers line up
-- A proven divisor is not checked: `!= 0`, an attribute or member path as the divisor, and `--repl`/`--hot-reload` builds
+- A proven divisor is not checked: an attribute or member path as the divisor, and `--repl`/`--hot-reload` builds
 - Arithmetic that does not fit halts: a `Long` counter whose bound has no range keeps its check and interactive builds keep every check
 - A range proves arithmetic fits (built, D768; not built: `absolute`, the counters stepped down, the loop locals other than counters, see the optimisation's line)
 
 ### Compile-time questions
 
-- How many arguments a function takes: `argument.argument_count()` outside a walk over functions has no error
 - Whether a class keeps state: the answer is a filled value, not a folded constant
 - Conditions decided while compiling: `function_waits` and `function_writes_parameter` are late (D673), a codegen number against a literal, a function taking a `type` copied per class, `x and false` and `x or true` whose `x` calls something
 - Tree shaking: nothing is shaken after lowering, inlining or late folding; a function nobody calls is not type-checked; no inspectable build keeps everything
@@ -325,7 +320,3 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 - A loop that can never end is an error: in `Parallel` work, a call through a function value, a `type` or a union is not followed
 - Reads in a row are independent
 
-### Other refusals built on an analysis
-
-- Singletons that make each other in a circle are an error: the "makes" links (a circle through an ordinary object made in an attribute default halts at run time instead)
-- A member template fits: the specific error for `each` given something that is not a function, and the member checks of a member template of the program's own class (only a library collection's are checked)

@@ -27,7 +27,7 @@ anything themselves. A proof on the low representation is a `LowProof`, in its o
 proof, registered among the low passes right before the pass that reads its facts. `ARCHITECTURE.md` lists the
 order.
 
-Of the 92 proofs the old compiler made, 34 are built, 37 are partly built and 21 are missing (audit of
+Of the 92 proofs the old compiler made, 40 are built, 32 are partly built and 20 are missing (audit of
 2026-10-24, with what was built since). Where a proof is partly built and what is missing could let a wrong program through, the section says
 **fails silently**: that is a D244 bug and its `TODO.md` line comes first.
 
@@ -100,20 +100,20 @@ as when each was refused while building.
 
 ### An `if` that leaves proves the rest
 
-- **Status**: partly built.
+- **Status**: built.
 - **Rule**: after an `if` with no `else` whose block always leaves (a `return`, a bare `crash`, a `switch` whose
   every case leaves, an `if`/`else` that both leave, a `while true`), the opposite of its condition holds: each `or`
   side written `not path` narrows that path, each side read with the sides before it narrowed (`if not holder or
   not holder.weapon { return }` proves both), and other sides turned around prove `[]` reads and divisors
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule),
   [control_flow.md](../SpiteLanguage/specs/control_flow.md#switch-over-values)).
-- **Buys**: guards read as answers: `if not monster { return }` and the rest reads `monster`.
-- **Missing**: a count side (`found.count() == 0`) after `not found` proves no `found[0]`.
+- **Buys**: guards read as answers: `if not monster { return }` and the rest reads `monster`, and `if not found or
+  found.count() == 0 { return }` proves `found[0]`.
 - **Falls back**: the rest stays unproven, and a read of it is refused.
 - **Lives in**: embedded, `statements.spite` (`build_if`, `read_a_negated_fact`, `read_a_negated_binary`,
   `note_the_leaving_if`), `endings.spite` (`always_leaves`), `ranges.spite` (`prove_an_if`).
 - **Checked by**: tests/leaving_if, tests/returning_branch_proof, tests/control_switch_leaving_narrows,
-  tests/leaving_or_narrows; conformance/leaving_if_proves_nothing.
+  tests/leaving_or_narrows, tests/leaving_count_side; conformance/leaving_if_proves_nothing.
 
 ### Assigning undoes a proof
 
@@ -185,38 +185,52 @@ as when each was refused while building.
 
 ### Proving what is proven is an error
 
-- **Status**: partly built.
-- **Rule**: a check of a `T?` already narrowed, a `[]` read already proven (by a bound, a count or an earlier
-  check), a divisor already proven, a class test the type already answers, the same call-free condition on the next
-  line, or an `assert`/`crash` that folds true is refused, naming where it was proven
+- **Status**: built (D1445 to D1447).
+- **Rule**: a check of a `T?` already narrowed (by an `assert`, a `crash`, the `if`, `while` or `switch` around
+  it), a `[]` read already proven (by a bound, a count or an earlier check), a divisor already proven (`name != 0`
+  after `name != 0` or `name > 0`, `name > 0` after `name > 0`), a class test the type already answers, the same
+  call-free condition on the very next statement of the same block, an `assert`/`crash` that folds true, and a check
+  of a value that cannot be null are refused, naming where it was proven
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: no dead checks in the source.
-- **Missing**: a re-check inside the `if`, `while` or `switch` that narrowed gets the "a condition is a Boolean"
-  text instead; `[]` reads proven by a count or an earlier check are not refused; a divisor re-proven, a class test
-  already answered, the repeated next-line check and an `assert` that folds true are not refused. The plain-value
-  refusal judges a local by the type it is declared with (written, or the type of its first value), so a local
-  declared `T?` and narrowed since is not refused by it; the library is held to it too, and only the compiler's
-  generated files (under `.spite/`) are not.
-- **Falls back**: the redundant check is kept as a run-time test (harmless), or refused with a less precise text.
+- **How**: inside a `while`, only a proof made inside that loop makes a check redundant (the frame of the scope the
+  path was narrowed in is compared with the loop's), since an assignment later in the loop would leave the next
+  pass unproven. A narrowed `Boolean` is not refused when tested again, since an `if` on it tests its value. A folded
+  `assert` is one that asks a compile-time question (a call such as `has_function`, or a `Build` field); a presence
+  check that folds is judged as a plain value or a proven read instead. The
+  class test and the folded `assert` are refused only outside a generic class and a walk, where they fold per
+  instance, and outside the library and the compiler's generated files. A local is plain when its value cannot be
+  null and it has a written type, is made by a construction, or, outside a generic class and a walk, holds a call's
+  answer; a local holding a `[]` read is not, since a proven read and an unproven one are written alike. The plain-value refusal judges a local by the type it is declared with (written, or the type of its first
+  value), so a local declared `T?` and narrowed since is refused as narrowed instead.
+- **Falls back**: the redundant check is refused; a check the compiler cannot prove redundant (two equal checks
+  with a statement between, a condition with a call, a stronger check after a weaker one) stays.
 - **Lives in**: the proof `proofs/proven_checks`, judging what `statements.spite` recorded
-  (`note_a_proven_check`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`, `note_the_checks`).
+  (`note_a_proven_check`, `note_a_proven_condition`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`,
+  `note_a_repeated_check`, `note_a_proven_divisor`, `note_a_check_that_always_holds`, `note_the_checks`,
+  `note_one_check`) and `values.spite` (`note_an_answered_class_test`).
 - **Checked by**: conformance/check_proves_nothing, conformance/known_fact_checked, conformance/proven_element,
   conformance/proven_index_check, conformance/assert_on_plain_value, conformance/leaving_if_proves_nothing,
-  conformance/crash_on_plain_local.
+  conformance/crash_on_plain_local, conformance/known_fact_inside_its_if, conformance/known_fact_divisor,
+  conformance/known_fact_next_line, conformance/known_fact_class_never, conformance/known_fact_class_again,
+  conformance/proven_element_by_count, conformance/proven_element_by_earlier_check,
+  conformance/check_always_holds, conformance/check_of_a_returned_local.
 
 ### A copy made to narrow is an error
 
-- **Status**: partly built.
+- **Status**: built (D1447).
 - **Rule**: a `var` holding a bare name or path of a `T?`, never assigned again and whose source is not assigned in
   the function, then narrowed (by `assert`, `crash`, `if`, `while`, `switch`, `not` of it or an `and` side), is
-  refused: narrow the source itself. A snapshot taken before its source changes is allowed
+  refused: narrow the source itself. `if not copy { }` tests it whether or not its block leaves. A snapshot taken
+  before its source changes is allowed
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: one name per value.
-- **Missing**: a copy narrowed by an `if not copy` whose block does not leave.
-- **Falls back**: accepted, which is safe: only the style rule is missed.
+- **Falls back**: refused, "'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('assert
+  tracker') and use it directly".
 - **Lives in**: the proof `proofs/proven_checks`, judging each copy `statements.spite` recorded when the copy is
-  narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `build_switch`).
-- **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions; tests/narrowing_snapshot_copy.
+  narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `note_a_tested_copy`, `build_switch`).
+- **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions,
+  conformance/copy_to_narrow_not_leaving; tests/narrowing_snapshot_copy.
 
 ### A class test narrows its block
 
@@ -299,9 +313,11 @@ as when each was refused while building.
 - **Buys**: a proven read answers `T`, not `T?`.
 - **Bounds written with `<=`**: `crash p + k <= list.count()` (in an `assert`, a `crash` or an `if`), and the `if
   p + k > list.count()` that leaves, prove `list[p]` to `list[p + k - 1]`, as `p + (k - 1) < list.count()` would.
-- **Missing**: a `<=` bound in a `while`; count facts in a `while`; undoing a proof inside the loop that read it is
-  not refused, and a shrinking call inside an assignment or an argument does not undo it (each read still halts
-  when its list changed, see the next section).
+- **In a `while`** (D1448): a `<=` bound and the count facts prove the reads of its body as they do after a `crash`:
+  `while at + 3 <= values.count()` proves `values[at]` to `values[at + 2]`, `while queue.count() > 1` proves
+  `queue[0]` and `queue[1]`.
+- **Missing**: undoing a proof inside the loop that read it is not refused, and a shrinking call inside an
+  assignment or an argument does not undo it (each read still halts when its list changed, see the next section).
 - **Falls back**: an unproven read is a `T?`; where a `T` is needed it is refused, "'...' may be missing, since every
   '[ ]' answers a 'T?' ...: ..., or prove the count first, 'crash list.count() > 2'".
 - **Lives in**: the proving is building, since it decides whether a read is a `T`: `statements.spite`
@@ -309,7 +325,7 @@ as when each was refused while building.
   `note_a_counted_list`, `forget_after_a_shrinking_call`), `values.spite` (`index_value`, `proven_by_its_path`); the
   refusal of an unproven read where a `T` is needed is the proof `proofs/present_values`.
 - **Checked by**: tests/count_bound_proofs, tests/bound_proofs, tests/count_in_name_proves, tests/structural_index,
-  tests/proof_again_in_loop, tests/compared_count_proves_read; conformance/index_reads,
+  tests/proof_again_in_loop, tests/compared_count_proves_read, tests/while_bound_facts; conformance/index_reads,
   conformance/bound_proofs_undone, conformance/count_proves_no_key, conformance/count_undoes_proof,
   conformance/structural_index_undone, conformance/proven_index_check, conformance/call_in_index,
   conformance/indexable_unproven.
@@ -346,14 +362,20 @@ as when each was refused while building.
 
 ### An index built from loop counters is proven by one guard
 
-- **Status**: missing.
-- **Rule**: the guard `rows * stride <= list.count()` with `while row < rows` and `while column < stride` over
-  non-negative locals proves `list[row * stride + column]`, and the reads of a width there
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
-- **Buys**: the cells of an area are read with one guard.
-- **Falls back**: the read is a `T?` and is narrowed, or refused where a `T` is needed.
-- **Lives in**: none.
-- **Checked by**: none (tests/area_guard_cells has the shape and reads the cells as `T?`).
+- **Status**: partly built (D1449): not the reads of a width.
+- **Rule**: the guard `rows * stride <= list.count()` (an `assert`, a `crash`, or the `if rows * stride >
+  list.count()` that leaves), with `while row < rows` and inside it `while column < stride`, proves
+  `list[row * stride + column]` in the inner loop: `row * stride + column` is below `rows * stride`. The four are
+  names. Assigning `rows` or `stride`, or a call that shrinks the list, forgets the guard; assigning `row` or
+  `column` forgets the read ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+- **Buys**: the cells of an area are read with one guard, each a `T`.
+- **Missing**: the reads of a width (`read_<number>_at`) at a cell.
+- **Falls back**: the read is a `T?` and is narrowed, or refused where a `T` is needed. The guard proves only the top:
+  a negative counter halts at the read, as every proven read does ("... is outside its list ...").
+- **Lives in**: `high_intermediary_representation/building/windows.spite` (`note_an_area`, `read_the_areas`,
+  `read_an_area_cell`), beside the window it extends: the outer loop's condition marks its counter in the scope of
+  its body, and the inner loop's condition proves the cell where that mark still holds.
+- **Checked by**: tests/area_guard_proven, tests/area_guard_cells.
 
 ### An index offset by a base is proven by one guard
 
@@ -414,13 +436,15 @@ as when each was refused while building.
 - **Status**: partly built (by ranges, wider than the old rule).
 - **Rule**: a divisor that is a non-zero constant, or whose range leaves out 0 (and -1 when the dividend may be the
   smallest value), is divided with no test ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#numeric-types)).
+  A local tested `!= 0` (`crash parts != 0`, `if parts == 0 { return }`, the block of `if parts != 0 { }`) is not zero
+  until it is assigned, which a range cannot say, so the ranges keep it as a fact beside the range (D1450); it is
+  divided with no test when its range also leaves out -1 or the dividend's range leaves out the smallest value.
 - **Buys**: no zero test on a division.
-- **Missing**: `!= 0` proves nothing (a range cannot leave out a middle value); a divisor that is an attribute or a
-  member path; nothing in `--repl` and `--hot-reload` builds.
+- **Missing**: a divisor that is an attribute or a member path; nothing in `--repl` and `--hot-reload` builds.
 - **Falls back**: the test stays, "spite: '...' divided by zero, at ...".
-- **Lives in**: the proof `proofs/ranges` (`prove_the_divisor`), a speed proof run after the acceptance proofs,
-  whose fact the lowering reads (`is_divisor_proven`).
-- **Checked by**: tests/division_by_zero, tests/divisions, tests/smallest_divided.
+- **Lives in**: the proof `proofs/ranges` (`prove_the_divisor`, `prove_a_divisor_not_zero`), a speed proof run after
+  the acceptance proofs, whose fact the lowering reads (`is_divisor_proven`).
+- **Checked by**: tests/division_by_zero, tests/divisions, tests/smallest_divided, tests/divisor_not_zero.
 
 ### A divisor written as zero is an error
 
@@ -583,19 +607,22 @@ as when each was refused while building.
 
 ### How many arguments a function takes
 
-- **Status**: partly built.
+- **Status**: built (D1442).
 - **Rule**: `$T.argument_count("<pattern>")` and a walk's `phase.argument_count()` fold to a whole number; every
   function a pattern matches must take the same number, and a pattern matching none is an error
   ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks)).
 - **Buys**: generic code chooses its call by the count.
-- **Missing**: the error for `argument.argument_count()` asked outside a walk over functions.
 - **Falls back**: refused, "'...' has no function named '...', so 'argument_count' has nothing to count ...", or
   "... has no one answer: the functions of 'Painter' that fit it take different numbers of arguments ('update_each'
-  1, 'render_each' 2), so ask 'phase.argument_count()' in a template over them, where each is walked on its own".
+  1, 'render_each' 2), so ask 'phase.argument_count()' in a template over them, where each is walked on its own";
+  asked of a walk that is not over functions, "'argument.argument_count()' is how many arguments the function a walk
+  over functions stands for takes, so it is asked with no name in a template over functions, such as
+  'run_phase_each(phase: Spite.FunctionDeclaration)'".
 - **Lives in**: embedded, `values.spite` (`counted_arguments`, `refuse_disagreeing_counts`,
   `pattern_argument_count`).
 - **Checked by**: tests/folded_argument_count, tests/system_phases, tests/streamed_rows; conformance/argument_count,
-  conformance/argument_count_missing, conformance/passed_argument_count, conformance/argument_count_disagrees.
+  conformance/argument_count_missing, conformance/passed_argument_count, conformance/argument_count_disagrees,
+  conformance/argument_count_outside_walk.
 
 ### Whether a class fits a `Vector`
 
@@ -1376,14 +1403,18 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### Singletons that make each other in a circle are an error
 
-- **Status**: partly built.
+- **Status**: built (D1444).
 - **Rule**: following every attribute of every singleton through the objects those attributes make, a path back to
-  the start is refused ([classes_and_files.md](../SpiteLanguage/specs/classes_and_files.md#singleton-rules)).
-- **Missing**: the "makes" links: a circle through an ordinary object made in an attribute default.
-- **Falls back**: such a circle halts at run time, "spite: singleton ...: singletons initialise each other in a
-  circle".
+  the start is refused ([classes_and_files.md](../SpiteLanguage/specs/classes_and_files.md#singleton-rules)). An
+  attribute whose default constructs its class links to it: "binds" for a singleton, "makes" for an ordinary
+  object. A circle is refused when a singleton is on it, told from the last singleton on it, at that singleton's
+  attribute that starts the rest: "singleton 'Metronome' makes 'Tick', which binds 'Metronome': singletons initialise
+  each other in a circle, ...". A circle of ordinary objects alone is not this rule.
+- **Falls back**: a circle only a constructor's body closes, which this does not follow, halts at run time,
+  "spite: singleton ...: singletons initialise each other in a circle".
 - **Lives in**: `validators/name_resolution/singleton_circle`.
-- **Checked by**: conformance/singleton_circle; tests/singleton_circle.
+- **Checked by**: conformance/singleton_circle, conformance/singleton_circle_through_an_object;
+  tests/singleton_circle.
 
 ### Build settings are constants
 
@@ -1420,19 +1451,23 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### A member template fits
 
-- **Status**: partly built.
+- **Status**: built (D1441, D1443).
 - **Rule**: the member a template names exists and has the right kind (a Boolean for `filter_`, a number for
   `sum_`), and a passed function takes the element
   ([collections.md](../SpiteLanguage/specs/collections.md#standard-library-metaprogramming)).
 - **How**: on a library collection, `sum_` needs a number, `count_` a Boolean, `each_` a function, `map_` a member
   that answers something, `sort_by_` a number or a text, and `filter_`, `any_` and `all_` a Boolean, each refused at
   the call with its own text (D1142).
-- **Missing**: the specific error for `each` given something that is not a function, and the same checks for a
-  member template of the program's own class.
-- **Falls back**: refused, mostly with a more general text.
+- **Program collections**: the same checks hold for a member template of a program's own class that holds an
+  `$element_type`; before, `bag.sum_name()` on a `String` member summed the texts onto "0" (D244). A program class
+  with no `$element_type` names its templates as it likes, so its prefixes say nothing.
+- **`each` given a value**: "'each' takes a function to call with each element, such as 'each(say_hello)' or
+  'each(greeter.say_hello)', and 'engine' is not one".
+- **Falls back**: refused with its own text.
 - **Lives in**: embedded, `values.spite` (`specialized_over_a_class`), `validators/high_intermediary_representation/typing`.
 - **Checked by**: conformance/member_template_mistakes, member_template_map_nothing, member_template_sort_boolean,
-  member_template_filter_text, member_template_any_number, conformance/passed_functions.
+  member_template_filter_text, member_template_any_number, own_member_template_mistakes, each_of_a_value,
+  conformance/passed_functions.
 
 ### A value can be written
 
