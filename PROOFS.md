@@ -803,10 +803,10 @@ as when each was refused while building.
 - **How**: each function of the program is read for the stores it makes: `x.a = y`, `x.f.append(y)` (and
   `insert`, `prepend`, `add`, `set_at`), `x.f[k] = y`, and a constructor that keeps its argument in an attribute. A
   call of a program function whose name only one class declares adds that function's own stores, with `this` and
-  its parameters replaced by the call's receiver and arguments, so `team.sign(player)` beside `player.join(team)`
+  its parameters replaced by the call's receiver and arguments, so `team.recruit(player)` beside `player.play_for(team)`
   links the two as `team.players.append(player)` beside `player.team = team` would (D1396). A link found in one
   function decides the attribute for the whole program.
-- **Missing**: a link through a function named by two classes, a call two levels deep, two objects neither of which
+- **Missing**: a link through a function named by two classes (the library's included: a `join` is `String.join`'s name too), a call two levels deep, two objects neither of which
   the function made linked directly (not through a collection), one attribute pointing both ways (`partner`), a
   cycle through a union or a `type`, and a back attribute that cannot be null: each keeps its counts and leaks,
   which `--debug-memory` names at exit.
