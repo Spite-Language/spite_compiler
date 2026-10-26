@@ -2630,7 +2630,8 @@ The two need not be written one after the other: a pass before the generator mov
 the first when both are in one block, nothing between them writes either number or the first's target, nothing
 between them reads or writes the second's target, and the second cannot halt on its own (it is unchecked, or the
 first is checked and halts on the same divisor first). `var digit = rest % base` then `total = total + digit` then
-`rest = rest / base` is one division too (SpiteSpec `tests/divisions_apart`).
+`rest = rest / base` is one division too (SpiteSpec `tests/divisions_apart`). Measured on
+`a_proven_divisor_is_not_checked` (`amount / parts + amount % parts`): 56.9 ms to 29.0 ms, against 29.9 ms for naive C.
 
 **Not built:** a pair in two blocks.
 
