@@ -35,7 +35,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
 - A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
-- Leaks `--debug-memory` names in the spec tests (D1242; 91 of 736 leak, run with `--debug-memory` added): the reflection objects (`Spite.Class`, `Spite.Function`, `Spite.Argument`, `Spite.AttributeDeclaration`, and the `String`, `Buffer`, `File`, `DynamicLibrary` and lists they hold) are never let go in every test that reflects; one `ReadEvaluatePrintLoop` in each `interactive_*` test; a `Circle` and a `Square` in `union_identity`; two blocks that are not objects in `foreign_callbacks`
+- Leaks `--debug-memory` cannot be asked about: `tests/divisions`, `objects` and `receivers` declare a `Build` without `debug_memory`, so they are not swept (D1242, D1256); a reflection object made on two threads at once records itself on the list let go at exit without a lock
 
 ## The language
 - From the old repository's programs (spite_spec `CORPUS.md`), still failing:
