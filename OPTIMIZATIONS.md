@@ -1280,7 +1280,8 @@ the release that brings it to zero lets go of the row's attributes in place, wit
 ### What a call keeps nothing of
 
 A call keeps nothing of its argument at a position when, in the called function, the parameter and every copy of it
-are only read through, written through or compared: never stored, answered, passed on, retained or released. An
+are only read through, written through, copied from or compared, or passed on to a call that keeps nothing of it
+in its turn: never stored, answered, retained or released. An
 object passed only to such calls can still live in the frame (the third placement above), since nothing can hold
 its address after the call returns. A call that stores an address made from its parameter (the parameter plus an
 offset) into the parameter itself keeps nothing of it either: that is how a `Buffer` points at the room inside it,
