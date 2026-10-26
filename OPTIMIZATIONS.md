@@ -2928,7 +2928,12 @@ functions do. A singleton no such work reaches gets none of them, and a program 
    assigns after the singleton is made, and calls nothing that touches more, runs unlocked. A whole number or
    `Boolean` attribute that each of the singleton's functions writes at most once, outside loops and not again
    through another of them, is never seen half changed, so another class reads it with no lock (its writes from
-   another class still take the lock). The lock is a word in the singleton's slot holding the thread that owns it, with a count of how
+   another class still take the lock). Inside the singleton's own functions every attribute, atomic on its own or
+   not, is a plain number: its reads, writes and `attribute = attribute + x` are plain loads, stores and additions,
+   never a locked instruction, since the lock already keeps every other thread out and an aligned store of eight
+   bytes or fewer is never seen half written by a reader past it. A read or write of a changing attribute from
+   another class takes the lock around it (around the whole statement for a write), and a counted one is counted
+   before the lock is let go. The lock is a word in the singleton's slot holding the thread that owns it, with a count of how
    deep that thread holds it: a call by the owning thread only adds one to the count, a free lock is claimed with
    one compare-exchange, and a held one is retried after giving the processor up. The thread is read from the
    thread's own block (`gs:[0x48]`), not asked of the system.
