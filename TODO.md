@@ -297,8 +297,8 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 - Borrowed items of a `Vector` or `Items`: the reads stay counted references, walk copies and library member templates are not checked, `InlineMemory` is not a borrowing collection
 - Rows of borrowed items: the row in the frame and uncounted for a callee not inlined, a walked template's `var stored_row = rows[...]`, the arguments a plural fills, `row.describe` as a function value, a row passed to a library function
 - A list element lent to a row
-- A singleton attribute that never changes is read in place: the per-attribute fact (a singleton is steady only when all its attributes are plain)
-- An item written back to its own slot is the slot: a write-back nested in a block, and lists other than a library `List`
+- A singleton attribute that never changes is read in place: with no count, for an object attribute of a singleton whose other attributes change
+- An item written back to its own slot is the slot: lists other than a library `List`
 - A value followed through calls is the slot it was read from
 - An item a name holds from its list is not counted (built for `var item = list[index]` with a proven read when nothing after it in its block can write the slot, D992; not built: a name kept across a call that may write any list of the item's class, even another one)
 - A list item read only to test it is not counted: lists of nullable items, `Items`, a path through the item
@@ -320,11 +320,10 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 - Objects of a class made on one thread
 - A copy nothing changes is the original
 - No other thread touches a singleton (the second walk over the tree-shaken program)
-- Read-only and atomic singletons: one lone atomic attribute inside a locked singleton
-- A function that touches no changing state takes no lock: "touches no changing attribute" rather than "never reads `this`", and a call between two locked functions going to the unlocked body
+- A function that touches no changing state takes no lock: a call between two locked functions going to the unlocked body
 - Reading functions share the lock: outside a counted loop that holds it (D988)
 - A loop that starts no task tests for tasks once
-- A loop that can never end is an error: in `Parallel` work "waits" is "calls nothing but the console", not the waits fact
+- A loop that can never end is an error: in `Parallel` work, a call through a function value, a `type` or a union is not followed
 - Reads in a row are independent
 
 ### Other refusals built on an analysis
