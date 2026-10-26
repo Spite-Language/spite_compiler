@@ -37,11 +37,19 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
         program.data.append(call_placeholder)
         program.call_table = program.data.count() - 1
     }
-    if counts_memory {
+    if counts_memory or high.prompt {
         program.counts_memory = true
         program.allocation_count_label = zeroed_count()
         program.free_count_label = zeroed_count()
         program.live_list_label = zeroed_count()
+    }
+    if high.prompt {
+        program.prompt_intrinsics = high.prompt_intrinsics
+    }
+    if high.prompt_check_point {
+        program.prompt_flag_label = zeroed_count()
+        program.prompt_objects_label = zeroed_room(24)
+        program.prompt_check_point = high.prompt_check_point.key()
     }
     high.built_functions.each(lower_function)
     lower_the_unguarded_bodies()
@@ -179,9 +187,13 @@ func write_the_work() {
 }
 
 func zeroed_count(): Integer {
+    return zeroed_room(8)
+}
+
+func zeroed_room(size: Integer): Integer {
     var room = Buffer(0)
     var index = 0
-    while index < 8 {
+    while index < size {
         room.append(0)
         index = index + 1
     }
@@ -291,6 +303,13 @@ func lower_the_start() {
     }
     var entry_key = high.model.entry
     var object = lowering.make_object(entry_key)
+    var prompt_object = -1
+    if high.prompt {
+        prompt_object = lowering.make_object(high.prompt.owner)
+    }
+    if high.prompt_listen {
+        listen_remotely(lowering, prompt_object, object, high.prompt_listen)
+    }
     var code = lowering.constant(0)
     if high.entry {
         code = call_the_entry(lowering, object, high.entry)
@@ -299,8 +318,11 @@ func lower_the_start() {
         var working = Working(lowering)
         working.drain()
     }
-    if high.prompt {
-        call_the_prompt(lowering, object, high.prompt)
+    if high.prompt and high.prompt_runs_the_console {
+        call_the_prompt(lowering, prompt_object, object, high.prompt)
+    }
+    if high.prompt_serve {
+        call_the_prompt(lowering, prompt_object, object, high.prompt_serve)
     }
     if high.makes_work {
         var ending = Working(lowering)
@@ -525,8 +547,59 @@ func destroy_the_singletons(lowering: FunctionLowering) {
     lowering.switch_to(done)
 }
 
-func call_the_prompt(lowering: FunctionLowering, entry_object: Integer, prompt: Model.FunctionModel) {
-    var prompt_object = lowering.make_object(prompt.owner)
+# ../../../spite_spec/specs/repl.md#--repl-portport
+func listen_remotely(
+    lowering: FunctionLowering,
+    prompt_object: Integer,
+    entry_object: Integer,
+    listen: Model.FunctionModel,
+) {
+    var objects = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(objects, program.prompt_objects_label)
+    lowering.emit(addressed)
+    var kept_prompt = LowIntermediaryRepresentation.Instructions.Store(objects, 0, prompt_object, 'bits_64')
+    lowering.emit(kept_prompt)
+    var kept_entry = LowIntermediaryRepresentation.Instructions.Store(objects, 8, entry_object, 'bits_64')
+    lowering.emit(kept_entry)
+    var arguments = List<Integer>()
+    arguments.append(prompt_object)
+    var listen_key = listen.key()
+    var listened = LowIntermediaryRepresentation.Instructions.Call(-1, listen_key, arguments)
+    lowering.emit(listened)
+    write_the_alarm()
+    var no_block = lowering.constant(0)
+    var thread = lowering.new_register()
+    var started = LowIntermediaryRepresentation.Instructions.StartThread(thread, "_prompt_alarm", no_block)
+    lowering.emit(started)
+}
+
+# ../../../spite_spec/specs/repl.md#--repl-portport
+func write_the_alarm() {
+    var writer = FunctionLowering(layout, program, singleton_slots)
+    var machine = MachineWriting(writer)
+    machine.begin("_prompt_alarm", 1)
+    var top = machine.loop_top()
+    var objects = machine.data_at(program.prompt_objects_label)
+    var stopping = machine.loaded(objects, 16)
+    var goes_on = machine.is_zero(stopping)
+    var done = machine.loop_while(goes_on)
+    var pause = machine.constant_of(25)
+    var pausing = machine.one_listed(pause)
+    machine.imported("Sleep", pausing)
+    var flag = machine.data_at(program.prompt_flag_label)
+    machine.stored_number(flag, 0, 1)
+    machine.loop_back(top, done)
+    var nothing = machine.constant_of(0)
+    machine.answered(nothing)
+    machine.finish()
+}
+
+func call_the_prompt(
+    lowering: FunctionLowering,
+    prompt_object: Integer,
+    entry_object: Integer,
+    prompt: Model.FunctionModel,
+) {
     var arguments = List<Integer>()
     arguments.append(prompt_object)
     arguments.append(entry_object)

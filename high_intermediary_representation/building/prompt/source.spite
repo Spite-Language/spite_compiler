@@ -10,6 +10,9 @@ var listed_classes = List<Model.ClassModel>()
 var described_classes = List<Model.ClassModel>()
 var chosen_keys = List<String>()
 var writable_scalars = ["Integer", "Long", "Double", "Float", "Boolean"]
+var intrinsics = Dictionary<String, String>()
+var intrinsic_lines = List<String>()
+var port = 0
 var readers = ["integer_of", "long_of", "double_of", "float_of", "boolean_of"]
 
 func Source(starting_context: Context) {
@@ -29,17 +32,45 @@ func source(own_key: String): String {
         number_of(singleton_type)
         index = index + 1
     }
+    var asked_port = context.build_flags["repl_port"]
+    if asked_port {
+        var read_port = asked_port.to_integer()
+        crash read_port
+        port = read_port
+    }
     out(0, "var prompt = Spite.Prompt()")
+    out(0, "var prepared = false")
     blank()
     write_run(entry)
     write_bind()
+    write_the_class_list()
     var type_index = 0
     while type_index < types.count() {
         var each = types[type_index]
         write_type(type_index + 1, each)
         type_index = type_index + 1
     }
+    declare("live_allocations", "func live_allocations(): Long", "allocations")
+    declare("live_frees", "func live_frees(): Long", "frees")
+    var declared_index = 0
+    while declared_index < intrinsic_lines.count() {
+        var declaration = intrinsic_lines[declared_index]
+        blank()
+        out(0, declaration)
+        declared_index = declared_index + 1
+    }
     return lines.join("\n")
+}
+
+# ../../../../spite_spec/specs/repl.md#command-language
+func declare(name: String, declaration: String, meaning: String) {
+    assert not intrinsics.contains(name)
+    intrinsics[name] = meaning
+    intrinsic_lines.append(declaration)
+}
+
+func reads_remotely(): Boolean {
+    return port > 0
 }
 
 func choose_the_classes(own_key: String) {
@@ -188,12 +219,16 @@ func object_kind_of(described: Model.Type): String {
     if is_a_dictionary {
         return "dictionary"
     }
-    var is_settings = model.key == "Build" or model.key == "Environment"
-    var from_the_library = context.resolver.symbols.is_library_path(model.file.path)
-    if from_the_library and not is_settings {
+    if model.key.starts_with("Spite.") {
         return "library"
     }
     return "object"
+}
+
+func is_from_the_library(model: Model.ClassModel): Boolean {
+    var is_settings = model.key == "Build" or model.key == "Environment"
+    var from_the_library = context.resolver.symbols.is_library_path(model.file.path)
+    return from_the_library and not is_settings
 }
 
 func class_model_of(described: Model.Type): Model.ClassModel {
@@ -462,6 +497,7 @@ func calls_of(described: Model.Type): List<Call> {
         return dictionary_calls_of(described)
     }
     var model = class_model_of(described)
+    assert not is_from_the_library(model)
     var calls = declared_calls_of(model)
     var has_its_own = false
     var index = 0
@@ -645,21 +681,40 @@ func signatures_of(calls: List<Call>, keys_text: String): String {
 }
 
 func write_run(entry: Model.ClassModel) {
-    out(0, "func run(program: {entry.shown}) \{")
+    out(0, "func prepare() \{")
+    out(1, "if prepared \{")
+    out(2, "return")
+    out(1, "}")
+    out(1, "prepared = true")
     var enum_text = enum_lines()
     var enum_written = escaped(enum_text)
     out(1, "prompt.enum_lines = \"{enum_written}\"")
-    var class_text = class_lines()
-    var class_written = escaped(class_text)
-    out(1, "prompt.class_lines = \"{class_written}\"")
     described_classes.each(write_a_description)
+    out(0, "}")
+    blank()
+    out(0, "func run(program: {entry.shown}) \{")
+    out(1, "prepare()")
     out(1, "while prompt.reads() \{")
     out(2, "answer(program)")
+    out(2, "prompt.deliver()")
     out(1, "}")
     out(1, "prompt.finish()")
     out(0, "}")
     blank()
+    if reads_remotely() {
+        write_the_remote_loop(entry)
+    }
     out(0, "func answer(program: {entry.shown}) \{")
+    out(1, "if prompt.lists_classes() \{")
+    out(2, "list_the_classes()")
+    out(2, "return")
+    out(1, "}")
+    out(1, "if prompt.counts_memory() \{")
+    out(2, "var made = live_allocations()")
+    out(2, "var freed = live_frees()")
+    out(2, "prompt.say_the_memory(made, freed)")
+    out(2, "return")
+    out(1, "}")
     out(1, "if prompt.fetches() \{")
     out(2, "prompt.start_fetching()")
     out(2, "walk_1(program, 0)")
@@ -668,6 +723,53 @@ func write_run(entry: Model.ClassModel) {
     out(2, "prompt.start_walking()")
     out(2, "walk_1(program, 0)")
     out(1, "}")
+    out(0, "}")
+    blank()
+}
+
+# ../../../../spite_spec/specs/repl.md#--repl-portport
+func write_the_remote_loop(entry: Model.ClassModel) {
+    out(0, "func listen() \{")
+    out(1, "prepare()")
+    out(1, "prompt.listen({port})")
+    out(0, "}")
+    blank()
+    out(0, "func check_point(program: {entry.shown}) \{")
+    out(1, "var keeps_going = not prompt.exits")
+    out(1, "while keeps_going \{")
+    out(2, "keeps_going = serve_one(program)")
+    out(1, "}")
+    out(0, "}")
+    blank()
+    out(0, "func serve_one(program: {entry.shown}): Boolean \{")
+    out(1, "var line = prompt.next_line(false)")
+    out(1, "if line \{")
+    out(2, "serve_line(line, program)")
+    out(2, "return true")
+    out(1, "}")
+    out(1, "return false")
+    out(0, "}")
+    blank()
+    out(0, "func serve(program: {entry.shown}) \{")
+    out(1, "prepare()")
+    out(1, "while not prompt.exits \{")
+    out(2, "serve_waiting(program)")
+    out(1, "}")
+    out(0, "}")
+    blank()
+    out(0, "func serve_waiting(program: {entry.shown}) \{")
+    out(1, "var line = prompt.next_line(true)")
+    out(1, "if line \{")
+    out(2, "serve_line(line, program)")
+    out(1, "}")
+    out(0, "}")
+    blank()
+    out(0, "func serve_line(line: String, program: {entry.shown}) \{")
+    out(1, "var goes_on = prompt.hears(line)")
+    out(1, "if goes_on \{")
+    out(2, "answer(program)")
+    out(1, "}")
+    out(1, "prompt.send_the_answer(goes_on)")
     out(0, "}")
     blank()
 }
@@ -696,21 +798,68 @@ func enum_lines(): String {
     return found.join("\n")
 }
 
-func class_lines(): String {
-    var found = List<String>()
+func argument_lists_of(singleton: Model.ClassModel): List<String> {
+    var known = context.singleton_arguments[singleton.key]
+    if known {
+        return known
+    }
+    var only_one = List<String>()
+    only_one.append("")
+    return only_one
+}
+
+func made_function_of(singleton: Model.ClassModel, arguments: String): String {
+    var name = "made_{intrinsics.count()}"
+    var singleton_type = singleton.type_of_an_instance()
+    var written = written_of(singleton_type)
+    var slot_key = singleton.key
+    if not arguments.is_empty() {
+        slot_key = "{singleton.key}({arguments})"
+    }
+    declare(name, "func {name}(): {written}?", "made\t{singleton.key}\t{slot_key}")
+    return name
+}
+
+func called_of(singleton: Model.ClassModel, arguments: String): String {
+    var written = singleton.shown.replace(" ", "")
+    return "{written}({arguments})"
+}
+
+func write_the_class_list() {
+    out(0, "func list_the_classes() \{")
+    out(1, "var listed = List<String>()")
     var index = 0
     while index < singletons.count() {
         var singleton = singletons[index]
-        found.append("{singleton.shown}()")
+        var lists = argument_lists_of(singleton)
+        var list_index = 0
+        while list_index < lists.count() {
+            var arguments = lists[list_index]
+            crash arguments
+            var made = made_function_of(singleton, arguments)
+            var called = called_of(singleton, arguments)
+            var quoted = escaped(called)
+            out(1, "var held_{made} = {made}()")
+            out(1, "if held_{made} \{")
+            out(2, "listed.append(\"{quoted}\")")
+            out(1, "} else \{")
+            out(2, "listed.append(\"{quoted} not made yet\")")
+            out(1, "}")
+            list_index = list_index + 1
+        }
         index = index + 1
     }
     var class_index = 0
     while class_index < listed_classes.count() {
         var listed = listed_classes[class_index]
-        found.append(listed.shown)
+        var quoted_class = escaped(listed.shown)
+        out(1, "listed.append(\"{quoted_class}\")")
         class_index = class_index + 1
     }
-    return found.join("\n")
+    out(1, "var joined = listed.join(\"\\n\")")
+    out(1, "prompt.say(joined)")
+    out(0, "}")
+    blank()
 }
 
 func write_a_description(model: Model.ClassModel) {
@@ -853,15 +1002,47 @@ func singletons_named(short: String): List<String> {
     return found
 }
 
+# ../../../../spite_spec/specs/repl.md#command-language
 func write_a_binding(singleton: Model.ClassModel) {
     var singleton_type = singleton.type_of_an_instance()
     var number = number_of(singleton_type)
     var written = singleton.shown.replace(" ", "")
     var quoted = escaped(written)
+    var lists = argument_lists_of(singleton)
+    var takes_none = lists.count() == 1 and lists.contains("")
     out(0, "func bind_{number}(at: Integer) \{")
-    out(1, "assert prompt.bound_without_arguments(at, \"{quoted}\")")
-    out(1, "var bound = {singleton.shown}()")
-    out(1, "walk_{number}(bound, at + 1)")
+    if takes_none {
+        out(1, "assert prompt.bound_without_arguments(at, \"{quoted}\")")
+    }
+    out(1, "var given = prompt.given_arguments(at)")
+    var instances = List<String>()
+    var index = 0
+    while index < lists.count() {
+        var arguments = lists[index]
+        crash arguments
+        var made = made_function_of(singleton, arguments)
+        var called = called_of(singleton, arguments)
+        instances.append(called)
+        var quoted_arguments = escaped(arguments)
+        var named = called
+        if arguments.is_empty() {
+            named = written
+        }
+        var quoted_called = escaped(named)
+        out(1, "if given == \"{quoted_arguments}\" \{")
+        out(2, "var bound_{index} = {made}()")
+        out(2, "if bound_{index} \{")
+        out(3, "walk_{number}(bound_{index}, at + 1)")
+        out(3, "return")
+        out(2, "}")
+        out(2, "prompt.not_made_yet(\"{quoted_called}\")")
+        out(2, "return")
+        out(1, "}")
+        index = index + 1
+    }
+    var joined = instances.join(", ")
+    var quoted_instances = escaped(joined)
+    out(1, "prompt.no_instance(at, \"{quoted}\", \"{quoted_instances}\")")
     out(0, "}")
     blank()
 }
@@ -869,6 +1050,9 @@ func write_a_binding(singleton: Model.ClassModel) {
 func write_type(number: Integer, described: Model.Type) {
     var kind = kind_of(described)
     assert kind != "opaque"
+    if kind == "object" or kind == "list" or kind == "dictionary" {
+        write_bytes(number, described, kind)
+    }
     write_walk(number, described, kind)
     write_reach(number, described)
     write_end(number, described, kind)
@@ -1020,6 +1204,11 @@ func write_end(number: Integer, described: Model.Type, kind: String) {
     }
     cases.append("fetch")
     statements.append("prompt.fetch(value, \"{quoted_shown}\")")
+    var has_bytes = kind == "object" or kind == "list" or kind == "dictionary"
+    if has_bytes {
+        cases.append("bytes")
+        statements.append("bytes_{number}(value)")
+    }
     out(1, "var mode = prompt.mode")
     write_switch(1, "mode", cases, statements, "prompt.refuse_bytes(at)")
     out(0, "}")
@@ -1028,9 +1217,11 @@ func write_end(number: Integer, described: Model.Type, kind: String) {
 
 func write_show(number: Integer, described: Model.Type) {
     var written = written_of(described)
+    var value_shown = shown_of(described)
+    var quoted_value_shown = escaped(value_shown)
     out(0, "func show_{number}(value: {written}) \{")
     out(1, "var shown = full_{number}(value)")
-    out(1, "prompt.say(shown)")
+    out(1, "prompt.say_a_value(shown, \"{quoted_value_shown}\")")
     out(0, "}")
     blank()
     out(0, "func show_or_null_{number}(value: {written}?) \{")
@@ -1203,6 +1394,104 @@ func write_object_step(number: Integer, described: Model.Type) {
     blank()
 }
 
+# ../../../../spite_spec/specs/repl.md#command-language
+func write_bytes(number: Integer, described: Model.Type, kind: String) {
+    var written = written_of(described)
+    var shown = shown_of(described)
+    var quoted_shown = escaped(shown)
+    var model = class_model_of(described)
+    declare_the_address(number, written)
+    declare("size_{number}", "func size_{number}(): Integer", "size\t{model.key}")
+    out(0, "func bytes_{number}(value: {written}) \{")
+    out(1, "var address = address_{number}(value)")
+    out(1, "var size = size_{number}()")
+    if kind == "list" {
+        declare("storage_{number}", "func storage_{number}(value: {written}): Long", "storage\t{model.key}")
+        declare("item_size_{number}", "func item_size_{number}(): Integer", "item_size\t{model.key}")
+        out(1, "var storage = storage_{number}(value)")
+        out(1, "var item_size = item_size_{number}()")
+        out(1, "var held = value.count()")
+        out(1, "prompt.say_list_bytes(\"{quoted_shown}\", address, size, storage, item_size, held)")
+        out(0, "}")
+        blank()
+        return
+    }
+    out(1, "var fields = List<String>()")
+    if kind == "object" {
+        var attributes = attributes_of(described)
+        var index = 0
+        while index < attributes.count() {
+            var attribute = attributes[index]
+            var place = place_of(number, model, index, attribute)
+            var piece = piece_of(attribute.attribute_type, "value.{attribute.name}")
+            var attribute_shown = shown_of(attribute.attribute_type)
+            var quoted_attribute = escaped(attribute_shown)
+            out(1, "var piece_{index} = {piece}")
+            out(1, "var offset_{index} = offset_{place}()")
+            out(1, "var width_{index} = width_{place}()")
+            out(
+                1,
+                "var field_{index} = prompt.field_json(\"{attribute.name}\", \"{quoted_attribute}\", offset_{index}, width_{index}, piece_{index})",
+            )
+            out(1, "fields.append(field_{index})")
+            index = index + 1
+        }
+    }
+    out(1, "prompt.say_object_bytes(\"{quoted_shown}\", address, size, fields)")
+    out(0, "}")
+    blank()
+}
+
+func place_of(number: Integer, model: Model.ClassModel, index: Integer, attribute: Model.AttributeModel): String {
+    var place = "{number}_{index}"
+    var offset_name = "offset_{place}"
+    if not intrinsics.contains(offset_name) {
+        declare(offset_name, "func {offset_name}(): Integer", "offset\t{model.key}\t{attribute.name}")
+        declare("width_{place}", "func width_{place}(): Integer", "width\t{model.key}\t{attribute.name}")
+    }
+    return place
+}
+
+func has_a_slot_of_its_own(described: Model.Type): Boolean {
+    var kind = kind_of(described)
+    return kind == "scalar" or kind == "text" or kind == "enum"
+}
+
+func write_a_slot(number: Integer, described: Model.Type, index: Integer, attribute: Model.AttributeModel) {
+    var written = written_of(described)
+    var model = class_model_of(described)
+    var place = place_of(number, model, index, attribute)
+    var attribute_shown = shown_of(attribute.attribute_type)
+    var quoted_attribute = escaped(attribute_shown)
+    var piece = piece_of(attribute.attribute_type, "value.{attribute.name}")
+    declare_the_address(number, written)
+    out(0, "func slot_{place}(value: {written}, at: Integer) \{")
+    out(1, "if prompt.bytes_end_here(at) \{")
+    out(2, "var offset = offset_{place}()")
+    out(2, "if offset < 0 \{")
+    out(3, "prompt.refuse_bytes(at)")
+    out(3, "return")
+    out(2, "}")
+    out(2, "var address = address_{number}(value)")
+    out(2, "var place = address + offset.to_long()")
+    out(2, "var width = width_{place}()")
+    out(2, "var piece = {piece}")
+    out(2, "prompt.say_slot_bytes(\"{quoted_attribute}\", place, width, piece)")
+    out(2, "return")
+    out(1, "}")
+    var walked = walk_of(attribute.attribute_type, "value.{attribute.name}")
+    out(1, walked)
+    out(0, "}")
+    blank()
+}
+
+func declare_the_address(number: Integer, written: String) {
+    var name = "address_{number}"
+    if not intrinsics.contains(name) {
+        declare(name, "func {name}(value: {written}): Long", "address")
+    }
+}
+
 func write_object_names(number: Integer, described: Model.Type) {
     var written = written_of(described)
     out(0, "func name_{number}(value: {written}, at: Integer) \{")
@@ -1210,18 +1499,35 @@ func write_object_names(number: Integer, described: Model.Type) {
     var cases = List<String>()
     var statements = List<String>()
     var attributes = attributes_of(described)
+    var slots = List<Integer>()
     var index = 0
     while index < attributes.count() {
         var attribute = attributes[index]
         cases.append(attribute.name)
-        var walked = walk_of(attribute.attribute_type, "value.{attribute.name}")
-        statements.append(walked)
+        if has_a_slot_of_its_own(attribute.attribute_type) {
+            var model = class_model_of(described)
+            var place = place_of(number, model, index, attribute)
+            statements.append("slot_{place}(value, at)")
+            slots.append(index)
+        } else {
+            var walked = walk_of(attribute.attribute_type, "value.{attribute.name}")
+            statements.append(walked)
+        }
         index = index + 1
     }
     var refused = no_attribute_of(described)
     write_switch(1, "name", cases, statements, refused)
     out(0, "}")
     blank()
+    var slot_index = 0
+    while slot_index < slots.count() {
+        var slot = slots[slot_index]
+        crash slot
+        var slotted = attributes[slot]
+        crash slotted
+        write_a_slot(number, described, slot, slotted)
+        slot_index = slot_index + 1
+    }
 }
 
 func write_calls(number: Integer, described: Model.Type) {
@@ -1552,6 +1858,27 @@ func write_list_index(number: Integer, described: Model.Type) {
     out(1, "var counted = value.count()")
     out(1, "var index = prompt.index_of_a_list(at, counted)")
     out(1, "assert index")
+    if has_a_slot_of_its_own(element) {
+        var model = class_model_of(described)
+        declare("storage_{number}", "func storage_{number}(value: {written}): Long", "storage\t{model.key}")
+        declare("item_size_{number}", "func item_size_{number}(): Integer", "item_size\t{model.key}")
+        var element_shown = shown_of(element)
+        var quoted_element = escaped(element_shown)
+        var element_piece = piece_of(element, "element_item")
+        out(1, "if prompt.bytes_end_here(at) \{")
+        out(2, "var element_item = value.get_at(index)")
+        if not element.is_nullable {
+            out(2, "crash element_item")
+        }
+        out(2, "var storage = storage_{number}(value)")
+        out(2, "var item_size = item_size_{number}()")
+        out(2, "var reach = index * item_size")
+        out(2, "var place = storage + reach.to_long()")
+        out(2, "var piece = {element_piece}")
+        out(2, "prompt.say_slot_bytes(\"{quoted_element}\", place, item_size, piece)")
+        out(2, "return")
+        out(1, "}")
+    }
     out(1, "var item = value.get_at(index)")
     if element.is_nullable {
         out(1, "reach_{element_number}(item, at + 1)")
