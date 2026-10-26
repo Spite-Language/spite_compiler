@@ -139,7 +139,9 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    it (`HighProgram.waits`).
    Right after it, the proof `no_thread_counts`, registered through `HighOptimizationPasses.Proving` since it reads
    that walk, records the classes another thread may count (`HighProgram.thread_counted_classes`); every other
-   class is counted plainly.
+   class is counted plainly. Then the proof `copies_nothing_changes`, registered the same way since it reads what
+   each call may assign and the waits, marks each copy that nothing changes while it lives, and the pass
+   `shared_copies` declares each marked copy from its original.
 11. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
    fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`, `fresh_by_constructor`).
 12. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting

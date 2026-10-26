@@ -207,6 +207,47 @@ with no table, since nothing an `Order` holds leads back to an `Order`.
 **When it does not apply:** a class that declares its own `deep_copy()` is copied through it. **What a program can
 observe:** nothing but time and allocations: the copy is what [the rule](https://github.com/Spite-Language/spite_spec/blob/master/specs/memory.md) says.
 
+## A deep copy nothing changes is the original
+
+A copy is worth making only if something tells it from the original: a write to one that the other must not see,
+or a question about which object it is. Where the proof [a copy nothing changes is the
+original](PROOFS.md#a-copy-nothing-changes-is-the-original) holds, `var copies = orders.deep_copy()` (or `copy()`)
+makes nothing: the high pass `high_optimization_passes/shared_copies` declares `copies` from `orders` itself, so it
+is the original counted once more, let go at the end of its block like any name.
+
+**When it applies:** the copy is the whole value of a `var` of the copied class, made from a local, `this` or an
+attribute read from one of them, by a `copy()` or `deep_copy()` the compiler writes or the library's `List` or
+`Dictionary` has. From the copy to the end of its block nothing writes anything: no attribute, no list, no bytes of
+a buffer, in the statements or in any function they call (or any `drop()` a release could run), and nothing calls a
+function value or a foreign function or makes a function value; a name declared before the copy is assigned only
+a number, a `Boolean` or an enum, and a `return` answers only one of those, so nothing of the copy outlives it. A
+copy passed on to a call is shared too, since a call that writes nothing keeps nothing. The copied classes (the
+class and everything its attributes, items, keys and values hold) are the program's own or the library's `List`,
+`Dictionary`, `String` and `Buffer`, have no `drop()`, hold nothing through a back reference, never lead back to
+themselves, are not singletons, and nothing in the whole program compares one of them with `==` or `!=` (a test
+against `null` aside) or keys a `Dictionary` with it. The program makes no `Concurrent`, starts no thread and
+hands no callback to C, the function does not wait, and the build is not a `--repl`, `--repl-port`,
+`--development` or `--hot-reload` one.
+
+**When it does not apply:** a copy that is changed, kept or answered, or of a class compared by identity anywhere,
+is made as written; and so is every copy in a block that writes anything at all, even to an object the copy never
+reaches.
+
+**What a program can observe:** fewer allocations under `--debug-memory`, and the time: every value read through
+the copy is the original's, which nothing changes while the copy lives.
+
+```spite
+var sum = 0
+var round = 0
+while round < 4 {
+    var copies = orders.deep_copy()
+    sum = sum + copies.sum_total()
+    round = round + 1
+}
+```
+
+No round copies the orders: `copies` is `orders`.
+
 ## Arithmetic a range proves is not checked
 
 A `+`, `-` or `*` on whole numbers halts when its answer does not fit its type. Where the compiler proves while
@@ -1241,7 +1282,47 @@ the release that brings it to zero lets go of the row's attributes in place, wit
 A call keeps nothing of its argument at a position when, in the called function, the parameter and every copy of it
 are only read through, written through or compared: never stored, answered, passed on, retained or released. An
 object passed only to such calls can still live in the frame (the third placement above), since nothing can hold
-its address after the call returns.
+its address after the call returns. A call that stores an address made from its parameter (the parameter plus an
+offset) into the parameter itself keeps nothing of it either: that is how a `Buffer` points at the room inside it,
+and the address lives exactly as long as the object.
+
+## A buffer that never leaves its function lives in the frame
+
+A `Buffer` that a function makes and that never leaves it (a local list's storage, a variadic list's, a list made
+with `List()` and filled by appends) is room in the function's frame instead of a heap block: the room is cleared
+where the buffer is made, and the buffer is marked as living inside another value, the mark a buffer inside a
+`String` carries. Its count is kept as before, and the release that brings it to zero runs the buffer's own free
+function, which lets go of its bytes when they grew out of the room inside it and, seeing the mark, leaves the
+buffer itself alone. A buffer whose bytes fit in the room inside it (48 bytes) therefore costs no allocation at all.
+
+**When it applies:** to a buffer that never leaves its function by the rules of [objects that never leave their
+function](#objects-that-never-leave-their-function-live-in-registers-or-the-frame), made at most one at a time in a
+loop or outside every loop, of at most 4096 bytes, in a function that never touches the mark itself, and only when
+texts are held whole (the buffer's free function reads the mark). The object that held it is often placed first
+(the list in registers), so the placement runs a second time right after the first cleaning, when the buffer is
+handed only to its own functions and released.
+
+**When it does not apply:** a buffer stored in an object that stays on the heap, answered, or passed to a call
+that keeps it.
+
+**What a program can observe:** fewer allocations under `--debug-memory`, and the time.
+
+```spite
+func largest(...values: List<Integer>): Integer {
+    var biggest = 0
+    var index = 0
+    while index < values.count() {
+        if values[index] > biggest {
+            biggest = values[index]
+        }
+        index = index + 1
+    }
+    return biggest
+}
+```
+
+Inlined into `var biggest = largest(round % 10, round % 7, round % 13, round % 3)`, the list is registers and its
+buffer is room in the caller's frame: the four items fit inside it, so the call allocates nothing.
 
 ## A list's objects sit inside its storage
 

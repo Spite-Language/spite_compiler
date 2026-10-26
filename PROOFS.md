@@ -679,14 +679,18 @@ as when each was refused while building.
   ([memory.md](../SpiteLanguage/specs/memory.md)).
 - **Buys**: no allocation, no count.
 - **Missing**: the fresh result of a function that is not inlined goes to the heap; an object whose class lets go
-  of attributes is placed only in registers, never in the frame; `.memory.section` answering `'stack'`.
+  of attributes is placed only in registers, never in the frame, but a `Buffer`, which is placed in the frame and
+  lets go of its own bytes; `.memory.section` answering `'stack'`.
 - **Falls back**: a heap object.
 - **Lives in**: the low proof `proofs/objects_in_the_frame`, run on the low representation after inlining and
   compile-time evaluation (and again after the late inlining, on the functions it changed): it follows each object
   a function makes through its copies, loads, stores, calls and returns, asks whether each callee keeps what it is
-  handed (`kept_parameters.spite`) and reads the class's free function, and records on the function how each object
-  that never leaves it is placed (`LowFunction.placed_objects`: in shared registers, in registers of its own, or in
-  the frame) with the fields it has. The pass `low_optimization_passes/object_placement` right after it only writes
+  handed (`kept_parameters.spite`: an address made from the parameter and stored only into the parameter, as a
+  `Buffer` points at the room inside it, keeps nothing) and reads the class's free function, and records on the
+  function how each object that never leaves it is placed (`LowFunction.placed_objects`: in shared registers, in
+  registers of its own, in the frame, or, for a `Buffer`, in the frame marked as living inside another value) with
+  the fields it has. It runs once more right after the first cleaning, for an object stored only into one placed
+  then. The pass `low_optimization_passes/object_placement` right after it only writes
   what was recorded.
 - **Checked by**: tests/generic_vectors, tests/written_codegen_in_frame, tests/owned_objects (output only).
 
@@ -1020,7 +1024,20 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### A copy nothing changes is the original
 
-- **Status**: missing. **Falls back**: the copy is made. **Checked by**: tests/shared_copies (output only).
+- **Status**: built.
+- **Rule**: while a `copy()` or `deep_copy()` kept in a `var` lives, nothing writes anything (no attribute, no list,
+  no buffer's bytes, in its statements or in what they call), nothing of it outlives its block, and nothing in the
+  program asks a copied class which object it is; the copied classes have no `drop()`, no back reference and no
+  cycle ([memory.md](https://github.com/Spite-Language/spite_spec/blob/master/specs/memory.md)).
+- **Buys**: the copy is the original, counted once more: no object is made and none let go
+  ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-deep-copy-nothing-changes-is-the-original)).
+- **Falls back**: the copy, as written: a write anywhere while it lives, a call whose effects are not known, a copy
+  kept or answered, a comparison of a copied class anywhere, threads, work or callbacks, an interactive build.
+  Nothing is an error, and nothing changes in what the program prints.
+- **Lives in**: the speed proof `proofs/copies_nothing_changes`, registered among the high passes right after
+  `no_thread_counts` (it reads what each call may assign, `HighProgram.assignments`, and the waits), which marks the
+  declaration (`Declare.shares_the_original`); the high pass `shared_copies` right after it only acts on the mark.
+- **Checked by**: tests/shared_copies (output only).
 
 ### Which singletons a `Parallel` reaches
 
