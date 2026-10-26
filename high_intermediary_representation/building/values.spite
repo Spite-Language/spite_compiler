@@ -724,7 +724,23 @@ func decimal_value(written: String, expected: Model.Type?): HighIntermediaryRepr
     if expected and expected.name == "Double" {
         decimal_type = context.scalar_type("Double")
     }
+    refuse_a_decimal_too_large(written, decimal_type.name)
     return HighIntermediaryRepresentation.Values.DecimalNumber(decimal_type, written)
+}
+
+func refuse_a_decimal_too_large(written: String, type_name: String) {
+    var parsed = written.to_double()
+    crash parsed
+    var doubled = parsed + parsed
+    var is_too_large = parsed > 1.0 and doubled == parsed
+    var largest_written = "1.7976931348623157e+308"
+    if type_name == "Float" {
+        var largest_float: Double = 340282346638528859811704183484516925440.0
+        is_too_large = parsed > largest_float
+        largest_written = "3.4028235e+38"
+    }
+    assert is_too_large
+    typing.refuse_a_decimal_too_large(context, written, type_name, largest_written)
 }
 
 func boolean_value(number: Long): HighIntermediaryRepresentation.Values.Value {
@@ -2862,6 +2878,7 @@ func own_call(
     if passed_on {
         return passed_on
     }
+    refuse_a_bare_operator_call(call, function)
     var own = this_value()
     return called(function, own, call.arguments)
 }
@@ -3153,10 +3170,14 @@ func member_call(
         return value_call_of(receiver, call.arguments)
     }
     if receiver.value_type.kind == 'shape' {
+        var typed = context.program.shape_keyed(receiver.value_type.name)
+        crash typed
+        refuse_an_operator_call_through_a_shape(callee, call, typed)
         return shape_call(receiver, callee.name, call.arguments)
     }
     if receiver.value_type.kind == 'union' {
         var through = union_shape_of(receiver.value_type, callee.name)
+        refuse_an_operator_call_through_a_shape(callee, call, through)
         var as_shape = Model.Type('shape', through.key)
         var shaped = HighIntermediaryRepresentation.Values.Conversion(as_shape, 'proven', receiver)
         return shape_call(shaped, callee.name, call.arguments)
@@ -3387,27 +3408,55 @@ func refuse_an_operator_call(
     function: Model.FunctionModel,
     receiver: HighIntermediaryRepresentation.Values.Value,
 ) {
-    var path = context.path()
-    assert not context.resolver.symbols.generated_texts[path]
     var receiver_kind = receiver.value_type.kind
     assert receiver_kind == 'object' or receiver_kind == 'scalar'
     var owner = present_class_of(receiver)
-    var name = callee.name
+    var is_its_own = owner.key == context.current_class.key and context.current_function.name == callee.name
+    assert not is_its_own
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    refuse_an_operator_by_name(call, callee.name, function, receiver_text, receiver_kind == 'scalar')
+}
+
+func refuse_an_operator_call_through_a_shape(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    shape: Model.ShapeModel,
+) {
+    var member = shape.member_named(callee.name)
+    assert member and context.current_function.name != callee.name
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    refuse_an_operator_by_name(call, callee.name, member, receiver_text, false)
+}
+
+func refuse_a_bare_operator_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, function: Model.FunctionModel) {
+    assert context.current_function.name != function.name
+    var is_a_number = scalars.is_a_scalar(context.current_class.key)
+    refuse_an_operator_by_name(call, function.name, function, "this", is_a_number)
+}
+
+func refuse_an_operator_by_name(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+    function: Model.FunctionModel,
+    receiver_text: String,
+    is_on_a_number: Boolean,
+) {
+    var path = context.path()
+    assert not context.resolver.symbols.generated_texts[path]
     var written_count = call.arguments.count()
     assert function.name == name and function.parameters.count() == written_count
     var operator = operator_written(name, written_count)
     assert not operator.is_empty()
-    var is_its_own = owner.key == context.current_class.key and context.current_function.name == name
-    assert not is_its_own
     var first_parameter = function.parameters.first()
     if first_parameter {
         var parameter_kind = first_parameter.parameter_type.kind
         assert parameter_kind != 'function'
-        assert name != "equals" or parameter_kind == 'object' or receiver_kind == 'scalar'
+        assert name != "equals" or parameter_kind == 'object' or is_on_a_number
     }
-    crash callee.target
-    var printer = Printers.Spite.ExpressionPrinter(callee.target)
-    var receiver_text = printer.text()
     var written_arguments = List<String>()
     var index = 0
     while index < call.arguments.count() {
