@@ -104,6 +104,8 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    index holds a known count of items (a speed proof: it records the count on the list's declaration,
    `Declare.frame_items`, which a high pass carries with the statement, and the lowering lays the list out in the
    frame).
+15. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
+   since the running program's manifest; none answers `unchanged` before anything is lowered.
 
 The sites `recorded_sites` judges hold what the builder resolved where it recorded them (the names in scope with
 their narrowed types, the block and the statement's place in it); `PROOFS.md` lists them.
@@ -149,6 +151,9 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
 13. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).
 14. `inline_items`: a list's objects sit inside its storage, or in one array per attribute (into the layout).
 15. `lent_attributes`: an attribute that only holds an item of its holder's list is not counted (into the layout).
+   Right after it, in a reload compile, the proof `reload_reaches_moved_objects`, registered through
+   `HighOptimizationPasses.Proving` since it reads the final layout, refuses a reload whose layout of a class the
+   running program holds, or whose numbers of an enum's values, differ from the manifest's.
 
 Passes 2 to 15 run only when the program is lowered (not with `--check`). Passes 7 to 15 make the decisions the
 lowering reads, so the lowering only lowers; they read nothing a later high pass changes. The layout and the studies of calls

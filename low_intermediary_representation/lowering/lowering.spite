@@ -28,29 +28,56 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
     program.thread_counted_classes = high.thread_counted_classes
     program.static_singletons = high.static_singletons
     program.counts_every_class_atomically = high.counts_every_class_atomically
+    crash high.context
+    program.hot_reload = high.context.build_flags["hot_reload"] == "true"
+    program.reload_host = high.model.reload_host
     if layout.program.class_named("Spite.Fault") {
         program.reports_faults = true
         var placeholder = Buffer(0)
         program.data.append(placeholder)
         program.place_table = program.data.count() - 1
+        program.name_state(program.place_table, "table.places")
         var call_placeholder = Buffer(0)
         program.data.append(call_placeholder)
         program.call_table = program.data.count() - 1
+        program.name_state(program.call_table, "table.calls")
     }
     if counts_memory or high.prompt or reads_the_live_memory() {
         program.counts_memory = true
         program.allocation_count_label = zeroed_count()
+        program.name_state(program.allocation_count_label, "memory.allocations")
         program.free_count_label = zeroed_count()
+        program.name_state(program.free_count_label, "memory.frees")
         program.live_list_label = zeroed_count()
+        program.name_state(program.live_list_label, "memory.live")
         program.live_bytes_label = zeroed_count()
+        program.name_state(program.live_bytes_label, "memory.live_bytes")
     }
     if high.prompt {
         program.prompt_intrinsics = high.prompt_intrinsics
     }
+    var checks_points = false
     if high.prompt_check_point {
+        checks_points = true
+    }
+    if high.reload_check_point {
+        checks_points = true
+    }
+    if checks_points {
         program.prompt_flag_label = zeroed_count()
-        program.prompt_objects_label = zeroed_room(24)
+        program.name_state(program.prompt_flag_label, "prompt.flag")
+        var room = 24
+        if high.reload_check_point {
+            room = 32
+        }
+        program.prompt_objects_label = zeroed_room(room)
+        program.name_state(program.prompt_objects_label, "prompt.objects")
+    }
+    if high.prompt_check_point {
         program.prompt_check_point = high.prompt_check_point.key()
+    }
+    if high.reload_check_point {
+        program.reload_check_point = high.reload_check_point.key()
     }
     high.built_functions.each(lower_function)
     lower_the_unguarded_bodies()
@@ -176,6 +203,7 @@ func write_the_work() {
         program.in_flight_room = 9 * high.in_flight_sites + 1
         var machine = MachineWriting(writer)
         program.in_flight_table = machine.zeroed_label(24 + 16 * program.in_flight_room)
+        program.name_state(program.in_flight_table, "flights")
     }
     var scheduling = Scheduling(writer)
     scheduling.write_the_scheduler()
@@ -212,7 +240,9 @@ func zeroed_room(size: Integer): Integer {
         index = index + 1
     }
     program.data.append(room)
-    return program.data.count() - 1
+    var label = program.data.count() - 1
+    program.name_state(label, "")
+    return label
 }
 
 func lower_function(function: HighIntermediaryRepresentation.HighFunction) {
@@ -324,6 +354,10 @@ func lower_the_start() {
     if high.prompt_listen {
         listen_remotely(lowering, prompt_object, object, high.prompt_listen)
     }
+    var reloader = -1
+    if high.reload_start {
+        reloader = start_the_reloader(lowering, object, high.reload_start)
+    }
     var code = lowering.constant(0)
     if high.entry {
         code = call_the_entry(lowering, object, high.entry)
@@ -342,6 +376,9 @@ func lower_the_start() {
         var ending = Working(lowering)
         var lets_go_of_flights = high.in_flight_sites > 0
         ending.end(lets_go_of_flights)
+    }
+    if reloader >= 0 {
+        lowering.release(reloader)
     }
     lowering.release(object)
     var guards_debug_texts = layout.program.class_named("Spite.Debugging")
@@ -638,6 +675,31 @@ func listen_remotely(
     var thread = lowering.new_register()
     var started = LowIntermediaryRepresentation.Instructions.StartThread(thread, "_prompt_alarm", no_block)
     lowering.emit(started)
+}
+
+# ../../../spite_spec/specs/repl.md#live-reload-in-detail
+func start_the_reloader(lowering: FunctionLowering, entry_object: Integer, starting: Model.FunctionModel): Integer {
+    var reloader = lowering.make_object(starting.owner)
+    var objects = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(objects, program.prompt_objects_label)
+    lowering.emit(addressed)
+    var kept_entry = LowIntermediaryRepresentation.Instructions.Store(objects, 8, entry_object, 'bits_64')
+    lowering.emit(kept_entry)
+    var kept_reloader = LowIntermediaryRepresentation.Instructions.Store(objects, 24, reloader, 'bits_64')
+    lowering.emit(kept_reloader)
+    var arguments = List<Integer>()
+    arguments.append(reloader)
+    var starting_key = starting.key()
+    var started_watching = LowIntermediaryRepresentation.Instructions.Call(-1, starting_key, arguments)
+    lowering.emit(started_watching)
+    if not high.prompt_listen {
+        write_the_alarm()
+        var no_block = lowering.constant(0)
+        var thread = lowering.new_register()
+        var started = LowIntermediaryRepresentation.Instructions.StartThread(thread, "_prompt_alarm", no_block)
+        lowering.emit(started)
+    }
+    return reloader
 }
 
 # ../../../spite_spec/specs/repl.md#--repl-portport
