@@ -87,9 +87,20 @@ and the entries of every function it copies at their new offsets. One more slot 
 fault handler walks the records from the newest and reads the table of the one whose code holds the address; an
 address in no record and past the executable's code names no place instead of the last function written.
 
+## Code typed at the prompt, and breakpoints
+
+Both are reloads whose answer the program keeps to itself. `eval` and `run` write `<program>.reload_prompt` (the
+word, then the code); the compile writes `Spite.PromptCode`, one function `answer(program: <Entry>): String` whose
+body is the typed code, to `.spite/build/spite/prompt_code.spite`, digested in the manifest like a program file. A
+build writes it with `return ""`, so the REPL calls the same function before and after, through its slot. A
+breakpoint writes `<program>.reload_breaks`; the compile has the parser write a call of
+`Spite.Breakpoint().pause_at(site)` before the statement starting on each line, after the file's rules are checked, so only the
+functions of the files holding one change. `Spite.Breakpoint` is machinery the symbols stage writes, holding the
+REPL's stop as a function value. The program removes both files when it starts.
+
 ## Not built yet
 
 What `TODO.md` lists: moving live objects to a new layout, compiling only the changed classes instead of the whole
 program (the proof finds them, the compile does not skip the rest yet), the compile on a helper thread, a reload
-held while a `Concurrent` waits inside a function it swaps, reflection that follows a reload, and `eval`, `run`
-and breakpoints.
+held while a `Concurrent` waits inside a function it swaps, reflection that follows a reload, and a breakpoint's
+`locals`.
