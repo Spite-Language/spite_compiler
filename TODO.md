@@ -97,7 +97,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
 - `--repl-port` (D1236, D1641): a command is answered at once at a loop's check point and in `Program.sleep` (outside a program with `Concurrent`s, whose sleeps go through the scheduler), but not yet in the other waits (`Console.read_line`, a `File` or `Socket` call, a `Concurrent`'s value, joining a `Parallel`), which finish first; not yet run (written in the last push, untested)
 - `--repl` (D698 to D701, D1234, D1235, D1237): `reload` with a map of renamed attributes and a construction on the right of `=` (`prompt_made_<n>`) only answer their refusal
-- Breakpoints (D1483, D1485): no path starts at a local (`locals` lists them as text, but `next.count()` at a stop is not read); a breakpoint another thread reaches while one is stopped is passed with a line on the error output instead of waiting its turn; a line inside a `switch` case cannot hold one; a stop does not swap in a reload the watcher finds meanwhile
+- Breakpoints (D1483, D1485, D1642): no path starts at a local (`locals` lists them as text, but `next.count()` at a stop is not read: the stop would have to hand the locals as values and the reload write a walk for each local's type); a stop on a thread other than the program's does not reload a save until it goes on; the turn a second thread waits, the stop in a `switch` case and the reload at a stop are written but not yet run (last push, untested; `tests/hot_reload_stops_in_a_case`)
 - Caches per step and per unit
 
 ## The compiler proves itself
