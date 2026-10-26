@@ -27,16 +27,15 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The scheduler's crash lines name the program's frames only where the walk reaches them: a halt inside a `Concurrent`'s state machine prints no `spite.frame` line, since its frame lives on the heap (`concurrent_wait_cycle_in_place`)
 
 ## Faults found
+- Adding an object literal with the same layout before another in the same function still shifts the second literal's class id (`Object_<digest>_<n>`, D1496), so a hot reload can give a running object the other literal's class
 
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D748)
 - A getter or setter called by its bare name inside its own class (`set_rotation(rotation)` in `Matrix4`) is not refused (D752 refuses `point.set_height(4)`), and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
 - A plural template's member is matched with `String`'s `irregulars()` and `uncountables()` as the program reopens them, but a word they leave out is inflected by the compiler's own library rules and irregulars, which a reopened table may have dropped (`foot`)
+- A fault inside reloaded code names its place (D1497), but its `spite.function` and `spite.caller` lines come from `<program>.functions`, which knows only the executable's code, so they print no key for a reloaded frame, and `at=` gives the bare address instead of the reload library
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk
-- Leaks `--debug-memory` cannot be asked about: a reflection object made on two threads at once records itself on the list let go at exit without a lock
 
-- A crash inside code a reload swapped in is looked up in the executable's place table, which knows only the executable's code, so its report does not name the reloaded function (D1362)
-- An object-literal class is named by its place among the program's literals (`Object3`), so a reload that adds a literal before another gives the running program's class id to a different literal; a class test between the two answers wrongly when their layouts agree
 
 ## The language
 - `Spite.Call` on a declaration known only at run time (D864, D1271, D1402): an argument the function lacks halts only as "fills an argument ... does not have" without naming it, and a function-value parameter halts instead of being passed
@@ -103,13 +102,12 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - A singleton circle closed at run time halts with the message for one singleton; it should name the chain (`singleton 'Registry' binds 'Catalog', which binds 'Registry'`). The compile-time check follows only a singleton binding another directly, not a circle through an object that is not one (`Metronome` binds a `Tick` that binds `Metronome`)
 
-- A temporary the builder declares for a comparison (`call() == true`) can be read before its declaration in some branch; plain reads avoid it today
 
 ## The outputs
 
 - Crash reports
 - `--final-classes` (D1223, D1389): the printed folder does not run as the same program yet: compiling it stops at the first class the compiler writes for itself (`spite/copy_table.spite`, `Spite.CopyTable` is internal to the standard library), the library's classes are printed beside the program as reopenings of the library its moved `load` still reads, and the generic templates its code names are not printed (only their instantiations, as `type`s); a class the compiler makes without a file is printed as a `type`, not as code that compiles
-- `--repl-port`; `--hot-reload` (D1361 to D1369) swaps changed functions in, but does not yet move live objects to a new layout (a reload that changes a class's attributes is refused), compile on a helper thread (the compile runs at the check point that finds the save, so the program waits for it), hold a reload while a `Concurrent` waits inside a function it swaps, swap reflection (`<Class>___functions`) so the REPL lists a function a reload added, or name the place of a crash inside reloaded code; whether the reflection model can be the manifest is open; `--reload-at` checks the command line's `--hot-reload`, not one a program's `build.spite` sets (D1381)
+- `--repl-port`; `--hot-reload` (D1361 to D1369) swaps changed functions in, but does not yet move live objects to a new layout (a reload that changes a class's attributes is refused), compile on a helper thread (the compile runs at the check point that finds the save, so the program waits for it), hold a reload while a `Concurrent` waits inside a function it swaps, or swap reflection (`<Class>___functions`) so the REPL lists a function a reload added; whether the reflection model can be the manifest is open; `--reload-at` checks the command line's `--hot-reload`, not one a program's `build.spite` sets (D1381)
 - `--repl` (D698 to D701): a singleton made with arguments (`Channel(1)`), `bytes <path>`, the `not made yet` mark in `classes`, walking `Environment()` and the library's own classes, `eval`, `run` and breakpoints
 - `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
 - `--repl-port` (D1236): a command is answered only at a loop's check point and after the constructor returns, not where the program waits (`Program.sleep`, `Console.read_line`, a `File` or `Socket` call, a `Concurrent`'s value); a check point asks a flag a thread raises every 25 ms, not the REPL thread's handover, so an answer waits up to 25 ms, and a remote `exit` ends the program at the first check point that runs after it (D1388), up to 25 ms after the next pass

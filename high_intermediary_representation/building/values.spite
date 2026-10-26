@@ -987,6 +987,7 @@ func default_of_a_shape(wanted: Model.Type): HighIntermediaryRepresentation.Valu
         }
         index = index + 1
     }
+    key = stable_object_key(model)
     context.program.add(model)
     context.need_defaults(key)
     var object_type = Model.Type('object', key)
@@ -6655,6 +6656,7 @@ func object_literal(
         }
         index = index + 1
     }
+    key = stable_object_key(model)
     context.program.add(model)
     context.need_defaults(key)
     var object_type = Model.Type('object', key)
@@ -6677,6 +6679,40 @@ func object_literal(
         field_index = field_index + 1
     }
     return local
+}
+
+# ../../HOT_RELOAD.md#a-reload-is-refused-when
+func stable_object_key(model: Model.ClassModel): String {
+    var digest = Model.Digest()
+    var function_key = context.current_function.key()
+    digest.add_text(context.current_class.key)
+    digest.add_text(function_key)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        digest.add_text(attribute.name)
+        digest.add_text(attribute.attribute_type.name)
+        if attribute.attribute_type.is_nullable {
+            digest.add_text("?")
+        }
+        index = index + 1
+    }
+    var layout = digest.digest_text()
+    var ordinal = 1
+    var seen = context.object_ordinals[layout]
+    if seen {
+        ordinal = seen + 1
+    }
+    context.object_ordinals[layout] = ordinal
+    var key = "Object_{layout}_{ordinal}"
+    model.key = key
+    var renamed = 0
+    while renamed < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[renamed]
+        attribute.owner = key
+        renamed = renamed + 1
+    }
+    return key
 }
 
 func field_of(
@@ -8397,13 +8433,54 @@ func logic_value(
             return left
         }
     }
+    var outer_pending = context.pending
+    context.pending = List<HighIntermediaryRepresentation.Statements.Statement>()
     var right = right_condition_of(binary)
+    var right_work = context.pending
+    context.pending = outer_pending
+    if not right_work.is_empty() {
+        return logic_in_order(binary, left, right, right_work)
+    }
     var operator = operator_of(binary.operator)
     var folded = folded_logic(left, right, operator)
     if folded {
         return folded
     }
     return HighIntermediaryRepresentation.Values.MachineOperation(boolean, operator, left, right)
+}
+
+# ../../ARCHITECTURE.md#work-a-condition-needs-runs-where-the-condition-reaches-it
+func logic_in_order(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    left: HighIntermediaryRepresentation.Values.Value,
+    right: HighIntermediaryRepresentation.Values.Value,
+    right_work: List<HighIntermediaryRepresentation.Statements.Statement>,
+): HighIntermediaryRepresentation.Values.Value {
+    var boolean = context.boolean()
+    temporary_count = temporary_count + 1
+    var name = context.scope.declare("logic_{temporary_count}", boolean)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, boolean, left)
+    declared.line = context.line
+    context.pending.append(declared)
+    var deciding = HighIntermediaryRepresentation.Statements.Block()
+    var index = 0
+    while index < right_work.count() {
+        var work = right_work[index]
+        deciding.statements.append(work)
+        index = index + 1
+    }
+    var decided = HighIntermediaryRepresentation.Statements.Assign.Assign(name, right)
+    decided.line = context.line
+    deciding.statements.append(decided)
+    var held = HighIntermediaryRepresentation.Values.LocalRead(boolean, name)
+    var tested: HighIntermediaryRepresentation.Values.Value = held
+    if binary.operator == 'or' {
+        tested = HighIntermediaryRepresentation.Values.Negation(held)
+    }
+    var branch = HighIntermediaryRepresentation.Statements.If(tested, deciding, null)
+    branch.line = context.line
+    context.pending.append(branch)
+    return HighIntermediaryRepresentation.Values.LocalRead(boolean, name)
 }
 
 func right_condition_of(

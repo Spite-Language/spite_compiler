@@ -70,10 +70,26 @@ The program keeps all of its code, and the answer says why:
 
 Class ids are seeded from the manifest, so a class keeps the id its objects carry, and a new class takes the next
 one after the largest.
+An object literal's class is keyed by what does not move when code is added around it: the class and function
+that write it, its attributes' names and types in order, and its place among the literals of that same layout in
+that function (`Object_<digest>_<n>`). A reload that adds a literal before another therefore leaves the running
+literal's id with the literal that made its objects, instead of handing it to whichever literal now comes first.
+
+## Crash reports inside reloaded code
+
+A fault report names its place (file, line, class, function) from the place table: one entry for each run of code
+that comes from one line, in order of address, closed by an entry at the end of the code that names no place. The
+table's second eight bytes hold the address of the newest reload's place record, zero until the program reloads.
+
+A reload library carries a place record for the code it copies: the record before it (the running record when the
+reload was compiled, which the manifest keeps as the state `table.places.reload`), where its code starts and ends,
+and the entries of every function it copies at their new offsets. One more slot write makes it the newest. The
+fault handler walks the records from the newest and reads the table of the one whose code holds the address; an
+address in no record and past the executable's code names no place instead of the last function written.
 
 ## Not built yet
 
 What `TODO.md` lists: moving live objects to a new layout, compiling only the changed classes instead of the whole
 program (the proof finds them, the compile does not skip the rest yet), the compile on a helper thread, a reload
-held while a `Concurrent` waits inside a function it swaps, reflection that follows a reload, `eval`, `run` and
-breakpoints, and crash reports inside reloaded code.
+held while a `Concurrent` waits inside a function it swaps, reflection that follows a reload, and `eval`, `run`
+and breakpoints.
