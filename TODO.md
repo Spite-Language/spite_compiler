@@ -112,7 +112,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `--hot-reload`, `--development` (see `HOT_RELOAD.md`); check whether the reflection model can be the reload manifest
 - `--repl-port` (D1236): a command is answered only at a loop's check point and after the constructor returns, not where the program waits (`Program.sleep`, `Console.read_line`, a `File` or `Socket` call, a `Concurrent`'s value); a check point asks a flag a thread raises every 25 ms, not the REPL thread's handover, so an answer waits up to 25 ms, and a remote `exit` ends the program at the first check point that runs after it (D1388), up to 25 ms after the next pass
 - `--repl` (D698 to D701, D1234, D1235, D1237): `reload` with a map of renamed attributes and a construction on the right of `=` (`prompt_made_<n>`) only answer their refusal
-- Breakpoints (D1483): `locals` is refused, since a stop does not reflect its locals, and no path starts at a local; a breakpoint another thread reaches while one is stopped is passed with a line on the error output instead of waiting its turn; a line inside a `switch` case cannot hold one; a stop does not swap in a reload the watcher finds meanwhile
+- Breakpoints (D1483, D1485): no path starts at a local (`locals` lists them as text, but `next.count()` at a stop is not read); a breakpoint another thread reaches while one is stopped is passed with a line on the error output instead of waiting its turn; a line inside a `switch` case cannot hold one; a stop does not swap in a reload the watcher finds meanwhile
 - Caches per step and per unit
 
 ## The compiler proves itself

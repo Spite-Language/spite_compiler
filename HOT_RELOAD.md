@@ -96,11 +96,13 @@ build writes it with `return ""`, so the REPL calls the same function before and
 breakpoint writes `<program>.reload_breaks`; the compile has the parser write a call of
 `Spite.Breakpoint().pause_at(site)` before the statement starting on each line, after the file's rules are checked, so only the
 functions of the files holding one change. `Spite.Breakpoint` is machinery the symbols stage writes, holding the
-REPL's stop as a function value. The program removes both files when it starts.
+REPL's stop as a function value. Before that call the builder writes, from the scope it holds there, one line of
+text for `self` and for every local in scope, each its name, its type and its value as the REPL prints a nested
+value, into a list the call hands to the stop (`locals` answers them). The program removes both files when it starts.
 
 ## Not built yet
 
 What `TODO.md` lists: moving live objects to a new layout, compiling only the changed classes instead of the whole
 program (the proof finds them, the compile does not skip the rest yet), the compile on a helper thread, a reload
-held while a `Concurrent` waits inside a function it swaps, reflection that follows a reload, and a breakpoint's
-`locals`.
+held while a `Concurrent` waits inside a function it swaps, reflection that follows a reload, and a path at
+the prompt that starts at a breakpoint's local.
