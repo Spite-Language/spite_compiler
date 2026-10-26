@@ -30,7 +30,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D748)
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
-- A fault inside reloaded code names its place (D1497), but its `spite.function` and `spite.caller` lines come from `<program>.functions`, which knows only the executable's code, so they print no key for a reloaded frame, and `at=` gives the bare address instead of the reload library
 - A union switch with repeated case bodies must use `_:`, which lets a member added later slip past a walk: waits on Mortaro's answer to "a `switch` case that names several values" in `mortaros_missing_decisions.md`
 
 

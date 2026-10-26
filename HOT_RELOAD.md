@@ -88,7 +88,10 @@ A reload library carries a place record for the code it copies: the record befor
 reload was compiled, which the manifest keeps as the state `table.places.reload`), where its code starts and ends,
 and the entries of every function it copies at their new offsets. One more slot write makes it the newest. The
 fault handler walks the records from the newest and reads the table of the one whose code holds the address; an
-address in no record and past the executable's code names no place instead of the last function written.
+address in no record and past the executable's code names no place instead of the last function written. The
+`spite.function` and `spite.caller` lines name a reloaded frame from the same record (its class and function, as
+the place names them), since `<program>.functions` knows only the executable's code, and `at=` gives
+`reload+0x<offset>` from the start of that record's code.
 
 ## Code typed at the prompt, and breakpoints
 
