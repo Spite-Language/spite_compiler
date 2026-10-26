@@ -61,7 +61,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - `--debug-memory` prints its counts (D883), but not the leaked-object summary by class name, and fresh memory is zeroed, not filled with `0xA5`; the counts a pass proves unneeded are still written
 - Chains of member templates as one loop beyond `filter_` and `map_` steps on a `List` (D876, D945: a `filter_` or `find_by_` after a `map_`, a passed function `filter(f)`, a chain on a `Dictionary`'s values or an `Items`, and a last step other than `filter_`, `count_`, `any_`, `all_`, `sum_`, `each_`, `map_`, `find_by_` run step by step; an unfused step's function is still compiled), class filters on a `Dictionary`'s values, the errors of plural, enum value and chained templates (a singular where the plural differs, a member named like an enum value), and the passed-function forms that need an overload by count beyond `count(f)` or a function-level answer type beyond `sum(f)` (`sort_by(f)` by text)
 - A function value that answers a nullable number carries its presence only through `CallAt`; reflection on function values (argument names and count)
-- A decimal too large for a `Long` prints a wrong number in its range-stop message
 - Crash reports (D908, D913 to D920): a call the condition may skip (the right side of an `and`, or of an `or` that passed) or one after a read it could change is not reported; a reported call's answer is let go at the end of the function, not after the check; a function holding a `crash` is never inlined, since its report is written in line; halts other than `crash` (overflow, a missing item) and native faults print neither the ring nor the frames; the `.crashes` map gives each part's line only through the site's line (the tree keeps no column per expression); `Color(text)` prints its own `spite:` line naming the text and exits 1 instead of crashing, an `assert` of several parts keeps one site for all of them, the ring allocates its 32 lines as they first fill, a crash line carries no site id, and the map leaves out the asserts in `library/` (D881)
 - A number's room is a `Buffer` made on every read of `_buffer` (D659): fold a read at a known position of a fresh room into the number itself
 
@@ -85,7 +84,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 
 
-- The fault handler runs before any library's own exception handling, so a C library that catches its own faults inside a foreign call would be stopped
 
 
 - Class objects are filled from a worklist once compiling ends, but every read of a constant one still reads the run-time object: fold the constant ones while compiling (the 64 MB main stack reserve raised for the nested fills can come back down)
