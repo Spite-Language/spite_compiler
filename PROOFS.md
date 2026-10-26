@@ -922,7 +922,7 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
   A constructor called by its class's name is followed like any function; lending to a function the compiler
   cannot follow (a function value, a function of a value typed by a `type` or known only while the program runs)
   is "'...' is borrowed from '...', and '...' is not a function the compiler follows while compiling ...", and to
-  a variadic position "... gathers it into the list of its variadic arguments, which holds its own values and is
+  a variadic position of a program function "... gathers it into the list of its variadic arguments, which holds its own values and is
   never lent an item ..." (D1400).
 - **How**: a lent parameter the callee passes on by name to a program function called by name is lent to that
   function too, for the call, and its body is judged the same way, through any depth of calls (D1141).
