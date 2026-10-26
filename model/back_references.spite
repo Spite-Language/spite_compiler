@@ -8,6 +8,9 @@ var stores = List<BackReferenceStore>()
 var locals = List<String>()
 var aliases = Dictionary<String, String>()
 var made_count = 0
+var summaries = Dictionary<String, List<BackReferenceStore>>()
+var named_counts = Dictionary<String, Integer>()
+var is_summarizing = false
 var appending = ["append", "insert", "prepend", "add", "set_at"]
 
 func holds_no_count(program: ProgramModel, attribute: AttributeModel): Boolean {
@@ -32,7 +35,138 @@ func learn(program: ProgramModel) {
     assert not is_learned
     is_learned = true
     program.order.each(note_the_constructors)
+    program.order.each(count_the_names)
+    is_summarizing = true
+    program.order.each(summarize_the_class)
+    is_summarizing = false
     program.order.each(read_the_class)
+}
+
+func count_the_names(model: ClassModel) {
+    model.declared_functions.each(count_a_name)
+}
+
+func count_a_name(function: FunctionModel) {
+    var known = named_counts[function.name]
+    var count = 1
+    if known {
+        count = known + 1
+    }
+    named_counts[function.name] = count
+}
+
+# ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
+func summarize_the_class(model: ClassModel) {
+    assert model.bound_types.count() == 0
+    model.declared_functions.each(summarize_a_function)
+}
+
+func summarize_a_function(function: FunctionModel) {
+    assert not function.is_constructor and named_counts[function.name] == 1
+    assert function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    start_reading(declaration)
+    var names = List<String>()
+    var index = 0
+    while index < declaration.parameters.count() {
+        var parameter = declaration.parameters[index]
+        names.append(parameter.name)
+        index = index + 1
+    }
+    var summary = List<BackReferenceStore>()
+    var store_index = 0
+    while store_index < stores.count() {
+        var store = stores[store_index]
+        var holder = summarized_key(store.holder, names)
+        var value = summarized_key(store.value, names)
+        if holder and value {
+            var kept = BackReferenceStore(holder, store.attribute, value)
+            summary.append(kept)
+        }
+        store_index = store_index + 1
+    }
+    if not summary.is_empty() {
+        summaries[function.name] = summary
+    }
+}
+
+func summarized_key(key: String, parameter_names: List<String>): String? {
+    if key == "this" or key.starts_with("this.") or key.starts_with("#") {
+        return key
+    }
+    var head = key
+    var rest = ""
+    var dot = key.index_of(".")
+    if dot {
+        var length = key.length()
+        head = key.slice(0, dot)
+        rest = key.slice(dot, length)
+    }
+    var index = 0
+    while index < parameter_names.count() {
+        var name = parameter_names[index]
+        if name == head {
+            return "@{index}{rest}"
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func expand_a_call(
+    name: String,
+    receiver_key: String,
+    arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+) {
+    assert not is_summarizing
+    var summary = summaries[name]
+    assert summary
+    var argument_keys = List<String>()
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        var argument_key = key_of(argument)
+        argument_keys.append(argument_key)
+        index = index + 1
+    }
+    var store_index = 0
+    while store_index < summary.count() {
+        var store = summary[store_index]
+        var holder = placed_key(store.holder, receiver_key, argument_keys)
+        var value = placed_key(store.value, receiver_key, argument_keys)
+        if holder and value {
+            add_a_store(holder, store.attribute, value)
+        }
+        store_index = store_index + 1
+    }
+}
+
+func placed_key(key: String, receiver_key: String, argument_keys: List<String>): String? {
+    if key.starts_with("#") {
+        return key
+    }
+    var head = key
+    var rest = ""
+    var dot = key.index_of(".")
+    if dot {
+        var length = key.length()
+        head = key.slice(0, dot)
+        rest = key.slice(dot, length)
+    }
+    var placed = ""
+    if head == "this" {
+        placed = receiver_key
+    } else {
+        var head_length = head.length()
+        var digits = head.slice(1, head_length)
+        var position = digits.to_integer()
+        crash position
+        var argument_key = argument_keys[position]
+        assert argument_key
+        placed = argument_key
+    }
+    assert not placed.is_empty()
+    return "{placed}{rest}"
 }
 
 func note_the_constructors(model: ClassModel) {
@@ -238,17 +372,30 @@ func read_a_callee(
 ) {
     switch callee {
         AbstractSyntaxTree.Shapes.Expressions.MemberExpression: read_a_method_call(callee, arguments)
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: read_an_own_call(callee, arguments)
         _: return
     }
+}
+
+func read_an_own_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+    arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
+) {
+    assert not locals.contains(callee.name)
+    expand_a_call(callee.name, "this", arguments)
 }
 
 func read_a_method_call(
     callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
     arguments: List<AbstractSyntaxTree.Shapes.Expressions.Expression>,
 ) {
-    assert appending.contains(callee.name)
-    var item = arguments.last()
     crash callee.target
+    if not appending.contains(callee.name) {
+        var receiver_key = key_of(callee.target)
+        expand_a_call(callee.name, receiver_key, arguments)
+        return
+    }
+    var item = arguments.last()
     assert item
     var item_key = key_of(item)
     store_into(callee.target, item_key)

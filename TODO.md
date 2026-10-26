@@ -27,9 +27,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - The scheduler's crash lines name the program's frames only where the walk reaches them: a halt inside a `Concurrent`'s state machine prints no `spite.frame` line, since its frame lives on the heap (`concurrent_wait_cycle_in_place`)
 
 ## Faults found
-- A class that reaches itself only through a `type` attribute gets no copy table (`uses_a_table` in `building/copying.spite` follows object attributes and the classes of a union, D1252), so its `deep_copy()` recurses around a cycle through one until the stack overflows (D244)
 
-- A serializer's `keys` map (D893, D1204) is refused when changed through an index, `set_at`, `remove_at`, `clear` or a local holding it, but not when it is passed to a function that changes it: a lost write (D244)
 - A wider operand of `bits_and`, `bits_or` and `bits_exclusive_or` is refused only in the program's own code: the library's calls are not audited yet (D748)
 - A getter or setter called by its bare name inside its own class (`set_rotation(rotation)` in `Matrix4`) is not refused (D752 refuses `point.set_height(4)`), and `equals`, `negate`, `get_at`, `set_at` and the arithmetic functions called by name are not refused yet
 - `passed_symbol` (a symbol helper called with a literal) and `lent_arguments` (`streamed_rows` over a helper whose name has no `argument`) have no rule in the spec, so neither is refused
@@ -41,17 +39,15 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - An object-literal class is named by its place among the program's literals (`Object3`), so a reload that adds a literal before another gives the running program's class id to a different literal; a class test between the two answers wrongly when their layouts agree
 
 ## The language
-- `Spite.Call` on a declaration known only at run time (D864, D1271): an argument filled twice is not refused (the second write replaces the first), an argument the function lacks halts only as "fills an argument ... does not have" without naming it, and a parameter that is nullable, a union or a `type` halts instead of being passed
-- A function value of another object held in a local (`var roar = troll.roar`, then `run(roar)`) is still looked up by name in its class object's `.functions`, bound to the stand-in and not to `troll`, so its `call_function()` runs on the stand-in (D866): describing it in place, bound to its object, loses its `accesses`, which are filled only after the program's functions are built
+- `Spite.Call` on a declaration known only at run time (D864, D1271, D1402): an argument the function lacks halts only as "fills an argument ... does not have" without naming it, and a function-value parameter halts instead of being passed
 - Templates over `Spite.Attribute` and `Spite.Function`, bound to one object (D798, D815): a parameter of those types is still an ordinary parameter; and `Namespace.classes.each(walker)` unrolls only with a walker of one parameter named in the same class (D813)
 - spite_spec as the whole specification (D799): one program per rule and corner of every spec page, then the Markdown spec retired
 - Fixes instead of errors (D800, to discuss): the layout is fixed (D901); each other rule whose fix needs no choice, such as the declaration order, waits for Mortaro's choice in `mortaros_missing_decisions.md`
-- A cycle the program's code does not link as owner and back reference still leaks (D759): two objects stored in each other's attributes where neither was made in that function, one attribute pointing both ways (`partner`), a cycle through a union or a `type`, a non-nullable back attribute, or links made in two different functions; a leak no run reports until `--debug-memory` has its report (D244)
+- A cycle the program's code does not link as owner and back reference still leaks (D759, D1396), named only by `--debug-memory` at exit (D244): two objects stored directly in each other's attributes where the function made neither, one attribute pointing both ways (`partner`), a cycle through a union or a `type`, a back attribute that cannot be null, and links made through a function two classes name or a call two levels deep
 - A back reference is read without a count (D760), so a call on it (`child.parent.leave()`) whose body lets the owner go runs on freed memory, and on two threads the check that its object lives races with the owner's last release
-- A pinned `load` is fetched (D839, D1270), but a copy is not checked again against its `<commit>.files`, which lists each file's size and not the two hashes and modification times the spec asks; a URL git cannot clone is refused without git's own first line; a relative pin inside a fetched package is resolved from the copy, not from the repository it came from; and two versions of one repository are read as one
+- A pinned `load` (D839, D1270, D1407): a URL git cannot clone is refused without git's own first line (the library's `Process` reads only the standard output); a relative pin inside a fetched package is resolved from the copy, not from the repository it came from; and two versions of one repository are read as one
 - The compiler's generated files (the REPL's `Spite.Prompt`, the copy table) are still exempt from three rules (D838, D1274): a case of two statements, an `if` that only holds an `if`, and `crash` on a value that cannot be null
 - A lone hole in an untyped `var` knows a text only from a local or parameter declared with text (D836); a reopening's attribute type is compared only between two written types or two literals (D840)
-- A `load` of a repository pinned to a commit is refused even when well formed (D839): fetching into `.spite/git/` is not built
 - The library and the compiler's generated files break three rules they are exempt from for now (D838): a case of two statements (`Duration.part`), an `if` that only holds an `if` (`ZoneRules.transition_offset_seconds_at`), and `crash` on a value that cannot be null (`Spite.Prompt`, the generated REPL)
 - An `assert`/`crash` on a value that cannot be null is refused only on a parameter or an attribute, not on a local; a lone hole in an untyped `var` knows a text only from a local or parameter declared with text (D836); a reopening's attribute type is compared only between two written types or two literals (D840)
 - The unread-attribute check counts a read of any attribute of the same name in any class of the program's own folder (reads by name, not per class, D878); in a folder the program loads it checks only singleton bindings, counting reads from that folder
@@ -59,7 +55,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 - The runtime the library needs, as machine code: console, files, directories, clock, sockets, processes, dynamic library
 - A serializer's `keys` map is folded only when it is written out where it is set (D893): a map made at run time (the spec's key table filled once per attribute) is refused, not built
-- Calling a `Spite.Class` known only at run time makes a class of the program's own folder, a number, a `Boolean` or a `String` (D865, D1272): any other library class halts, and `kind()` through an attribute or a member (`argument.class()` on a run-time argument) is not built
+- Calling a `Spite.Class` known only at run time (D865, D1272, D1403): `kind()` through an attribute or a member (`argument.class()` on a run-time argument) is not built
 - `Color("#ffffff")` with a literal is not specialised per literal: the format tests run at run time unless the lowered program's evaluation (D784) folds the whole call (D807)
 - `File.lock()` waits in place: inside a `Concurrent` it does not return to the scheduler while another process holds the lock
 - A header's prototype casts each foreign argument to its C type's number (D848), but a prototype written over several lines, or with a `typedef`'d parameter type, is not read, so its arguments pass as written
@@ -74,12 +70,10 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - A number's room is a `Buffer` made on every read of `_buffer` (D659): fold a read at a known position of a fresh room into the number itself
 
 - `Symbol` is text marked as a symbol: `symbol.class` is not yet `Symbol`, `Symbol(text)` finds only the names written in single quotes that were compiled (not the names reflection answers), and `Symbol<T>` outside a template parameter is a symbol whose class is not checked; `Anything`, and `Null` and `Number` as type names outside a `$T ==` test (D661)
-- A `Build` field whose default is not a literal is read from the singleton while the program runs (D1273); the reads of the compiler's own options are not kept constant in a `--hot-reload` build, as the spec asks
-- A value typed `Number` (D1277) answers only the operators, `to_long()` and `to_double()`, by the number class it holds; its other functions, and a `Number` filled by a program's own class, halt or are refused
-- `deep_copy()` of a graph (D724): a class that reaches itself only through a union or a `type` attribute is not seen as one and is copied plainly, so a cycle through one still recurses until the stack runs out; `List.deep_copy()` gives each item a table of its own, so items that hold each other are copied twice; a `Dictionary`, `Items` or `Vector` reached inside a table copy is copied by its own `deep_copy()`, without the table; and a `deep_copy()` through a shape some number, text, enum or singleton fills (refused as not fitting); a walked row declared `var row: $row_type = null` when `$row_type` is a `type`
+- A `Build` field whose default reads anything but literals (a call, another field) is read from the singleton while the program runs (D1273, D1406); the reads of the compiler's own options are not kept constant in a `--hot-reload` build, as the spec asks
+- A value typed `Number` (D1277, D1405) answers the operators and the functions taking nothing by the number class it holds; a function taking arguments (`maximum(other)`), and a `Number` filled by a program's own class, halt or are refused
 - `Build` reads are not folded (only `crash build.<field>` on a Boolean field that is false is refused, D749), so both branches of `if build.serve` are compiled; a `load` under an `if` on a `Build` field
-- Arithmetic and functions through `Number` (`value + value` on a `Number`)
-- `deep_copy()` of a graph (D724): a class that reaches itself only through a `type` attribute is not seen as one and is copied plainly, so a cycle through one still recurses until the stack runs out; `List.deep_copy()` gives each item a table of its own, so items that hold each other are copied twice; a `Dictionary`, `Items` or `Vector` reached inside a table copy is copied by its own `deep_copy()`, without the table; the table finds a copy by walking its keys (it waits for a hashed `Dictionary`); and a `deep_copy()` through a shape some number, text, enum or singleton fills (refused as not fitting); a walked row declared `var row: $row_type = null` when `$row_type` is a `type`
+- `deep_copy()` of a graph (D724, D1252, D1397): `List.deep_copy()` gives each item a table of its own, so items that hold each other are copied twice; a `Dictionary`, `Items` or `Vector` reached inside a table copy is copied by its own `deep_copy()`, without the table; the table finds a copy by walking its keys (it waits for a hashed `Dictionary`); and a `deep_copy()` through a shape some number, text, enum or singleton fills (refused as not fitting); a walked row declared `var row: $row_type = null` when `$row_type` is a `type`
 - Vector and Items keep their items inline: today each write stores a copy of the item by reference (one allocation and one copy per write, and every move inside the library copies again), not its attributes in the block
 - Reflection as reopenable library classes (`Spite.Class`, `Spite.Namespace`, `Spite.Function`, `Spite.Attribute`, `Spite.Argument`, `Spite.Access`), filled in by the compiler and folded where constant (D663, D673 to D678): still missing are folding of constant reads (a constant list's `[]`, `filter` and member templates, so `hurt.arguments[1]` needs no run-time check and a filter's predicate runs while compiling, D676; an `each` unrolled over `C.functions` or a known function's `arguments` (D896) still reads each item at run time and checks its name, and it is unrolled only when its walker needs the item known), the `if` on a late answer (`function_waits`, `function_writes_parameter`) dropping its other branch, enums as classes, `Symbol<Spite.Class>` and the `Spite` namespace by name (`class_walk`), stand-ins for singletons, a function value known only at run time answering its `Spite.Function` (a parameter given a function the compiler knows is compiled once for it, and one the compiler knows is looked up by name), `is_stateful` following the singletons a class binds, and a reflection argument other than `Class.attributes['name']` compiled once for its constant (`attribute.class()` and `Spite.Debug<attribute.class>` on an attribute known only at run time)
 - A `Parallel`'s reach (`ThreadReach`) does not follow a call through a function value, a `type` or a union (D1289); work that never finishes counts as never waiting only when it calls nothing but the console; a locked singleton's lock is taken by every function of its own that reads `this`
@@ -296,14 +290,14 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 
 ### Borrowing and lending
 
-- No borrowed read past a resize (fails silently, memory stays safe): assigning an object two levels up the path is not a resize; the library's own functions are not followed; a value of unknown type fans out to every function of the name; effects computed under the recursion guard are cached short
+- No borrowed read past a resize: a value of unknown type fans out to every function of the name (strict, not silent)
 - An item lent to the caller: not built: the uncounted return, `is_fixed_size` and `functions[...]` folded in its conditions
-- An item lent to a call (fails silently): a lent parameter the callee passes on through a receiver whose class the study cannot tell, or to a library function, a row's attribute, the unnamed expression refusal, lending to a local function value, variadic positions; not built: the uncounted argument
+- An item lent to a call (fails silently): inside the callee (`proofs/lent_parameters`), a lent parameter passed on through a receiver whose class the study cannot tell, or to a library function; a row's attribute; the unnamed expression refusal; not built: the uncounted argument
 - Borrowed items of a `Vector` or `Items`: the reads stay counted references, walk copies and library member templates are not checked, `InlineMemory` is not a borrowing collection
 - Rows of borrowed items: the row in the frame and uncounted for a callee not inlined, a walked template's `var stored_row = rows[...]`, the arguments a plural fills, `row.describe` as a function value, a row passed to a library function
 - A list element lent to a row
-- A singleton attribute that never changes is read in place: the per-attribute fact (a singleton is steady only when all its attributes are plain)
-- An item written back to its own slot is the slot: a write-back nested in a block, and lists other than a library `List`
+- A singleton attribute that never changes is read in place: with no count, for an object attribute of a singleton whose other attributes change
+- An item written back to its own slot is the slot: lists other than a library `List`
 - A value followed through calls is the slot it was read from
 - An item a name holds from its list is not counted (built for `var item = list[index]` with a proven read when nothing after it in its block can write the slot, D992; not built: a name kept across a call that may write any list of the item's class, even another one)
 - A list item read only to test it is not counted: lists of nullable items, `Items`, a path through the item
@@ -325,15 +319,13 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 - Objects of a class made on one thread
 - A copy nothing changes is the original
 - No other thread touches a singleton (the second walk over the tree-shaken program)
-- Read-only and atomic singletons: one lone atomic attribute inside a locked singleton
-- A function that touches no changing state takes no lock: "touches no changing attribute" rather than "never reads `this`", and a call between two locked functions going to the unlocked body
+- A function that touches no changing state takes no lock: a call between two locked functions going to the unlocked body
 - Reading functions share the lock: outside a counted loop that holds it (D988)
 - A loop that starts no task tests for tasks once
-- A loop that can never end is an error: in `Parallel` work "waits" is "calls nothing but the console", not the waits fact
+- A loop that can never end is an error: in `Parallel` work, a call through a function value, a `type` or a union is not followed
 - Reads in a row are independent
 
 ### Other refusals built on an analysis
 
-- A value fits a `type`: a `type` member is compared by its members' names, not their types (D1255), and a `$T`'s constraint checks only that each member exists
 - Singletons that make each other in a circle are an error: the "makes" links (a circle through an ordinary object made in an attribute default halts at run time instead)
 - A member template fits: the specific error for `each` given something that is not a function, and the member checks of a member template of the program's own class (only a library collection's are checked)
