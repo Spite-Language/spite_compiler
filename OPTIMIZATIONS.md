@@ -290,8 +290,9 @@ is unchecked too: the loop runs at most 2147483647 passes, so before the additio
 items, each an `Integer`, which a `Long` always holds.
 
 When it does not apply: an operand that is an attribute, a list item or a call's answer has its type's range, so an
-operation on two of them keeps its check. A `--repl`, `--repl-port` or `--hot-reload` build proves no ranges, since
-code may run between two steps. What a user can observe: `--optimization-report` lists every check kept, under
+operation on two of them keeps its check. A `--repl`, `--repl-port` or `--hot-reload` build proves ranges as every
+build does: a range is about one function's own locals, which no REPL command and no reload can write (a call
+already running finishes on the code it started in). What a user can observe: `--optimization-report` lists every check kept, under
 "Overflow checks kept", with the ranges that did not prove it.
 
 ## Arithmetic whose operands' bounds prove it fits is not checked

@@ -440,7 +440,7 @@ as when each was refused while building.
   until it is assigned, which a range cannot say, so the ranges keep it as a fact beside the range (D1450); it is
   divided with no test when its range also leaves out -1 or the dividend's range leaves out the smallest value.
 - **Buys**: no zero test on a division.
-- **Missing**: a divisor that is an attribute or a member path; nothing in `--repl` and `--hot-reload` builds.
+- **Missing**: a divisor that is an attribute or a member path.
 - **Falls back**: the test stays, "spite: '...' divided by zero, at ...".
 - **Lives in**: the proof `proofs/ranges` (`prove_the_divisor`, `prove_a_divisor_not_zero`), a speed proof run after
   the acceptance proofs, whose fact the lowering reads (`is_divisor_proven`).
@@ -464,8 +464,8 @@ as when each was refused while building.
   arithmetic that does not fit is a compile error
   ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#numeric-types)).
 - **Buys**: no wrapped number is ever read.
-- **Missing**: a `Long` counter whose bound has no range keeps its check; `--repl` and `--hot-reload` builds keep
-  every check. The constant overflow error is made for `Integer` arithmetic only, as the old compiler made it: other
+- **Missing**: a `Long` counter whose bound has no range keeps its check. Interactive builds prove ranges like
+  every build: a range is about a function's own locals, which nothing typed at the REPL and no reload writes. The constant overflow error is made for `Integer` arithmetic only, as the old compiler made it: other
   widths are folded in their own type and checked where they are narrowed.
 - **Falls back**: the check stays, "spite: '...' does not fit in an Integer (...), at ...".
 - **Lives in**: the lowering (`function_lowering.spite`: `is_checked`, `check_the_range`), the generator
