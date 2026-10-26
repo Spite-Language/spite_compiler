@@ -1,53 +1,24 @@
 # ../../OPTIMIZATIONS.md#arithmetic-whose-operands-bounds-prove-it-fits-is-not-checked
 var function = LowIntermediaryRepresentation.LowFunction("", 0)
 var operands = LowOptimizationPasses.Operands()
-var register_total = 0
-var definitions = List<Integer>()
-var known = List<Boolean>()
-var lows = List<Long>()
-var highs = List<Long>()
+var ranges = LowIntermediaryRepresentation.RegisterRanges(0, 0)
+var current_block = 0
 var largest_bound: Long = 4611686018427387904
 var largest_factor: Long = 2147483648
-var learned = false
 
 func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
 }
 
 func transformed(): LowIntermediaryRepresentation.LowFunction {
-    if function.is_resumable {
+    if function.is_resumable or not function.register_ranges {
         return function
     }
-    register_total = operands.most_register_of(function)
-    var index = 0
-    while index < register_total {
-        definitions.append(0)
-        known.append(false)
-        lows.append(0)
-        highs.append(0)
-        index = index + 1
-    }
+    ranges = function.register_ranges
     var block_index = 0
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
-        block.instructions.each(count_a_definition)
-        block_index = block_index + 1
-    }
-    var round = 0
-    learned = true
-    while learned and round < 6 {
-        learned = false
-        block_index = 0
-        while block_index < function.blocks.count() {
-            var block = function.blocks[block_index]
-            block.instructions.each(learn_a_range)
-            block_index = block_index + 1
-        }
-        round = round + 1
-    }
-    block_index = 0
-    while block_index < function.blocks.count() {
-        var block = function.blocks[block_index]
+        current_block = block_index
         block.instructions.each(uncheck_when_it_fits)
         answer_the_decided_compares(block)
         take_the_decided_branch(block)
@@ -56,142 +27,16 @@ func transformed(): LowIntermediaryRepresentation.LowFunction {
     return function
 }
 
-func count_a_definition(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
-    operands.read(instruction)
-    var index = 0
-    while index < operands.defines.count() {
-        var register = operands.defines[index]
-        var count = definitions[register]
-        crash count
-        definitions[register] = count + 1
-        index = index + 1
-    }
-}
-
-func written_once(register: Integer): Boolean {
-    if register < function.parameter_count or register < 0 {
-        return false
-    }
-    return definitions[register] == 1
-}
-
 func is_known(register: Integer): Boolean {
-    if register < 0 {
-        return false
-    }
-    return known[register] == true
+    return ranges.is_known_at(current_block, register)
 }
 
 func low_of(register: Integer): Long {
-    var value = lows[register]
-    crash value
-    return value
+    return ranges.low_at(current_block, register)
 }
 
 func high_of(register: Integer): Long {
-    var value = highs[register]
-    crash value
-    return value
-}
-
-func learn(register: Integer, low: Long, high: Long) {
-    assert written_once(register) and not is_known(register)
-    assert low >= 0 - largest_bound and high <= largest_bound and low <= high
-    known[register] = true
-    lows[register] = low
-    highs[register] = high
-    learned = true
-}
-
-func learn_a_range(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
-    switch instruction {
-        LowIntermediaryRepresentation.Instructions.Constant: learn(instruction.target, instruction.number, instruction.number)
-        LowIntermediaryRepresentation.Instructions.Copy: learn_a_copy(instruction)
-        LowIntermediaryRepresentation.Instructions.Compare: learn(instruction.target, 0, 1)
-        LowIntermediaryRepresentation.Instructions.Load: learn_a_load(instruction)
-        LowIntermediaryRepresentation.Instructions.Arithmetic: learn_an_arithmetic(instruction)
-        _: return
-    }
-}
-
-func learn_a_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
-    assert is_known(copy.source)
-    var low = low_of(copy.source)
-    var high = high_of(copy.source)
-    learn(copy.target, low, high)
-}
-
-func learn_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
-    assert not loaded.is_swapped
-    switch loaded.width {
-        'bits_8': learn_a_width(loaded.target, 256, loaded.is_signed)
-        'bits_16': learn_a_width(loaded.target, 65536, loaded.is_signed)
-        'bits_32': learn_a_width(loaded.target, 4294967296, loaded.is_signed)
-        'bits_64': return
-    }
-}
-
-func learn_a_width(target: Integer, span: Long, is_signed: Boolean) {
-    if is_signed {
-        var half = span / 2
-        learn(target, 0 - half, half - 1)
-    } else {
-        learn(target, 0, span - 1)
-    }
-}
-
-func learn_an_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
-    assert written_once(arithmetic.target) and not is_known(arithmetic.target)
-    if arithmetic.operator == 'remainder' {
-        learn_a_remainder(arithmetic)
-        return
-    }
-    if arithmetic.operator == 'bits_and' {
-        learn_a_mask(arithmetic)
-        return
-    }
-    assert not arithmetic.wraps and is_known(arithmetic.left) and is_known(arithmetic.right) and fits_its_width(arithmetic)
-    var low = result_low(arithmetic)
-    var high = result_high(arithmetic)
-    assert low <= high
-    learn(arithmetic.target, low, high)
-}
-
-func learn_a_remainder(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
-    assert is_known(arithmetic.right)
-    var divisor_low = low_of(arithmetic.right)
-    var divisor_high = high_of(arithmetic.right)
-    assert divisor_low == divisor_high and divisor_low > 0
-    var largest = divisor_low - 1
-    if is_known(arithmetic.left) and low_of(arithmetic.left) >= 0 {
-        learn(arithmetic.target, 0, largest)
-        return
-    }
-    learn(arithmetic.target, 0 - largest, largest)
-}
-
-func learn_a_mask(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
-    if is_known(arithmetic.right) and low_of(arithmetic.right) >= 0 and low_of(arithmetic.right) == high_of(arithmetic.right) {
-        var mask = high_of(arithmetic.right)
-        var span = span_of(arithmetic.width)
-        assert fits_between(true, 0, mask, span)
-        learn(arithmetic.target, 0, mask)
-        return
-    }
-    assert is_known(arithmetic.left) and low_of(arithmetic.left) >= 0 and low_of(arithmetic.left) == high_of(arithmetic.left)
-    var left_mask = high_of(arithmetic.left)
-    var left_span = span_of(arithmetic.width)
-    assert fits_between(true, 0, left_mask, left_span)
-    learn(arithmetic.target, 0, left_mask)
-}
-
-func span_of(width: LowIntermediaryRepresentation.Width): Long {
-    switch width {
-        'bits_8': return 256
-        'bits_16': return 65536
-        'bits_32': return 4294967296
-        'bits_64': return largest_bound
-    }
+    return ranges.high_at(current_block, register)
 }
 
 func is_small(register: Integer): Boolean {
@@ -265,6 +110,9 @@ func fits_its_width(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
     if operator != 'add' and operator != 'subtract' and operator != 'multiply' {
         return false
     }
+    if not is_known(arithmetic.left) or not is_known(arithmetic.right) {
+        return false
+    }
     if not is_small(arithmetic.left) or not is_small(arithmetic.right) {
         return false
     }
@@ -293,8 +141,7 @@ func uncheck_when_it_fits(instruction: LowIntermediaryRepresentation.Instruction
 }
 
 func uncheck_an_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
-    assert arithmetic.is_checked and not arithmetic.wraps
-    assert is_known(arithmetic.left) and is_known(arithmetic.right) and fits_its_width(arithmetic)
+    assert arithmetic.is_checked and not arithmetic.wraps and fits_its_width(arithmetic)
     arithmetic.is_checked = false
 }
 

@@ -1,0 +1,937 @@
+# ../../PROOFS.md#the-range-of-a-register
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var flow = LowOptimizationPasses.Flow()
+var ranges = LowIntermediaryRepresentation.RegisterRanges(0, 0)
+var register_total = 0
+var definitions = List<Integer>()
+var defined_in = List<Integer>()
+var defined_at = List<Integer>()
+var site_registers = List<Integer>()
+var site_blocks = List<Integer>()
+var site_indexes = List<Integer>()
+var site_starts = List<Integer>()
+var ordered_sites = List<Integer>()
+var first_pending = List<Integer>()
+var pending_counts = List<Integer>()
+var pending_registers = List<Integer>()
+var pending_others = List<Integer>()
+var pending_kinds = List<Integer>()
+var pending_deltas = List<Long>()
+var current_block = 0
+var reading_at = 0
+var learned = false
+var computed_low: Long = 0
+var computed_high: Long = 0
+var largest_bound: Long = 4611686018427387904
+var largest_sum: Long = 2305843009213693952
+var largest_factor: Long = 2147483648
+var float_bits: Long = 4294967295
+var deepest_chain = 8
+var upper_bound = 0
+var lower_bound = 1
+var unsigned_upper_bound = 2
+
+func Study(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func ranges_proven(): LowIntermediaryRepresentation.RegisterRanges? {
+    assert not function.is_resumable and not function.blocks.is_empty()
+    register_total = operands.most_register_of(function)
+    var block_total = function.blocks.count()
+    ranges = LowIntermediaryRepresentation.RegisterRanges(register_total, block_total)
+    flow.find_the_edges(function)
+    read_the_definitions()
+    var block_index = 0
+    while block_index < block_total {
+        var first = pending_registers.count()
+        first_pending.append(first)
+        pending_counts.append(0)
+        find_the_facts_of(block_index)
+        block_index = block_index + 1
+    }
+    learn_in_rounds()
+    find_the_never_negative()
+    learn_in_rounds()
+    block_index = 0
+    while block_index < block_total {
+        record_the_facts_of(block_index)
+        block_index = block_index + 1
+    }
+    return ranges
+}
+
+func learn_in_rounds() {
+    var round = 0
+    learned = true
+    while learned and round < 8 {
+        learned = false
+        learn_the_single_definitions()
+        learn_the_shared_definitions()
+        round = round + 1
+    }
+}
+
+# ../../PROOFS.md#the-range-of-a-register
+func find_the_never_negative() {
+    var never_negative = List<Boolean>()
+    var register = 0
+    while register < register_total {
+        var low = ranges.low_of(register)
+        var is_bounded = ranges.is_known(register)
+        never_negative.append(register >= function.parameter_count and (low >= 0 or not is_bounded))
+        register = register + 1
+    }
+    var changed = true
+    var round = 0
+    while changed and round < 32 {
+        changed = false
+        var index = 0
+        while index < site_registers.count() {
+            var defined = site_registers[index]
+            var block_index = site_blocks[index]
+            var at = site_indexes[index]
+            crash defined
+            crash block_index
+            crash at
+            var is_open = not ranges.is_known(defined)
+            if is_open and never_negative[defined] == true and not keeps_the_sign(block_index, at, never_negative) {
+                never_negative[defined] = false
+                changed = true
+            }
+            index = index + 1
+        }
+        round = round + 1
+    }
+    assert not changed
+    register = function.parameter_count
+    while register < register_total {
+        if never_negative[register] == true and not ranges.is_known(register) {
+            ranges.set_floor(register, 0)
+        }
+        register = register + 1
+    }
+}
+
+func keeps_the_sign(block_index: Integer, at: Integer, never_negative: List<Boolean>): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var instruction = block.instructions[at]
+    crash instruction
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return instruction.number >= 0
+        LowIntermediaryRepresentation.Instructions.Copy: return is_marked(instruction.source, never_negative)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return adds_never_negatives(instruction, never_negative)
+        _: return false
+    }
+}
+
+func is_marked(register: Integer, never_negative: List<Boolean>): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    return never_negative[register] == true
+}
+
+func adds_never_negatives(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    never_negative: List<Boolean>,
+): Boolean {
+    var both = is_marked(arithmetic.left, never_negative) and is_marked(arithmetic.right, never_negative)
+    return arithmetic.operator == 'add' and arithmetic.is_signed and not arithmetic.wraps and both
+}
+
+func read_the_definitions() {
+    var index = 0
+    while index < register_total {
+        definitions.append(0)
+        defined_in.append(-1)
+        defined_at.append(-1)
+        index = index + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        current_block = block_index
+        reading_at = 0
+        block.instructions.each(read_a_definition)
+        block_index = block_index + 1
+    }
+    order_the_sites()
+}
+
+func order_the_sites() {
+    var total = 0
+    var register = 0
+    while register < register_total {
+        site_starts.append(total)
+        var count = definitions[register]
+        crash count
+        total = total + count
+        register = register + 1
+    }
+    site_starts.append(total)
+    var filled = List<Integer>()
+    register = 0
+    while register < register_total {
+        filled.append(0)
+        register = register + 1
+    }
+    var index = 0
+    while index < total {
+        ordered_sites.append(0)
+        index = index + 1
+    }
+    index = 0
+    while index < site_registers.count() {
+        var defined = site_registers[index]
+        crash defined
+        var start = site_starts[defined]
+        var placed = filled[defined]
+        crash start
+        crash placed
+        ordered_sites[start + placed] = index
+        filled[defined] = placed + 1
+        index = index + 1
+    }
+}
+
+func read_a_definition(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
+    operands.read(instruction)
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        var count = definitions[register]
+        crash count
+        definitions[register] = count + 1
+        defined_in[register] = current_block
+        defined_at[register] = reading_at
+        site_registers.append(register)
+        site_blocks.append(current_block)
+        site_indexes.append(reading_at)
+        index = index + 1
+    }
+    reading_at = reading_at + 1
+}
+
+func is_steady(register: Integer): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    if register < function.parameter_count {
+        return definitions[register] == 0
+    }
+    return definitions[register] == 1
+}
+
+func is_learnable(register: Integer): Boolean {
+    return register >= function.parameter_count and register < register_total and not ranges.is_known(register)
+}
+
+# ../../PROOFS.md#the-range-of-a-register
+func find_the_facts_of(block_index: Integer) {
+    var chain = List<Integer>()
+    var current = block_index
+    var steps = 0
+    while steps < deepest_chain {
+        chain.append(current)
+        var coming = flow.predecessors_of(current)
+        assert coming.count() == 1
+        var predecessor = coming[0]
+        crash predecessor
+        assert not chain.contains(predecessor)
+        var earlier = function.blocks[predecessor]
+        crash earlier
+        var ending = earlier.instructions.last()
+        if ending == LowIntermediaryRepresentation.Instructions.Branch and ending.when_true != ending.when_false {
+            var on_true = ending.when_true == current
+            add_the_facts_of_the_branch(block_index, predecessor, ending.condition, on_true, chain)
+        }
+        current = predecessor
+        steps = steps + 1
+    }
+}
+
+func add_the_facts_of_the_branch(
+    block_index: Integer,
+    predecessor: Integer,
+    condition: Integer,
+    on_true: Boolean,
+    chain: List<Integer>,
+) {
+    assert is_made_in(condition, predecessor)
+    var at = defined_at[condition]
+    crash at
+    var earlier = function.blocks[predecessor]
+    crash earlier
+    var tested = earlier.instructions[at]
+    crash tested
+    if tested == LowIntermediaryRepresentation.Instructions.Compare {
+        add_the_facts_of_a_test(block_index, predecessor, at, tested, on_true, chain)
+    }
+}
+
+func is_made_in(register: Integer, block_index: Integer): Boolean {
+    if register < function.parameter_count or register >= register_total or definitions[register] != 1 {
+        return false
+    }
+    return defined_in[register] == block_index
+}
+
+func add_the_facts_of_a_test(
+    block_index: Integer,
+    predecessor: Integer,
+    at: Integer,
+    tested: LowIntermediaryRepresentation.Instructions.Compare,
+    on_true: Boolean,
+    chain: List<Integer>,
+) {
+    var is_equality = tested.comparison == 'equal' or tested.comparison == 'not_equal'
+    if is_equality and is_a_zero(tested.right) and is_made_in(tested.left, predecessor) {
+        var inner_at = defined_at[tested.left]
+        crash inner_at
+        var earlier = function.blocks[predecessor]
+        crash earlier
+        var inner = earlier.instructions[inner_at]
+        crash inner
+        var inner_true = on_true
+        if tested.comparison == 'equal' {
+            inner_true = not on_true
+        }
+        if inner == LowIntermediaryRepresentation.Instructions.Compare {
+            add_the_facts_of_a_compare(block_index, predecessor, inner_at, inner, inner_true, chain)
+            return
+        }
+    }
+    add_the_facts_of_a_compare(block_index, predecessor, at, tested, on_true, chain)
+}
+
+func is_a_zero(register: Integer): Boolean {
+    if not is_steady(register) or register < function.parameter_count {
+        return false
+    }
+    var made_in = defined_in[register]
+    var made_at = defined_at[register]
+    crash made_in
+    crash made_at
+    var block = function.blocks[made_in]
+    crash block
+    var made = block.instructions[made_at]
+    crash made
+    if made == LowIntermediaryRepresentation.Instructions.Constant {
+        return made.number == 0
+    }
+    return false
+}
+
+func add_the_facts_of_a_compare(
+    block_index: Integer,
+    predecessor: Integer,
+    at: Integer,
+    compared: LowIntermediaryRepresentation.Instructions.Compare,
+    holds: Boolean,
+    chain: List<Integer>,
+) {
+    var comparison = compared.comparison
+    if not holds {
+        comparison = opposite_of(comparison)
+    }
+    var left = compared.left
+    var right = compared.right
+    var left_held = is_held_from(left, predecessor, at, chain)
+    var right_held = is_held_from(right, predecessor, at, chain)
+    if not compared.is_signed {
+        add_the_unsigned_facts(block_index, comparison, left, right, left_held, right_held)
+        return
+    }
+    switch comparison {
+        'less': add_the_pair(block_index, left, right, left_held, right_held, upper_bound, -1)
+        'less_or_equal': add_the_pair(block_index, left, right, left_held, right_held, upper_bound, 0)
+        'greater': add_the_pair(block_index, left, right, left_held, right_held, lower_bound, 1)
+        'greater_or_equal': add_the_pair(block_index, left, right, left_held, right_held, lower_bound, 0)
+        'equal': add_the_equality(block_index, left, right, left_held, right_held)
+        'not_equal': return
+    }
+}
+
+func add_the_unsigned_facts(
+    block_index: Integer,
+    comparison: LowIntermediaryRepresentation.Comparison,
+    left: Integer,
+    right: Integer,
+    left_held: Boolean,
+    right_held: Boolean,
+) {
+    switch comparison {
+        'less': add_a_pending(block_index, left, right, unsigned_upper_bound, -1, left_held)
+        'less_or_equal': add_a_pending(block_index, left, right, unsigned_upper_bound, 0, left_held)
+        'greater': add_a_pending(block_index, right, left, unsigned_upper_bound, -1, right_held)
+        'greater_or_equal': add_a_pending(block_index, right, left, unsigned_upper_bound, 0, right_held)
+        'equal': add_the_equality(block_index, left, right, left_held, right_held)
+        'not_equal': return
+    }
+}
+
+func add_the_pair(
+    block_index: Integer,
+    left: Integer,
+    right: Integer,
+    left_held: Boolean,
+    right_held: Boolean,
+    kind: Integer,
+    delta: Long,
+) {
+    add_a_pending(block_index, left, right, kind, delta, left_held)
+    var mirrored = upper_bound
+    if kind == upper_bound {
+        mirrored = lower_bound
+    }
+    var zero: Long = 0
+    add_a_pending(block_index, right, left, mirrored, zero - delta, right_held)
+}
+
+func add_the_equality(block_index: Integer, left: Integer, right: Integer, left_held: Boolean, right_held: Boolean) {
+    add_a_pending(block_index, left, right, upper_bound, 0, left_held)
+    add_a_pending(block_index, left, right, lower_bound, 0, left_held)
+    add_a_pending(block_index, right, left, upper_bound, 0, right_held)
+    add_a_pending(block_index, right, left, lower_bound, 0, right_held)
+}
+
+func add_a_pending(block_index: Integer, register: Integer, other: Integer, kind: Integer, delta: Long, held: Boolean) {
+    assert held and register != other
+    pending_registers.append(register)
+    pending_others.append(other)
+    pending_kinds.append(kind)
+    pending_deltas.append(delta)
+    var count = pending_counts[block_index]
+    crash count
+    pending_counts[block_index] = count + 1
+}
+
+# ../../PROOFS.md#the-range-of-a-register
+func is_held_from(register: Integer, predecessor: Integer, at: Integer, chain: List<Integer>): Boolean {
+    if not is_steady(register) {
+        return false
+    }
+    if register < function.parameter_count {
+        return true
+    }
+    var made_in = defined_in[register]
+    var made_at = defined_at[register]
+    crash made_in
+    crash made_at
+    if chain.contains(made_in) {
+        return false
+    }
+    return made_in != predecessor or made_at < at
+}
+
+func opposite_of(comparison: LowIntermediaryRepresentation.Comparison): LowIntermediaryRepresentation.Comparison {
+    switch comparison {
+        'equal': return 'not_equal'
+        'not_equal': return 'equal'
+        'less': return 'greater_or_equal'
+        'less_or_equal': return 'greater'
+        'greater': return 'less_or_equal'
+        'greater_or_equal': return 'less'
+    }
+}
+
+func pending_low(block_index: Integer, register: Integer): Long {
+    var low = ranges.low_of(register)
+    var first = first_pending[block_index]
+    var count = pending_counts[block_index]
+    crash first
+    crash count
+    var index = first
+    while index < first + count {
+        if pending_registers[index] == register {
+            var bound = bound_of(index, true)
+            if bound > low {
+                low = bound
+            }
+        }
+        index = index + 1
+    }
+    return low
+}
+
+func pending_high(block_index: Integer, register: Integer): Long {
+    var high = ranges.high_of(register)
+    var first = first_pending[block_index]
+    var count = pending_counts[block_index]
+    crash first
+    crash count
+    var index = first
+    while index < first + count {
+        if pending_registers[index] == register {
+            var bound = bound_of(index, false)
+            if bound < high {
+                high = bound
+            }
+        }
+        index = index + 1
+    }
+    return high
+}
+
+func bound_of(index: Integer, is_low: Boolean): Long {
+    var other = pending_others[index]
+    var kind = pending_kinds[index]
+    var delta = pending_deltas[index]
+    crash other
+    crash kind
+    crash delta
+    var smallest = ranges.low_of(-1)
+    var largest = ranges.high_of(-1)
+    if not ranges.is_known(other) {
+        if is_low {
+            return smallest
+        }
+        return largest
+    }
+    var other_low = ranges.low_of(other)
+    var other_high = ranges.high_of(other)
+    if kind == unsigned_upper_bound {
+        if other_low < 0 {
+            if is_low {
+                return smallest
+            }
+            return largest
+        }
+        if is_low {
+            return 0
+        }
+        return other_high + delta
+    }
+    if kind == upper_bound and not is_low {
+        return other_high + delta
+    }
+    if kind == lower_bound and is_low {
+        return other_low + delta
+    }
+    if is_low {
+        return smallest
+    }
+    return largest
+}
+
+func record_the_facts_of(block_index: Integer) {
+    ranges.start_the_facts_of(block_index)
+    var first = first_pending[block_index]
+    var count = pending_counts[block_index]
+    crash first
+    crash count
+    var seen = List<Integer>()
+    var index = first
+    while index < first + count {
+        var register = pending_registers[index]
+        crash register
+        if not seen.contains(register) {
+            seen.append(register)
+            record_a_fact(block_index, register)
+        }
+        index = index + 1
+    }
+}
+
+func record_a_fact(block_index: Integer, register: Integer) {
+    var low = pending_low(block_index, register)
+    var high = pending_high(block_index, register)
+    var is_tighter = low > ranges.low_of(register) or high < ranges.high_of(register)
+    if is_tighter and low <= high {
+        ranges.add_a_fact(block_index, register, low, high)
+    }
+}
+
+func range_at(block_index: Integer, register: Integer): Boolean {
+    if register < 0 or register >= register_total {
+        return false
+    }
+    computed_low = pending_low(block_index, register)
+    computed_high = pending_high(block_index, register)
+    return computed_low >= 0 - largest_bound and computed_high <= largest_bound and computed_low <= computed_high
+}
+
+func learn_the_single_definitions() {
+    var index = 0
+    while index < site_registers.count() {
+        var register = site_registers[index]
+        crash register
+        if is_learnable(register) and definitions[register] == 1 {
+            var block_index = site_blocks[index]
+            var at = site_indexes[index]
+            crash block_index
+            crash at
+            if site_range(block_index, at) {
+                learn(register, computed_low, computed_high)
+            }
+        }
+        index = index + 1
+    }
+}
+
+func learn_the_shared_definitions() {
+    var register = function.parameter_count
+    while register < register_total {
+        var count = definitions[register]
+        crash count
+        if count > 1 and is_learnable(register) {
+            learn_a_shared(register)
+        }
+        register = register + 1
+    }
+}
+
+# ../../PROOFS.md#the-range-of-a-register
+func learn_a_shared(register: Integer) {
+    var low = ranges.high_of(-1)
+    var high = ranges.low_of(-1)
+    var start = site_starts[register]
+    var end = site_starts[register + 1]
+    crash start
+    crash end
+    var at_site = start
+    while at_site < end {
+        var index = ordered_sites[at_site]
+        crash index
+        var block_index = site_blocks[index]
+        var at = site_indexes[index]
+        crash block_index
+        crash at
+        assert site_range(block_index, at)
+        low = smaller(low, computed_low)
+        high = larger(high, computed_high)
+        at_site = at_site + 1
+    }
+    if low <= high {
+        learn(register, low, high)
+    }
+}
+
+func learn(register: Integer, low: Long, high: Long) {
+    assert low >= 0 - largest_bound and high <= largest_bound and low <= high
+    ranges.learn(register, low, high)
+    learned = true
+}
+
+func site_range(block_index: Integer, at: Integer): Boolean {
+    var block = function.blocks[block_index]
+    crash block
+    var instruction = block.instructions[at]
+    crash instruction
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: return answered(instruction.number, instruction.number)
+        LowIntermediaryRepresentation.Instructions.Copy: return range_at(block_index, instruction.source)
+        LowIntermediaryRepresentation.Instructions.Compare: return answered(0, 1)
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: return answered(0, 1)
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return decimal_answer(instruction.is_double)
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return converted(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: return loaded(instruction)
+        LowIntermediaryRepresentation.Instructions.Select: return selected(block_index, instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return arithmetic_range(block_index, instruction)
+        _: return false
+    }
+}
+
+func answered(low: Long, high: Long): Boolean {
+    computed_low = low
+    computed_high = high
+    return true
+}
+
+func decimal_answer(is_double: Boolean): Boolean {
+    if is_double {
+        return false
+    }
+    return answered(0, float_bits)
+}
+
+func converted(conversion: LowIntermediaryRepresentation.Instructions.Decimal.Conversion): Boolean {
+    if conversion.to_decimal_size != 4 {
+        return false
+    }
+    return answered(0, float_bits)
+}
+
+func loaded(reading: LowIntermediaryRepresentation.Instructions.Load): Boolean {
+    if reading.is_swapped {
+        return false
+    }
+    switch reading.width {
+        'bits_8': return width_answer(256, reading.is_signed)
+        'bits_16': return width_answer(65536, reading.is_signed)
+        'bits_32': return width_answer(4294967296, reading.is_signed)
+        'bits_64': return false
+    }
+}
+
+func width_answer(span: Long, is_signed: Boolean): Boolean {
+    if is_signed {
+        var half = span / 2
+        return answered(0 - half, half - 1)
+    }
+    return answered(0, span - 1)
+}
+
+func selected(block_index: Integer, select: LowIntermediaryRepresentation.Instructions.Select): Boolean {
+    if not range_at(block_index, select.when_true) {
+        return false
+    }
+    var low = computed_low
+    var high = computed_high
+    if not range_at(block_index, select.when_false) {
+        return false
+    }
+    if low < computed_low {
+        computed_low = low
+    }
+    if high > computed_high {
+        computed_high = high
+    }
+    return true
+}
+
+# ../../PROOFS.md#the-range-of-a-register
+func arithmetic_range(block_index: Integer, arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
+    var found = raw_range(block_index, arithmetic)
+    var raw_low = computed_low
+    var raw_high = computed_high
+    if not arithmetic.is_checked or arithmetic.wraps {
+        return found and fits_the_width(arithmetic.width, arithmetic.is_signed, raw_low, raw_high)
+    }
+    if not width_range(arithmetic.width, arithmetic.is_signed) {
+        return found and fits_the_width(arithmetic.width, arithmetic.is_signed, raw_low, raw_high)
+    }
+    var overlaps = raw_low <= computed_high and raw_high >= computed_low
+    if not found or not overlaps {
+        return true
+    }
+    computed_low = larger(computed_low, raw_low)
+    computed_high = smaller(computed_high, raw_high)
+    return true
+}
+
+func width_range(width: LowIntermediaryRepresentation.Width, is_signed: Boolean): Boolean {
+    switch width {
+        'bits_8': return width_answer(256, is_signed)
+        'bits_16': return width_answer(65536, is_signed)
+        'bits_32': return width_answer(4294967296, is_signed)
+        'bits_64': return false
+    }
+}
+
+func fits_the_width(width: LowIntermediaryRepresentation.Width, is_signed: Boolean, low: Long, high: Long): Boolean {
+    if not width_range(width, is_signed) {
+        return low >= 0 - largest_bound and high <= largest_bound and (is_signed or low >= 0)
+    }
+    var fits = low >= computed_low and high <= computed_high
+    computed_low = low
+    computed_high = high
+    return fits
+}
+
+func raw_range(block_index: Integer, arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
+    var operator = arithmetic.operator
+    if operator == 'bits_and' {
+        return masked(block_index, arithmetic)
+    }
+    if operator == 'remainder' {
+        return remainder_range(block_index, arithmetic)
+    }
+    if arithmetic.wraps {
+        return false
+    }
+    if not range_at(block_index, arithmetic.left) {
+        return false
+    }
+    var left_low = computed_low
+    var left_high = computed_high
+    var right_known = range_at(block_index, arithmetic.right)
+    var right_low = computed_low
+    var right_high = computed_high
+    if operator == 'divide' {
+        return divided(left_low, left_high, right_known, right_low, right_high)
+    }
+    if not right_known {
+        return false
+    }
+    switch operator {
+        'add': return summed(left_low, left_high, right_low, right_high)
+        'subtract': return summed(left_low, left_high, 0 - right_high, 0 - right_low)
+        'multiply': return multiplied(left_low, left_high, right_low, right_high)
+        'shift_right': return shifted_right(left_low, left_high, right_low, right_high)
+        'shift_left': return shifted_left(left_low, left_high, right_low, right_high)
+        'bits_or': return joined_bits(left_low, left_high, right_low, right_high)
+        'bits_xor': return joined_bits(left_low, left_high, right_low, right_high)
+        _: return false
+    }
+}
+
+func is_a_sum_term(low: Long, high: Long): Boolean {
+    return low >= 0 - largest_sum and high <= largest_sum
+}
+
+func summed(left_low: Long, left_high: Long, right_low: Long, right_high: Long): Boolean {
+    if not is_a_sum_term(left_low, left_high) or not is_a_sum_term(right_low, right_high) {
+        return false
+    }
+    return answered(left_low + right_low, left_high + right_high)
+}
+
+func is_a_factor(low: Long, high: Long): Boolean {
+    return low >= 0 - largest_factor and high <= largest_factor
+}
+
+func multiplied(left_low: Long, left_high: Long, right_low: Long, right_high: Long): Boolean {
+    if not is_a_factor(left_low, left_high) or not is_a_factor(right_low, right_high) {
+        return false
+    }
+    var low = left_low * right_low
+    var high = low
+    var other = left_low * right_high
+    low = smaller(low, other)
+    high = larger(high, other)
+    other = left_high * right_low
+    low = smaller(low, other)
+    high = larger(high, other)
+    other = left_high * right_high
+    low = smaller(low, other)
+    high = larger(high, other)
+    return answered(low, high)
+}
+
+func smaller(first: Long, second: Long): Long {
+    if second < first {
+        return second
+    }
+    return first
+}
+
+func larger(first: Long, second: Long): Long {
+    if second > first {
+        return second
+    }
+    return first
+}
+
+func magnitude(value: Long): Long {
+    if value < 0 {
+        return 0 - value
+    }
+    return value
+}
+
+# ../../PROOFS.md#the-range-of-a-register
+func divided(left_low: Long, left_high: Long, right_known: Boolean, right_low: Long, right_high: Long): Boolean {
+    var without_zero = right_low >= 1 or right_high <= -1
+    if right_known and without_zero {
+        var low = left_low / right_low
+        var high = low
+        var other = left_low / right_high
+        low = smaller(low, other)
+        high = larger(high, other)
+        other = left_high / right_low
+        low = smaller(low, other)
+        high = larger(high, other)
+        other = left_high / right_high
+        low = smaller(low, other)
+        high = larger(high, other)
+        return answered(low, high)
+    }
+    if right_known and left_low >= 0 and right_low >= 0 {
+        return answered(0, left_high)
+    }
+    var low_size = magnitude(left_low)
+    var high_size = magnitude(left_high)
+    var reach = larger(low_size, high_size)
+    return answered(0 - reach, reach)
+}
+
+func remainder_range(block_index: Integer, arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
+    var left_known = range_at(block_index, arithmetic.left)
+    var left_low = computed_low
+    var left_high = computed_high
+    var right_known = range_at(block_index, arithmetic.right)
+    var right_low = computed_low
+    var right_high = computed_high
+    var without_zero = right_low >= 1 or right_high <= -1
+    if right_known and without_zero {
+        var low_size = magnitude(right_low)
+        var high_size = magnitude(right_high)
+        var reach = larger(low_size, high_size) - 1
+        var lowest = smaller(left_low, 0)
+        var highest = larger(left_high, 0)
+        var low = larger(lowest, 0 - reach)
+        var high = smaller(highest, reach)
+        return answered(low, high)
+    }
+    if not left_known {
+        return false
+    }
+    var low = smaller(left_low, 0)
+    var high = larger(left_high, 0)
+    return answered(low, high)
+}
+
+func masked(block_index: Integer, arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
+    var left_known = range_at(block_index, arithmetic.left)
+    var left_low = computed_low
+    var left_high = computed_high
+    var right_known = range_at(block_index, arithmetic.right)
+    var right_low = computed_low
+    var right_high = computed_high
+    if right_known and right_low >= 0 {
+        if left_known and left_low >= 0 {
+            var high = smaller(left_high, right_high)
+            return answered(0, high)
+        }
+        return answered(0, right_high)
+    }
+    if not left_known or left_low < 0 {
+        return false
+    }
+    return answered(0, left_high)
+}
+
+func power_of(count: Long): Long {
+    var power: Long = 1
+    var index: Long = 0
+    while index < count {
+        power = power * 2
+        index = index + 1
+    }
+    return power
+}
+
+func shifted_right(left_low: Long, left_high: Long, right_low: Long, right_high: Long): Boolean {
+    if left_low < 0 or right_low != right_high or right_low < 0 or right_low > 62 {
+        return false
+    }
+    var power = power_of(right_low)
+    return answered(left_low / power, left_high / power)
+}
+
+func shifted_left(left_low: Long, left_high: Long, right_low: Long, right_high: Long): Boolean {
+    if left_low < 0 or right_low != right_high or right_low < 0 or right_low > 61 {
+        return false
+    }
+    var power = power_of(right_low)
+    if left_high > largest_bound / power {
+        return false
+    }
+    return answered(left_low * power, left_high * power)
+}
+
+func joined_bits(left_low: Long, left_high: Long, right_low: Long, right_high: Long): Boolean {
+    if left_low < 0 or right_low < 0 {
+        return false
+    }
+    var widest = larger(left_high, right_high)
+    var mask: Long = 0
+    while mask < widest {
+        mask = mask * 2 + 1
+    }
+    return answered(0, mask)
+}
