@@ -136,7 +136,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Maths on constants is worked out while compiling (built: whole numbers in the high representation, and every call, decimal operation and maths function on constants in the lowered program, D784, followed through every path and loop of a function, D1041; not built: a call is run on at most 100 000 instructions (D1047), so a whole case over a hundred thousand points is not answered while compiling, and an object a singleton holds is never known)
 - The whole-function evaluation (D1041 to D1046) makes three cases slower than before it: `the_thread_pool_only_where_a_parallel_is_made` 8.7 to 11.1 ms, `a_crashs_report_is_kept_out_of_the_way` 23.5 to 27.3 ms, `copies_that_cost_nothing` 48.9 to 53.1 ms; find which rewrite (an unrolled loop, a constant written before its instruction) costs them and keep it out there
 - A call is copied for its known arguments only when it passes a known closure (D1043): a callee given known numbers or a known object without a function in it is not copied, and a loop is unrolled only when no loop is nested in it
-- A binary schema is a constant (measured 2026-10-25: 2.1 ms against the old compiler's 1.2)
+- A binary schema is a constant (built: `schema()` is its number while compiling; the case's 2.1 ms against the old compiler's 1.2 is the list it fills and counts, where `count(is_current)` in a loop is copied once per pass by the compile-time evaluation, folded back by `identical_functions`, D1541)
 - Identical functions are folded into one (built as the low pass `identical_functions`, D1541; not built: functions that only call each other, and functions that differ only in which data label holds the same bytes)
 
 ### The memory, the placement and the copies
@@ -186,7 +186,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Boxing only where a value travels as a shape (measured 2026-10-25: 57 ms against the old compiler's 17: each `to_string()` through `Printable` makes its text)
 - A function value describes its arguments when asked (built: a function value made and called in one loop is a direct call, inlined, D1052; not built: a function value passed in from outside the function, or one of several functions, is still called through its address)
 - Defaults the constructor replaces are never made: done for a quiet default the constructor assigns before reading it; a default some other making (a deep copy, a reader) overwrites is still made
-- Proofs that survive a call
 
 ### The threads
 

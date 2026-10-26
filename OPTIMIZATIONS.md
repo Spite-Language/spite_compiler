@@ -3744,8 +3744,10 @@ report or a crash's call lines), each function's place and each block's place ar
 one place (the instances of one generic function) fold.
 
 **When it does not:** a function that differs in an instruction, a constant, an offset, a data label or a class number
-is kept; so is a function that can be resumed, one a proof left facts on, and one the program names outside its
-instructions (the entry, a singleton's maker, the free functions, what runs before the entry). Two functions that only
+is kept; so is a function that can be resumed, one a proof left facts on, and the entry. The copies the compile-time
+evaluation makes of one function for each known closure it is passed (`count_where$known0` to `$known19` for a
+`count(is_current)` in an unrolled loop) fold back into one, and so do the free functions of classes that hold
+nothing counted (`_free_Long`, `_free_Integer` and the rest). Two functions that only
 call each other do not fold (folding goes by rounds from functions that are equal already). A `--hot-reload` build and
 the REPL fold nothing, since each function there must be replaceable on its own.
 
