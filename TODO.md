@@ -34,7 +34,7 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 
 ## The language
-- `Spite.Call` on a declaration known only at run time (D864, D1271, D1402): an argument the function lacks halts only as "fills an argument ... does not have" without naming it, and a function-value parameter halts instead of being passed
+- `Spite.Call` on a declaration known only at run time (D864, D1271, D1402): a function-value parameter halts instead of being passed (a function value held as `Anything` is not told apart from another at run time)
 - Templates over `Spite.Attribute` and `Spite.Function`, bound to one object (D798, D815): a parameter of those types is still an ordinary parameter; and `Namespace.classes.each(walker)` unrolls only with a walker of one parameter named in the same class (D813)
 - spite_spec as the whole specification (D799): one program per rule and corner of every spec page, then the Markdown spec retired
 - Fixes instead of errors (D800, to discuss): the layout is fixed (D901); each other rule whose fix needs no choice, such as the declaration order, waits for Mortaro's choice in `mortaros_missing_decisions.md`
