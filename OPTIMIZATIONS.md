@@ -3731,3 +3731,90 @@ func Totals() {
     console.print(first + first)
 }
 ```
+
+## Identical functions are folded into one
+
+Once every other low pass has run, the compiler compares the functions it is about to write, instruction by
+instruction and field by field, and keeps one of each group that is the same: two instances of a generic class over
+classes of the same layout (`Column<Position>` and `Column<Velocity>` when both hold the same attributes), two classes
+with the same helper, two versions of one package. Every call, function value and thread start then goes to the one
+kept, and the others are not written. A call compares by the function it reaches once folded, and a call of the
+function itself as "itself", so two functions that each call themselves fold together, and so do their callers in a
+second round.
+
+**When it applies:** to every function of an ordinary build. Where the executable reports places (a native fault's
+report or a crash's call lines), each function's place and each block's place are compared too, so only functions of
+one place (the instances of one generic function) fold.
+
+**When it does not:** a function that differs in an instruction, a constant, an offset, a data label or a class number
+is kept; so is a function that can be resumed, one a proof left facts on, and the entry. The copies the compile-time
+evaluation makes of one function for each known closure it is passed (`count_where$known0` to `$known19` for a
+`count(is_current)` in an unrolled loop) fold back into one, and so do the free functions of classes that hold
+nothing counted (`_free_Long`, `_free_Integer` and the rest). Two functions that only
+call each other do not fold (folding goes by rounds from functions that are equal already). A `--hot-reload` build and
+the REPL fold nothing, since each function there must be replaceable on its own.
+
+**What a user can observe:** nothing a program prints. Two function values of folded functions compare equal, and a
+debugger names the kept function. The executable is smaller: the compiler's own by 134 KB, and
+`a_binary_schema_is_a_constant`'s from 788 KB to 756 KB, with its time unchanged.
+
+```spite
+var console = Console()
+var left = Left()
+var right = Right()
+
+func IdenticalFunctionsFold() {
+    var doubled = left.doubled(21)
+    var also_doubled = right.doubled(4)
+    console.print(doubled, also_doubled)
+}
+```
+
+with `Left` and `Right` each declaring the same `func doubled(number: Integer): Integer { return number * 2 }`: the
+executable holds one `doubled`, and both calls reach it (`tests/identical_functions_fold`).
+
+## A foreign name is never copied
+
+The name of each function a program calls in a foreign library is known while compiling, so the generated code hands
+the system's lookup (`GetProcAddress`) a pointer to that name written into the executable, and keeps the address it
+answers in a slot of its own, looked up once. The library's file name is the bytes of the `String` the program passed,
+handed to `LoadLibraryA` as they are. Nothing is copied onto the heap to open a library or find a function in it, and
+a missing function stops the program naming it from the same constant text.
+
+**When it applies:** every foreign library a program opens, in every build. **What a user can observe:** nothing
+but the time (`tests/foreign_names`).
+
+```spite
+var console = Console()
+var kernel = DynamicLibrary("kernel32.dll", 'identity', "")
+
+func ForeignNames() {
+    var tick = kernel.GetTickCount64()
+    var running = kernel.GetCurrentProcessId()
+    console.print("asked", tick > 0, running > 0)
+}
+```
+
+## The REPL, live reload and debug machinery are only in those builds
+
+Everything that exists to look inside a running program is compiled only into the build that asks for it:
+
+- `--repl` and `--repl-port`: the classes of the prompt (`Spite.Prompt`, `Spite.PromptPath`, and the socket's
+  `listen`, `serve` and `check_point` for `--repl-port`) are written by the compiler for that build only, with the
+  allocation counts the prompt reads.
+- `--hot-reload` (or `hot_reload = true` in `build.spite`): `Spite.HotReload` and `Spite.ReloadPoint`, a slot per
+  function that its first instruction jumps through, functions aligned to 32 bytes, the manifest's names of the data,
+  and the check point at the end of each loop's pass.
+- `--debug-memory`: the four counts of allocations, frees and live objects and bytes, and the report of what leaked.
+  An ordinary build keeps the counts only when the program reads `live_allocations()` or `live_bytes()`.
+
+**When it applies:** always: it is the inspecting itself, present only where it is asked for. **What a user can
+observe:** an ordinary build's executable holds none of it, and runs as if those flags did not exist.
+
+```spite
+var console = Console()
+
+func Plain() {
+    console.print("no prompt, no reload slots, no allocation table")
+}
+```

@@ -136,8 +136,8 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Maths on constants is worked out while compiling (built: whole numbers in the high representation, and every call, decimal operation and maths function on constants in the lowered program, D784, followed through every path and loop of a function, D1041; not built: a call is run on at most 100 000 instructions (D1047), so a whole case over a hundred thousand points is not answered while compiling, and an object a singleton holds is never known)
 - The whole-function evaluation (D1041 to D1046) makes three cases slower than before it: `the_thread_pool_only_where_a_parallel_is_made` 8.7 to 11.1 ms, `a_crashs_report_is_kept_out_of_the_way` 23.5 to 27.3 ms, `copies_that_cost_nothing` 48.9 to 53.1 ms; find which rewrite (an unrolled loop, a constant written before its instruction) costs them and keep it out there
 - A call is copied for its known arguments only when it passes a known closure (D1043): a callee given known numbers or a known object without a function in it is not copied, and a loop is unrolled only when no loop is nested in it
-- A binary schema is a constant (measured 2026-10-25: 2.1 ms against the old compiler's 1.2)
-- Identical functions are folded into one
+- A binary schema is a constant (built: `schema()` is its number while compiling; the case's 2.1 ms against the old compiler's 1.2 is the list it fills and counts, where `count(is_current)` in a loop is copied once per pass by the compile-time evaluation, folded back by `identical_functions`, D1541)
+- Identical functions are folded into one (built as the low pass `identical_functions`, D1541; not built: functions that only call each other, and functions that differ only in which data label holds the same bytes)
 
 ### The memory, the placement and the copies
 
@@ -176,7 +176,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Short text lives inside the `String` (D789): a text whose `String` keeps other attributes is still two allocations
 - A slice shares its source's bytes where the source outlives it and neither changes (texts can change in place through `append_code` and an append, so it needs that proven first)
 - Short symbols are inline text
-- A foreign name is never copied
 - A number's bits are read in place (built for a read at offset 0 of the number's own width, D786, D791 and D805, and the parts `to_half_precision` takes apart with `/` and `%` by powers of two are shifts and masks, D1323: 264 ms to 170 ms; not built: a read of part of a number's bytes, or at another offset; what is left of the case is the machine code: the alignment padding at every join, the moves between registers, and a magnitude whose subnormal path the bounds cannot follow, so the `UnsignedShort` narrowing keeps its two tests)
 - A decimal literal beside a `Float` is a `Float` (built: the literal is a `Float` and decimals live in decimal registers, D971; not built: a sum of decimals in a loop is never reassociated or vectorised, which needs a proof that every partial sum is exact, so `a_decimal_literal_beside_a_float_is_a_float` waits on one addition after another, about 16 times expert C)
 - Arithmetic is checked in every build (37.8 ms to 35.5 since a checked 32-bit operation works in its target's register, D1418, against the old compiler's 19.8): the loop is three checked 32-bit operations in a chain, each the operation, a jump on overflow and a sign extension, so the chain waits two cycles per operation; the 64-bit form tested beside the chain halves that wait but was slower elsewhere (D1418), and nothing bounds `values[index]`, so the checks stay
@@ -187,7 +186,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 - Boxing only where a value travels as a shape (measured 2026-10-25: 57 ms against the old compiler's 17: each `to_string()` through `Printable` makes its text)
 - A function value describes its arguments when asked (built: a function value made and called in one loop is a direct call, inlined, D1052; not built: a function value passed in from outside the function, or one of several functions, is still called through its address)
 - Defaults the constructor replaces are never made: done for a quiet default the constructor assigns before reading it; a default some other making (a deep copy, a reader) overwrites is still made
-- Proofs that survive a call
 
 ### The threads
 
@@ -206,10 +204,6 @@ What is left, in order. One line each; delete a line when it is done. The old co
 
 ### The compiler's own machinery
 
-- REPL, live reload and debug machinery only in those builds
-- A reload compiles only the classes that changed
-- What a `--hot-reload` build carries so its objects can move
-- A crash's report is kept out of the way (20.1 ms to 14.1 since the report's block is written after the function and the loop tests at the bottom, D1416, D1417, against the old compiler's 13.4): the loop keeps the checked `picks[index] + round`
 - A reload compiles only the classes that changed: the proof finds them and a save that changed nothing answers `unchanged` (D1368), but the whole program is still lowered and emitted to find the functions whose code changed
 - What a `--hot-reload` build carries so its objects can move (the hidden `spite_moved` and `spite_live` words, `<Class>___fields`)
 - A crash's report is kept out of the way (27.1 ms to 20.4 ms since the read after `crash values[pick]` tests its index once, D1321, against the old compiler's 13.4): the hot path still jumps over the cold call on every pass (the block layout puts the call right after the test) and keeps the checked `picks[index] + round`
