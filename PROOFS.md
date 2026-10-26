@@ -569,15 +569,16 @@ as when each was refused while building.
 - **Buys**: generic code compiles only the branch its class takes.
 - **Missing**: `function_waits` and `function_writes_parameter` are answered after every function is built, so both
   branches are built and checked (D673); a codegen number compared with a literal folds only when one side is a
-  call; a function taking a `type` has no copy per class; `x and false` and `x or true` whose left side calls
-  something (one that only reads names, attributes and tests folds, D1143).
+  call; a function taking a `type` has no copy per class. `x and false` and `x or true` fold whatever `x` is: one
+  that only reads names, attributes and tests is left out (D1143), and one that calls something is run on its own,
+  once, before the statement, and its answer dropped (D1513).
 - **Falls back**: a run-time test of a constant, removed later by constant folding; both branches must compile.
 - **Lives in**: the builder, `statements.spite` (`build_a_decided_if`), `values.spite` (`condition_of`,
   `folded_logic`, `decided_comparison`, `reflection_question`): deciding a condition is choosing what to build, and
   the branch not taken is never built, so nothing is left for a proof to judge (D1110).
 - **Checked by**: tests/codegen_member_fold, tests/walked_class_fold, tests/private_walk, tests/codegen_short_circuit,
   tests/codegen_kind_tests, tests/codegen_class_test, tests/build_settings, tests/folded_helpers,
-  tests/folded_functions, tests/folded_argument_count, tests/decided_and_false.
+  tests/folded_functions, tests/folded_argument_count, tests/decided_and_false, tests/decided_and_false_after_a_call.
 
 ### Whether a function waits
 
@@ -952,15 +953,20 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
   a variadic position of a program function "... gathers it into the list of its variadic arguments, which holds its own values and is
   never lent an item ..." (D1400).
 - **How**: a lent parameter the callee passes on by name to a program function called by name is lent to that
-  function too, for the call, and its body is judged the same way, through any depth of calls (D1141).
-- **Missing**: the uncounted argument; inside the callee, passing on through a receiver whose class the study
-  cannot tell, or to a library function; a row's attribute is not lent; the unnamed expression refusal.
+  function too, for the call, and its body is judged the same way, through any depth of calls (D1141). Passing it
+  on where it cannot be lent is refused inside the callee as at the first call (D1512): to a function the compiler
+  cannot follow ("... and '...' is not a function the compiler follows while compiling ..., so '...' does not pass
+  it on to it ..."), to a library function ("... is a library function, which is never lent an item, so '...' does
+  not pass it on to it ..."), to a variadic position of a program function, or to a union parameter.
+- **Missing**: the uncounted argument; a row's attribute is not lent, and a row is not followed when the callee
+  passes it on; the unnamed expression refusal.
 - **Falls back**: refused, "'...' is borrowed from '...' and lent to '...' for its call ...".
 - **Lives in**: the proof `proofs/borrowed_items` refuses a resizing, library or union lend and records each lent
   call in the context (`borrows.spite`, `check_the_lent_body`); the proof `proofs/lent_parameters`, after it, judges
   the callee's body.
 - **Checked by**: conformance/lent_to_calls, lent_call_alias, lent_call_function_value, lent_call_kept, lent_call_passed_on,
-  lent_call_library, lent_call_listed, lent_call_returned, lent_call_union; tests/lent_to_calls, lent_arguments,
+  lent_call_library, lent_call_listed, lent_call_returned, lent_call_union, lent_call_passed_on_library,
+  lent_call_passed_on_union; tests/lent_to_calls, lent_arguments,
   lent_call_written_back, ignored_lent_argument.
 
 ### A list element lent to a row

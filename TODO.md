@@ -271,7 +271,7 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 ### Compile-time questions
 
 - Whether a class keeps state: the answer is a filled value, not a folded constant
-- Conditions decided while compiling: `function_waits` and `function_writes_parameter` are late (D673), a codegen number against a literal, a function taking a `type` copied per class, `x and false` and `x or true` whose `x` calls something
+- Conditions decided while compiling: `function_waits` and `function_writes_parameter` are late (D673), a codegen number against a literal, a function taking a `type` copied per class
 - Tree shaking: nothing is shaken after lowering, inlining or late folding; a function nobody calls is not type-checked; no inspectable build keeps everything
 - A reload compiles only the changed classes (it finds them, D1368, and compiles the whole program), and reaches every object whose attributes it changes (it refuses the reload instead, D1365, until objects move)
 
@@ -286,7 +286,7 @@ reach, the singleton forms and a loop's coarse lock go with the decisions at the
 
 - No borrowed read past a resize: a value of unknown type fans out to every function of the name (strict, not silent)
 - An item lent to the caller: not built: the uncounted return, `is_fixed_size` and `functions[...]` folded in its conditions
-- An item lent to a call (fails silently): inside the callee (`proofs/lent_parameters`), a lent parameter passed on through a receiver whose class the study cannot tell, or to a library function; a row's attribute; the unnamed expression refusal; not built: the uncounted argument
+- An item lent to a call (fails silently): a row's attribute is not lent, and a row lent to a callee is not followed when the callee passes it on; the unnamed expression refusal; not built: the uncounted argument
 - Borrowed items of a `Vector` or `Items`: the reads stay counted references, walk copies and library member templates are not checked, `InlineMemory` is not a borrowing collection
 - Rows of borrowed items: the row in the frame and uncounted for a callee not inlined, a walked template's `var stored_row = rows[...]`, the arguments a plural fills, `row.describe` as a function value, a row passed to a library function
 - A list element lent to a row
