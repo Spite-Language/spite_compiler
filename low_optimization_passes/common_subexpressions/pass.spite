@@ -6,6 +6,7 @@ var lefts = List<Integer>()
 var rights = List<Integer>()
 var loaded = List<Boolean>()
 var offsets = List<Integer>()
+var regions = List<String>()
 var most_kept = 64
 var flow = LowOptimizationPasses.Flow()
 var definitions = List<Integer>()
@@ -178,7 +179,7 @@ func forwarded_key(stored: LowIntermediaryRepresentation.Instructions.Store, sig
         return ""
     }
     var shape = "{stored.width} {signed} {stored.is_swapped}"
-    return "load {shape} r{stored.address} {stored.offset}"
+    return "load {shape} in {stored.region} r{stored.address} {stored.offset}"
 }
 
 func fits_as(stored: LowIntermediaryRepresentation.Instructions.Store, signed: Boolean): Boolean {
@@ -196,6 +197,7 @@ func fits_as(stored: LowIntermediaryRepresentation.Instructions.Store, signed: B
         LowIntermediaryRepresentation.Instructions.Arithmetic: return fits_from_arithmetic(source, signed)
         LowIntermediaryRepresentation.Instructions.Load: return fits_from_a_load(source, stored, signed)
         LowIntermediaryRepresentation.Instructions.Constant: return fits_from_a_constant(source, signed)
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return not signed and not source.is_double
         _: return false
     }
 }
@@ -308,6 +310,10 @@ func meet_with(predecessor: Integer, first: Boolean) {
 func forget_the_flowing_writes(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
     var only_counts = instruction == LowIntermediaryRepresentation.Instructions.Retain
     assert only_counts or writes_memory(instruction)
+    if instruction == LowIntermediaryRepresentation.Instructions.Store and not instruction.region.is_empty() {
+        forget_the_flowing_loads_in(instruction.region)
+        return
+    }
     var kept_keys = List<String>()
     var kept_targets = List<Integer>()
     var index = 0
@@ -318,6 +324,28 @@ func forget_the_flowing_writes(instruction: LowIntermediaryRepresentation.Instru
         var is_a_load = key.starts_with("load ")
         var counted = key.ends_with(" 8")
         if not is_a_load or only_counts and not counted {
+            kept_keys.append(key)
+            kept_targets.append(target)
+        }
+        index = index + 1
+    }
+    flowing_keys = kept_keys
+    flowing_targets = kept_targets
+}
+
+# ../../OPTIMIZATIONS.md#a-write-to-one-attribute-keeps-what-was-read-from-another
+func forget_the_flowing_loads_in(region: String) {
+    var kept_keys = List<String>()
+    var kept_targets = List<Integer>()
+    var same = " in {region} r"
+    var index = 0
+    while index < flowing_keys.count() {
+        var key = flowing_keys[index]
+        var target = flowing_targets[index]
+        crash target
+        var is_a_load = key.starts_with("load ")
+        var touched = key.contains(same) or key.contains(" in  r")
+        if not is_a_load or not touched {
             kept_keys.append(key)
             kept_targets.append(target)
         }
@@ -358,6 +386,7 @@ func forget_everything() {
     rights.clear()
     loaded.clear()
     offsets.clear()
+    regions.clear()
 }
 
 func share_in_block(block: LowIntermediaryRepresentation.LowBlock) {
@@ -366,6 +395,9 @@ func share_in_block(block: LowIntermediaryRepresentation.LowBlock) {
     while index < block.instructions.count() {
         var instruction = block.instructions[index]
         var key = key_of(instruction)
+        if instruction == LowIntermediaryRepresentation.Instructions.Constant {
+            key = constant_key(instruction)
+        }
         var found = -1
         if not key.is_empty() {
             found = available(key)
@@ -433,10 +465,13 @@ func remember(instruction: LowIntermediaryRepresentation.Instructions.Instructio
     }
     loaded.append(is_a_load)
     var offset = -1
+    var region = ""
     if instruction == LowIntermediaryRepresentation.Instructions.Load {
         offset = instruction.offset
+        region = instruction.region
     }
     offsets.append(offset)
+    regions.append(region)
 }
 
 func remember_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
@@ -454,6 +489,7 @@ func remember_a_stored_sign(stored: LowIntermediaryRepresentation.Instructions.S
     rights.append(stored.source)
     loaded.append(true)
     offsets.append(stored.offset)
+    regions.append(stored.region)
 }
 
 func forget_the_register(register: Integer) {
@@ -476,6 +512,7 @@ func forget_at(index: Integer) {
     rights.remove_at(index)
     loaded.remove_at(index)
     offsets.remove_at(index)
+    regions.remove_at(index)
 }
 
 func forget_the_writes(instruction: LowIntermediaryRepresentation.Instructions.Instruction) {
@@ -484,7 +521,25 @@ func forget_the_writes(instruction: LowIntermediaryRepresentation.Instructions.I
         return
     }
     assert writes_memory(instruction)
+    if instruction == LowIntermediaryRepresentation.Instructions.Store and not instruction.region.is_empty() {
+        forget_the_loads_in(instruction.region)
+        return
+    }
     forget_the_loads_at(-1)
+}
+
+# ../../OPTIMIZATIONS.md#a-write-to-one-attribute-keeps-what-was-read-from-another
+func forget_the_loads_in(region: String) {
+    var index = keys.count() - 1
+    while index >= 0 {
+        var is_a_load = loaded[index] == true
+        var other = regions[index]
+        crash other
+        if is_a_load and (other.is_empty() or other == region) {
+            forget_at(index)
+        }
+        index = index - 1
+    }
 }
 
 func forget_the_loads_at(offset: Integer) {
@@ -545,6 +600,14 @@ func arithmetic_key(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
     return "{arithmetic.operator} {arithmetic.width} {arithmetic.is_signed} r{left} r{right}"
 }
 
+# ../../OPTIMIZATIONS.md#the-same-computation-in-a-block-is-made-once
+func constant_key(constant: LowIntermediaryRepresentation.Instructions.Constant): String {
+    if constant.number == 0 or not is_stable(constant.target) or constant.target < function.parameter_count {
+        return ""
+    }
+    return "constant {constant.number}"
+}
+
 func decimal_key(arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic): String {
     return "decimal {arithmetic.operator} {arithmetic.is_double} r{arithmetic.left} r{arithmetic.right}"
 }
@@ -559,5 +622,5 @@ func load_key(loaded_value: LowIntermediaryRepresentation.Instructions.Load): St
     if loaded_value.is_invariant {
         return "invariant load {shape} r{loaded_value.address} {loaded_value.offset}"
     }
-    return "load {shape} r{loaded_value.address} {loaded_value.offset}"
+    return "load {shape} in {loaded_value.region} r{loaded_value.address} {loaded_value.offset}"
 }

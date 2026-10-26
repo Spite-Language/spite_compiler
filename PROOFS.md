@@ -392,6 +392,23 @@ as when each was refused while building.
   `low_optimization_passes/vector_loops`.
 - **Checked by**: tests/counted_loops, tests/strided_counted_loops, tests/decided_comparisons, tests/window_reads_one_test.
 
+### A test a dominating test already made is answered
+
+- **Status**: built.
+- **Rule**: a comparison made in its branch's own block, of two registers each written once (or parameters) whose
+  writes dominate an earlier branch on the same comparison of the same registers (or its opposite: `<` against
+  `>=`, `==` against `!=`), is answered while compiling when the block one side of that earlier branch enters has no
+  other way in and dominates the later branch. The answer is that side's.
+- **Buys**: a second bound test of an index already tested (`crash values[at]` then `values[at]`) and any repeated
+  test of the same values are not made; the branch becomes a jump.
+- **Missing**: a register written twice (a loop's counter), a comparison made in another block than its branch, a
+  decimal comparison, a function of more than 2000 blocks.
+- **Falls back**: the test is made again.
+- **Lives in**: the low proof `proofs/dominating_tests`, run in each cleaning after the signed-test proof, which
+  adds its answers to the same record on each function; the pass `low_optimization_passes/proven_bounds` writes
+  them (the comparison becomes its constant answer) and the folding and jump threading after it take the branch.
+- **Checked by**: tests/dominated_tests.
+
 ### A proven divisor is not checked
 
 - **Status**: partly built (by ranges, wider than the old rule).
