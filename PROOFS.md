@@ -1526,7 +1526,9 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   refuses the reload, naming the class and the attributes that are new or gone, since the objects the program holds
   would be read through attributes they do not have; an enum whose values change other than by new ones added last
   refuses it too, since a value the program holds keeps its number. Class ids are seeded from the manifest, so a
-  class keeps the id its objects carry.
+  class keeps the id its objects carry. Object literals of one layout in one function are told apart only by their
+  place among each other (`Object_<layout>_<n>`), so a reload that changes how many a function writes is refused:
+  the running objects of one would take the other's class.
 - **What it buys**: no reloaded function ever reads a live object through a layout it was not made with: the reload
   is refused instead, and the program keeps all of its code.
 - **When it does not apply**: a build without `--hot-reload` has no reload. Moving the objects to the new layout,

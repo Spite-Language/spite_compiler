@@ -66,7 +66,8 @@ The program keeps all of its code, and the answer says why:
   through a layout they do not have), or an enum's values change other than by adding new ones last;
 - the shared routines are compiled differently (the program starts using threads, say);
 - changed code calls a system function the program never imported, or reaches state that has no name;
-- the room kept for new code is full or cannot be reserved.
+- the room kept for new code is full or cannot be reserved;
+- a function writes more or fewer object literals of one layout than the running program's.
 
 Class ids are seeded from the manifest, so a class keeps the id its objects carry, and a new class takes the next
 one after the largest.
@@ -74,6 +75,8 @@ An object literal's class is keyed by what does not move when code is added arou
 that write it, its attributes' names and types in order, and its place among the literals of that same layout in
 that function (`Object_<digest>_<n>`). A reload that adds a literal before another therefore leaves the running
 literal's id with the literal that made its objects, instead of handing it to whichever literal now comes first.
+A reload that changes how many literals of one layout a function writes is refused, since it could not say which
+literal the running objects came from.
 
 ## Crash reports inside reloaded code
 
