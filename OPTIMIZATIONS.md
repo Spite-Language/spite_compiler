@@ -3751,7 +3751,8 @@ program runs.
 
 **When it applies:** to a `Boolean`, number or `String` field, read through a `Build` binding
 (`var build = Build()`), whose value is given on the command line or whose default is a literal or arithmetic on
-literals (`-3`, `0.5`, `2 * 60`, D1406), in every build but a `--hot-reload`, `--repl`, `--repl-port` or
+literals (`-3`, `0.5`, `2 * 60`, D1406) or another field of the same type (`var attempts = retries`, the other
+field's constant, D1664), in every build but a `--hot-reload`, `--repl`, `--repl-port` or
 `--development` one, where the program reads the field while it runs, so that a reload can change it. A default
 written as arithmetic is the expression itself in place of the read, which the evaluation of constants folds.
 

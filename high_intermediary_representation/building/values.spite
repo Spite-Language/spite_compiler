@@ -6,6 +6,7 @@ var context = Context(no_program, no_resolver)
 var scalars = Model.Scalars()
 var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
 var temporary_count = 0
+var build_defaults_read = 0
 var spread_into: Model.FunctionModel? = null
 var members_being_compared = List<String>()
 
@@ -2010,6 +2011,11 @@ func folded_build_read(target: HighIntermediaryRepresentation.Values.Value, name
     var flags = context.build_flags
     var is_live = flags["hot_reload"] == "true" or flags["repl"] == "true" or flags["development"] == "true"
     assert not is_live
+    return folded_setting_named(name)
+}
+
+# ../../OPTIMIZATIONS.md#build-settings-are-constants
+func folded_setting_named(name: String): HighIntermediaryRepresentation.Values.Value? {
     var settings = context.program.class_named("Build")
     assert settings
     var field = settings.attribute_named(name)
@@ -2063,8 +2069,22 @@ func build_default_of(
     if written == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
         return build_literal_of(written, field_type)
     }
+    if written == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return build_field_default_of(written.name, field_type)
+    }
     assert is_a_constant_default(written)
     return fitted_value_of(written, field_type)
+}
+
+func build_field_default_of(name: String, field_type: Model.Type): HighIntermediaryRepresentation.Values.Value? {
+    var settings = context.program.class_named("Build")
+    assert settings and build_defaults_read < 16
+    var other = settings.attribute_named(name)
+    assert other and other.attribute_type.name == field_type.name
+    build_defaults_read = build_defaults_read + 1
+    var folded = folded_setting_named(name)
+    build_defaults_read = build_defaults_read - 1
+    return folded
 }
 
 func build_literal_of(
@@ -2592,9 +2612,6 @@ func call_value(
 ): HighIntermediaryRepresentation.Values.Value {
     var maker = call.callee
     if maker == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        if is_the_symbol_maker(maker.name) and call.arguments.count() == 1 {
-            return symbol_from_text(call)
-        }
         if is_a_handle_maker(maker.name) and call.arguments.count() == 1 {
             return handle_value(maker.name, call)
         }
@@ -2687,30 +2704,6 @@ func reads_into_defaults(constructor: Model.FunctionModel): Boolean {
         return false
     }
     return path.ends_with("/json_reader.spite") or path.ends_with("/binary_format.spite")
-}
-
-func is_the_symbol_maker(name: String): Boolean {
-    if context.current_class.function_named(name) {
-        return false
-    }
-    return name == "Symbol"
-}
-
-func symbol_from_text(
-    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
-): HighIntermediaryRepresentation.Values.Value {
-    var written = call.arguments[0]
-    crash written
-    need_text_constants()
-    var text_type = context.text()
-    var read = fitted_value_of(written, text_type)
-    var string_model = context.class_of(text_type)
-    var equals = string_model.function_named("equals")
-    crash equals
-    need(equals)
-    var symbol_type = context.resolver.symbol_type()
-    var answer_type = symbol_type.nullable()
-    return HighIntermediaryRepresentation.Values.EnumFromText(answer_type, context.symbol_table, read)
 }
 
 func is_a_handle_maker(name: String): Boolean {
@@ -3526,6 +3519,13 @@ func member_call(
     if not function and names_the_pattern {
         function = owner.function_named(stands_for)
     }
+    if function and callee.name == "deep_copy" and call.arguments.is_empty() {
+        var sharing = Copying(context, this)
+        var shared = sharing.shared_table_copy_of(owner)
+        if shared {
+            function = shared
+        }
+    }
     if not function {
         function = member_template_of(owner, callee.name)
     }
@@ -3559,6 +3559,12 @@ func member_call(
         var read_as_an_enum = text_read_as_an_enum(receiver, owner, callee.name, written_count)
         if read_as_an_enum {
             return read_as_an_enum
+        }
+    }
+    if not function {
+        var numbered_enum = number_read_as_an_enum(receiver, owner, callee.name, written_count)
+        if numbered_enum {
+            return numbered_enum
         }
     }
     if not function {
@@ -4049,6 +4055,55 @@ func text_read_as_an_enum(
     assert found.kind == 'enumeration'
     var wanted = found.nullable()
     return fitted(receiver, wanted)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#enums-in-full
+func number_read_as_an_enum(
+    receiver: HighIntermediaryRepresentation.Values.Value,
+    owner: Model.ClassModel,
+    name: String,
+    written_count: Integer,
+): HighIntermediaryRepresentation.Values.Value? {
+    var whole = ["Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong"]
+    assert whole.contains(owner.key) and name.starts_with("to_") and written_count == 0
+    var name_length = name.length()
+    var snake = name.slice(3, name_length)
+    var enum_name = pascal_case_of(snake)
+    var path = List<String>()
+    path.append(enum_name)
+    var found = context.resolver.declared_type_in(path, context.current_class)
+    assert found
+    assert found.kind == 'enumeration'
+    var wanted = found.nullable()
+    var held = held_operand(receiver)
+    var nothing = HighIntermediaryRepresentation.Values.NullConstant(wanted)
+    temporary_count = temporary_count + 1
+    var local_name = context.scope.declare("numbered_{temporary_count}", wanted)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(local_name, wanted, nothing)
+    declared.line = context.line
+    context.pending.append(declared)
+    var enumeration = enum_model_of(found)
+    var boolean = context.boolean()
+    var index = 0
+    while index < enumeration.values.count() {
+        var value_name = enumeration.values[index]
+        var number = enumeration.numbers[index]
+        crash value_name
+        crash number
+        var compared = HighIntermediaryRepresentation.Values.WholeNumber(held.value_type, number)
+        var tested = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', held, compared)
+        var value = enum_value(value_name, found)
+        var fitted_value = fitted(value, wanted)
+        var assigned = HighIntermediaryRepresentation.Statements.Assign.Assign(local_name, fitted_value)
+        assigned.line = context.line
+        var branch = HighIntermediaryRepresentation.Statements.Block()
+        branch.statements.append(assigned)
+        var test = HighIntermediaryRepresentation.Statements.If(tested, branch, null)
+        test.line = context.line
+        context.pending.append(test)
+        index = index + 1
+    }
+    return HighIntermediaryRepresentation.Values.LocalRead(wanted, local_name)
 }
 
 func enum_value_found(
@@ -7610,7 +7665,6 @@ func bound_is(bound: Model.Type, written: String): Boolean {
         "Number": return bound.kind == 'scalar' and bound.name != "Boolean" and not bound.is_nullable
         "List": return bound.name.starts_with("List_of_") and not bound.is_nullable
         "Dictionary": return bound.name.starts_with("Dictionary_of_") and not bound.is_nullable
-        "Symbol": return (bound.is_symbol or bound.kind == 'enumeration') and not bound.is_nullable
         "Enum": return bound.kind == 'enumeration' and not bound.is_nullable
         "Nothing": return bound.kind == 'nothing'
         _: return is_the_class(bound, written)

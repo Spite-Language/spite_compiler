@@ -838,15 +838,18 @@ as when each was refused while building.
   `insert`, `prepend`, `add`, `set_at`), `x.f[k] = y`, and a constructor that keeps its argument in an attribute. A
   call of a program function whose name only one class declares adds that function's own stores, with `this` and
   its parameters replaced by the call's receiver and arguments, so `team.recruit(player)` beside `player.play_for(team)`
-  links the two as `team.players.append(player)` beside `player.team = team` would (D1396). A link found in one
+  links the two as `team.players.append(player)` beside `player.team = team` would (D1396). A function's own stores
+  include those of the program functions it calls, found in three rounds over the program (each round expanding
+  the calls by the summaries of the round before), so a link made three calls down counts (D1663). A link found in one
   function decides the attribute for the whole program.
-- **Missing**: a link through a function named by two classes (the library's included: a `join` is `String.join`'s name too), a call two levels deep, two objects neither of which
+- **Missing**: a link through a function named by two classes (the library's included: a `join` is `String.join`'s name too), a call more than three deep, two objects neither of which
   the function made linked directly (not through a collection), one attribute pointing both ways (`partner`), a
   cycle through a union or a `type`, and a back attribute that cannot be null: each keeps its counts and leaks,
   which `--debug-memory` names at exit.
 - **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
 - **Lives in**: `model/back_references.spite`, asked by `ProgramModel.holds_no_count`.
-- **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls.
+- **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls,
+  tests/back_reference_two_levels.
 
 ### A deep copy copies a graph with its shape
 
@@ -859,7 +862,11 @@ as when each was refused while building.
   the class it holds, with the same table. A class that reaches a `type` attribute is copied through a table
   whatever fills it, since the classes that fill a `type` are known only once the whole program is built (D1397),
   and the `type` value is copied through `_deep_copy_in` with the same table.
-- **Missing**: `List.deep_copy()` gives each item a table of its own.
+  A `List`, `Dictionary` or `Items` whose items reach such a class (or a union or a `type`) is copied through one
+  table for all its items (`_deep_copy_through_a_table`, made when a `deep_copy()` of it is built), so items that
+  hold each other stay one graph; one reached inside a table copy uses that table (its `_deep_copy_in`)
+  (`tests/deep_copy_list_graph`). A collection whose items need no table copies them one by one and makes none.
+- **Missing**: a `Vector` copies its items as values; the table finds a copy through a `Dictionary<Long, Long>`.
 - **Falls back**: a class that reaches a `type` pays for a table even when no filler reaches it back.
 - **Lives in**: embedded, `high_intermediary_representation/building/copying.spite` (`uses_a_table`, `holds_a_type`,
   `copy_in_call`).
