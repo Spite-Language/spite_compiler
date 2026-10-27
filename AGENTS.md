@@ -1,6 +1,6 @@
 # Working on spite_compiler
 
-Read `README.md`, then `ARCHITECTURE.md`, then `TODO.md`. Read a folder's `contract.md` before changing it.
+Read `README.md`, then `ARCHITECTURE.md`, then the [issues](https://github.com/Spite-Language/spite_compiler/issues) (what is left, labelled by category, urgency and what blocks them). Read a folder's `contract.md` before changing it.
 
 ## The goal
 
@@ -15,13 +15,13 @@ is decided; [the specification](https://github.com/Spite-Language/spite_spec/blo
 - A step never writes an error (a validator does) and a representation never writes text (a printer does).
 - Anything that can go wrong silently is a bug: a crash that names its cause or a compile error, never a guess.
 - No C, and no standard library code here. A new class in [spite_standard_library](https://github.com/Spite-Language/spite_standard_library) needs Mortaro's yes first.
-- Keep markdown short. One fact in one place. `TODO.md` is one line per thing left; delete it when done.
+- Keep markdown short. One fact in one place. What is left is a GitHub issue, never a file: a pull request that finishes one says `Closes #n`, one that finishes part of it comments what is left, and a fault you find and do not fix now is a new issue (label `urgency: silent` when it fails silently, D244).
 
 ## Work
 
 - Work on `master`; there is no other branch.
   The default branch is `master`; do not rename it or suggest renaming it.
-- Shared files (`TODO.md`, the files of [mortaros_spite](https://github.com/Spite-Language/mortaros_spite)) are written by every session. Edit them with targeted
+- Shared files (the files of [mortaros_spite](https://github.com/Spite-Language/mortaros_spite)) are written by every session. Edit them with targeted
   changes that match on surrounding text, never line numbers, and re-read immediately before writing. Never restore
   one from a backup: a whole-file overwrite has already lost a day of decisions once.
 - Delegate to a cheaper subagent only when it is cheaper: if the round trips and the cold context cost more quota

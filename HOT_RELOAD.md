@@ -108,7 +108,7 @@ value, into a list the call hands to the stop (`locals` answers them). The progr
 
 ## Not built yet
 
-What `TODO.md` lists: moving live objects to a new layout, compiling only the changed classes instead of the whole
+What the issues list: moving live objects to a new layout, compiling only the changed classes instead of the whole
 program (the proof finds them, the compile does not skip the rest yet), the compile on a helper thread, a reload
 held while a `Concurrent` waits inside a function it swaps, reflection that follows a reload, and a path at
 the prompt that starts at a breakpoint's local.

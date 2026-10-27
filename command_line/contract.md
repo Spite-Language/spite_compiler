@@ -17,4 +17,4 @@ program (`validators/command_line/program_named`).
 ## What it does not do yet
 
 The original's options (`--check`, `--build`, `--executable-path`, the program's own `Build` and `Environment`
-settings, and the exact texts it refuses each one with) are listed in `TODO.md` under the outputs.
+settings, and the exact texts it refuses each one with) are issues labelled `tools`.

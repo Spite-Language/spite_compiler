@@ -47,7 +47,7 @@ and `List_of_Integer` in the instance `List_of_Integer`.
 - A type parameter with no `generic` line: `validators/name_resolution/codegen_line`.
 - A member of a type that is not there: `validators/name_resolution/type_member`.
 
-A class name that reaches no file is collected and not reported yet (`TODO.md`).
+A class name that reaches no file is collected and not reported yet (an issue labelled `architecture`).
 
 ## The two kinds of dependent type
 

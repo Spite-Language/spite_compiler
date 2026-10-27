@@ -10,13 +10,13 @@ the code is refused, saying what to write, or the run-time check stays.
 The rules are the language's, in `../SpiteLanguage/specs`; this page says, for each proof, what this compiler does
 with it. Each section has the same parts:
 
-- **Status**: built, partly built (what is missing is its line in `TODO.md`, "Every proof the original makes"), or
+- **Status**: built, partly built (what is missing is its issue labelled `proof`), or
   missing.
 - **Rule**: what is proven and how, with a link to the specification that states it in full.
 - **Buys**: the code accepted or refused, the check dropped, the cost saved.
 - **Falls back**: when it does not apply, what the compiler does and what the user writes.
 - **Lives in**: the pass or the file that makes it. A proof is a pass of its own (D1086), in `proofs/<name>/`; a
-  proof still made inside a step or another pass says "embedded", and moving it out is a `TODO.md` line.
+  proof still made inside a step or another pass says "embedded", and moving it out is an issue.
 - **Checked by**: the `../spite_spec` programs that pin it (`tests/` must run, `conformance/` must be refused).
 
 Two kinds of proof run at two places (D1086, D1072). A proof that decides whether code is **accepted** runs on the
@@ -29,7 +29,7 @@ order.
 
 Of the 92 proofs the old compiler made, 40 are built, 32 are partly built and 20 are missing (audit of
 2026-10-24, with what was built since). Where a proof is partly built and what is missing could let a wrong program through, the section says
-**fails silently**: that is a D244 bug and its `TODO.md` line comes first.
+**fails silently**: that is a D244 bug and its issue is labelled `urgency: silent` and comes first.
 
 ## What the builder records for the proofs
 

@@ -47,5 +47,5 @@ From the clone of [spite_spec](https://github.com/Spite-Language/spite_spec) bes
 
 ## Read next
 
-`ARCHITECTURE.md` (how it is put together), `TODO.md` (what is left), `HOT_RELOAD.md`, and each folder's
+`ARCHITECTURE.md` (how it is put together), the [issues](https://github.com/Spite-Language/spite_compiler/issues) (what is left), `HOT_RELOAD.md`, and each folder's
 `contract.md`.
