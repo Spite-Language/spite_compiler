@@ -330,11 +330,11 @@ proved](#a-bound-a-signed-test-already-proved-is-not-tested-again) covers a loop
 ```spite
 func digit_of(alphabet: String, group: Integer, shift: Integer): Integer {
     var value = group.shifted_right(shift).bits_and(63)
-    return alphabet.code_at(value)
+    return alphabet.byte_at(value)
 }
 ```
 
-`code_at` halts on an index outside the text: here only `value < alphabet.length()` is tested, since `value >= 0`
+`byte_at` halts on an index outside the text: here only `value < alphabet.length()` is tested, since `value >= 0`
 holds for every value a mask with 63 can give.
 
 **What a program can observe:** nothing but time; a test the bounds do not decide still runs and still halts with
@@ -475,8 +475,8 @@ more bytes per `Buffer`, and the time.
 The library's text and bytes functions copy runs of bytes with `Buffer._copy_bytes(at, source, source_at,
 wanted)`, a function with no body that the compiler writes as one block copy: `rep movsb`, or, when the two runs
 overlap with the target after the source, the same copy run backwards. `String`'s `_append_text`, `slice`, `sum`,
-`replace`, `split`, `trim`, `to_bytes`, `upper_case` and `lower_case`, and `Buffer`'s `append_bytes`, `copy`,
-`read_bytes` and `text` are each one copy per run instead of a call per byte. `equals`, `starts_with`, `ends_with`,
+`replace`, `split`, `trim`, `to_buffer`, `upper_case` and `lower_case`, and `Buffer`'s `append_buffer`, `copy`,
+`read_buffer_at` and `read_string_at` are each one copy per run instead of a call per byte. `equals`, `starts_with`, `ends_with`,
 `contains`, `index_of`, `split` and `replace` compare eight bytes at a time (one 64-bit load from each side), and
 look for a match only where the first byte matches. A number's `to_string()` counts its digits, makes room once
 and writes them from the last, into the text it answers.
@@ -2264,7 +2264,7 @@ func count_digits(text: String): Integer {
     var index = 0
     var counted = 0
     while index < text.length() {
-        var code = text.code_at(index)
+        var code = text.byte_at(index)
         if code >= 48 and code <= 57 {
             digits.append(code)
             counted = counted + 1
