@@ -27,6 +27,10 @@ is decided; [the specification](https://github.com/Spite-Language/spite_spec/blo
 - Delegate to a cheaper subagent only when it is cheaper: if the round trips and the cold context cost more quota
   than doing the work inline, do it inline.
 - Build once per batch of changes (about two minutes), then run [spite_spec](https://github.com/Spite-Language/spite_spec) (see `README.md`).
+- A change here or in [spite_standard_library](https://github.com/Spite-Language/spite_standard_library) that changes
+  what a program writes, what it answers or an error's words updates, in the same push, the specification page that
+  states it (`spite_spec/specs/`) and the docs page that teaches it ([spite_documentation](https://github.com/Spite-Language/spite_documentation),
+  `skills/spite/reference.md` included), examples and their output too. Search both for the old name before pushing.
 - Every feature or fixed error gets a test in [spite_spec](https://github.com/Spite-Language/spite_spec): `tests/<name>` must pass, `conformance/<name>`
   must fail with the old compiler's exact error text.
 - Commit as you go. Ask Mortaro first only for an architecture decision you are not sure of.
