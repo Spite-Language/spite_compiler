@@ -17,6 +17,8 @@ var building_function_name = ""
 var typing_function_name = ""
 var read_function_path = ""
 var passing_depth = 0
+var first_types = List<Model.Type>()
+var first_type_members = List<List<String>>()
 
 func Resolver(starting_symbols: Symbols.SymbolTable) {
     symbols = starting_symbols
@@ -1546,13 +1548,19 @@ func element_type_of(listed: Model.Type): Model.Type {
 
 func function_type_of(arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>): Model.Type {
     var made = Model.Type('function', "Spite.Function")
-    var types = types_of_arguments(arguments)
-    var answer = types.remove_last()
-    crash answer
-    if answer.kind != 'nothing' {
-        made.answer = answer
+    var written_types = types_of_arguments(arguments)
+    var written_answer = written_types.remove_last()
+    crash written_answer
+    if written_answer.kind != 'nothing' {
+        made.answer = same_member_type(written_answer)
     }
-    made.parameters = types
+    var index = 0
+    while index < written_types.count() {
+        var written = written_types[index]
+        var parameter = same_member_type(written)
+        made.parameters.append(parameter)
+        index = index + 1
+    }
     return made
 }
 
@@ -1595,11 +1603,13 @@ func declared_type_of(path: List<String>): Model.Type? {
     }
     var made_union = owner.union_named(name)
     if made_union {
-        return Model.Type('union', made_union.key)
+        var union_type = Model.Type('union', made_union.key)
+        return same_member_type(union_type)
     }
     var made_shape = owner.shape_named(name)
     if made_shape {
-        return Model.Type('shape', made_shape.key)
+        var shape_type = Model.Type('shape', made_shape.key)
+        return same_member_type(shape_type)
     }
     assert path.count() == 1
     var named_class = symbols.find(name, context.file.namespace)
@@ -1648,11 +1658,13 @@ func declared_in(model: Model.ClassModel, name: String): Model.Type? {
     }
     var made_union = model.union_named(name)
     if made_union {
-        return Model.Type('union', made_union.key)
+        var union_type = Model.Type('union', made_union.key)
+        return same_member_type(union_type)
     }
     var made_shape = model.shape_named(name)
     if made_shape {
-        return Model.Type('shape', made_shape.key)
+        var shape_type = Model.Type('shape', made_shape.key)
+        return same_member_type(shape_type)
     }
     return null
 }
@@ -2077,7 +2089,8 @@ func instance_key(class_key: String, given: List<Model.Type>): String {
     return "{class_key}_of_{joined}"
 }
 
-func key_of_an_argument(argument: Model.Type): String {
+func key_of_an_argument(given: Model.Type): String {
+    var argument = same_member_type(given)
     var argument_key = argument.name.replace(".", "_")
     if argument.is_symbol {
         argument_key = "Symbol"
@@ -2095,6 +2108,125 @@ func key_of_an_argument(argument: Model.Type): String {
         argument_key = "{argument_key}_maybe"
     }
     return argument_key
+}
+
+# ../../spite_spec/specs/values_and_types.md#unions-in-full
+func same_member_type(given: Model.Type): Model.Type {
+    if given.kind != 'union' and given.kind != 'shape' {
+        return given
+    }
+    var members = written_members_of(given)
+    if members.is_empty() {
+        return given
+    }
+    var index = 0
+    while index < first_types.count() {
+        var first = first_types[index]
+        var first_members = first_type_members[index]
+        crash first_members
+        if first.kind == given.kind and has_the_same_members(members, first_members) {
+            if given.is_nullable {
+                return first.nullable()
+            }
+            return first
+        }
+        index = index + 1
+    }
+    var present = given.present()
+    first_types.append(present)
+    first_type_members.append(members)
+    return given
+}
+
+func has_the_same_members(members: List<String>, others: List<String>): Boolean {
+    if members.count() != others.count() {
+        return false
+    }
+    var index = 0
+    while index < members.count() {
+        var member = members[index]
+        if not others.contains(member) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func written_members_of(declared: Model.Type): List<String> {
+    var members = List<String>()
+    var parts = declared.name.split(".")
+    var simple = parts.remove_last()
+    crash simple
+    var owner_key = parts.join(".")
+    var owner = program.class_named(owner_key)
+    if not owner {
+        return members
+    }
+    var index = 0
+    while index < owner.file.declarations.count() {
+        var declaration = owner.file.declarations[index]
+        if declaration == AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration and declaration.name == simple {
+            add_the_written_members(members, declaration, owner)
+        }
+        if declaration == AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration and declaration.name == simple {
+            add_the_written_signatures(members, declaration)
+        }
+        index = index + 1
+    }
+    return members
+}
+
+func add_the_written_members(
+    members: List<String>,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration,
+    owner: Model.ClassModel,
+) {
+    var index = 0
+    while index < declaration.member_names.count() {
+        var written = declaration.member_names[index]
+        var found = symbols.find(written, owner.file.namespace)
+        if found {
+            members.append(found.namespace)
+        } else {
+            members.append(written)
+        }
+        index = index + 1
+    }
+}
+
+func add_the_written_signatures(
+    members: List<String>,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration,
+) {
+    var index = 0
+    while index < declaration.members.count() {
+        var member = declaration.members[index]
+        var written = List<String>()
+        var parameter_index = 0
+        while parameter_index < member.parameters.count() {
+            var parameter = member.parameters[parameter_index]
+            var parameter_text = written_type_text(parameter.declared_type)
+            written.append(parameter_text)
+            parameter_index = parameter_index + 1
+        }
+        var joined = written.join(", ")
+        var answer = written_type_text(member.result)
+        var signature = "{member.name}({joined}): {answer}"
+        if member.is_an_attribute {
+            signature = "{member.name}: {answer}"
+        }
+        members.append(signature)
+        index = index + 1
+    }
+}
+
+func written_type_text(written: AbstractSyntaxTree.Shapes.Types.Type?): String {
+    if not written {
+        return ""
+    }
+    var printer = Printers.Spite.TypePrinter(written)
+    return printer.text()
 }
 
 func function_key_of(described: Model.Type): String {
@@ -2126,8 +2258,9 @@ func mint(
     var index = 0
     while index < names.count() {
         var name = names[index]
-        var bound = given[index]
-        crash bound
+        var written_bound = given[index]
+        crash written_bound
+        var bound = same_member_type(written_bound)
         model.bound_types[name] = bound
         index = index + 1
     }

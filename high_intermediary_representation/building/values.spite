@@ -53,7 +53,7 @@ func same_signature(given: Model.Type, wanted: Model.Type): Boolean {
         var given_parameter = given.parameters[index]
         var wanted_parameter = wanted.parameters[index]
         crash wanted_parameter
-        if not given_parameter.is_the_same_as(wanted_parameter) {
+        if not is_the_same_type(given_parameter, wanted_parameter) {
             return false
         }
         index = index + 1
@@ -64,7 +64,33 @@ func same_signature(given: Model.Type, wanted: Model.Type): Boolean {
     if not wanted.answer {
         return false
     }
-    return given.answer.is_the_same_as(wanted.answer)
+    return is_the_same_type(given.answer, wanted.answer)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#unions-in-full
+func is_the_same_type(given: Model.Type, wanted: Model.Type): Boolean {
+    var given_type = context.resolver.same_member_type(given)
+    var wanted_type = context.resolver.same_member_type(wanted)
+    return given_type.is_the_same_as(wanted_type)
+}
+
+func same_member_copy(
+    value: HighIntermediaryRepresentation.Values.Value,
+    wanted: Model.Type,
+): HighIntermediaryRepresentation.Values.Value? {
+    var given = value.value_type
+    assert given.kind == 'union' and wanted.kind == 'union'
+    var given_present = given.present()
+    var wanted_present = wanted.present()
+    assert is_the_same_type(given_present, wanted_present)
+    if given.is_nullable and not wanted.is_nullable {
+        note_a_maybe_null("fit", value, "", wanted)
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'proven', value)
+    }
+    if wanted.is_nullable and not given.is_nullable {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'nullable', value)
+    }
+    return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_union', value)
 }
 
 func named_or_described(
@@ -114,6 +140,10 @@ func fitted(
     }
     if given.is_the_same_as(wanted) {
         return value
+    }
+    var copied = same_member_copy(value, wanted)
+    if copied {
+        return copied
     }
     var cast_to_text = cast_text_of(value, wanted)
     if cast_to_text {
@@ -189,6 +219,7 @@ func fitted(
     var conversion = conversion_name_of(wanted)
     typing.refuse_text_given(context, shown_given, shown_wanted, wants_an_enum, conversion)
     refuse_a_union_member_missing(value, wanted)
+    refuse_a_smaller_union_inside(given, wanted)
     refuse_a_missing_conversion(value, wanted)
     typing.refuse_mismatch(context, shown_given, shown_wanted)
     return value
@@ -617,7 +648,9 @@ func refuse_a_mistyped_function(
 }
 
 func own_type_in_the_shape(wanted: Model.Type, given: Model.Type, shape: Model.ShapeModel): Model.Type {
-    if wanted.kind == 'shape' and wanted.name == shape.key {
+    var own_shape = Model.Type('shape', shape.key)
+    var own_type = context.resolver.same_member_type(own_shape)
+    if wanted.kind == 'shape' and wanted.name == own_type.name {
         if wanted.is_nullable {
             return given.nullable()
         }
@@ -644,7 +677,7 @@ func fits_the_member_type(
 func fits_an_open_type(found: Model.Type, needed: Model.Type): Boolean {
     var found_present = found.present()
     var needed_present = needed.present()
-    if found_present.is_the_same_as(needed_present) {
+    if is_the_same_type(found_present, needed_present) {
         return needed.kind != 'function' or fits_a_function_type(found, needed)
     }
     switch needed.kind {
@@ -663,7 +696,7 @@ func fits_a_function_type(found: Model.Type, needed: Model.Type): Boolean {
         var found_parameter = found.parameters[index]
         var needed_parameter = needed.parameters[index]
         crash found_parameter
-        if not found_parameter.is_the_same_as(needed_parameter) {
+        if not is_the_same_type(found_parameter, needed_parameter) {
             return false
         }
         index = index + 1
@@ -677,7 +710,7 @@ func fits_a_function_type(found: Model.Type, needed: Model.Type): Boolean {
     if needed.answer {
         needed_answer = needed.answer
     }
-    return found_answer.is_the_same_as(needed_answer)
+    return is_the_same_type(found_answer, needed_answer)
 }
 
 func is_a_member_of_the_union(found: Model.Type, needed: Model.Type): Boolean {
@@ -885,6 +918,33 @@ func refuse_a_union_member_missing(value: HighIntermediaryRepresentation.Values.
     var shown_given = context.shown(given)
     var shown_wanted = context.shown(wanted)
     typing.refuse_a_union_member_missing(context, shown_given, shown_wanted, missing)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#unions-in-full
+func refuse_a_smaller_union_inside(given: Model.Type, wanted: Model.Type) {
+    assert given.kind == 'object' and wanted.kind == 'object' and not given.is_nullable
+    var given_model = context.program.class_named(given.name)
+    var wanted_model = context.program.class_named(wanted.name)
+    assert given_model and wanted_model
+    assert given_model.file.path == wanted_model.file.path
+    var names = given_model.bound_types.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var inside = given_model.bound_types[name]
+        var wanted_inside = wanted_model.bound_types[name]
+        crash inside
+        crash wanted_inside
+        var both_unions = inside.kind == 'union' and wanted_inside.kind == 'union' and not inside.is_nullable
+        if both_unions and is_a_part_of(inside, wanted_inside) {
+            var shown_given = context.shown(given)
+            var shown_wanted = context.shown(wanted)
+            var shown_inside = context.shown(inside)
+            var shown_wanted_inside = context.shown(wanted_inside)
+            typing.refuse_a_smaller_union_inside(context, shown_given, shown_wanted, shown_inside, shown_wanted_inside)
+        }
+        index = index + 1
+    }
 }
 
 func union_model_of(union_type: Model.Type): Model.UnionModel {
