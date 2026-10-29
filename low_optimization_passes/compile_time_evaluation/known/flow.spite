@@ -24,7 +24,6 @@ var rewriting = false
 var kept = List<LowIntermediaryRepresentation.Instructions.Instruction>()
 var next_register = 0
 var single_constants = List<Boolean>()
-var changes = 0
 var call_changed = false
 var call_left_objects = false
 var trip_locals = List<State>()
@@ -514,7 +513,6 @@ func keep_folded(
         var number = state.value_of(target)
         var made = LowIntermediaryRepresentation.Instructions.Constant(target, number)
         kept.append(made)
-        changes = changes + 1
         return false
     }
     keep(instruction)
@@ -573,9 +571,6 @@ func arithmetic_step(arithmetic: LowIntermediaryRepresentation.Instructions.Arit
     }
     if identity == 2 {
         var copied = LowIntermediaryRepresentation.Instructions.Copy(arithmetic.target, arithmetic.left)
-        if rewriting {
-            changes = changes + 1
-        }
         return copy_step(copied)
     }
     var base = pointer_base(arithmetic)
@@ -943,7 +938,10 @@ func retain_step(held: LowIntermediaryRepresentation.Instructions.Retain): Boole
 func free_step(freeing: LowIntermediaryRepresentation.Instructions.Free): Boolean {
     keep(freeing)
     if points_at_a_known_object(freeing.pointer) {
-        executed_on_scratch(freeing)
+        var outcome = executed_on_scratch(freeing)
+        if outcome < 0 {
+            poison()
+        }
     }
     return false
 }
@@ -1021,7 +1019,6 @@ func branch_step(test: LowIntermediaryRepresentation.Instructions.Branch): Boole
         if rewriting {
             var jumped = LowIntermediaryRepresentation.Instructions.Jump(taken)
             kept.append(jumped)
-            changes = changes + 1
             strong_changes = strong_changes + 1
         }
         return true
@@ -1198,7 +1195,6 @@ func keep_answer(target: Integer, presence: Integer) {
         var present = LowIntermediaryRepresentation.Instructions.Constant(presence, machine.presence)
         kept.append(present)
     }
-    changes = changes + 1
     strong_changes = strong_changes + 1
 }
 
@@ -1318,7 +1314,6 @@ func keep_direct(called: LowIntermediaryRepresentation.Instructions.CallAt, name
     direct.line = called.line
     direct.frames = called.frames.copy()
     kept.append(direct)
-    changes = changes + 1
     strong_changes = strong_changes + 1
 }
 
@@ -1354,7 +1349,6 @@ func constantized(register: Integer): Integer {
     var made = new_register()
     var constant = LowIntermediaryRepresentation.Instructions.Constant(made, number)
     kept.append(constant)
-    changes = changes + 1
     return made
 }
 
@@ -1439,10 +1433,9 @@ func note_a_definition(instruction: LowIntermediaryRepresentation.Instructions.I
     }
 }
 
-func rewrite(): Integer {
+func rewrite() {
     note_the_single_constants()
     rewriting = true
-    changes = 0
     var block_index = 0
     while block_index < function.blocks.count() {
         if reached[block_index] == true {
@@ -1458,7 +1451,6 @@ func rewrite(): Integer {
     if next_register > function.register_count {
         function.register_count = next_register
     }
-    return changes
 }
 
 func state_after(block_index: Integer, target: Integer): State? {
@@ -1518,7 +1510,7 @@ func entry_state(header: Integer, outside: List<Integer>): State? {
         var after = state_after(predecessor, header)
         if after {
             if any {
-                joined.join(after)
+                joined.absorb(after)
             } else {
                 joined = after.copied()
                 any = true
@@ -1632,7 +1624,7 @@ func arrived_in_trip(successor: Integer, position: Integer, header: Integer, pla
     if trip_reached[place] == true {
         var there = trip_locals[place]
         crash there
-        there.join(state)
+        there.absorb(state)
         return true
     }
     var first = state.copied()
@@ -1643,7 +1635,7 @@ func arrived_in_trip(successor: Integer, position: Integer, header: Integer, pla
 
 func join_the_way_back() {
     if trip_back_reached {
-        trip_back.join(state)
+        trip_back.absorb(state)
     } else {
         trip_back = state.copied()
         trip_back_reached = true
