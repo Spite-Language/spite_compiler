@@ -82,7 +82,9 @@ clearing a function's facts once it has, so no fact outlives the round that prov
      only to a program function by name (it records each lent call for `lent_parameters`);
    - `parallel_reach`: a `Parallel` work reaches only what it may, and no lock waits forever.
    A refusal the builder still makes asks this walk first, so the earliest error is the one told.
-2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program. Then
+2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program (the call
+   inside a call, unused names, and the lone hole, which reads whether each hole the builder built is text), and the
+   reopening that changes an attribute's type (`validators/mapping/reopened_type`, comparing the resolved types). Then
    `endless_parallel_work`: a `while true` that never leaves in a function a `Parallel` runs, recorded by
    `parallel_reach`, is refused when that function never waits, which the waits of the whole built program tell.
 3. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.

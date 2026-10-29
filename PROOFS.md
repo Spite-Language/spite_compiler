@@ -200,8 +200,9 @@ as when each was refused while building.
   check that folds is judged as a plain value or a proven read instead. The
   class test and the folded `assert` are refused only outside a generic class and a walk, where they fold per
   instance, and outside the library and the compiler's generated files. A local is plain when its value cannot be
-  null and it has a written type, is made by a construction, or, outside a generic class and a walk, holds a call's
-  answer; a local holding a `[]` read is not, since a proven read and an unproven one are written alike. The plain-value refusal judges a local by the type it is declared with (written, or the type of its first
+  null, whatever made it (D1447: a call's answer, a copy of an attribute or another local, a proven `[]` read);
+  in a generic class or a walk only a written type or a construction makes it plain, since its type may differ per
+  instance. The plain-value refusal judges a local by the type it is declared with (written, or the type of its first
   value), so a local declared `T?` and narrowed since is refused as narrowed instead.
 - **Falls back**: the redundant check is refused; a check the compiler cannot prove redundant (two equal checks
   with a statement between, a condition with a call, a stronger check after a weaker one) stays.
@@ -214,7 +215,7 @@ as when each was refused while building.
   conformance/crash_on_plain_local, conformance/known_fact_inside_its_if, conformance/known_fact_divisor,
   conformance/known_fact_next_line, conformance/known_fact_class_never, conformance/known_fact_class_again,
   conformance/proven_element_by_count, conformance/proven_element_by_earlier_check,
-  conformance/check_always_holds, conformance/check_of_a_returned_local.
+  conformance/check_always_holds, conformance/check_of_a_returned_local, conformance/check_of_a_copied_local.
 
 ### A copy made to narrow is an error
 
@@ -1526,7 +1527,10 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   every branch, a switch that is a class test and a text that is one hole are refused, naming the short form
   ([control_flow.md](../SpiteLanguage/specs/control_flow.md)).
 - **Lives in**: `high_intermediary_representation/building/template_walks.spite`,
-  `validators/abstract_syntax_tree/switch_chain`, `repeated_branch_call`, `switch_cases`, `lone_hole`.
+  `validators/abstract_syntax_tree/switch_chain`, `repeated_branch_call`, `switch_cases`, `lone_hole` (run by
+  `proofs/rules_after_building`, reading whether the builder built each declared hole as text:
+  `statements.spite`, `note_a_lone_hole`, so `'var shown = label'` is named for any text, an attribute or a call
+  included).
 - **Checked by**: conformance/walk_with_function, argument_walk_without_function, repeated_branch_call,
   repeated_branch_call_chain, switch_chain, switch_chain_else_if, switch_chain_or, lone_hole and its variants.
 
