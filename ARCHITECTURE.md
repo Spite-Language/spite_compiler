@@ -73,6 +73,10 @@ clearing a function's facts once it has, so no fact outlives the round that prov
 
 ### The proofs, in order
 
+0. `proven_present`: the `T?` locals, attributes and answers every assignment or `return` of which is present
+   (`present_assignments` and `present_answers`, run together until neither proves more), recorded as the builder
+   context's `PresenceFacts`, which `present_values` and `proven_checks` read. A refusal the builder makes first
+   proves them over the functions built so far.
 1. `recorded_sites`: every site the builder recorded, in the order built, judged by the proof of its kind:
    - `present_values`: a value that may be null (an unnarrowed `T?`, an unproven `[]` read) is never used where a
      value is needed;

@@ -1,0 +1,214 @@
+# ../../PROOFS.md#a-value-proven-present-is-a-t
+var model = Model.ProgramModel()
+var facts = HighIntermediaryRepresentation.PresenceFacts()
+var keys = List<String>()
+var kinds = Dictionary<String, String>()
+var attribute_names = Dictionary<String, String>()
+var declared = Dictionary<String, Boolean>()
+var blocked = Dictionary<String, Boolean>()
+var blocked_members = List<String>()
+var ignored = List<String>()
+var value_keys = List<String>()
+var assigned_values = List<HighIntermediaryRepresentation.Values.Value>()
+var assigned_in = List<Model.FunctionModel>()
+var function = Model.FunctionModel("", "")
+var is_live = false
+
+func gather(
+    built_functions: List<HighIntermediaryRepresentation.HighFunction>,
+    starting_model: Model.ProgramModel,
+    starting_facts: HighIntermediaryRepresentation.PresenceFacts,
+    starting_is_live: Boolean,
+) {
+    model = starting_model
+    facts = starting_facts
+    is_live = starting_is_live
+    var index = 0
+    while index < built_functions.count() {
+        var built = built_functions[index]
+        function = built.function
+        read_block(built.body)
+        index = index + 1
+    }
+}
+
+func read_block(block: HighIntermediaryRepresentation.Statements.Block) {
+    block.statements.each(read_statement)
+}
+
+func read_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: read_a_declaration(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: read_a_local_assignment(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: read_an_attribute_assignment(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: read_a_shape_assignment(statement)
+        HighIntermediaryRepresentation.Statements.If: read_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: read_block(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: read_block(statement)
+        _: return
+    }
+}
+
+func read_a_declaration(declaration: HighIntermediaryRepresentation.Statements.Declare) {
+    assert declaration.declared_type.is_nullable
+    var key = facts.local_key(function, declaration.name)
+    note_a_key(key, "local")
+    declared[key] = true
+    note_a_value(key, declaration.value)
+}
+
+func read_a_local_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign) {
+    var key = facts.local_key(function, assigned.name)
+    note_a_key(key, "local")
+    note_a_value(key, assigned.value)
+}
+
+func read_an_attribute_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    var attribute = assigned.attribute
+    assert attribute.attribute_type.is_nullable
+    var key = facts.attribute_key(attribute)
+    if not kinds.contains(key) and is_an_eligible_attribute(attribute) {
+        declared[key] = true
+    }
+    note_a_key(key, "attribute")
+    attribute_names[key] = attribute.name
+    note_a_value(key, assigned.value)
+}
+
+func read_a_shape_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    if not assigned.value or assigned.value.value_type.is_nullable {
+        blocked_members.append(assigned.member)
+    }
+}
+
+# ../../PROOFS.md#a-value-proven-present-is-a-t
+func read_an_if(made: HighIntermediaryRepresentation.Statements.If) {
+    read_block(made.then_branch)
+    assert made.else_branch
+    var outer = ignored.copy()
+    var tested_key = key_tested_by(made.condition)
+    if not tested_key.is_empty() {
+        ignored.append(tested_key)
+    }
+    read_block(made.else_branch)
+    ignored = outer
+}
+
+func key_tested_by(condition: HighIntermediaryRepresentation.Values.Value?): String {
+    if condition == HighIntermediaryRepresentation.Values.PresenceTest {
+        return key_of_a_read(condition.tested)
+    }
+    return ""
+}
+
+func key_of_a_read(read: HighIntermediaryRepresentation.Values.Value?): String {
+    if read == HighIntermediaryRepresentation.Values.LocalRead {
+        return facts.local_key(function, read.name)
+    }
+    if read == HighIntermediaryRepresentation.Values.AttributeRead {
+        return facts.attribute_key(read.attribute)
+    }
+    return ""
+}
+
+func note_a_key(key: String, kind: String) {
+    if not kinds.contains(key) {
+        kinds[key] = kind
+        keys.append(key)
+    }
+}
+
+func note_a_value(key: String, value: HighIntermediaryRepresentation.Values.Value?) {
+    assert not ignored.contains(key)
+    if not value {
+        blocked[key] = true
+        return
+    }
+    assert value.value_type.is_nullable
+    value_keys.append(key)
+    assigned_values.append(value)
+    assigned_in.append(function)
+}
+
+# ../../PROOFS.md#a-live-build-proves-no-attribute
+func is_an_eligible_attribute(attribute: Model.AttributeModel): Boolean {
+    if is_live {
+        return false
+    }
+    if not attribute.declaration or not attribute.declaration.value {
+        return false
+    }
+    if attribute.owner.starts_with("Spite.") {
+        return false
+    }
+    var owner = model.class_named(attribute.owner)
+    if not owner {
+        return false
+    }
+    var library = Validators.LibraryFile()
+    return not library.holds(owner.file.path)
+}
+
+func proved(): Boolean {
+    var failing = Dictionary<String, Boolean>()
+    var index = 0
+    while index < value_keys.count() {
+        var key = value_keys[index]
+        var value = assigned_values[index]
+        var assigned_function = assigned_in[index]
+        crash value and assigned_function
+        if not is_present_here(key, value, assigned_function) {
+            failing[key] = true
+        }
+        index = index + 1
+    }
+    var learned = false
+    index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        var could = declared.contains(key) and not failing.contains(key) and not blocked.contains(key)
+        if could and not is_proven(key) and not is_a_blocked_member(key) {
+            prove(key)
+            learned = true
+        }
+        index = index + 1
+    }
+    return learned
+}
+
+func is_present_here(
+    key: String,
+    value: HighIntermediaryRepresentation.Values.Value,
+    assigned_function: Model.FunctionModel,
+): Boolean {
+    if facts.is_present(value, assigned_function) {
+        return true
+    }
+    var outer = function
+    function = assigned_function
+    var read_key = key_of_a_read(value)
+    function = outer
+    return read_key == key
+}
+
+func is_a_blocked_member(key: String): Boolean {
+    var name = attribute_names[key]
+    if not name {
+        return false
+    }
+    return blocked_members.contains(name)
+}
+
+func is_proven(key: String): Boolean {
+    return facts.present_locals.contains(key) or facts.present_attributes.contains(key)
+}
+
+func prove(key: String) {
+    var kind = kinds[key]
+    crash kind
+    if kind == "local" {
+        facts.present_locals[key] = true
+    } else {
+        facts.present_attributes[key] = true
+    }
+}

@@ -102,7 +102,7 @@ as when each was refused while building.
 
 - **Status**: built.
 - **Rule**: after an `if` with no `else` whose block always leaves (a `return`, a bare `crash`, a `switch` whose
-  every case leaves, an `if`/`else` that both leave, a `while true`), the opposite of its condition holds: each `or`
+  every case leaves, an `if`/`else` that both leave), the opposite of its condition holds: each `or`
   side written `not path` narrows that path, each side read with the sides before it narrowed (`if not holder or
   not holder.weapon { return }` proves both), and other sides turned around prove `[]` reads and divisors
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule),
@@ -197,7 +197,8 @@ as when each was refused while building.
   path was narrowed in is compared with the loop's), since an assignment later in the loop would leave the next
   pass unproven. A narrowed `Boolean` is not refused when tested again, since an `if` on it tests its value. A folded
   `assert` is one that asks a compile-time question (a call such as `has_function`, or a `Build` field); a presence
-  check that folds is judged as a plain value or a proven read instead. The
+  check that folds is judged as a plain value or a proven read instead; any other folded condition that is not a
+  bare name is refused too (D1746). The
   class test and the folded `assert` are refused only outside a generic class and a walk, where they fold per
   instance, and outside the library and the compiler's generated files. A local is plain when its value cannot be
   null, whatever made it (D1447: a call's answer, a copy of an attribute or another local, a proven `[]` read);
@@ -233,6 +234,52 @@ as when each was refused while building.
 - **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions,
   conformance/copy_to_narrow_not_leaving; tests/narrowing_snapshot_copy.
 
+### A value proven present is a `T`
+
+- **Status**: partly built (D1719): the local, attribute and answer proofs are built; the answer of a call the
+  compiler evaluates while compiling (spite_compiler#229, #230) is missing.
+- **Rule**: a `T?` the compiler proves present is a `T` where it is read, with nothing written: a local every
+  assignment of which in its function is present, an attribute of a program class whose default and every
+  assignment anywhere in the built program are present, and a function of the program every `return` of which is
+  present, at every call of it. A value is present when its type is not a `T?`, when it is a read of a proven local
+  or attribute or a call of a proven function, or a `T` made a `T?` to fit; a read of the name itself (a copy
+  assigning an attribute from the same attribute) and an `else` taken only when the name tested is null keep the
+  proof. The proofs are run together until neither proves more, so a local holding a proven answer, or an answer
+  returning a proven attribute, is proven too
+  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+- **Buys**: `var shown: Monster? = Monster()`, never assigned null, reads `shown.name` with no narrowing; an
+  `assert`, `crash` or `if` on such a name is the "already narrowed" error: "'shown' is already narrowed by the
+  proof that every value it can hold is present: remove this check".
+- **Falls back**: not proven, and read as the `T?` it is declared, when any assignment may be null, a `T?`
+  parameter is read, an attribute has no default or belongs to the library or to a `Spite.` class, an attribute of
+  that name is assigned a `T?` through a `type`, or the function belongs to the library (whose answers are the
+  contract every target keeps, D1721). The refusal of a check is made outside a generic class and a walk only,
+  where a name's type may differ per instance; a check of a call (`crash find()`) is never refused, since a dropped
+  answer must be used. A proven `Boolean?` is a condition, and a proven `Spite.Class` or function value held in
+  an attribute or a local is called, with nothing written (D1746). A `while` on a proven name is refused like an
+  `if`.
+- **Lives in**: `proofs/proven_present`, which runs `proofs/present_assignments` and `proofs/present_answers` until
+  neither proves more, before `recorded_sites`, recording `PresenceFacts` on the builder's context
+  (`high_intermediary_representation/presence_facts.spite`); `proofs/present_values` accepts a use of a proven
+  value, and `proofs/proven_checks` refuses a check of one (`statements.spite`: `note_a_check_of_a_proven_value`).
+  When the builder refuses something before the proofs run, the proofs are made over the functions built so far,
+  so that the earliest error is told.
+- **Checked by**: tests/proven_present_local, tests/proven_present_attribute, tests/proven_present_answer,
+  tests/proven_present_uses; conformance/proven_present_checked, conformance/proven_present_attribute_checked,
+  conformance/proven_present_while_checked.
+
+### A live build proves no attribute
+
+- **Status**: built (D1746).
+- **Rule**: in a `--hot-reload` or `--repl` build only locals are proven present; an attribute is read as the
+  `T?` it is declared, so a null an older version of the program left in a running object is still checked
+  ([repl.md](../SpiteLanguage/specs/repl.md)).
+- **Buys**: a reload or a REPL assignment can never break a proof the running objects were built under. Those builds
+  are for iteration time, not for the checks a proof drops.
+- **Falls back**: the attribute keeps its narrowing: a check of it is written and is not the "already narrowed" error.
+- **Lives in**: `proofs/present_assignments` (`is_an_eligible_attribute`), told by `proofs/proven_present`.
+- **Checked by**: tests/proven_present_hot_reload, tests/proven_present_repl.
+
 ### A class test narrows its block
 
 - **Status**: built, wider than the old rule.
@@ -250,14 +297,14 @@ as when each was refused while building.
 
 - **Status**: built.
 - **Rule**: a path ends at a `return`, a bare `crash`, an `if`/`else` whose branches both end, a `switch` whose every
-  case ends, a `while true`, or a folded condition whose taken branch ends; a function that answers something and
+  case ends, or a folded condition whose taken branch ends; a function that answers something and
   has a path that reaches its end is refused ([failure.md](../SpiteLanguage/specs/failure.md#assert-is-control-flow)).
 - **Buys**: no caller gets a value nobody wrote.
 - **Falls back**: refused, "'...' answers ..., but ... it reaches its end without a 'return' ...: end that path with
   'return <value>', or with 'crash' if it cannot happen".
 - **Lives in**: `high_intermediary_representation/building/endings.spite` (`check`, `always_leaves`), its own class,
   run by the builder on each function body.
-- **Checked by**: conformance/falling_end; tests/every_path_returns, tests/control_while_true_returns.
+- **Checked by**: conformance/falling_end; tests/every_path_returns, tests/control_while_running.
 
 ### A guard `assert` answers only "nothing"
 
@@ -575,7 +622,8 @@ as when each was refused while building.
 - **Buys**: generic code compiles only the branch its class takes.
 - **Missing**: `function_waits` and `function_writes_parameter` are answered after every function is built, so both
   branches are built and checked (D673); a codegen number compared with a literal folds only when one side is a
-  call; a function taking a `type` has no copy per class. `x and false` and `x or true` fold whatever `x` is: one
+  call; a function taking a `type` has no copy per class. `x and $flag` and `x or $flag` fold whatever `x` is (in
+  plain code a condition that folds is refused, D1746): one
   that only reads names, attributes and tests is left out (D1143), and one that calls something is run on its own,
   once, before the statement, and its answer dropped (D1513).
 - **Falls back**: a run-time test of a constant, removed later by constant folding; both branches must compile.
@@ -697,6 +745,25 @@ as when each was refused while building.
   arguments, or an offset another union takes.
 - **Lives in**: embedded, the high pass `high_optimization_passes/untouched_attributes` (`optimized`), and the lowering (`lower_shape_call`).
 - **Checked by**: none aimed at it (tests/class_through_shape and tests/unions read through a `type`).
+
+### A condition known while compiling is an error
+
+- **Status**: built (D1746).
+- **Rule**: outside a generic class and a walk, an `if` or `while` whose condition the builder decides while
+  compiling, and an `assert` that folds false, are refused: the condition is always true or always false, so writing
+  it tells a reader nothing. A condition that reads a `Build` field is kept, since the field is set from the command
+  line and choosing the branch is its purpose; the literal `while true` is refused like any other (a loop states
+  the condition it runs under). A
+  bare name is judged by the narrowing errors instead ("already narrowed", a plain value). An `assert` or `crash`
+  that folds true is "Proving what is proven is an error"; a `crash` that folds false is the next section
+  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+- **Buys**: no dead branch in the source.
+- **Falls back**: refused, "'if 2 > 1' is decided while compiling and is always true here, so it tells a reader
+  nothing: remove the 'if' and keep the code it runs".
+- **Lives in**: `statements.spite` (`note_a_decided_condition`, from `build_if`, `build_while` and `build_assert`),
+  judged by `proofs/proven_checks`; `values.spite` counts each `Build` read it folds (`folded_build_read`).
+- **Checked by**: conformance/decided_if_true, conformance/decided_if_false, conformance/decided_while,
+  conformance/decided_assert_false; tests/decided_conditions_kept.
 
 ### A `crash` that folds false is a compile error
 
@@ -1314,8 +1381,9 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 ### A loop that can never end is an error
 
 - **Status**: partly built.
-- **Rule**: a `while true` with no `return`, `assert` or `crash` that calls nothing is refused; in `Parallel` work
-  it is refused when nothing in it waits. The work's functions are followed through every call whose class is known
+- **Rule**: every `while true` is refused, since a loop states the condition it runs under (D1746, "A condition
+  known while compiling is an error"); in `Parallel` work and in a locked singleton function an endless `while true`
+  is refused with the reason that is worse there, when it is judged first. The work's functions are followed through every call whose class is known
   while compiling: a function of its own class, of `this`, of a parameter's or an attribute's class, of a path of
   attributes, of a local made by a constructor or answered by a call whose answer's class is known, and a
   constructor called by its class's name; a class of the library is not followed. A singleton reached that way is
@@ -1324,8 +1392,10 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   blocking read or write, a join, through every call): a loop that calls only the console is refused while the site
   is judged, and one that calls anything else is refused once the whole program is built, when the waits are known.
 - **Missing**: a call through a function value, a `type` or a union is not followed.
-- **Falls back**: refused, "this 'while true' never ends: ...".
-- **Lives in**: `validators/abstract_syntax_tree/spinning_loop`, the proof `proofs/parallel_reach`
+- **Missing**: a loop on a condition nothing in it changes (`while running` with no `running = false`) is not
+  read as endless.
+- **Falls back**: refused, "'while true' is decided while compiling and is always true here: ...".
+- **Lives in**: `statements.spite` (`note_a_decided_condition`), the proof `proofs/parallel_reach`
   (`thread_reach.spite`: `refuse_endless_work`, which refuses a loop that only prints and records the others in the
   context, `context.endless_work`), and the proof `proofs/endless_parallel_work`, right after the recorded sites,
   which asks `HighIntermediaryRepresentation.Waits` whether each recorded function waits.

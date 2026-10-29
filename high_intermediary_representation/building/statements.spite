@@ -460,6 +460,7 @@ func note_a_maybe_boolean(
     var value = values.result_of_handle(written_value)
     var tested = value.value_type
     var site = PresenceSite("boolean", context, tested)
+    site.value = value
     context.note_a_presence_site(site)
 }
 
@@ -747,11 +748,75 @@ func note_a_check_that_always_holds(
     crash written
     var printer = Printers.Spite.ExpressionPrinter(written)
     var written_text = printer.text()
-    assert holds_a_call(written) or written_text.contains("Build.")
+    assert holds_a_call(written) or written_text.contains("Build.") or not is_a_bare_path(written)
     var site = CheckSite("always holds", context)
     site.written = written_text
     site.keyword = keyword
     context.note_a_check_site(site)
+}
+
+# ../../PROOFS.md#a-condition-known-while-compiling-is-an-error
+func note_a_decided_condition(
+    condition: HighIntermediaryRepresentation.Values.Value,
+    keyword: String,
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    build_reads_before: Integer,
+) {
+    var decided = decided_number_of(condition)
+    assert decided
+    var holds = decided.number != 0
+    var is_a_check = keyword == "assert" or keyword == "crash"
+    assert not is_a_check or not holds
+    var function = context.current_function
+    var is_a_walk = not function.bound_parameter.is_empty() or not function.bound_member.is_empty()
+    var is_generic = not context.current_class.bound_types.is_empty()
+    var reads_a_setting = context.folded_build_reads > build_reads_before
+    assert not is_a_walk and not is_generic and not reads_a_setting
+    var path = context.path()
+    assert not path.contains("/.spite/")
+    crash written
+    var printer = Printers.Spite.ExpressionPrinter(written)
+    var site = CheckSite("decided condition", context)
+    site.written = printer.text()
+    site.keyword = keyword
+    site.holds = holds
+    site.source = known_presence_of(written, holds)
+    context.note_a_check_site(site)
+}
+
+func decided_number_of(
+    condition: HighIntermediaryRepresentation.Values.Value,
+): HighIntermediaryRepresentation.Values.WholeNumber? {
+    if condition == HighIntermediaryRepresentation.Values.WholeNumber {
+        return condition
+    }
+    assert condition == HighIntermediaryRepresentation.Values.MachineOperation
+    var left = condition.left
+    var right = condition.right
+    assert left == HighIntermediaryRepresentation.Values.WholeNumber
+    assert right == HighIntermediaryRepresentation.Values.WholeNumber
+    var compared = values.compared_numbers(condition.operator, left.number, right.number)
+    if compared == HighIntermediaryRepresentation.Values.WholeNumber {
+        return compared
+    }
+    return null
+}
+
+func known_presence_of(written: AbstractSyntaxTree.Shapes.Expressions.Expression, holds: Boolean): String? {
+    var tested = written
+    var names_a_present_value = holds
+    if tested == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression and tested.operator == 'not' {
+        crash tested.operand
+        tested = tested.operand
+        names_a_present_value = not holds
+    }
+    assert is_a_bare_path(tested)
+    var printer = Printers.Spite.ExpressionPrinter(tested)
+    var name = printer.text()
+    if names_a_present_value {
+        return "'{name}' is proven present here"
+    }
+    return "'{name}' is known to be null here"
 }
 
 func note_a_proven_check(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?) {
@@ -1522,7 +1587,10 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
     note_a_proven_condition(written)
     statement.condition = values.with_its_links(statement.condition)
     note_a_maybe_boolean(written, statement.condition)
+    var build_reads_before = context.folded_build_reads
     var condition = values.condition_of(statement.condition)
+    note_a_check_of_a_proven_value(written, condition, "if")
+    note_a_decided_condition(condition, "if", written, build_reads_before)
     flush_the_pending()
     if condition == HighIntermediaryRepresentation.Values.WholeNumber {
         build_a_decided_if(statement, condition.number != 0)
@@ -1553,6 +1621,41 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
         var windows = Windows(context, values)
         windows.note_a_leaving_guard(statement.condition)
     }
+}
+
+# ../../PROOFS.md#a-value-proven-present-is-a-t
+func note_a_check_of_a_proven_value(
+    written: AbstractSyntaxTree.Shapes.Expressions.Expression?,
+    condition: HighIntermediaryRepresentation.Values.Value,
+    keyword: String,
+) {
+    var function = context.current_function
+    var is_a_walk = not function.bound_parameter.is_empty() or not function.bound_member.is_empty()
+    var is_generic = not context.current_class.bound_types.is_empty()
+    assert not is_a_walk and not is_generic
+    var tested_written = written
+    var tested_condition = condition
+    if tested_written == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression and tested_written.operator == 'not' {
+        tested_written = tested_written.operand
+        if tested_condition == HighIntermediaryRepresentation.Values.Negation {
+            crash tested_condition.negated
+            tested_condition = tested_condition.negated
+        }
+    }
+    assert is_a_bare_path(tested_written)
+    assert tested_condition == HighIntermediaryRepresentation.Values.PresenceTest
+    crash tested_condition.tested
+    var tested = tested_condition.tested
+    var is_a_name = tested == HighIntermediaryRepresentation.Values.LocalRead
+    is_a_name = is_a_name or tested == HighIntermediaryRepresentation.Values.AttributeRead
+    assert is_a_name and tested.value_type.is_nullable
+    crash tested_written
+    var printer = Printers.Spite.ExpressionPrinter(tested_written)
+    var site = CheckSite("proven value", context)
+    site.written = printer.text()
+    site.keyword = keyword
+    site.tested = tested
+    context.note_a_check_site(site)
 }
 
 func note_a_check_of_a_plain_value(condition: AbstractSyntaxTree.Shapes.Expressions.Expression?, keyword: String) {
@@ -1755,7 +1858,11 @@ func build_while(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement)
     context.loop_bases.append(base)
     var log_start = context.logged_calls.count()
     var reads_start = context.narrowed_reads.count()
+    var written_condition = statement.condition
+    var build_reads_before = context.folded_build_reads
     var condition = values.condition_of(statement.condition)
+    note_a_check_of_a_proven_value(written_condition, condition, "while")
+    note_a_decided_condition(condition, "while", written_condition, build_reads_before)
     var condition_work = context.pending
     flush_the_pending()
     log_a_value(condition, statement.line)
@@ -2439,8 +2546,11 @@ func build_assert(statement: AbstractSyntaxTree.Shapes.Statements.AssertStatemen
     note_a_proven_divisor(statement.condition, statement.line)
     var written_condition = statement.condition
     statement.condition = values.with_its_links(statement.condition)
+    var build_reads_before = context.folded_build_reads
     var condition = values.condition_of(statement.condition)
     note_a_check_that_always_holds(condition, "assert", written_condition)
+    note_a_check_of_a_proven_value(written_condition, condition, "assert")
+    note_a_decided_condition(condition, "assert", written_condition, build_reads_before)
     var failed = HighIntermediaryRepresentation.Statements.Block()
     var noting = noted_failure(statement)
     if noting {
@@ -2726,6 +2836,7 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     var condition = values.condition_of(linked)
     refuse_a_folded_crash(statement, condition)
     note_a_check_that_always_holds(condition, "crash", written)
+    note_a_check_of_a_proven_value(written, condition, "crash")
     flush_the_pending()
     var failed = HighIntermediaryRepresentation.Statements.Block()
     failed.statements = report_of(message, written, mentioned, statement.line)
@@ -3192,7 +3303,6 @@ func shown_when_present(
 
 func append_a_value(text: String, value: HighIntermediaryRepresentation.Values.Value) {
     var shown = text_of_a_shown(value)
-    crash shown
     var named = values.described_text(", {text}=")
     var joined = values.joined_with(named, shown)
     append_to_the_report(joined)
@@ -3235,7 +3345,7 @@ func can_be_shown(present: Model.Type, objects_too: Boolean): Boolean {
     return false
 }
 
-func text_of_a_shown(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value? {
+func text_of_a_shown(value: HighIntermediaryRepresentation.Values.Value): HighIntermediaryRepresentation.Values.Value {
     var text = context.text()
     var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
     if value.value_type.is_the_same_as(text) {
@@ -3305,8 +3415,6 @@ func append_a_missing_item(read: AbstractSyntaxTree.Shapes.Expressions.IndexExpr
         var counted = values.method_call(target, "count", no_arguments)
         var counted_text = text_of_a_shown(counted)
         var index_text = text_of_a_shown(index_value)
-        crash counted_text
-        crash index_text
         var opening = values.described_text(", {printed} is missing: index ")
         var middle = values.described_text(", count ")
         var with_index = values.joined_with(opening, index_text)
@@ -3323,7 +3431,6 @@ func append_a_missing_item(read: AbstractSyntaxTree.Shapes.Expressions.IndexExpr
 
 func append_a_missing_key(printed: String, key: HighIntermediaryRepresentation.Values.Value) {
     var key_text = text_of_a_shown(key)
-    crash key_text
     var text = context.text()
     var quote = ""
     if key.value_type.is_the_same_as(text) {
