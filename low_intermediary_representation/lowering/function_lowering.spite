@@ -2391,6 +2391,7 @@ func make_object_with(class_key: String, defaults_key: String): Integer {
     var allocated = LowIntermediaryRepresentation.Instructions.Allocate(object, size_register)
     var class_id = layout.class_id_of(class_key)
     allocated.class_id = class_id
+    allocated.zeroed_bytes = layout.size_of(class_key)
     emit(allocated)
     var id_register = constant(class_id)
     var stored_id = LowIntermediaryRepresentation.Instructions.Store(object, 0, id_register, 'bits_64')
@@ -4094,6 +4095,7 @@ func small_object(class_key: String, size: Integer): Integer {
     var allocated = LowIntermediaryRepresentation.Instructions.Allocate(object, size_register)
     var class_id = layout.class_id_of(class_key)
     allocated.class_id = class_id
+    allocated.zeroed_bytes = size
     emit(allocated)
     var id_register = constant(class_id)
     var stored_id = LowIntermediaryRepresentation.Instructions.Store(object, 0, id_register, 'bits_64')
@@ -5007,6 +5009,9 @@ func foreign_argument(argument: HighIntermediaryRepresentation.Values.Value): In
     var argument_type = argument.value_type
     release_later(argument_value, argument_type)
     if argument_type.kind == 'object' and argument_type.name == "String" {
+        if program.fills_fresh_memory {
+            end_the_text(argument_value.value)
+        }
         return bytes_of_text(argument_value.value)
     }
     if argument_type.kind == 'object' and argument_type.name == "Buffer" {
@@ -5025,6 +5030,38 @@ func bytes_of_text(text: Integer): Integer {
     var loaded = LowIntermediaryRepresentation.Instructions.Load(buffer, text, buffer_offset, 'bits_64')
     emit(loaded)
     return storage_of(buffer)
+}
+
+# ../../OPTIMIZATIONS.md#small-blocks-come-from-the-compilers-own-free-lists
+func end_the_text(text: Integer) {
+    assert program.fills_fresh_memory
+    var string_model = layout.program.class_named("String")
+    crash string_model
+    var length_attribute = string_model.attribute_named("_length")
+    crash length_attribute
+    var length_offset = layout.offset_of(length_attribute)
+    var length = new_register()
+    var loaded_length = LowIntermediaryRepresentation.Instructions.Load(length, text, length_offset, 'bits_32')
+    emit(loaded_length)
+    var bytes = bytes_of_text(text)
+    var end = address_plus(bytes, length)
+    var end_byte = new_register()
+    var loaded_end = LowIntermediaryRepresentation.Instructions.Load(end_byte, end, 0, 'bits_8')
+    loaded_end.is_signed = false
+    emit(loaded_end)
+    var zero = constant(0)
+    var is_ended = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_ended, 'equal', end_byte, zero)
+    emit(compared)
+    var ending = new_block()
+    var ended = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_ended, ended, ending)
+    emit(test)
+    switch_to(ending)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(end, 0, zero, 'bits_8')
+    emit(stored)
+    jump_to(ended)
+    switch_to(ended)
 }
 
 func storage_of(buffer: Integer): Integer {

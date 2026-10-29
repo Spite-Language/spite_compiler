@@ -9,6 +9,8 @@ var sizes = List<Integer>()
 var freed = List<Boolean>()
 var poisoned = List<Boolean>()
 var owned = List<Boolean>()
+var class_ids = Dictionary<Integer, Integer>()
+var fresh_pattern: Long = -6510615555426900571
 var memory_words = 0
 var watermark = 0
 var saved_objects = List<Integer>()
@@ -85,6 +87,7 @@ func function_of(tag: Integer): Integer {
 
 func reset() {
     words.clear()
+    class_ids.clear()
     word_tags.clear()
     sizes.clear()
     freed.clear()
@@ -221,7 +224,35 @@ func allocated(size: Long): Integer {
     freed.append(false)
     poisoned.append(false)
     owned.append(true)
-    return words.count() - 1
+    var made = words.count() - 1
+    class_ids[made] = 0
+    return made
+}
+
+# ../../OPTIMIZATIONS.md#small-blocks-come-from-the-compilers-own-free-lists
+func fill_from(object: Integer, from: Integer) {
+    assert program.fills_fresh_memory
+    var held = words[object]
+    crash held
+    var end = held.count() * 8
+    var at = from
+    while at < end {
+        if at % 8 == 0 and at + 8 <= end {
+            put_word(object, at / 8, fresh_pattern, -1)
+            at = at + 8
+        } else {
+            put_byte(object, at, 165)
+            at = at + 1
+        }
+    }
+}
+
+func class_id_of(object: Integer): Integer {
+    var found = class_ids[object]
+    if found {
+        return found
+    }
+    return 0
 }
 
 func is_live(object: Integer): Boolean {
@@ -1337,6 +1368,10 @@ func allocate(made: LowIntermediaryRepresentation.Instructions.Allocate, frame: 
     if object < 0 {
         return failure()
     }
+    class_ids[object] = made.class_id
+    if program.fills_fresh_memory {
+        fill_from(object, made.zeroed_bytes)
+    }
     frame.set(made.target, 0, object)
     return 0
 }
@@ -1389,8 +1424,17 @@ func resize(resizing: LowIntermediaryRepresentation.Instructions.Resize, frame: 
     if made < 0 {
         return failure()
     }
+    if program.fills_fresh_memory {
+        fill_from(made, 0)
+    }
     if moved {
+        class_ids[made] = class_id_of(object)
         move_the_words(object, made)
+        if program.fills_fresh_memory {
+            var kept_size = sizes[object]
+            crash kept_size
+            fill_from(made, kept_size)
+        }
         touch(object)
         freed[object] = true
     }

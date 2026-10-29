@@ -653,9 +653,13 @@ threads the number of the thread that owns it.
 Nothing counts the blocks: no counter is kept beside an allocation or a free. Only a `--debug-memory` build
 keeps the two counts it reports at exit, and it puts 32 bytes in front of every block: the next and previous live
 blocks (one list of every live block, under a lock of its own), the size asked for and the class of the object
-made in it (0 for memory that is not an object). Fresh memory is zero there as in every build, since the code this
-compiler writes relies on it (the end byte after a text's bytes, the room inside a `Buffer`), and its resize moves
-the bytes it keeps into a new block whose new bytes are zero. At exit, when the allocations and frees differ, it walks the list
+made in it (0 for memory that is not an object). Fresh memory is `0xA5` there: every `Allocate` names how many of
+its first bytes the code relies on as zero (`zeroed_bytes`: an object's header and attributes, but not a `Buffer`'s
+room after them; a task frame, the header of a work block, a `ForeignCallback` block, an object the compile-time
+evaluation writes out whole), the allocator writes those zeros and fills the rest, and its resize moves the bytes it
+keeps into a new block whose new bytes are `0xA5`. A text handed to a foreign function gets its end byte written
+just before the call, since its room past its bytes is no longer zero; the compile-time evaluation fills the
+memory it allocates the same way, so what it folds is what the program would read. At exit, when the allocations and frees differ, it walks the list
 once and prints `spite: --debug-memory: N allocation(s) leaked` and a `  <Class>: N leaked object(s)` line for
 each class with objects still live, before `allocations: N frees: N`. None of it is in any other build: the
 routines, the list and the report function are written only for `--debug-memory`.
