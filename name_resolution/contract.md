@@ -46,6 +46,9 @@ and `List_of_Integer` in the instance `List_of_Integer`.
 - The count of types in `<>` against a class's `generic` lines: `validators/name_resolution/generic_arguments`.
 - A type parameter with no `generic` line: `validators/name_resolution/codegen_line`.
 - A member of a type that is not there: `validators/name_resolution/type_member`.
+- A class's `enum`, `union` or `type` named plainly outside the class, or through a namespace instead of its
+  class: `validators/name_resolution/class_member`. A namespace holds classes and namespaces only, so a plain
+  name looks in the class's own declarations and then for a class, never in another class's declarations.
 
 A class name that reaches no file is collected and not reported yet (an issue labelled `architecture`).
 

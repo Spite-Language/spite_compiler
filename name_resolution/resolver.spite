@@ -1194,6 +1194,7 @@ func type_of_a_path(path: List<String>, arguments: List<AbstractSyntaxTree.Shape
         versioned.refuse_an_unpinned_version(context.file.path, line, context.shown, written, unpinned)
     }
     if not found {
+        refuse_a_class_member(path)
         var suggestion = suggested_type(path)
         var unknown = Validators.NameResolution.UnknownType.Validator()
         unknown.refuse(context.file.path, line, context.shown, written, suggestion)
@@ -1605,7 +1606,7 @@ func declared_type_of(path: List<String>): Model.Type? {
     if named_class {
         return declared_by_its_file(named_class, name)
     }
-    return declared_anywhere(name)
+    return null
 }
 
 func declared_as_a_file(path: List<String>): Model.Type? {
@@ -1664,7 +1665,52 @@ func declared_type_in(path: List<String>, model: Model.ClassModel): Model.Type? 
     return found
 }
 
-func declared_anywhere(name: String): Model.Type? {
+# ../../spite_spec/specs/packages.md#packages-namespaces-and-loading
+func refuse_a_class_member(path: List<String>) {
+    var last_name = path.last()
+    crash last_name
+    var owners = List<String>()
+    var namespace_name = ""
+    if path.count() == 1 {
+        owners = classes_declaring(last_name)
+    } else {
+        var owner_path = path.copy()
+        var dropped = owner_path.remove_last()
+        crash dropped
+        var written_owner = owner_path.join(".")
+        var folder = namespace_folder_named(written_owner)
+        assert folder
+        namespace_name = folder.namespace
+        owners = classes_of_the_folder_declaring(folder, last_name)
+    }
+    assert not owners.is_empty()
+    var namings = List<String>()
+    var index = 0
+    while index < owners.count() {
+        var owner = owners[index]
+        var shortest = shortest_name_of(owner)
+        namings.append("{shortest}.{last_name}")
+        index = index + 1
+    }
+    var written = path.join(".")
+    var refusal = Validators.NameResolution.ClassMember.Validator()
+    if namespace_name.is_empty() {
+        refusal.refuse_outside_its_class(context.file.path, line, context.shown, typing_function_name, written, owners, namings)
+    } else {
+        refusal.refuse_through_a_namespace(
+            context.file.path,
+            line,
+            context.shown,
+            typing_function_name,
+            written,
+            namespace_name,
+            owners,
+            namings,
+        )
+    }
+}
+
+func classes_declaring(name: String): List<String> {
     var outer_context = context
     var outer_line = line
     var outer_parameters = read_parameters
@@ -1672,28 +1718,87 @@ func declared_anywhere(name: String): Model.Type? {
     context = outer_context
     line = outer_line
     read_parameters = outer_parameters
-    var owners = List<Model.ClassModel>()
+    var owners = List<String>()
     var index = 0
     while index < program.order.count() {
         var model = program.order[index]
-        if declares_a_type(model, name) {
-            owners.append(model)
+        var owner = model.file.namespace
+        if declares_a_type(model, name) and not owners.contains(owner) {
+            owners.append(owner)
         }
         index = index + 1
     }
-    assert not owners.is_empty()
-    var level = symbols.enclosing(context.file.namespace)
+    return owners
+}
+
+func namespace_folder_named(written: String): Mapping.MappedFolder? {
+    var names = Mapping.Names()
+    var searched = context.file.namespace
     var keep_going = true
     while keep_going {
-        var nearest = nearest_at(owners, level)
-        if nearest {
-            return type_declared_in(nearest, name)
+        var candidate = names.joined(searched, written)
+        var folder = symbols.map.folder_named(candidate)
+        if folder {
+            return folder
         }
-        keep_going = not level.is_empty()
-        level = symbols.enclosing(level)
+        keep_going = not searched.is_empty()
+        searched = symbols.enclosing(searched)
     }
-    var anywhere = owners[0]
-    return type_declared_in(anywhere, name)
+    return null
+}
+
+func classes_of_the_folder_declaring(folder: Mapping.MappedFolder, name: String): List<String> {
+    var owners = List<String>()
+    var index = 0
+    while index < folder.files.count() {
+        var class_file = folder.files[index]
+        if not symbols.file_for(class_file.path) {
+            read_later_class(class_file)
+        }
+        index = index + 1
+    }
+    var outer_context = context
+    var outer_line = line
+    var outer_parameters = read_parameters
+    fill_the_waiting()
+    context = outer_context
+    line = outer_line
+    read_parameters = outer_parameters
+    var file_index = 0
+    while file_index < folder.files.count() {
+        var class_file = folder.files[file_index]
+        var model = program.class_named(class_file.namespace)
+        var declares = false
+        if model {
+            declares = declares_a_type(model, name)
+        }
+        if declares and not owners.contains(class_file.namespace) {
+            owners.append(class_file.namespace)
+        }
+        file_index = file_index + 1
+    }
+    return owners
+}
+
+func shortest_name_of(owner: String): String {
+    var segments = owner.split(".")
+    var start = segments.count() - 1
+    while start > 0 {
+        var shorter = List<String>()
+        var index = start
+        while index < segments.count() {
+            var segment = segments[index]
+            shorter.append(segment)
+            index = index + 1
+        }
+        var written = shorter.join(".")
+        var found = symbols.find(written, context.file.namespace)
+        if found and found.namespace == owner {
+            return written
+        }
+        start = start - 1
+    }
+    return owner
 }
 
 func declares_a_type(model: Model.ClassModel, name: String): Boolean {
@@ -1704,65 +1809,6 @@ func declares_a_type(model: Model.ClassModel, name: String): Boolean {
         return true
     }
     return false
-}
-
-func nearest_at(owners: List<Model.ClassModel>, level: String): Model.ClassModel? {
-    var chosen: Model.ClassModel? = null
-    var chosen_shared = -1
-    var index = 0
-    while index < owners.count() {
-        var owner = owners[index]
-        var folder = symbols.enclosing(owner.file.namespace)
-        var shared = nearness(owner.file.path, context.file.path)
-        if folder == level and shared > chosen_shared {
-            chosen = owner
-            chosen_shared = shared
-        }
-        index = index + 1
-    }
-    return chosen
-}
-
-func nearness(owner_path: String, reader_path: String): Integer {
-    var owner_is_library = symbols.is_library_path(owner_path)
-    if owner_is_library and not symbols.is_library_path(reader_path) {
-        return 0
-    }
-    var shared = shared_length(owner_path, reader_path)
-    return shared + 1
-}
-
-func shared_length(left: String, right: String): Integer {
-    var index = 0
-    var keep_going = index < left.length() and index < right.length()
-    while keep_going {
-        var left_letter = left.slice(index, index + 1)
-        crash left_letter
-        var right_letter = right.slice(index, index + 1)
-        crash right_letter
-        if left_letter != right_letter {
-            return index
-        }
-        index = index + 1
-        keep_going = index < left.length() and index < right.length()
-    }
-    return index
-}
-
-func type_declared_in(model: Model.ClassModel, name: String): Model.Type? {
-    var made_enum = model.enum_named(name)
-    if made_enum {
-        return Model.Type('enumeration', made_enum.key)
-    }
-    var made_union = model.union_named(name)
-    if made_union {
-        return Model.Type('union', made_union.key)
-    }
-    var made_shape = model.shape_named(name)
-    if made_shape {
-        return Model.Type('shape', made_shape.key)
-    }
-    return null
 }
 
 func class_type_of(
