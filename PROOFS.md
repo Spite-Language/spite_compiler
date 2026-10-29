@@ -48,7 +48,7 @@ used.
 | `CheckSite` | `statements.spite` (`note_a_proven_check`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`, `note_a_narrowed_copy`) | the check written and what the scope says already proved it, the checked type, the copy and its source | `proofs/proven_checks` |
 | `CheckSite` | `statements.spite` (`note_an_undone_loop_check`, `note_an_undone_path`) | a path assigned a value that may be null inside a loop: whether it was narrowed before the loop and read in it, or whether the end of the body left it narrowed | `proofs/loop_narrowings` |
 | `GuardSite` | `statements.spite` (`default_return`, `note_a_terminal_if`) | a guard `assert` with no "nothing" to answer, or an `if` that may be the last statement | `proofs/guard_asserts` |
-| `ParallelSite` | `values.spite` (`handle_value`, `member_call`) | a `Parallel(...)` or a `parallel_each_` call, the block around it and a `ScopeView` | `proofs/parallel_reach` |
+| `ParallelSite` | `values.spite` (`handle_value`, `member_call`) | a `Parallel(...)`, the block around it and a `ScopeView` | `proofs/parallel_reach` |
 | `SwitchSite`, `VectorSite` | `statements.spite`, `constraints.spite` | a switch's cases and members, a `Vector` made | `proofs/switch_cover`, `proofs/vector_fit` |
 
 `building/function_entry.spite` puts a proof back inside the function of a site (its class, its function, its line,
@@ -1170,13 +1170,13 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 ### No other thread counts a class
 
 - **Status**: built.
-- **Rule**: code that can run on another thread is every function a `Parallel` or a `Concurrent` starts (a
-  `parallel_each_` band among them), every function those call, every constructor and attribute defaults of what
-  they make, and, where they call a function value, every function the program takes as a value. A class is counted
-  by another thread when that code names a value, a local, a parameter, an answer or an attribute of it, or of
-  anything that holds it (an attribute, a list's or a dictionary's items, a union's member, a shape's filler); a
-  function value there counts every class whose function is taken as a value, and a union or shape whose members are
-  not known counts every class. A program that makes a `ForeignCallback` counts every class atomically.
+- **Rule**: code that can run on another thread is every function a `Parallel` or a `Concurrent` starts (a band of
+  a banded loop among them: the compiler starts it with the same IR node), every function those call, every constructor and attribute defaults of what they make, and, where they call a function
+  value, every function the program takes as a value. A class is counted by another thread when that code names a
+  value, a local, a parameter, an answer or an attribute of it, or of anything that holds it (an attribute, a list's
+  or a dictionary's items, a union's member, a shape's filler); a function value there counts every class whose
+  function is taken as a value, and a union or shape whose members are not known counts every class. A program that
+  makes a `ForeignCallback` counts every class atomically.
 - **Buys**: [plain counts](OPTIMIZATIONS.md#plain-counts-where-no-other-thread-counts-a-class) for every other
   class whose objects' class is known where they are counted.
 - **Falls back**: an atomic count wherever the class is not known while compiling, or another thread may count it.
@@ -1365,19 +1365,18 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 ### What a `Parallel` may reach
 
 - **Status**: partly built.
-- **Rule**: a `Parallel` work or a `parallel_each_` member reaches only its own value attributes, its locals and
+- **Rule**: a `Parallel` work reaches only its own value attributes, its locals and
   singletons; it writes a value attribute only of an object handed over to it, never of `this`, an attribute, a
   parameter or a local used again ([concurrency.md](../SpiteLanguage/specs/concurrency.md)).
 - **Missing**: reach is followed only through calls of the work's own class.
 - **Falls back**: refused, "'...' runs '...' on another thread, so it may reach only ...", or "'Parallel(kept.bump)'
   writes 'count' of this 'Counter' on another thread while this thread may write it too, so one write would be lost
   ...".
-- **Lives in**: the proof `proofs/parallel_reach` (`work_reach.spite`), judging every `Parallel` and `parallel_each_`
-  call the builder recorded (a `ParallelSite`).
-- **Checked by**: conformance/parallel_reach, parallel_function_reach, parallel_handover, parallel_shared_writes,
-  parallel_shared_value_writes, parallel_held_value_writes, parallel_each_reach_through_call,
-  parallel_each_after_map, parallel_each_numbers, foreign_callback_thread_reach; tests/parallel_work,
-  parallel_handover, parallel_each, parallel_receivers.
+- **Lives in**: the proof `proofs/parallel_reach` (`work_reach.spite`), judging every `Parallel` the builder recorded
+  (a `ParallelSite`).
+- **Checked by**: conformance/parallel_function_reach, parallel_handover, parallel_shared_writes,
+  parallel_shared_value_writes, parallel_held_value_writes, foreign_callback_thread_reach; tests/parallel_work,
+  parallel_handover, parallel_receivers.
 
 ### Which calls suspend a `Concurrent`
 

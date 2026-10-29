@@ -80,8 +80,7 @@ clearing a function's facts once it has, so no fact outlives the round that prov
      assigned as its last mention;
    - `borrowed_items`: a borrowed item is not kept, listed, returned, renamed or read past a resize, and is lent
      only to a program function by name (it records each lent call for `lent_parameters`);
-   - `parallel_reach`: a `Parallel` work or a `parallel_each_` member reaches only what it may, and no lock waits
-     forever.
+   - `parallel_reach`: a `Parallel` work reaches only what it may, and no lock waits forever.
    A refusal the builder still makes asks this walk first, so the earliest error is the one told.
 2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program. Then
    `endless_parallel_work`: a `while true` that never leaves in a function a `Parallel` runs, recorded by

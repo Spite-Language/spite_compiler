@@ -566,7 +566,7 @@ What a user can observe: the time, and a larger executable where releases are ma
 ## Counts are atomic only in a program with threads
 
 Taking and letting go of a count is a plain addition and subtraction on the object's count, unless the program can
-run code on another thread: one that starts a `Parallel` (a `parallel_each_` pass included) or makes a
+run code on another thread: one that starts a `Parallel` (a banded loop included) or makes a
 `ForeignCallback`, which C may call from a thread of its own. Only such a program takes a count with a locked
 addition (`lock inc`) and lets one go with a locked subtraction; the allocator's own lists take their lock only there
 too. The lowering marks the program as one that uses threads where it writes a thread's start or a callback, and the
@@ -2841,8 +2841,7 @@ join; `--low-ir` shows them.
 
 ## A `Parallel` runs on a thread the program keeps
 
-A `Parallel` (and so each band of a banded loop and each piece of a `parallel_each_`, which are `Parallel`s of the
-library) hands its work to the program's thread pool, which the lowering writes as three low functions
+A `Parallel` (and each band of a banded loop, which the compiler starts with the same work node) hands its work to the program's thread pool, which the lowering writes as three low functions
 (`low_intermediary_representation/lowering/pool_writing.spite`): `_pool_submit` queues the work's block for a thread
 of the pool that waits for work and wakes it, or, when no thread waits, starts a new one with the block;
 `_pool_worker` is every pool thread's entry, which runs a block's work, marks it done, wakes the joiners, and then
@@ -3143,9 +3142,9 @@ list for each processor, when every pass writes only its own element: the compil
 function of the class it calls) and finds that it writes only number attributes of the element and its own locals,
 reads only number attributes of the element, its locals and literals, and calls only functions of the class that
 take and answer numbers. Nothing else may appear in it: no member call, no index, no text, no object made, no
-`crash`, no `switch`. It is `parallel_each_` without writing it: the
-compiler proves what that form asks the programmer to keep true, and when it cannot, the loop is the loop as written
-(the high pass `high_optimization_passes/banded_loops`, the library's `List._each_in_bands_member`).
+`crash`, no `switch`. There is no parallel form to write: the program
+writes `each_advance()`, and when the compiler cannot prove the pass, the loop is the loop as written (the high pass
+`high_optimization_passes/banded_loops`).
 
 ```spite
 var angle = 0.0
@@ -3172,6 +3171,17 @@ func advance() {
 `orbits.each_advance()` over 100 000 orbits cuts them into one band per processor; the program's own thread runs the
 first band and waits for the others, so whatever comes after the loop (`orbits.sum_turns()`) runs after every pass,
 as written.
+
+**What the compiler writes.** The library's `each_advance()` is a plain loop calling `_each_range_advance(start, end)`
+over the whole list. For a proven call the pass replaces it with `_each_range_advance$bands(least, times)` on the
+list's class, and builds `_each_range_advance$split(start, end, bands, times)` and `_items_held_once$bands()` beside
+it. All three are IR the compiler writes, never Spite source. The driver reads the list's count and the processor
+count (an intrinsic the compiler declares itself), caps the bands at 64 and at the count, uses one band when the
+count is under `least` or an item is held by more than one slot, and calls the split over the whole list. The split
+given fewer than 2 bands runs `_each_range_advance(start, end)` `times` times. Otherwise it halves the bands, starts
+the upper half on the pool with the IR's own work node (the `into_handle` conversion, as `Parallel`'s lowering
+does), runs the lower half itself, and joins (the `join` conversion). Which loops may band is proven in
+`pass_weights.spite`.
 
 **When it pays.** A band costs handing it to a thread of the [pool](#a-parallel-runs-on-a-thread-the-program-keeps)
 (the start of one the first time), so the compiler weighs the pass while compiling: each statement 1,
@@ -3208,7 +3218,7 @@ A `while` whose body is only a call that [runs in bands](#a-loop-whose-passes-wr
 and the step of its counter (an `Integer` counted by one up to a literal) starts the bands once: each band runs all
 ten passes of its own elements, one element after another, and the counter ends at the bound, as the loop would
 leave it. It is built as an `if tick < 10` that runs the passes `10 - tick` times and then sets `tick = 10`
-(`high_intermediary_representation/building/statements.spite`, the library's `List._each_in_bands_repeated_member`).
+(`high_optimization_passes/banded_loops/banded_loops.spite`, which passes `10 - tick` as the driver's `times`).
 Each pass writes only its own element and reads nothing another pass writes, so an element's ten passes in a row
 leave every element as ten rounds over the list would. Below the count at which bands pay, or when an element is
 held elsewhere too, the rounds run over the whole list one after another, as written.
