@@ -2814,6 +2814,15 @@ made without a map writes and reads the attributes' own names. Every map set on 
 same, set before the serializer is compiled, and never changed through an index; otherwise the program does not
 compile. What a user can observe: nothing but the keys.
 
+A map made at run time (filled in a loop, answered by a function, or a literal with a computed key or text) cannot
+be folded, so the compiler gives the serializer class a key table of its own: one hidden `String?` slot per public
+attribute of the serialized class that holds a value, named `keys.<attribute>`, which no program can write, set
+to `null` by the class's defaults. Where such a map is set, the compiler copies it, then fills each slot from the
+copy once and halts when the map holds a key the table has no slot for; each attribute's copy of `write_attribute`
+and `read_attribute` reads its slot instead of a constant, so a record costs what the folded case costs. A
+serializer class whose maps are all written out has slots nothing reads, which `untouched_attributes` removes.
+What a user can observe: nothing but the keys, and that the copy keeps the keys the map held when it was set.
+
 ## A type crosses into C as its struct, in the frame
 
 A `type` passed to a foreign function is laid out as the C struct of its attributes, in a room of the calling
