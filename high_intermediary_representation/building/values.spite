@@ -138,19 +138,6 @@ func fitted(
     if unions and is_a_part_of(given, wanted) {
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_union', value)
     }
-    var reads_text = given.name == "String" and given.kind == 'object' and not given.is_nullable and wanted.is_nullable
-    if reads_text and wanted.kind == 'scalar' {
-        return number_read_from_text(value, wanted)
-    }
-    if reads_text and wanted.kind == 'enumeration' {
-        var enumeration = enum_model_of(wanted)
-        need_text_constants()
-        var string_model = context.class_of(given)
-        var equals = string_model.function_named("equals")
-        crash equals
-        need(equals)
-        return HighIntermediaryRepresentation.Values.EnumFromText(wanted, enumeration, value)
-    }
     if wanted.kind == 'shape' and given.kind == 'shape' and given.name != wanted.name {
         refill_a_shape(given, wanted)
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
@@ -191,12 +178,94 @@ func fitted(
         }
     }
     refuse_a_walked_symbol_passed_on(value, wanted)
+    var converted = converted_by_its_class(value, wanted)
+    if converted {
+        return converted
+    }
     var shown_given = context.shown(given)
     var shown_wanted = context.shown(wanted)
     var wants_an_enum = wanted.kind == 'enumeration'
     typing.refuse_text_given(context, shown_given, shown_wanted, wants_an_enum)
+    refuse_a_missing_conversion(value, wanted)
     typing.refuse_mismatch(context, shown_given, shown_wanted)
     return value
+}
+
+func can_be_converted(given: Model.Type, wanted: Model.Type): Boolean {
+    var given_kind = given.kind == 'object' or given.kind == 'scalar' or given.kind == 'enumeration'
+    var wanted_kind = wanted.kind == 'object' or wanted.kind == 'scalar' or wanted.kind == 'enumeration'
+    var shown_given = context.shown(given)
+    var shown_wanted = context.shown(wanted)
+    var is_generic = shown_given.contains("<") or shown_wanted.contains("<")
+    var is_internal = given.name.starts_with("Spite.") or wanted.name.starts_with("Spite.")
+    return given_kind and wanted_kind and not given.is_nullable and not is_generic and not is_internal
+}
+
+func conversion_name_of(wanted: Model.Type): String {
+    var segments = wanted.name.split(".")
+    var last = segments.last()
+    crash last
+    var names = Mapping.Names()
+    var reader = names.snake_case_of(last)
+    return "to_{reader}"
+}
+
+# ../../../spite_spec/specs/values_and_types.md#casting
+func converted_by_its_class(
+    value: HighIntermediaryRepresentation.Values.Value,
+    wanted: Model.Type,
+): HighIntermediaryRepresentation.Values.Value? {
+    var given = value.value_type
+    assert can_be_converted(given, wanted)
+    var reads_text = given.kind == 'object' and given.name == "String"
+    var read_in_place = wanted.kind == 'scalar' or wanted.kind == 'enumeration'
+    assert not reads_text or not read_in_place or wanted.is_nullable
+    var conversion = conversion_name_of(wanted)
+    if reads_text and wanted.kind == 'enumeration' {
+        return text_read_into_an_enum(value, wanted)
+    }
+    if given.kind == 'enumeration' and conversion == "to_integer" {
+        var integer = context.scalar_type("Integer")
+        var widened = HighIntermediaryRepresentation.Values.Conversion(integer, 'widen', value)
+        return fitted(widened, wanted)
+    }
+    assert given.kind != 'enumeration'
+    var owner = context.class_of(given)
+    if wanted.kind == 'enumeration' {
+        var numbered = number_read_as_an_enum(value, owner, conversion, 0)
+        if numbered {
+            return fitted(numbered, wanted)
+        }
+    }
+    var function = owner.function_named(conversion)
+    assert function and function.parameters.is_empty()
+    assert function.answer
+    assert function.answer.kind == wanted.kind and function.answer.name == wanted.name
+    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
+    var called_conversion = method_call(value, conversion, no_arguments)
+    return fitted(called_conversion, wanted)
+}
+
+func text_read_into_an_enum(
+    value: HighIntermediaryRepresentation.Values.Value,
+    wanted: Model.Type,
+): HighIntermediaryRepresentation.Values.Value {
+    var enumeration = enum_model_of(wanted)
+    need_text_constants()
+    var string_model = context.class_of(value.value_type)
+    var equals = string_model.function_named("equals")
+    crash equals
+    need(equals)
+    return HighIntermediaryRepresentation.Values.EnumFromText(wanted, enumeration, value)
+}
+
+func refuse_a_missing_conversion(value: HighIntermediaryRepresentation.Values.Value, wanted: Model.Type) {
+    var given = value.value_type
+    assert can_be_converted(given, wanted)
+    var shown_given = context.shown(given)
+    var shown_wanted = context.shown(wanted)
+    var conversion = conversion_name_of(wanted)
+    typing.refuse_a_missing_conversion(context, shown_given, shown_wanted, conversion)
 }
 
 func refuse_a_walked_symbol_passed_on(value: HighIntermediaryRepresentation.Values.Value, wanted: Model.Type) {
@@ -274,17 +343,6 @@ func reflected_function(described: Model.FunctionModel): HighIntermediaryReprese
     context.pending.append(checked)
     var present_type = found.value_type.present()
     return HighIntermediaryRepresentation.Values.Conversion(present_type, 'proven', local)
-}
-
-func number_read_from_text(
-    value: HighIntermediaryRepresentation.Values.Value,
-    wanted: Model.Type,
-): HighIntermediaryRepresentation.Values.Value {
-    var names = Mapping.Names()
-    var reader = names.snake_case_of(wanted.name)
-    var no_arguments = List<HighIntermediaryRepresentation.Values.Value>()
-    var read = method_call(value, "to_{reader}", no_arguments)
-    return fitted(read, wanted)
 }
 
 func refill_a_shape(given: Model.Type, wanted: Model.Type) {
