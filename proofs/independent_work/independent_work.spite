@@ -1,0 +1,298 @@
+# ../../PROOFS.md#calls-that-share-nothing-written
+var no_program = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(no_program)
+var built_by_key = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var quiet_keys = List<String>()
+var loud_keys = List<String>()
+var studying = List<String>()
+var run_names = List<String>()
+var read_value: HighIntermediaryRepresentation.Values.Value? = null
+
+func check(starting_high: HighIntermediaryRepresentation.HighProgram) {
+    assert starting_high.will_be_lowered()
+    crash starting_high.context
+    var inspection = CommandLine.Inspection()
+    assert not inspection.holds(starting_high.context.build_flags)
+    high = starting_high
+    note_the_built()
+    var library = Validators.LibraryFile()
+    var index = 0
+    while index < starting_high.built_functions.count() {
+        var built = starting_high.built_functions[index]
+        var owner = starting_high.model.class_named(built.function.owner)
+        if owner and not library.holds(owner.file.path) {
+            mark_a_block(built.body)
+        }
+        index = index + 1
+    }
+}
+
+func note_the_built() {
+    var index = 0
+    while index < high.built_functions.count() {
+        var built = high.built_functions[index]
+        var key = built.function.key()
+        built_by_key[key] = built
+        index = index + 1
+    }
+}
+
+func mark_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    run_names = List<String>()
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        mark_a_statement(statement)
+        index = index + 1
+    }
+    run_names = List<String>()
+}
+
+func mark_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    if statement == HighIntermediaryRepresentation.Statements.Declare {
+        mark_a_declaration(statement)
+        return
+    }
+    mark_inside(statement)
+    run_names = List<String>()
+}
+
+func mark_inside(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.If: mark_the_branches(statement)
+        HighIntermediaryRepresentation.Statements.While: mark_a_block(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: mark_a_block(statement)
+        _: return
+    }
+}
+
+func mark_the_branches(branch: HighIntermediaryRepresentation.Statements.If) {
+    mark_a_block(branch.then_branch)
+    mark_a_block(branch.else_branch)
+}
+
+func mark_a_declaration(declared: HighIntermediaryRepresentation.Statements.Declare) {
+    var is_work = declared.hides.is_empty() and is_a_number(declared.declared_type) and is_quiet_work(declared.value)
+    if not is_work {
+        run_names = List<String>()
+        return
+    }
+    declared.is_quiet_work = true
+    if run_names.is_empty() or reads_the_run(declared.value) {
+        run_names = List<String>()
+    } else {
+        declared.stands_apart_from_the_run_before = true
+    }
+    run_names.append(declared.name)
+}
+
+func reads_the_run(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    read_value = value
+    return run_names.any(is_read)
+}
+
+func is_read(name: String): Boolean {
+    var uses = HighIntermediaryRepresentation.Ownership.Uses()
+    return uses.in_value(read_value, name) > 0
+}
+
+func is_quiet_work(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if value == HighIntermediaryRepresentation.Values.Call {
+        return is_a_number(value.value_type) and is_a_started_receiver(value.receiver) and is_a_quiet_call(value)
+    }
+    return false
+}
+
+func is_a_started_receiver(receiver: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if receiver == HighIntermediaryRepresentation.Values.ThisRead {
+        return true
+    }
+    if receiver == HighIntermediaryRepresentation.Values.AttributeRead {
+        var object = receiver.object
+        return object == HighIntermediaryRepresentation.Values.ThisRead
+    }
+    return false
+}
+
+func is_a_quiet_call(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    if call.is_a_join or not are_quiet_values(call.arguments) {
+        return false
+    }
+    return is_a_quiet_function(call.function)
+}
+
+func is_a_quiet_function(function: Model.FunctionModel): Boolean {
+    var key = function.key()
+    if quiet_keys.contains(key) {
+        return true
+    }
+    if loud_keys.contains(key) or studying.contains(key) {
+        return false
+    }
+    studying.append(key)
+    var quiet = is_quiet_when_studied(function, key)
+    crash studying.remove_last()
+    if quiet {
+        quiet_keys.append(key)
+    } else {
+        loud_keys.append(key)
+    }
+    return quiet
+}
+
+func is_quiet_when_studied(function: Model.FunctionModel, key: String): Boolean {
+    if function.is_written_by_the_compiler or not high.is_an_ordinary_class(function.owner) {
+        return false
+    }
+    if function.answer and not is_a_number(function.answer) {
+        return false
+    }
+    if not function.parameters.all(is_a_number_parameter) {
+        return false
+    }
+    var built = built_by_key[key]
+    if not built {
+        return false
+    }
+    return is_a_quiet_block(built.body)
+}
+
+func is_a_number_parameter(parameter: Model.ParameterModel): Boolean {
+    return is_a_number(parameter.parameter_type)
+}
+
+func is_a_quiet_block(block: HighIntermediaryRepresentation.Statements.Block?): Boolean {
+    if not block {
+        return true
+    }
+    return block.statements.all(is_a_quiet_statement)
+}
+
+func is_a_quiet_statement(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return is_a_quiet_declaration(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return is_a_quiet_local_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: return is_a_quiet_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.If: return is_a_quiet_branch(statement)
+        HighIntermediaryRepresentation.Statements.While: return is_a_quiet_loop(statement)
+        HighIntermediaryRepresentation.Statements.Return: return is_a_quiet_answer(statement.value)
+        HighIntermediaryRepresentation.Statements.Block: return is_a_quiet_block(statement)
+        _: return false
+    }
+}
+
+func is_a_quiet_declaration(declared: HighIntermediaryRepresentation.Statements.Declare): Boolean {
+    return is_a_number(declared.declared_type) and is_a_quiet_value(declared.value)
+}
+
+func is_a_quiet_local_write(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign): Boolean {
+    return is_a_quiet_value(assigned.value)
+}
+
+func is_a_quiet_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate): Boolean {
+    return not evaluated.waited and is_a_quiet_value(evaluated.value)
+}
+
+func is_a_quiet_branch(branch: HighIntermediaryRepresentation.Statements.If): Boolean {
+    if not is_a_quiet_value(branch.condition) or not is_a_quiet_answer(branch.decided_condition) {
+        return false
+    }
+    return is_a_quiet_block(branch.then_branch) and is_a_quiet_block(branch.else_branch)
+}
+
+func is_a_quiet_loop(loop: HighIntermediaryRepresentation.Statements.While): Boolean {
+    return is_a_quiet_value(loop.condition) and is_a_quiet_block(loop.body)
+}
+
+func is_a_quiet_answer(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if not value {
+        return true
+    }
+    return is_a_quiet_value(value)
+}
+
+func are_quiet_values(values: List<HighIntermediaryRepresentation.Values.Value>): Boolean {
+    return values.all(is_a_quiet_argument)
+}
+
+func is_a_quiet_argument(value: HighIntermediaryRepresentation.Values.Value): Boolean {
+    return is_a_quiet_value(value)
+}
+
+func is_a_quiet_value(value: HighIntermediaryRepresentation.Values.Value?): Boolean {
+    if not value {
+        return false
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return true
+        HighIntermediaryRepresentation.Values.DecimalNumber: return true
+        HighIntermediaryRepresentation.Values.LocalRead: return is_a_number(value.value_type)
+        HighIntermediaryRepresentation.Values.MachineOperation: return is_a_quiet_operation(value)
+        HighIntermediaryRepresentation.Values.Negation: return is_a_quiet_value(value.negated)
+        HighIntermediaryRepresentation.Values.Conversion: return is_a_quiet_conversion(value)
+        HighIntermediaryRepresentation.Values.Call: return is_a_quiet_inner_call(value)
+        _: return false
+    }
+}
+
+func is_a_quiet_inner_call(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    var receiver = call.receiver
+    if receiver == HighIntermediaryRepresentation.Values.ThisRead {
+        return is_a_quiet_call(call)
+    }
+    return false
+}
+
+func is_a_quiet_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
+    var never_halts = conversion.kind == 'widen' or conversion.kind == 'to_decimal'
+    return never_halts and is_a_quiet_value(conversion.converted)
+}
+
+func is_a_quiet_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation): Boolean {
+    if operation.is_folded {
+        return true
+    }
+    if not is_a_quiet_value(operation.left) or not is_a_quiet_value(operation.right) {
+        return false
+    }
+    var operator = operation.operator
+    var divides = operator == 'divide' or operator == 'remainder'
+    var counts = operator == 'add' or operator == 'subtract' or operator == 'multiply'
+    if not counts and not divides {
+        return true
+    }
+    crash operation.left
+    if is_a_decimal(operation.left.value_type) {
+        return true
+    }
+    if divides {
+        return operation.is_divisor_proven
+    }
+    return operation.is_proven_to_fit
+}
+
+func is_a_decimal(of_type: Model.Type): Boolean {
+    return of_type.kind == 'scalar' and (of_type.name == "Float" or of_type.name == "Double")
+}
+
+func is_a_number(of_type: Model.Type?): Boolean {
+    if not of_type {
+        return false
+    }
+    if of_type.is_nullable {
+        return false
+    }
+    if of_type.kind == 'enumeration' {
+        return true
+    }
+    if of_type.kind != 'scalar' {
+        return false
+    }
+    var scalars = Model.Scalars()
+    var scalar = scalars.of(of_type.name)
+    if not scalar {
+        return false
+    }
+    return true
+}

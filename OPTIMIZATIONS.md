@@ -3239,6 +3239,48 @@ held elsewhere too, the rounds run over the whole list one after another, as wri
 **What a program can observe:** the time; a checked operation that overflows reports its band's frames, as in any
 band.
 
+## Independent calls in a row run at once
+
+Two or more declarations in a row, each `var name = receiver.function(arguments)`, where every call is proven quiet
+work (the proof [calls that share nothing written](PROOFS.md#calls-that-share-nothing-written)) and no argument
+reads a name an earlier one of them declares, run at once: every call but the last is started on the
+[pool](#a-parallel-runs-on-a-thread-the-program-keeps) with the IR's own work node (the `into_handle` conversion,
+as the bands start theirs), the last runs on the calling thread, and each started one is joined (the `join`
+conversion) right before the first statement that reads its name, or that holds a `return` or a `crash`, whichever
+comes first. Nothing is written in the program: the high pass `high_optimization_passes/overlapped_work` rewrites
+`var left = mixer.blend(3)` into a handle local `left$running` and a `var left` that joins it.
+
+```spite
+func blend(seed: Integer): Double {
+    var total: Double = 0.0
+    var step: Double = seed
+    var index = 0
+    while index < 3000000 {
+        total = total * 0.999999 + step
+        index = index + 1
+    }
+    return total
+}
+```
+
+`var left = mixer.blend(3)` then `var right = mixer.blend(5)` start `left` on a pool thread and run `right` on the
+calling thread.
+
+**When it pays.** Each call is weighed as the bands weigh a pass, on the high representation (`work_weights.spite`:
+each statement 1, a loop's body times its bound, the literal it is counted to or 8, a call what its function
+weighs), and the run is overlapped only when every call weighs at least a million, the work the bands ask of each
+band they start. Otherwise the run stays in order, as written.
+
+**Why the output cannot change (spite_compiler#222).** Quiet work shows nothing: it prints nothing, touches no file,
+socket or process, cannot crash (no `crash`, no narrowing, no whole-number arithmetic that keeps its overflow check
+or a divisor check, no assert, which records into the assert ring), reads only its arguments and its own locals,
+writes only its own locals, and calls only quiet work through `this`. Its answer is a number, so what the program
+reads after the join is the value running in order gives, and nothing that runs meanwhile can be seen by it or
+change it. Anything the proof cannot show runs in order.
+
+**What a program can observe:** the time, and threads the pool starts. Not in `--hot-reload`, `--repl` or
+`--development` builds, and not in the standard library.
+
 ## A singleton the entry class makes is never tested again
 
 The entry class's attribute defaults run before any other code of the program: a singleton they make on every path

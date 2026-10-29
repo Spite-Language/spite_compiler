@@ -139,6 +139,10 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    a function written from the last template's body, with the steps inside its loop.
 3. `banded_loops`: an `each_` over a `List` whose passes write only their own item calls the template that runs it
    in bands, and a counted loop of one such call runs its count inside each band.
+   Right after it, the proof `independent_work`, registered through `HighOptimizationPasses.Proving`, marks each
+   declaration whose call is quiet work and each that stands apart from the run before it, and the pass
+   `overlapped_work` starts every heavy marked call of a run but the last on the pool and joins each where its name
+   is first read.
 4. `folded_dictionaries`: a local dictionary written out and only read by keys written out is its entries.
 5. `unreached_functions`: a function only the calls those passes replaced reached is dropped.
 6. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where

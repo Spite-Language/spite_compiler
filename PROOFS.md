@@ -1214,7 +1214,26 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 ### Calls that share nothing written
 
-- **Status**: missing. **Falls back**: the calls run in order. **Checked by**: none.
+- **Status**: partly built (spite_compiler#218).
+- **Rule**: in a straight run of declarations `var name = receiver.function(arguments)`, a call is quiet work when
+  its receiver is `this` or an attribute of `this`, its arguments and answer are numbers, and its function, through
+  every function it calls, belongs to an ordinary class of the program (no singleton, not the entry class), takes and
+  answers only numbers, writes only its own locals, reads only its parameters and locals, calls only functions of
+  `this`, and holds nothing that could halt: no `crash`, no narrowing, no object, text or list, no attribute, no
+  foreign call or function value, no recursion, and no whole-number arithmetic that keeps its overflow or divisor
+  check (the proof [a range proves arithmetic fits](#a-range-proves-arithmetic-fits) drops it). Two quiet calls in a
+  row are independent when the later one's arguments read no name the earlier ones of the run declare; neither can
+  see the other, since neither writes anything another reads. The proof marks each quiet declaration
+  (`Declare.is_quiet_work`) and each that stands apart from the whole run before it
+  (`Declare.stands_apart_from_the_run_before`).
+- **Buys**: [independent calls in a row run at once](OPTIMIZATIONS.md#independent-calls-in-a-row-run-at-once).
+- **Missing**: every other kind of statement (calls answering nothing, attribute and list writes kept apart, output
+  kept in order, work that can crash, statements that are not side by side), the old compiler's "calls in a row"
+  reckoning through objects made for their owner.
+- **Falls back**: the calls run in order, as written.
+- **Lives in**: the speed proof `proofs/independent_work`, registered among the high passes right after
+  `banded_loops`; the high pass `overlapped_work` right after it only acts on its marks.
+- **Checked by**: tests/overlapped_work, tests/overlapped_work_runs_at_once.
 
 ### Classes in a list that share nothing written
 
