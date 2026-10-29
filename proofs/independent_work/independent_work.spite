@@ -7,6 +7,7 @@ var loud_keys = List<String>()
 var studying = List<String>()
 var run_names = List<String>()
 var read_value: HighIntermediaryRepresentation.Values.Value? = null
+var allowing_halts = true
 
 func check(starting_high: HighIntermediaryRepresentation.HighProgram) {
     assert starting_high.will_be_lowered()
@@ -79,6 +80,9 @@ func mark_a_declaration(declared: HighIntermediaryRepresentation.Statements.Decl
         return
     }
     declared.is_quiet_work = true
+    allowing_halts = false
+    declared.quiet_work_may_halt = not is_quiet_work(declared.value)
+    allowing_halts = true
     if run_names.is_empty() or reads_the_run(declared.value) {
         run_names = List<String>()
     } else {
@@ -124,25 +128,29 @@ func is_a_quiet_call(call: HighIntermediaryRepresentation.Values.Call): Boolean 
 
 func is_a_quiet_function(function: Model.FunctionModel): Boolean {
     var key = function.key()
-    if quiet_keys.contains(key) {
+    var studied_key = key
+    if not allowing_halts {
+        studied_key = "never halting {key}"
+    }
+    if quiet_keys.contains(studied_key) {
         return true
     }
-    if loud_keys.contains(key) or studying.contains(key) {
+    if loud_keys.contains(studied_key) or studying.contains(studied_key) {
         return false
     }
-    studying.append(key)
+    studying.append(studied_key)
     var quiet = is_quiet_when_studied(function, key)
     crash studying.remove_last()
     if quiet {
-        quiet_keys.append(key)
+        quiet_keys.append(studied_key)
     } else {
-        loud_keys.append(key)
+        loud_keys.append(studied_key)
     }
     return quiet
 }
 
 func is_quiet_when_studied(function: Model.FunctionModel, key: String): Boolean {
-    if function.is_written_by_the_compiler or not high.is_an_ordinary_class(function.owner) {
+    if function.is_written_by_the_compiler or not is_a_started_class(function.owner) {
         return false
     }
     if function.answer and not is_a_number(function.answer) {
@@ -158,6 +166,16 @@ func is_quiet_when_studied(function: Model.FunctionModel, key: String): Boolean 
     return is_a_quiet_block(built.body)
 }
 
+func is_a_started_class(class_key: String): Boolean {
+    if high.is_an_ordinary_class(class_key) {
+        return true
+    }
+    if not high.entry {
+        return false
+    }
+    return high.entry.owner == class_key
+}
+
 func is_a_number_parameter(parameter: Model.ParameterModel): Boolean {
     return is_a_number(parameter.parameter_type)
 }
@@ -166,7 +184,18 @@ func is_a_quiet_block(block: HighIntermediaryRepresentation.Statements.Block?): 
     if not block {
         return true
     }
+    if allowing_halts and ends_the_program(block) {
+        return true
+    }
     return block.statements.all(is_a_quiet_statement)
+}
+
+func ends_the_program(block: HighIntermediaryRepresentation.Statements.Block): Boolean {
+    var last = block.statements.last()
+    if last and last == HighIntermediaryRepresentation.Statements.Stop {
+        return not last.then
+    }
+    return false
 }
 
 func is_a_quiet_statement(statement: HighIntermediaryRepresentation.Statements.Statement): Boolean {
@@ -245,8 +274,11 @@ func is_a_quiet_inner_call(call: HighIntermediaryRepresentation.Values.Call): Bo
 }
 
 func is_a_quiet_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
-    var never_halts = conversion.kind == 'widen' or conversion.kind == 'to_decimal'
-    return never_halts and is_a_quiet_value(conversion.converted)
+    var kind = conversion.kind
+    var widens = kind == 'widen' or kind == 'to_decimal'
+    var narrows = kind == 'narrow' or kind == 'to_whole' or kind == 'narrow_decimal'
+    var allowed = widens or (narrows and allowing_halts)
+    return allowed and is_a_quiet_value(conversion.converted)
 }
 
 func is_a_quiet_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation): Boolean {
@@ -255,6 +287,9 @@ func is_a_quiet_operation(operation: HighIntermediaryRepresentation.Values.Machi
     }
     if not is_a_quiet_value(operation.left) or not is_a_quiet_value(operation.right) {
         return false
+    }
+    if allowing_halts {
+        return true
     }
     var operator = operation.operator
     var divides = operator == 'divide' or operator == 'remainder'

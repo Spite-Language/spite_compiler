@@ -3247,7 +3247,8 @@ reads a name an earlier one of them declares, run at once: every call but the la
 [pool](#a-parallel-runs-on-a-thread-the-program-keeps) with the IR's own work node (the `into_handle` conversion,
 as the bands start theirs), the last runs on the calling thread, and each started one is joined (the `join`
 conversion) right before the first statement that reads its name, or that holds a `return` or a `crash`, whichever
-comes first. Nothing is written in the program: the high pass `high_optimization_passes/overlapped_work` rewrites
+comes first; a call that may halt is joined right after the run, so nothing the program does after it shows before
+its crash. Nothing is written in the program: the high pass `high_optimization_passes/overlapped_work` rewrites
 `var left = mixer.blend(3)` into a handle local `left$running` and a `var left` that joins it.
 
 ```spite
@@ -3271,15 +3272,29 @@ each statement 1, a loop's body times its bound, the literal it is counted to or
 weighs), and the run is overlapped only when every call weighs at least a million, the work the bands ask of each
 band they start. Otherwise the run stays in order, as written.
 
-**Why the output cannot change (spite_compiler#222).** Quiet work shows nothing: it prints nothing, touches no file,
-socket or process, cannot crash (no `crash`, no narrowing, no whole-number arithmetic that keeps its overflow check
-or a divisor check, no assert, which records into the assert ring), reads only its arguments and its own locals,
-writes only its own locals, and calls only quiet work through `this`. Its answer is a number, so what the program
-reads after the join is the value running in order gives, and nothing that runs meanwhile can be seen by it or
-change it. Anything the proof cannot show runs in order.
+**Why the output cannot change (spite_compiler#222, D1747).** Quiet work shows nothing but its halt: it prints
+nothing, touches no file, socket or process, records no assert (an assert writes the assert ring and goes on),
+reads only its arguments and its own locals, writes only its own locals, and calls only quiet work through `this`.
+It may halt: a `crash`, whole-number arithmetic that keeps its overflow or divisor check, and a narrowing of one
+number into another. Its answer is a number, so what the program reads after the join is the value running in
+order gives, and nothing that runs meanwhile can be seen by it or change it. When overlapped work crashes, the first
+crash that happens stops the program at once ([the first crash stops every thread](#the-first-crash-stops-every-thread)),
+so of two pieces of work that would both crash, either one's report may be the one printed. Anything the proof
+cannot show runs in order.
 
-**What a program can observe:** the time, and threads the pool starts. Not in `--hot-reload`, `--repl` or
-`--development` builds, and not in the standard library.
+**What a program can observe:** the time, threads the pool starts, and which of two crashing pieces of work
+reports. Not in `--hot-reload`, `--repl` or `--development` builds, and not in the standard library.
+
+## The first crash stops every thread
+
+A program that runs threads (the pool, the bands, a foreign callback) halts once, with one report: the first thread
+to crash claims a gate and every other thread that crashes after it sleeps until the program ends (D1747). The gate
+is eight bytes of state named `crash.gate` and the compiler-written function `_crash_gate`
+(`low_intermediary_representation/lowering/crash_gate_writing.spite`): it compares and exchanges the gate from zero
+to the calling thread's identity, returns when it won or already holds it, and otherwise sleeps for good. Every way
+a program halts enters it first: the shared stop routine, a stop with values, a library that cannot be opened, a
+halt the compiler writes (`MachineWriting.halted`), and `Spite.Fault.crashed`, the first line of every crash report,
+before any of the report is written. A program with no thread writes no gate and pays nothing.
 
 ## A singleton the entry class makes is never tested again
 
