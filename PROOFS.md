@@ -320,7 +320,7 @@ as when each was refused while building.
 - **Lives in**: `statements.spite` (`default_return`, `is_built_with_no_arguments`), the proof `proofs/guard_asserts`,
   judging every `fallback` whose answer type has no such value and every `if` the builder recorded
   (`note_a_terminal_if`), and `validators/abstract_syntax_tree/default_guard`.
-- **Checked by**: tests/fallback_answers, conformance/default_answer, conformance/default_answer_enum,
+- **Checked by**: tests/fallback_answers, conformance/default_answer_enum,
   conformance/fallback_built_with_arguments, conformance/default_guard, conformance/returning_guard,
   conformance/empty_collection_guard, conformance/terminal_if, conformance/assert_in_constructor,
   conformance/constructor_guard, conformance/guard_de_morgan, conformance/guard_inside_loop,
@@ -1221,7 +1221,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   its receiver is `this` or an attribute of `this`, its arguments and answer are numbers, and its function, through
   every function it calls, belongs to an ordinary class of the program or to the entry class (no singleton), takes
   and answers only numbers, writes only its own locals, reads only its parameters and locals, calls only functions of
-  `this`, and holds no object, text or list, no attribute, no assert (it writes the assert ring), no foreign call or
+  `this`, and holds no object, text or list, no attribute, no fallback (it writes the fallback ring), no foreign call or
   function value, and no recursion. It may halt (D1747): a block that ends the program (a `crash` and its report),
   whole-number arithmetic that keeps its overflow or divisor check, and a narrowing of one number into another.
   Each quiet declaration whose work may halt is marked too (`Declare.quiet_work_may_halt`), found by proving it again

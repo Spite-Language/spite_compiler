@@ -3276,7 +3276,7 @@ weighs), and the run is overlapped only when every call weighs at least a millio
 band they start. Otherwise the run stays in order, as written.
 
 **Why the output cannot change (spite_compiler#222, D1747).** Quiet work shows nothing but its halt: it prints
-nothing, touches no file, socket or process, records no assert (an assert writes the assert ring and goes on),
+nothing, touches no file, socket or process, records no fallback (a fallback writes the fallback ring and goes on),
 reads only its arguments and its own locals, writes only its own locals, and calls only quiet work through `this`.
 It may halt: a `crash`, whole-number arithmetic that keeps its overflow or divisor check, and a narrowing of one
 number into another. Its answer is a number, so what the program reads after the join is the value running in
