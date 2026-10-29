@@ -47,7 +47,7 @@ used.
 | `PresenceSite` | `values.spite` (`note_a_maybe_null`, `note_a_maybe_null_type`), `statements.spite` (`note_a_maybe_boolean`) | a value that may be null where a value is needed: its type, the value (for the list read it came from), what was wanted, the member or operator | `proofs/present_values` |
 | `CheckSite` | `statements.spite` (`note_a_proven_check`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`, `note_a_narrowed_copy`) | the check written and what the scope says already proved it, the checked type, the copy and its source | `proofs/proven_checks` |
 | `CheckSite` | `statements.spite` (`note_an_undone_loop_check`, `note_an_undone_path`) | a path assigned a value that may be null inside a loop: whether it was narrowed before the loop and read in it, or whether the end of the body left it narrowed | `proofs/loop_narrowings` |
-| `GuardSite` | `statements.spite` (`default_return`, `note_a_terminal_if`) | a guard `assert` with no "nothing" to answer, or an `if` that may be the last statement | `proofs/guard_asserts` |
+| `GuardSite` | `statements.spite` (`default_return`, `note_a_terminal_if`) | a guard `fallback` with no "nothing" to answer, or an `if` that may be the last statement | `proofs/guard_asserts` |
 | `ParallelSite` | `values.spite` (`handle_value`, `member_call`) | a `Parallel(...)`, the block around it and a `ScopeView` | `proofs/parallel_reach` |
 | `SwitchSite`, `VectorSite` | `statements.spite`, `constraints.spite` | a switch's cases and members, a `Vector` made | `proofs/switch_cover`, `proofs/vector_fit` |
 
@@ -68,14 +68,14 @@ as when each was refused while building.
 ### Narrowing a `T?`
 
 - **Status**: built.
-- **Rule**: only a call-free name or path narrows; `if` narrows its block and not its `else`; `assert` and `crash`
+- **Rule**: only a call-free name or path narrows; `if` narrows its block and not its `else`; `fallback` and `crash`
   narrow the rest of the block; `while` narrows its body; a `switch` `T:` case narrows its case; one check narrows
   every link of the path before it. It tests presence, never the value
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule),
   [control_flow.md](../SpiteLanguage/specs/control_flow.md#control-flow-in-full)).
 - **Buys**: reads, calls and stores through a `T?` are accepted, and the narrowed read has no test.
 - **Falls back**: refused, "this value may be null (it is a ...), so '...' cannot be read from it yet: narrow it
-  first with 'if value { }', 'assert value' or 'crash value'". Put a call's result in a `var` and narrow that.
+  first with 'if value { }', 'fallback value' or 'crash value'". Put a call's result in a `var` and narrow that.
 - **Lives in**: the narrowing itself is building, since it decides the type of every read:
   `high_intermediary_representation/building/statements.spite` (`read_facts`, `read_a_fact`, `narrowed_block_of`),
   `scope.spite` (`narrow`), `values.spite` (`narrowed`, `with_its_links`). The refusal of a value that may be null
@@ -186,20 +186,20 @@ as when each was refused while building.
 ### Proving what is proven is an error
 
 - **Status**: built (D1445 to D1447).
-- **Rule**: a check of a `T?` already narrowed (by an `assert`, a `crash`, the `if`, `while` or `switch` around
+- **Rule**: a check of a `T?` already narrowed (by a `fallback`, a `crash`, the `if`, `while` or `switch` around
   it), a `[]` read already proven (by a bound, a count or an earlier check), a divisor already proven (`name != 0`
   after `name != 0` or `name > 0`, `name > 0` after `name > 0`), a class test the type already answers, the same
-  call-free condition on the very next statement of the same block, an `assert`/`crash` that folds true, and a check
+  call-free condition on the very next statement of the same block, a `fallback`/`crash` that folds true, and a check
   of a value that cannot be null are refused, naming where it was proven
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: no dead checks in the source.
 - **How**: inside a `while`, only a proof made inside that loop makes a check redundant (the frame of the scope the
   path was narrowed in is compared with the loop's), since an assignment later in the loop would leave the next
   pass unproven. A narrowed `Boolean` is not refused when tested again, since an `if` on it tests its value. A folded
-  `assert` is one that asks a compile-time question (a call such as `has_function`, or a `Build` field); a presence
+  `fallback` is one that asks a compile-time question (a call such as `has_function`, or a `Build` field); a presence
   check that folds is judged as a plain value or a proven read instead; any other folded condition that is not a
   bare name is refused too (D1746). The
-  class test and the folded `assert` are refused only outside a generic class and a walk, where they fold per
+  class test and the folded `fallback` are refused only outside a generic class and a walk, where they fold per
   instance, and outside the library and the compiler's generated files. A local is plain when its value cannot be
   null, whatever made it (D1447: a call's answer, a copy of an attribute or another local, a proven `[]` read);
   in a generic class or a walk only a written type or a construction makes it plain, since its type may differ per
@@ -222,12 +222,12 @@ as when each was refused while building.
 
 - **Status**: built (D1447).
 - **Rule**: a `var` holding a bare name or path of a `T?`, never assigned again and whose source is not assigned in
-  the function, then narrowed (by `assert`, `crash`, `if`, `while`, `switch`, `not` of it or an `and` side), is
+  the function, then narrowed (by `fallback`, `crash`, `if`, `while`, `switch`, `not` of it or an `and` side), is
   refused: narrow the source itself. `if not copy { }` tests it whether or not its block leaves. A snapshot taken
   before its source changes is allowed
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: one name per value.
-- **Falls back**: refused, "'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('assert
+- **Falls back**: refused, "'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('fallback
   tracker') and use it directly".
 - **Lives in**: the proof `proofs/proven_checks`, judging each copy `statements.spite` recorded when the copy is
   narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `note_a_tested_copy`, `build_switch`).
@@ -248,7 +248,7 @@ as when each was refused while building.
   returning a proven attribute, is proven too
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: `var shown: Monster? = Monster()`, never assigned null, reads `shown.name` with no narrowing; an
-  `assert`, `crash` or `if` on such a name is the "already narrowed" error: "'shown' is already narrowed by the
+  `fallback`, `crash` or `if` on such a name is the "already narrowed" error: "'shown' is already narrowed by the
   proof that every value it can hold is present: remove this check".
 - **Falls back**: not proven, and read as the `T?` it is declared, when any assignment may be null, a `T?`
   parameter is read, an attribute has no default or belongs to the library or to a `Spite.` class, an attribute of
@@ -298,7 +298,7 @@ as when each was refused while building.
 - **Status**: built.
 - **Rule**: a path ends at a `return`, a bare `crash`, an `if`/`else` whose branches both end, a `switch` whose every
   case ends, or a folded condition whose taken branch ends; a function that answers something and
-  has a path that reaches its end is refused ([failure.md](../SpiteLanguage/specs/failure.md#assert-is-control-flow)).
+  has a path that reaches its end is refused ([failure.md](../SpiteLanguage/specs/failure.md#fallback-is-control-flow)).
 - **Buys**: no caller gets a value nobody wrote.
 - **Falls back**: refused, "'...' answers ..., but ... it reaches its end without a 'return' ...: end that path with
   'return <value>', or with 'crash' if it cannot happen".
@@ -306,23 +306,25 @@ as when each was refused while building.
   run by the builder on each function body.
 - **Checked by**: conformance/falling_end; tests/every_path_returns, tests/control_while_running.
 
-### A guard `assert` answers only "nothing"
+### A fallback answers what its answer type builds with no arguments
 
 - **Status**: built.
-- **Rule**: a guard `assert` is allowed only where the result says "nothing" (no result, a `T?`, a `List`, a
-  `Dictionary`, a `Vector`, an `Items`), never in a constructor; an `if` that only returns the default, or a last
-  `if` with no `else` that only checks presence, is refused naming the `assert`
-  ([failure.md](../SpiteLanguage/specs/failure.md#assert-is-control-flow)).
-- **Buys**: no default a caller cannot tell from a real answer.
-- **Falls back**: refused, "this 'assert' would answer a default ... that a caller cannot tell from a real one ...".
-- **Lives in**: the proof `proofs/guard_asserts`, judging every guard `assert` whose function has no "nothing" to
-  answer (`statements.spite`: `default_return`) and every `if` the builder recorded (`note_a_terminal_if`), and
-  `validators/abstract_syntax_tree/default_guard`.
-- **Checked by**: conformance/default_answer, conformance/default_answer_boolean, conformance/default_answer_decimal,
-  conformance/default_answer_enum, conformance/default_answer_text, conformance/default_guard,
-  conformance/returning_guard, conformance/empty_collection_guard, conformance/terminal_if,
-  conformance/assert_in_constructor, conformance/constructor_guard, conformance/guard_de_morgan,
-  conformance/guard_inside_loop.
+- **Rule**: a `fallback` whose condition fails returns what the function's answer type builds with no arguments
+  (D1765): nothing, `null` for a `T?`, `0` for a number, `false`, `""`, an empty collection, or the object of a class
+  with no constructor or a constructor without parameters. It is refused where the answer type has no such value (an
+  enum, a class whose constructor takes arguments, a singleton) and in a constructor; an `if` that only returns that
+  value, or a last `if` with no `else` that only checks presence, is refused naming the `fallback`
+  ([failure.md](../SpiteLanguage/specs/failure.md#fallback-is-control-flow)).
+- **Buys**: a guard written once, whose answer the answer type states.
+- **Falls back**: refused, "'fallback' returns what the answer type builds with no arguments, and a ... has none ...".
+- **Lives in**: `statements.spite` (`default_return`, `is_built_with_no_arguments`), the proof `proofs/guard_asserts`,
+  judging every `fallback` whose answer type has no such value and every `if` the builder recorded
+  (`note_a_terminal_if`), and `validators/abstract_syntax_tree/default_guard`.
+- **Checked by**: tests/fallback_answers, conformance/default_answer, conformance/default_answer_enum,
+  conformance/fallback_built_with_arguments, conformance/default_guard, conformance/returning_guard,
+  conformance/empty_collection_guard, conformance/terminal_if, conformance/assert_in_constructor,
+  conformance/constructor_guard, conformance/guard_de_morgan, conformance/guard_inside_loop,
+  conformance/assert_is_fallback.
 
 ### A switch covers every case
 
@@ -356,10 +358,10 @@ as when each was refused while building.
 - **Rule**: `index < list.count()` (also `- k`, `count() > index`, a count kept in a `var`), with any call-free
   index (`code - 32 < glyphs.count()` proves `glyphs[code - 32]`), `base + k < list.count()` for k from 1 to 63, and
   the count facts `== k`, `>= k`, `> k`, `!= 0` and `not is_empty()` (at most 64 indices) prove `list[...]`, in
-  `assert`, `crash`, `if`, `while`, the right of an `and`, and after an `if` that leaves
+  `fallback`, `crash`, `if`, `while`, the right of an `and`, and after an `if` that leaves
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: a proven read answers `T`, not `T?`.
-- **Bounds written with `<=`**: `crash p + k <= list.count()` (in an `assert`, a `crash` or an `if`), and the `if
+- **Bounds written with `<=`**: `crash p + k <= list.count()` (in a `fallback`, a `crash` or an `if`), and the `if
   p + k > list.count()` that leaves, prove `list[p]` to `list[p + k - 1]`, as `p + (k - 1) < list.count()` would.
 - **In a `while`** (D1448): a `<=` bound and the count facts prove the reads of its body as they do after a `crash`:
   `while at + 3 <= values.count()` proves `values[at]` to `values[at + 2]`, `while queue.count() > 1` proves
@@ -411,7 +413,7 @@ as when each was refused while building.
 ### An index built from loop counters is proven by one guard
 
 - **Status**: partly built (D1449): not the reads of a width.
-- **Rule**: the guard `rows * stride <= list.count()` (an `assert`, a `crash`, or the `if rows * stride >
+- **Rule**: the guard `rows * stride <= list.count()` (a `fallback`, a `crash`, or the `if rows * stride >
   list.count()` that leaves), with `while row < rows` and inside it `while column < stride`, proves
   `list[row * stride + column]` in the inner loop: `row * stride + column` is below `rows * stride`. The four are
   names. Assigning `rows` or `stride`, or a call that shrinks the list, forgets the guard; assigning `row` or
@@ -428,7 +430,7 @@ as when each was refused while building.
 ### An index offset by a base is proven by one guard
 
 - **Status**: built.
-- **Rule**: the guard `base + width <= list.count()` (an `assert` or a `crash`), or the `if base + width >
+- **Rule**: the guard `base + width <= list.count()` (a `fallback` or a `crash`), or the `if base + width >
   list.count()` that leaves, with `while counter < width`, proves `list[base + counter]` inside the loop, base and
   width and counter being names. Assigning `base` or `width`, or a call that shrinks the list, forgets the guard
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
@@ -436,7 +438,7 @@ as when each was refused while building.
 - **Falls back**: the read is a `T?` and is narrowed. The guard proves only the top: a negative base or counter
   halts at the read, as every proven read does ("... is outside its list ...").
 - **Lives in**: `high_intermediary_representation/building/windows.spite`, called by `statements.spite` from the
-  leaving `if`, the `assert`, the `crash` and the loop condition.
+  leaving `if`, the `fallback`, the `crash` and the loop condition.
 - **Checked by**: tests/list_base_counter.
 
 ### A counted loop reads its items unchecked
@@ -556,7 +558,7 @@ as when each was refused while building.
   every test on the one way into it: the branches of the blocks before it, as long as each has one predecessor
   (eight at most), each test of the register against another register's bounds (signed: `<`, `<=`, `>`, `>=`,
   `==`; unsigned `<` and `<=` against a count never negative, from 0), and through a test of such an answer
-  against zero (`crash` and `assert` write that). A write of the register inside those blocks drops what the test
+  against zero (`crash` and `fallback` write that). A write of the register inside those blocks drops what the test
   proved. A write's bounds are worked out with what holds in the block it is in, so a number tested to be between
   0 and 65 535 and then taken apart gives parts that are never negative.
 - **Buys**: arithmetic left unchecked ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#arithmetic-whose-operands-bounds-prove-it-fits-is-not-checked)),
@@ -750,11 +752,11 @@ as when each was refused while building.
 
 - **Status**: built (D1746).
 - **Rule**: outside a generic class and a walk, an `if` or `while` whose condition the builder decides while
-  compiling, and an `assert` that folds false, are refused: the condition is always true or always false, so writing
+  compiling, and a `fallback` that folds false, are refused: the condition is always true or always false, so writing
   it tells a reader nothing. A condition that reads a `Build` field is kept, since the field is set from the command
   line and choosing the branch is its purpose; the literal `while true` is refused like any other (a loop states
   the condition it runs under). A
-  bare name is judged by the narrowing errors instead ("already narrowed", a plain value). An `assert` or `crash`
+  bare name is judged by the narrowing errors instead ("already narrowed", a plain value). A `fallback` or `crash`
   that folds true is "Proving what is proven is an error"; a `crash` that folds false is the next section
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: no dead branch in the source.
@@ -768,8 +770,8 @@ as when each was refused while building.
 ### A `crash` that folds false is a compile error
 
 - **Status**: built.
-- **Rule**: an `assert` or a `crash` that asks only compile-time questions folds; a `crash` that folds false in a
-  function the program reaches is refused, naming the instance and each side of an `and`; an `assert` that folds
+- **Rule**: a `fallback` or a `crash` that asks only compile-time questions folds; a `crash` that folds false in a
+  function the program reaches is refused, naming the instance and each side of an `and`; a `fallback` that folds
   false answers its default and the rest of its block is not compiled
   ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md)).
 - **Buys**: a generic class that cannot work for a class is refused for it.

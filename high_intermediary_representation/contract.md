@@ -128,7 +128,7 @@ method: a `BufferRead` value that reads the byte of the receiver at an offset, o
 statement that writes one.
 
 **A crash and an assertion are one statement.** Both stop the program when their condition does not hold,
-which is the rule of the language: a `crash` is a guard that stops the program where an `assert` stops the
+which is the rule of the language: a `crash` is a guard that stops the program where a `fallback` stops the
 function. The builder lowers both to a `Crash` statement, which carries the condition and the text the
 program prints when it stops. The text names the file and the line, and the program writes it to the
 standard error before it leaves.

@@ -80,10 +80,10 @@ clearing a function's facts once it has, so no fact outlives the round that prov
 1. `recorded_sites`: every site the builder recorded, in the order built, judged by the proof of its kind:
    - `present_values`: a value that may be null (an unnarrowed `T?`, an unproven `[]` read) is never used where a
      value is needed;
-   - `proven_checks`: no check repeats what is already proven, no `assert` or `crash` checks a plain value, and no
+   - `proven_checks`: no check repeats what is already proven, no `fallback` or `crash` checks a plain value, and no
      copy is made only to narrow it;
    - `loop_narrowings`: an assignment inside a loop does not undo a narrowing the next pass reads;
-   - `guard_asserts`: a guard `assert` answers only "nothing", and a last `if` is not a hidden guard;
+   - `guard_asserts`: a guard `fallback` answers only "nothing", and a last `if` is not a hidden guard;
    - `lost_writes`: a write to an object only this function holds is read, and a name read from a list is not
      assigned as its last mention;
    - `borrowed_items`: a borrowed item is not kept, listed, returned, renamed or read past a resize, and is lent
@@ -222,7 +222,7 @@ the stand-in for a null in a shape (`Spite.Absent`) are high functions the build
 handle writes none of it, and a program that never starts calls in a row has no table.
 
 The rest is Spite code the compiler holds as text (`symbols/machinery_text.spite`: the fault and crash reports
-`Spite.Fault`, the assert ring `Spite.Asserts`, the deep copy table `Spite.CopyTable`; and, only in a `--repl` build,
+`Spite.Fault`, the fallback ring `Spite.Fallbacks`, the deep copy table `Spite.CopyTable`; and, only in a `--repl` build,
 `high_intermediary_representation/building/prompt_text.spite`: `Spite.Prompt` and `Spite.PromptPath`). The first
 time a program names one, the symbol table adds it as a generated class under the program's
 `.spite/build/spite/`, with the library's rights; a program that never needs one reads none of it. No folder holds

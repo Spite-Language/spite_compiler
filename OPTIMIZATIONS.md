@@ -261,7 +261,7 @@ range for each operand (the proof `proofs/ranges`), the rule of
   2147483647; `x % n`, `x / n`, `minimum`, `maximum`, `clamp`, `to_long` and `to_integer` are bound by their
   operands;
 - a comparison narrows the local it compares inside a `while` or an `if` whose condition says so, on each side of an
-  `and`, after an `assert` or a `crash` of it, and after an `if` that leaves; `counter + c < bound` narrows `counter`
+  `and`, after a `fallback` or a `crash` of it, and after an `if` that leaves; `counter + c < bound` narrows `counter`
   by `bound - c` too;
 - the two branches of an `if` join, and before a `while` every local its body assigns takes its type's range, except
   a counter only ever stepped up by constants: it keeps the floor it entered with and, under `counter < bound` with
@@ -1062,7 +1062,7 @@ so `spite.frame` lines name the guard's function and its callers as before.
 
 ## A crash's condition lives beside the executable
 
-The text of a `crash` or `assert` (its condition, `values[pick]`, `index >= 0 and index < _length`) is not in the
+The text of a `crash` or `fallback` (its condition, `values[pick]`, `index >= 0 and index < _length`) is not in the
 executable: every site is a number, and `<program>.crashes`, written beside the executable, maps each number to the
 site's file, line, column, class, function, kind, condition and the names and types of the values its report
 prints (`# spite crashes 1`, then one line per site, tab separated). The executable keeps only what the report
@@ -1076,7 +1076,7 @@ func half_of(value: Integer): Integer {
 ```
 
 holds no `value >= 0` in the executable; `grep` of the site's number in the `.crashes` file gives it. When it
-applies: every `crash` and `assert` site, in every build. What a user can observe: the report reads as it would
+applies: every `crash` and `fallback` site, in every build. What a user can observe: the report reads as it would
 with the text inside, and an executable moved without its `.crashes` file still prints the place and the values.
 
 ## The fault handler is in every program
@@ -1479,7 +1479,7 @@ buffer and no count is allocated, so nothing is freed either.
 
 **When it applies:** to a literal of numbers (any `Integer`, `Long`, `Byte`, `Float`, `Double`... list that is
 not nullable), of at most 4096 bytes, kept in a local that is never assigned again, and whose every use in the function is
-`count()`, `list[index]` (read, tested with `crash`, `assert` or `if`), or the literal itself. A list passed to a
+`count()`, `list[index]` (read, tested with `crash`, `fallback` or `if`), or the literal itself. A list passed to a
 call, answered, kept in an attribute, appended to, read by any other function of `List`, or held by a function
 that waits is made as before, and so is a list whose name the function declares more than once (in two blocks,
 say). A list of objects or texts is made as before. The proof is `proofs/lists_in_the_frame`
