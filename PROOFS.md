@@ -1409,11 +1409,19 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: built.
 - **Rule**: a name, parameter or attribute only written and never read is refused
-  ([style.md](../SpiteLanguage/specs/style.md#unused-is-an-error)).
+  ([style.md](../SpiteLanguage/specs/style.md#unused-is-an-error)). An attribute is read when a built function
+  reads it, counted for the class that owns it (every `AttributeRead` of the high representation, whatever made
+  it: the program's code, a template's walk, a writer of JSON or binary, `to_debug`), so another class's attribute
+  of the same name never hides it. Code the builder does not build still counts from the syntax tree: a bare name
+  as its own class's attribute, and `x.name` by name for every class; that is a function no call reaches, an
+  attribute default of a class never made, and a whole function from which the builder folded a branch away (it
+  records each one, `Context.folded_functions`). A member of a shape a class fills is read. In a folder the
+  program loads only singleton bindings are checked, counting reads from inside that folder.
+- **Falls back**: an unread attribute is refused (`the attribute 'label' is never read: remove it`).
 - **Lives in**: `validators/abstract_syntax_tree/unused_names`, and the proof `proofs/every_attribute_is_read`
   for attributes.
-- **Checked by**: conformance/unused_names, written_not_read, unused_attributes, template_unused_attribute,
-  template_unused_function.
+- **Checked by**: conformance/unused_names, written_not_read, unused_attributes, attribute_read_in_another_class,
+  loaded_singleton_unread, template_unused_attribute, template_unused_function.
 
 ### A constructed object must be kept and used
 

@@ -1,16 +1,17 @@
-var member_reads = Dictionary<String, Integer>()
-var name_reads = Dictionary<String, Integer>()
-var built_reads = Dictionary<String, Boolean>()
+var read_counts = Dictionary<String, Integer>()
+var read_paths = Dictionary<String, List<String>>()
+var typed_reads = Dictionary<String, List<String>>()
+var compiled = List<String>()
+var folded_functions = List<String>()
 var checked_paths = List<String>()
 var found_path = ""
 var found_line = 0
 var found_owner = ""
 var found_name = ""
 var found_in_the_entry = false
-var shape_members = List<String>()
+var filled_members = List<String>()
 var reading_path = ""
-var path_reads = Dictionary<String, Integer>()
-var read_paths = Dictionary<String, List<String>>()
+var reading_is_compiled = false
 var folders = Mapping.FolderMap()
 var program = Model.ProgramModel()
 
@@ -22,9 +23,10 @@ func check(high: HighIntermediaryRepresentation.HighProgram) {
     assert not is_interactive(context)
     program = context.program
     folders = context.resolver.symbols.map
+    folded_functions = context.folded_functions
+    built.each(note_the_built_reads)
     var walks = context.resolver.symbols.walks
     walks.each(count_the_reads)
-    built.each(note_the_built_reads)
     var shapes = context.program.shapes.values()
     shapes.each(note_the_shape_members)
     var map = context.resolver.symbols.map
@@ -48,11 +50,24 @@ func check(high: HighIntermediaryRepresentation.HighProgram) {
 }
 
 func note_the_shape_members(shape: Model.ShapeModel) {
+    var fillers = program.fillers_of(shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        note_a_filler(shape, filler)
+        index = index + 1
+    }
+}
+
+func note_a_filler(shape: Model.ShapeModel, filler: Model.Type) {
+    var model = program.class_named(filler.name)
+    assert model
+    var namespace = model.file.namespace
     var index = 0
     while index < shape.members.count() {
         var member = shape.members[index]
         if member.is_an_attribute {
-            shape_members.append(member.name)
+            filled_members.append("{namespace}|{member.name}")
         }
         index = index + 1
     }
@@ -64,18 +79,168 @@ func is_interactive(context: HighIntermediaryRepresentation.Building.Context): B
     return inspection.holds(flags)
 }
 
+func note_the_built_reads(function: HighIntermediaryRepresentation.HighFunction) {
+    reading_path = path_of(function.function)
+    note_what_is_compiled(function.function)
+    walk_a_block(function.body)
+}
+
+func note_what_is_compiled(function: Model.FunctionModel) {
+    var key = function.key()
+    assert not folded_functions.contains(key)
+    if function.name == "_attribute_defaults" {
+        note_compiled_defaults(function.owner)
+        return
+    }
+    assert function.declaration
+    compiled.append("{function.declaration.path}|{function.declaration.name}")
+}
+
+func note_compiled_defaults(owner: String) {
+    var model = program.class_named(owner)
+    assert model
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if attribute.declaration {
+            compiled.append("{attribute.declaration.path}|")
+        }
+        index = index + 1
+    }
+}
+
+func walk_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    assert block
+    block.statements.each(walk_a_statement)
+}
+
+func walk_a_statement(statement: HighIntermediaryRepresentation.Statements.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: walk_a_declare(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: walk_an_assign(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: walk_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: walk_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: walk_both(statement.value, statement.waited)
+        HighIntermediaryRepresentation.Statements.Return: walk_a_return(statement)
+        HighIntermediaryRepresentation.Statements.If: walk_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: walk_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Block: walk_a_block(statement)
+        HighIntermediaryRepresentation.Statements.Stop: walk_a_stop(statement)
+    }
+}
+
+func walk_a_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    walk_a_value(declare.value)
+}
+
+func walk_an_assign(assign: HighIntermediaryRepresentation.Statements.Assign.Assign) {
+    walk_a_value(assign.value)
+}
+
+func walk_a_return(returned: HighIntermediaryRepresentation.Statements.Return) {
+    walk_a_value(returned.value)
+}
+
+func walk_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    walk_both(written.object, written.value)
+}
+
+func walk_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    walk_both(written.object, written.value)
+}
+
+func walk_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(walk_a_present)
+    walk_a_value(stop.then)
+}
+
+func walk_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    walk_both(branch.condition, branch.decided_condition)
+    walk_a_block(branch.then_branch)
+    walk_a_block(branch.else_branch)
+}
+
+func walk_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    walk_a_value(loop.condition)
+    walk_a_block(loop.body)
+}
+
+func walk_both(
+    first: HighIntermediaryRepresentation.Values.Value?,
+    second: HighIntermediaryRepresentation.Values.Value?,
+) {
+    walk_a_value(first)
+    walk_a_value(second)
+}
+
+func walk_a_present(value: HighIntermediaryRepresentation.Values.Value) {
+    walk_a_value(value)
+}
+
+func walk_a_value(value: HighIntermediaryRepresentation.Values.Value?) {
+    assert value
+    switch value {
+        HighIntermediaryRepresentation.Values.AttributeRead: walk_an_attribute_read(value)
+        HighIntermediaryRepresentation.Values.Call: walk_a_call(value.receiver, value.arguments)
+        HighIntermediaryRepresentation.Values.ShapeCall: walk_a_call(value.receiver, value.arguments)
+        HighIntermediaryRepresentation.Values.Function.Value: walk_a_value(value.receiver)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: walk_a_call(value.called, value.arguments)
+        HighIntermediaryRepresentation.Values.Conversion: walk_a_value(value.converted)
+        HighIntermediaryRepresentation.Values.Class.OfValue: walk_a_value(value.described)
+        HighIntermediaryRepresentation.Values.Class.Test: walk_a_value(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: walk_a_value(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: walk_a_value(value.number)
+        HighIntermediaryRepresentation.Values.ForeignCall: walk_a_call(value.library, value.arguments)
+        HighIntermediaryRepresentation.Values.MachineOperation: walk_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MakeObject: value.arguments.each(walk_a_present)
+        HighIntermediaryRepresentation.Values.Negation: walk_a_value(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: walk_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: walk_a_value(value.tested)
+        _: return
+    }
+}
+
+func walk_a_call(
+    receiver: HighIntermediaryRepresentation.Values.Value?,
+    arguments: List<HighIntermediaryRepresentation.Values.Value>,
+) {
+    walk_a_value(receiver)
+    arguments.each(walk_a_present)
+}
+
+func walk_an_attribute_read(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    note_a_typed_read(read.attribute)
+    walk_a_value(read.object)
+}
+
+func note_a_typed_read(attribute: Model.AttributeModel) {
+    var owner = program.class_named(attribute.owner)
+    assert owner
+    var place = "{owner.file.namespace}|{attribute.name}"
+    if not typed_reads[place] {
+        typed_reads[place] = List<String>()
+    }
+    var known = typed_reads[place]
+    crash known
+    if not known.contains(reading_path) {
+        known.append(reading_path)
+    }
+}
+
 func count_the_reads(walk: AbstractSyntaxTree.Walk.Walk) {
     reading_path = walk.file.path
     var namespace = walk.file.namespace
     var index = 0
     while index < walk.expressions.count() {
         var found = walk.expressions[index]
+        reading_is_compiled = compiled.contains("{reading_path}|{found.function_name}")
         count_a_read(namespace, found.expression, 1)
         index = index + 1
     }
     var statement_index = 0
     while statement_index < walk.statements.count() {
         var found_statement = walk.statements[statement_index]
+        reading_is_compiled = compiled.contains("{reading_path}|{found_statement.function_name}")
         uncount_a_target(namespace, found_statement.statement)
         statement_index = statement_index + 1
     }
@@ -87,23 +252,23 @@ func uncount_a_target(namespace: String, statement: AbstractSyntaxTree.Shapes.St
     }
 }
 
+# ../../../spite_spec/specs/style.md#unused-is-an-error
 func count_a_read(namespace: String, expression: AbstractSyntaxTree.Shapes.Expressions.Expression?, step: Integer) {
     if expression == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        add_to(name_reads, "{namespace}|{expression.name}", step)
-        note_a_path_read(expression.name, step)
+        note_a_path_read(namespace, expression.name, step)
     }
-    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
-        add_to(member_reads, expression.name, step)
-        note_a_path_read(expression.name, step)
+    if expression == AbstractSyntaxTree.Shapes.Expressions.MemberExpression and not reading_is_compiled {
+        note_a_path_read("*", expression.name, step)
     }
 }
 
-func note_a_path_read(name: String, step: Integer) {
-    add_to(path_reads, "{reading_path}|{name}", step)
-    if not read_paths[name] {
-        read_paths[name] = List<String>()
+func note_a_path_read(owner: String, name: String, step: Integer) {
+    var place = "{owner}|{name}"
+    add_to(read_counts, "{reading_path}|{place}", step)
+    if not read_paths[place] {
+        read_paths[place] = List<String>()
     }
-    var known = read_paths[name]
+    var known = read_paths[place]
     crash known
     if not known.contains(reading_path) {
         known.append(reading_path)
@@ -117,41 +282,6 @@ func add_to(counts: Dictionary<String, Integer>, key: String, step: Integer) {
     } else {
         counts[key] = step
     }
-}
-
-func note_the_built_reads(function: HighIntermediaryRepresentation.HighFunction) {
-    reading_path = path_of(function.function)
-    var printer = Printers.HighIntermediaryRepresentation.Printer(function)
-    var text = printer.text()
-    var lines = text.lines()
-    lines.each(note_a_built_line)
-}
-
-func note_a_built_line(line: String) {
-    var pieces = line.split(".")
-    var index = 1
-    while index < pieces.count() {
-        var piece = pieces[index]
-        var before = pieces[index - 1]
-        crash before
-        note_a_built_piece(piece, before, index == 1)
-        index = index + 1
-    }
-}
-
-func note_a_built_piece(piece: String, before: String, is_the_first: Boolean) {
-    var name = leading_name(piece)
-    assert name != ""
-    var name_length = name.length()
-    var piece_length = piece.length()
-    var rest = piece.slice(name_length, piece_length)
-    crash rest
-    assert not rest.starts_with("(")
-    var trimmed = before.trim()
-    var is_a_write = rest.starts_with(" = ") and is_the_first and not trimmed.contains(" ")
-    assert not is_a_write
-    built_reads[name] = true
-    note_a_path_read(name, 1)
 }
 
 func path_of(function: Model.FunctionModel): String {
@@ -174,27 +304,6 @@ func declared_path_or(
         return otherwise
     }
     return declaration.path
-}
-
-func leading_name(piece: String): String {
-    var length = 0
-    var piece_length = piece.length()
-    var going = true
-    while going and length < piece_length {
-        var code = piece.byte_at(length)
-        going = is_a_name_code(code)
-        if going {
-            length = length + 1
-        }
-    }
-    var sliced = piece.slice(0, length)
-    crash sliced
-    return sliced
-}
-
-func is_a_name_code(code: Integer): Boolean {
-    var is_a_letter = code >= 97 and code <= 122 or code >= 65 and code <= 90
-    return is_a_letter or code >= 48 and code <= 57 or code == 95
 }
 
 func check_a_class(map: Mapping.FolderMap, model: Model.ClassModel, entry_path: String) {
@@ -229,16 +338,42 @@ func loaded_folder_of(map: Mapping.FolderMap, path: String): String {
     return ""
 }
 
-func is_read_in(folder: String, name: String): Boolean {
-    var paths = read_paths[name]
+func is_read(owner: String, name: String, folder: String): Boolean {
+    var place = "{owner}|{name}"
+    var typed = typed_reads[place]
+    if typed and read_in(typed, folder) {
+        return true
+    }
+    var any_place = "*|{name}"
+    return counted_in(place, folder) or counted_in(any_place, folder)
+}
+
+func read_in(paths: List<String>, folder: String): Boolean {
+    if folder.is_empty() {
+        return not paths.is_empty()
+    }
+    var index = 0
+    while index < paths.count() {
+        var path = paths[index]
+        if folders.inside(path, folder) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func counted_in(place: String, folder: String): Boolean {
+    var paths = read_paths[place]
     if not paths {
         return false
     }
     var index = 0
     while index < paths.count() {
         var path = paths[index]
-        var count = path_reads["{path}|{name}"]
-        if count and count > 0 and folders.inside(path, folder) {
+        var count = read_counts["{path}|{place}"]
+        var is_inside = folder.is_empty() or folders.inside(path, folder)
+        if count and count > 0 and is_inside {
             return true
         }
         index = index + 1
@@ -283,10 +418,12 @@ func check_an_attribute(
 ) {
     assert attribute.declaration
     var name = attribute.name
+    var namespace = model.file.namespace
     if loaded_folder.is_empty() {
-        assert not is_read(model.file.namespace, name) and not shape_members.contains(name)
+        var is_filled = filled_members.contains("{namespace}|{name}")
+        assert not is_read(namespace, name, "") and not is_filled
     } else {
-        assert binds_a_singleton(attribute) and not is_read_in(loaded_folder, name)
+        assert binds_a_singleton(attribute) and not is_read(namespace, name, loaded_folder)
     }
     assert attribute.attribute_type.name != "ForeignCallback"
     var path = model.file.path
@@ -298,21 +435,6 @@ func check_an_attribute(
     found_owner = plain_name(model.shown)
     found_name = name
     found_in_the_entry = in_the_entry
-}
-
-func is_read(namespace: String, name: String): Boolean {
-    if built_reads[name] == true {
-        return true
-    }
-    var members = member_reads[name]
-    if members and members > 0 {
-        return true
-    }
-    var names = name_reads["{namespace}|{name}"]
-    if names {
-        return names > 0
-    }
-    return false
 }
 
 func is_earlier(path: String, line: Integer, in_the_entry: Boolean): Boolean {

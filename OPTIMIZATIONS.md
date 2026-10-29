@@ -3763,7 +3763,9 @@ program runs.
 (`var build = Build()`), whose value is given on the command line or whose default is a literal or arithmetic on
 literals (`-3`, `0.5`, `2 * 60`, D1406) or another field of the same type (`var attempts = retries`, the other
 field's constant, D1664), in every build but a `--hot-reload`, `--repl`, `--repl-port` or
-`--development` one, where the program reads the field while it runs, so that a reload can change it. A default
+`--development` one, where the program reads the field while it runs, so that a reload can change it. The
+standard library's own reads of a field its own `Build` declares (`build.hot_reload` in `Reload`) stay constants
+in those builds too (`tests/hot_reload_keeps_library_options`). A default
 written as arithmetic is the expression itself in place of the read, which the evaluation of constants folds.
 
 **When it does not apply:** a field whose default reads anything else (a call, another field) is read from the
