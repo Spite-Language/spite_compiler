@@ -26,6 +26,7 @@ var trimmed_keys = List<String>()
 var block_statements = List<HighIntermediaryRepresentation.Statements.Statement>()
 var statement_index = 0
 var makes_work = false
+var terminated_copies = List<Integer>()
 var resumable_mode = false
 var resume_blocks = List<Integer>()
 var locks_its_singleton = false
@@ -4941,6 +4942,7 @@ func lower_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall)
         note_the_foreign_call(call, library.value)
     }
     emit(called)
+    free_the_terminated_copies()
     if tracked {
         var slot = foreign_slot()
         var unused_site = constant(0)
@@ -5009,8 +5011,7 @@ func foreign_argument(argument: HighIntermediaryRepresentation.Values.Value): In
     var argument_type = argument.value_type
     release_later(argument_value, argument_type)
     if argument_type.kind == 'object' and argument_type.name == "String" {
-        end_the_text(argument_value.value)
-        return bytes_of_text(argument_value.value)
+        return terminated_text(argument_value.value)
     }
     if argument_type.kind == 'object' and argument_type.name == "Buffer" {
         return storage_of(argument_value.value)
@@ -5031,7 +5032,7 @@ func bytes_of_text(text: Integer): Integer {
 }
 
 # ../../OPTIMIZATIONS.md#small-blocks-come-from-the-compilers-own-free-lists
-func end_the_text(text: Integer) {
+func terminated_text(text: Integer): Integer {
     var string_model = layout.program.class_named("String")
     crash string_model
     var length_attribute = string_model.attribute_named("_length")
@@ -5047,18 +5048,59 @@ func end_the_text(text: Integer) {
     loaded_end.is_signed = false
     emit(loaded_end)
     var zero = constant(0)
+    var passed = new_register()
+    var passing_the_text = LowIntermediaryRepresentation.Instructions.Copy(passed, bytes)
+    emit(passing_the_text)
+    var held_copy = new_register()
+    var keeping_nothing = LowIntermediaryRepresentation.Instructions.Copy(held_copy, zero)
+    emit(keeping_nothing)
     var is_ended = new_register()
     var compared = LowIntermediaryRepresentation.Instructions.Compare(is_ended, 'equal', end_byte, zero)
     emit(compared)
-    var ending = new_block()
+    var copying = new_block()
     var ended = new_block()
-    var test = LowIntermediaryRepresentation.Instructions.Branch(is_ended, ended, ending)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_ended, ended, copying)
     emit(test)
-    switch_to(ending)
-    var stored = LowIntermediaryRepresentation.Instructions.Store(end, 0, zero, 'bits_8')
+    switch_to(copying)
+    var one = constant(1)
+    var room = address_plus(length, one)
+    var fresh = new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(fresh, room)
+    emit(allocated)
+    var copied = LowIntermediaryRepresentation.Instructions.CopyBytes(fresh, bytes, length)
+    emit(copied)
+    var fresh_end = address_plus(fresh, length)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(fresh_end, 0, zero, 'bits_8')
     emit(stored)
+    var passing_the_copy = LowIntermediaryRepresentation.Instructions.Copy(passed, fresh)
+    emit(passing_the_copy)
+    var keeping_the_copy = LowIntermediaryRepresentation.Instructions.Copy(held_copy, fresh)
+    emit(keeping_the_copy)
     jump_to(ended)
     switch_to(ended)
+    terminated_copies.append(held_copy)
+    return passed
+}
+
+func free_the_terminated_copies() {
+    terminated_copies.each(free_a_terminated_copy)
+    terminated_copies = List<Integer>()
+}
+
+func free_a_terminated_copy(held_copy: Integer) {
+    var zero = constant(0)
+    var is_held_copy = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_held_copy, 'not_equal', held_copy, zero)
+    emit(compared)
+    var freeing = new_block()
+    var done = new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_held_copy, freeing, done)
+    emit(test)
+    switch_to(freeing)
+    var freed = LowIntermediaryRepresentation.Instructions.Free(held_copy)
+    emit(freed)
+    jump_to(done)
+    switch_to(done)
 }
 
 func storage_of(buffer: Integer): Integer {
