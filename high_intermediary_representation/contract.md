@@ -107,18 +107,16 @@ and says how many bytes it needs: `var _buffer = Buffer(1)`. The name resolution
 the builder lays the room out at the front of the class's block, so the first bytes of the block are the
 bytes of the room. A class with a room is a value class: the room is where its value is kept.
 
-**The value is read from the room, and not from `this`.** `this` is the place the value is kept, and never
-the value itself, so a method reads its value with the buffer: `_buffer._read_byte_at(0)`. A method of a
-value class is therefore made on the *address* of the value: the builder lowers the receiver of such a
-call to the value itself, and the lowering finds the address of the attribute or of the place the value
-is kept in.
+**A number class's value is its value, wherever it is kept.** A class whose only memory is a room of at most 8
+bytes is a number (`Integer`, `Boolean`, ...): `this` in its methods is the number itself, typed as the number,
+and a read of its room (`_buffer`) is a `NumberRoom`, a room made for the read and filled with the number, so a
+method never needs the place the number is kept.
 
-**An argument of a value class is the address of the value, when the value is an attribute of another
-object.** The block of a value class is kept inside the object that holds it, the room and the attributes
-of the class with it, so an argument that is an attribute of another object is passed as the address of
-that attribute, and the callee reads the room there. An argument that is a name of the class the code is
-in is a plain number of that class, and it is passed as the number: the callee wants the count, not the
-place the room is kept in.
+**An argument is passed by its parameter's type only.** The builder fits each argument to its parameter (made
+nullable, boxed into a shape, widened, narrowed) by the two types alone, and the lowering passes the value it
+lowered, so the callee is handed the same thing whether the caller's value is a local, an attribute, a list item
+or a call's answer. Where the value came from decides only how it is counted (owned, borrowed or held), never
+what is passed.
 
 **The methods that read and write a byte have no body, and the compiler writes them.** Reading a byte of
 memory is not something Spite can say, so the library declares the method and the compiler writes what it
