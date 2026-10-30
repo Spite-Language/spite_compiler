@@ -329,26 +329,26 @@ as when each was refused while building.
 ### A switch covers every case
 
 - **Status**: built.
-- **Rule**: a switch over a union covers every member or ends with `_:`; over a `T?` of a class or a union it covers
-  the class (or every member) and `Null`, or ends with `_:`; over an enum every value or `_:`; over a whole number
-  or a text always `_:`; a needless or repeated case is an error
+- **Rule**: a switch over a union covers every member; over a `T?` of a class or a union it covers the class (or
+  every member) and `Null`; over an enum or a `Boolean` every value. There is no `_:`, and a switch over a whole
+  number or a text is refused; a repeated case is an error
   ([control_flow.md](../SpiteLanguage/specs/control_flow.md#switch-over-values),
   [values_and_types.md](../SpiteLanguage/specs/values_and_types.md#unions-in-full)).
 - **Buys**: a member, a value or a null added later cannot be forgotten.
-- **Falls back**: refused, "this switch over '...' has no case for ...: add the cases, or end with '_:' for the
-  rest"; over a `T?`, "this switch over 'target' has no case for Null: 'target' is a Monster?, and a switch over a
-  'T?' covers its value and null, so a null cannot be forgotten; add the cases, or end with '_:' for the rest".
+- **Falls back**: refused, "this switch over '...' has no case for ...: add the cases"; over a `T?`, "this switch
+  over 'target' has no case for Null: 'target' is a Monster?, and a switch over a 'T?' covers its value and null, so
+  a null cannot be forgotten; add the cases".
 - **Lives in**: the proof `proofs/switch_cover`, which judges every switch the builder recorded before writing it as
   `if`s (`context.switch_sites`, from `statements.spite`: `check_the_cover`, `check_the_nullable_cover`) with the
   validator `validators/high_intermediary_representation/switch_cover`; a case of the wrong kind is still refused
   while building the case, and `validators/abstract_syntax_tree/switch_cases` checks the written cases.
   A switch is built as a chain of `if`s, so its cover is judged while it is built.
 - **Checked by**: conformance/missing_switch_case, conformance/control_switch_enum_missing,
-  conformance/control_switch_enum_rest_unneeded, conformance/control_switch_number_no_rest,
-  conformance/control_switch_text_no_rest, conformance/switch_rest_case, conformance/switch_rest_after_all,
+  conformance/control_switch_number_no_rest,
+  conformance/control_switch_text_no_rest, conformance/switch_rest_case, conformance/switch_rest_refused, conformance/switch_on_text, conformance/switch_one_exception,
   conformance/switch_rest_not_last, conformance/switch_same_as_rest, conformance/value_switch,
   conformance/control_switch_value_on_nullable, conformance/nullable_switch_without_null; tests/rest_case,
-  tests/value_switch, tests/nullable_switch_null_case, tests/nullable_switch_with_rest.
+  tests/value_switch, tests/nullable_switch_null_case.
 
 ## Indices and numbers
 
