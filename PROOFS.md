@@ -1028,29 +1028,19 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 
 - **Status**: partly built (D1400).
 - **Rule**: a borrowed item passed to a program function called by name is lent for the call; the callee is
-  compiled under the borrow rules, the call may not resize the source, and lending to a library function, a union
-  or an unnamed expression is an error ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)).
-  A constructor called by its class's name is followed like any function; lending to a function the compiler
-  cannot follow (a function value, a function of a value typed by a `type` or known only while the program runs)
-  is "'...' is borrowed from '...', and '...' is not a function the compiler follows while compiling ...", and to
-  a variadic position of a program function "... gathers it into the list of its variadic arguments, which holds its own values and is
-  never lent an item ..." (D1400).
+  compiled under the borrow rules, and the call may not resize the source. Where the compiler cannot follow the
+  item (a function value, a function of a value typed by a `type` or known only while the program runs, a library
+  function, a variadic position or a union parameter) it is not lent: the item stays counted, as every item of a
+  `List` is, and nothing is refused (D1781 under D1758; before, each was an error, D1400, D1512).
 - **How**: a lent parameter the callee passes on by name to a program function called by name is lent to that
-  function too, for the call, and its body is judged the same way, through any depth of calls (D1141). Passing it
-  on where it cannot be lent is refused inside the callee as at the first call (D1512): to a function the compiler
-  cannot follow ("... and '...' is not a function the compiler follows while compiling ..., so '...' does not pass
-  it on to it ..."), to a library function ("... is a library function, which is never lent an item, so '...' does
-  not pass it on to it ..."), to a variadic position of a program function, or to a union parameter.
-- **Missing**: the uncounted argument; a row's attribute is not lent, and a row is not followed when the callee
-  passes it on; the unnamed expression refusal.
-- **Falls back**: refused, "'...' is borrowed from '...' and lent to '...' for its call ...".
-- **Lives in**: the proof `proofs/borrowed_items` refuses a resizing, library or union lend and records each lent
-  call in the context (`borrows.spite`, `check_the_lent_body`); the proof `proofs/lent_parameters`, after it, judges
-  the callee's body.
-- **Checked by**: conformance/lent_to_calls, lent_call_alias, lent_call_function_value, lent_call_kept, lent_call_passed_on,
-  lent_call_library, lent_call_listed, lent_call_returned, lent_call_union, lent_call_passed_on_unfollowed,
-  lent_call_passed_on_union; tests/lent_to_calls, lent_arguments,
-  lent_call_written_back, ignored_lent_argument.
+  function too, for the call, and its body is judged the same way, through any depth of calls (D1141); passed on
+  where it cannot be followed, it is not followed further.
+- **Missing**: nothing borrows since `Vector` and `Items` left (D1707), so the rule waits for the compiler's own
+  inline storage (#205, #274).
+- **Falls back**: the item is counted.
+- **Lives in**: the proof `proofs/borrowed_items` records each lent call in the context (`borrows.spite`,
+  `check_the_lent_body`); the proof `proofs/lent_parameters`, after it, judges the callee's body.
+- **Checked by**: tests/lent_items_passed_on, lent_to_calls, lent_arguments, ignored_lent_argument.
 
 ### A list element lent to a row
 
@@ -1172,25 +1162,12 @@ bodies of the calls it lends to. The counts it saves are in the lowering.
 - **Falls back**: the test runs.
 - **Checked by**: tests/listed_values (output only).
 
-### A stage registers its passes only in its setup
-
-- **Status**: built.
-- **Rule**: a function `register` whose one parameter is a `type` and which appends it to a list of its class, when
-  the class's `run` walks that list in a counted loop, may be called only from the class's setup and the functions of the class only the setup calls; a call anywhere else is
-  refused, "'Stage.register' is called outside the setup of 'Stage': its passes are registered only in 'Stage()' and
-  the functions only it calls, so the compiler knows them and its 'run' is direct calls in order: move this call
-  there".
-- **Buys**: the setup's list is known while compiling, so `run` is direct calls in order
-  ([a list its setup fills holds what the setup made](#a-list-its-setup-fills-holds-what-the-setup-made)).
-- **Falls back**: refused.
-- **Lives in**: the proof `proofs/registered_in_setup`, an acceptance proof.
-- **Checked by**: conformance/register_outside_setup.
-
 ### A list its setup fills holds what the setup made
 
 - **Status**: built.
 - **Rule**: a list attribute read only by the one function that appends its parameter to it and by counted loops
-  over it, written by nothing but its default, and filled only from the class's setup with objects the setup makes,
+  over it, written by nothing but its default, and filled only from the class's setup with objects the setup makes
+  (a `register` called anywhere else leaves the loop as written, D1781),
   holds exactly those objects, in the order the setup made them, whenever a function of the object runs after its
   setup.
 - **Buys**: a loop over the list that calls through the list's `type` calls each item's function directly

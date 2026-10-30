@@ -83,7 +83,7 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    - `lost_writes`: a write to an object only this function holds is read, and a name read from a list is not
      assigned as its last mention;
    - `borrowed_items`: a borrowed item is not kept, listed, returned, renamed or read past a resize, and is lent
-     only to a program function by name (it records each lent call for `lent_parameters`);
+     only to a program function it follows, staying counted elsewhere (it records each lent call for `lent_parameters`);
    - `parallel_reach`: a `Parallel` work reaches only what it may, and no lock waits forever.
    A refusal the builder still makes asks this walk first, so the earliest error is the one told.
 2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program (the call
@@ -102,16 +102,15 @@ clearing a function's facts once it has, so no fact outlives the round that prov
 8. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
 9. `every_attribute_is_read`: an attribute nothing reads is a compile error.
 10. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
-11. `registered_in_setup`: a stage's `register` is called only from its setup.
-12. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
+11. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
    facts on the operations).
-13. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
+12. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
-14. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
+13. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
    index holds a known count of items (a speed proof: it records the count on the list's declaration,
    `Declare.frame_items`, which a high pass carries with the statement, and the lowering lays the list out in the
    frame).
-15. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
+14. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
    since the running program's manifest; none answers `unchanged` before anything is lowered.
 
 The sites `recorded_sites` judges hold what the builder resolved where it recorded them (the names in scope with

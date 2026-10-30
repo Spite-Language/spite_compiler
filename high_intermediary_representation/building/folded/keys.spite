@@ -98,13 +98,37 @@ func record(written: Expression?, attribute: Model.AttributeModel): Boolean {
         return false
     }
     if context.folded_key_assignments.contains(place) {
-        refusals.refuse_a_mixed_map(context, shown_place)
+        read_live(place, shown_place)
     }
     if context.folded_key_reads.contains(place) {
         refusals.refuse_a_late_map(context, shown_place)
     }
     context.run_time_key_maps.append(place)
     return true
+}
+
+# ../../../../spite_spec/specs/json.md#json-is-reflection-not-a-library
+func read_live(place: String, shown_place: String) {
+    fallback not context.live_key_maps.contains(place)
+    if context.folded_key_reads.contains(place) {
+        refusals.refuse_a_late_map(context, shown_place)
+    }
+    context.live_key_maps.append(place)
+}
+
+func reads_a_key_map(function: Model.FunctionModel): Boolean {
+    fallback not function.bound_parameter.is_empty() and not function.binds_a_function_declaration
+    var owner = context.program.class_named(function.owner)
+    fallback owner
+    var index = 0
+    while index < owner.declared_attributes.count() {
+        var attribute = owner.declared_attributes[index]
+        if is_a_key_map(attribute.attribute_type) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func record_a_folded_map(
@@ -116,7 +140,7 @@ func record_a_folded_map(
         context.folded_key_assignments.append(place)
     }
     if written.class == AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral {
-        record_the_literal(written, place, shown_place)
+        record_the_literal(written, place, shown_place, true)
     }
 }
 
@@ -172,7 +196,7 @@ func record_without_a_table(
     shown_place: String,
 ) {
     if written.class == AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral {
-        record_the_literal(written, place, shown_place)
+        record_the_literal(written, place, shown_place, false)
         return
     }
     if written.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
@@ -201,6 +225,7 @@ func record_the_literal(
     literal: AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral,
     place: String,
     shown_place: String,
+    has_its_table: Boolean,
 ) {
     var names = List<String>()
     var keys = List<String>()
@@ -222,7 +247,9 @@ func record_the_literal(
     var canonical = pieces.join("\n")
     var known = context.folded_key_maps[place]
     if known {
-        if known != canonical {
+        if known != canonical and has_its_table {
+            read_live(place, shown_place)
+        } else if known != canonical {
             refusals.refuse_a_second_map(context, shown_place)
         }
         return
@@ -543,6 +570,19 @@ func table_read(attribute: Model.AttributeModel, function: Model.FunctionModel):
     return HighIntermediaryRepresentation.Values.AttributeRead(own, slot)
 }
 
+func live_read(attribute: Model.AttributeModel, function: Model.FunctionModel): Value {
+    var text = context.text()
+    var nullable_text = text.nullable()
+    var described = described_type_of(attribute)
+    crash described
+    var walked = walked_class_of(function)
+    if not walked.is_empty() and walked != described.name {
+        return HighIntermediaryRepresentation.Values.NullConstant(nullable_text)
+    }
+    var own = values.this_value()
+    return keyed_read(own, attribute, described, function.bound_member)
+}
+
 func walked_class_of(function: Model.FunctionModel): String {
     if function.walked_object {
         return function.walked_object.name
@@ -580,8 +620,16 @@ func refuse_a_change(target: Value) {
     fallback is_a_key_map(target.value_type)
     if target.class == HighIntermediaryRepresentation.Values.AttributeRead {
         var shown_place = shown_place_of(target.attribute)
+        fallback not read_live_where_tabled(target.attribute, shown_place)
         refusals.refuse_a_changed_map(context, shown_place)
     }
+}
+
+func read_live_where_tabled(attribute: Model.AttributeModel, shown_place: String): Boolean {
+    fallback has_a_table(attribute)
+    var place = place_of(attribute)
+    read_live(place, shown_place)
+    return true
 }
 
 func refuse_a_changing_call(receiver: Value, name: String) {
@@ -594,6 +642,7 @@ func refuse_a_held_map(value: Value) {
     fallback is_a_key_map(value.value_type)
     if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
         var shown_place = shown_place_of(value.attribute)
+        fallback not read_live_where_tabled(value.attribute, shown_place)
         refusals.refuse_a_held_map(context, shown_place)
     }
 }
@@ -602,6 +651,7 @@ func refuse_a_passed_map(value: Value, called: String) {
     fallback is_a_key_map(value.value_type)
     if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
         var shown_place = shown_place_of(value.attribute)
+        fallback not read_live_where_tabled(value.attribute, shown_place)
         refusals.refuse_a_passed_map(context, shown_place, called)
     }
 }
@@ -632,6 +682,9 @@ func folded_attribute_read(name: String, function: Model.FunctionModel): Value? 
     var place = place_of(attribute)
     if not context.folded_key_reads.contains(place) {
         context.folded_key_reads.append(place)
+    }
+    if context.live_key_maps.contains(place) {
+        return live_read(attribute, function)
     }
     if context.run_time_key_maps.contains(place) {
         return table_read(attribute, function)
