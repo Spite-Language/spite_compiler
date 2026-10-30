@@ -37,18 +37,18 @@ union Instruction {
 }
 
 var program = LowIntermediaryRepresentation.LoweredProgram()
-var encoder = Encoder()
+var encoder = Generators.X64.Encoder()
 var function_offsets = Dictionary<String, Integer>()
 var block_offsets = List<Integer>()
-var block_fixups = List<Fixup>()
-var call_fixups = List<Fixup>()
-var import_fixups = List<Fixup>()
-var data_fixups = List<Fixup>()
-var slot_fixups = List<Fixup>()
-var stop_fixups = List<Fixup>()
+var block_fixups = List<Generators.X64.Fixup>()
+var call_fixups = List<Generators.X64.Fixup>()
+var import_fixups = List<Generators.X64.Fixup>()
+var data_fixups = List<Generators.X64.Fixup>()
+var slot_fixups = List<Generators.X64.Fixup>()
+var stop_fixups = List<Generators.X64.Fixup>()
 var foreign_names = List<String>()
 var library_imports = List<String>()
-var library_fixups = List<Fixup>()
+var library_fixups = List<Generators.X64.Fixup>()
 var stop_routine = 0
 var text_writer = 0
 var number_writer = 0
@@ -59,7 +59,8 @@ var current_header = 0
 var current_answer_decimal_size = 0
 var parameter_registers = List<Integer>()
 var no_function = LowIntermediaryRepresentation.LowFunction("", 0)
-var allocation = Allocation(no_function)
+var convention = Generators.X64.CallingConvention()
+var allocation = Generators.X64.Allocation(no_function, convention)
 var current_block = 0
 var addressed_base = 0
 var addressed_displacement = 0
@@ -95,7 +96,7 @@ var call_frames = LowIntermediaryRepresentation.CallFrames()
 var place_starts = List<Integer>()
 var place_texts = List<String>()
 var small_blocks = SmallBlocks(encoder, program, data_fixups, import_fixups)
-var kernels = VectorKernels(encoder, program, data_fixups)
+var kernels = Generators.X64.VectorKernels(encoder, program, data_fixups)
 var current_ends_a_thread = false
 var span_keys = List<String>()
 var span_starts = List<Integer>()
@@ -103,7 +104,7 @@ var code_end = 0
 var body_offsets = Dictionary<String, Integer>()
 var function_ends = Dictionary<String, Integer>()
 var slot_labels = Dictionary<String, Integer>()
-var routine_fixups = List<Fixup>()
+var routine_fixups = List<Generators.X64.Fixup>()
 var routines_end = 0
 var _arithmetic_with_small_immediate_opcode = 131
 var _subtract_from_rsp_operand = 236
@@ -111,6 +112,8 @@ var _writer_frame_size = 120
 var _move_from_register_opcode = 137
 var _move_rcx_into_rax_operands = 200
 var _load_address_opcode = 141
+var _rbp_at_rcx_displacement_32_operands = 169
+var _gs_segment_prefix = 101
 var _r11_with_r11_operands = 219
 var _test_opcode = 133
 var _rdx_with_rdx_operands = 210
@@ -179,11 +182,10 @@ var _filled_word_pattern: Long = 2779096485
 func Emitter(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
     program = starting_program
     small_blocks = SmallBlocks(encoder, program, data_fixups, import_fixups)
-    kernels = VectorKernels(encoder, program, data_fixups)
-    parameter_registers.append(encoder.rcx)
-    parameter_registers.append(encoder.rdx)
-    parameter_registers.append(encoder.r8)
-    parameter_registers.append(encoder.r9)
+    kernels = Generators.X64.VectorKernels(encoder, program, data_fixups)
+    var windows_convention = Convention()
+    convention = windows_convention.table()
+    parameter_registers = convention.argument_registers
 }
 
 func emitted(): Buffer {
@@ -483,7 +485,7 @@ func emit_the_gated_stop_start() {
 func gate_the_crash() {
     if program.gates_crashes {
         var at = encoder.call_relative()
-        var fixup = Fixup(at, "_crash_gate", 0)
+        var fixup = Generators.X64.Fixup(at, "_crash_gate", 0)
         call_fixups.append(fixup)
     }
 }
@@ -507,14 +509,14 @@ func call_routine(routine: Integer) {
     var at = encoder.call_relative()
     encoder.patch_dword(at, routine - (at + 4))
     if program.hot_reload {
-        var fixup = Fixup(at, "", routine)
+        var fixup = Generators.X64.Fixup(at, "", routine)
         routine_fixups.append(fixup)
     }
 }
 
 func write_a_label(label: Integer) {
     var at = encoder.load_address_of(encoder.rcx)
-    var fixup = Fixup(at, "", label)
+    var fixup = Generators.X64.Fixup(at, "", label)
     data_fixups.append(fixup)
     var bytes = program.data[label]
     crash bytes
@@ -591,7 +593,7 @@ func article_of(name: String): String {
 
 func call_import(name: String) {
     var at = encoder.call_through_memory()
-    var fixup = Fixup(at, name, 0)
+    var fixup = Generators.X64.Fixup(at, name, 0)
     import_fixups.append(fixup)
 }
 
@@ -616,21 +618,21 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     if program.hot_reload {
         jump_through_the_slot(function.key)
     }
-    block_fixups = List<Fixup>()
-    allocation = Allocation(function)
+    block_fixups = List<Generators.X64.Fixup>()
+    allocation = Generators.X64.Allocation(function, convention)
     allocation.allocate()
     if program.vector_loops > 0 {
         kernels.plan_the_saved(function, allocation)
     }
     current_block = 0
-    var outgoing = 32 + 8 * most_arguments_of(function)
+    var outgoing = convention.shadow_space + 8 * most_arguments_of(function)
     current_is_resumable = function.is_resumable
     current_ends_a_thread = function.ends_a_thread
     current_answer_decimal_size = function.answer_decimal_size
     if function.is_resumable {
         current_outgoing = (outgoing + 15) / 16 * 16
         current_header = 0 - 48 - 8 * function.register_count
-        encoder.resumable_prologue(0 - current_header, current_outgoing)
+        resumable_prologue(0 - current_header, current_outgoing)
     } else {
         frame_slots = allocation.register_total
         if frame_slots < function.register_count {
@@ -693,7 +695,7 @@ func jump_through_the_slot(key: String) {
     encoder.byte(37)
     var at = encoder.position()
     encoder.dword(0)
-    var fixup = Fixup(at, "", label)
+    var fixup = Generators.X64.Fixup(at, "", label)
     data_fixups.append(fixup)
     body_offsets[key] = encoder.position()
 }
@@ -921,13 +923,13 @@ func falls_into(block: Integer): Boolean {
 func jump_to_block(block: Integer) {
     fallback not falls_into(block)
     var at = encoder.jump()
-    var fixup = Fixup(at, "", block)
+    var fixup = Generators.X64.Fixup(at, "", block)
     block_fixups.append(fixup)
 }
 
 func jump_to_block_if(condition: Integer, block: Integer) {
     var at = encoder.jump_if(condition)
-    var fixup = Fixup(at, "", block)
+    var fixup = Generators.X64.Fixup(at, "", block)
     block_fixups.append(fixup)
 }
 
@@ -2087,7 +2089,7 @@ func divide_unsigned_by_multiplying(arithmetic: LowIntermediaryRepresentation.In
 
 # ../../OPTIMIZATIONS.md#dividing-by-a-constant-is-a-multiplication
 func divide_wide_unsigned_by_multiplying(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, divisor: Long) {
-    var magic = UnsignedMagic(divisor)
+    var magic = Generators.X64.UnsignedMagic(divisor)
     if magic.is_a_power {
         divide_wide_unsigned_by_a_power(arithmetic, divisor, magic.shift)
         return
@@ -2134,7 +2136,7 @@ func divide_wide_unsigned_by_a_larger_half(arithmetic: LowIntermediaryRepresenta
 }
 
 func divide_by_multiplying(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, divisor: Long) {
-    var magic = Magic(divisor)
+    var magic = Generators.X64.Magic(divisor)
     encoder.move_register(encoder.rcx, encoder.rax)
     encoder.move_small_immediate(encoder.rax, magic.multiplier)
     encoder.multiply_wide_by(encoder.rcx)
@@ -2254,14 +2256,14 @@ func stop_with(text: String, line: Integer) {
 
 func load_message(label: Integer) {
     var at = encoder.load_address_of(encoder.rcx)
-    var fixup = Fixup(at, "", label)
+    var fixup = Generators.X64.Fixup(at, "", label)
     data_fixups.append(fixup)
     var bytes = program.data[label]
     crash bytes
     var length = bytes.count()
     encoder.move_small_immediate(encoder.rdx, length)
     var call_at = encoder.call_relative()
-    var stop_fixup = Fixup(call_at, "", 0)
+    var stop_fixup = Generators.X64.Fixup(call_at, "", 0)
     stop_fixups.append(stop_fixup)
 }
 
@@ -2421,7 +2423,7 @@ func pass_arguments(arguments: List<Integer>) {
 func emit_call(call: LowIntermediaryRepresentation.Instructions.Call) {
     pass_arguments(call.arguments)
     var at = encoder.call_relative()
-    var fixup = Fixup(at, call.function, 0)
+    var fixup = Generators.X64.Fixup(at, call.function, 0)
     call_fixups.append(fixup)
     if program.call_table >= 0 {
         note_a_call_site(call.line, call.frames)
@@ -2467,7 +2469,7 @@ func emit_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
 
 func emit_function_address(address: LowIntermediaryRepresentation.Instructions.FunctionAddress) {
     var at = encoder.load_address_of(encoder.rax)
-    var fixup = Fixup(at, address.function, 0)
+    var fixup = Generators.X64.Fixup(at, address.function, 0)
     call_fixups.append(fixup)
     write_from(address.target, encoder.rax)
 }
@@ -2477,19 +2479,19 @@ func emit_foreign_address(found: LowIntermediaryRepresentation.Instructions.Fore
     foreign_names.append(found.name)
     read_into(encoder.rcx, found.library)
     var owner_loaded = encoder.load_from_address(encoder.rax)
-    var owner_fixup = Fixup(owner_loaded, "owner", slot)
+    var owner_fixup = Generators.X64.Fixup(owner_loaded, "owner", slot)
     slot_fixups.append(owner_fixup)
     encoder.compare_rax_rcx()
     var not_equal = _jump_if_not_equal_code
     var not_zero = _jump_if_not_equal_code
     var looked_up = encoder.jump_if(not_equal)
     var loaded = encoder.load_from_address(encoder.rax)
-    var loaded_fixup = Fixup(loaded, "", slot)
+    var loaded_fixup = Generators.X64.Fixup(loaded, "", slot)
     slot_fixups.append(loaded_fixup)
     var known = encoder.jump()
     patch_here(looked_up)
     var name_at = encoder.load_address_of(encoder.rdx)
-    var name_fixup = Fixup(name_at, "name", slot)
+    var name_fixup = Generators.X64.Fixup(name_at, "name", slot)
     slot_fixups.append(name_fixup)
     call_import("GetProcAddress")
     encoder.test_rax()
@@ -2504,7 +2506,7 @@ func emit_foreign_address(found: LowIntermediaryRepresentation.Instructions.Fore
 func keep_the_first_owner(found: LowIntermediaryRepresentation.Instructions.ForeignAddress, slot: Integer) {
     encoder.move_register(encoder.rdx, encoder.rax)
     var claimed_at = encoder.load_address_of(encoder.r11)
-    var claimed_fixup = Fixup(claimed_at, "owner", slot)
+    var claimed_fixup = Generators.X64.Fixup(claimed_at, "owner", slot)
     slot_fixups.append(claimed_fixup)
     encoder.move_small_immediate(encoder.rax, 0)
     encoder.move_small_immediate(encoder.rcx, -1)
@@ -2512,11 +2514,11 @@ func keep_the_first_owner(found: LowIntermediaryRepresentation.Instructions.Fore
     var not_zero = _jump_if_not_equal_code
     var taken = encoder.jump_if(not_zero)
     var stored = encoder.store_at_address(encoder.rdx)
-    var stored_fixup = Fixup(stored, "", slot)
+    var stored_fixup = Generators.X64.Fixup(stored, "", slot)
     slot_fixups.append(stored_fixup)
     read_into(encoder.rcx, found.library)
     var owned = encoder.store_at_address(encoder.rcx)
-    var owned_fixup = Fixup(owned, "owner", slot)
+    var owned_fixup = Generators.X64.Fixup(owned, "owner", slot)
     slot_fixups.append(owned_fixup)
     patch_here(taken)
     encoder.move_register(encoder.rax, encoder.rdx)
@@ -2524,7 +2526,7 @@ func keep_the_first_owner(found: LowIntermediaryRepresentation.Instructions.Fore
 
 func emit_data_address(address: LowIntermediaryRepresentation.Instructions.DataAddress) {
     var at = encoder.load_address_of(encoder.rax)
-    var fixup = Fixup(at, "", address.label)
+    var fixup = Generators.X64.Fixup(at, "", address.label)
     data_fixups.append(fixup)
     write_from(address.target, encoder.rax)
 }
@@ -2848,7 +2850,7 @@ func emit_start_thread(starting: LowIntermediaryRepresentation.Instructions.Star
     encoder.move_small_immediate(encoder.rcx, 0)
     encoder.move_small_immediate(encoder.rdx, 0)
     var at = encoder.load_address_of(encoder.r8)
-    var fixup = Fixup(at, starting.entry, 0)
+    var fixup = Generators.X64.Fixup(at, starting.entry, 0)
     call_fixups.append(fixup)
     read_into(encoder.r9, starting.block)
     call_import("CreateThread")
@@ -2922,7 +2924,7 @@ func call_library_import(name: String) {
         library_imports.append(name)
     }
     var at = encoder.call_through_memory()
-    var fixup = Fixup(at, name, 0)
+    var fixup = Generators.X64.Fixup(at, name, 0)
     library_fixups.append(fixup)
 }
 
@@ -2944,7 +2946,7 @@ func emit_atomic_add(adding: LowIntermediaryRepresentation.Instructions.AtomicAd
 }
 
 func emit_thread_identity(asked: LowIntermediaryRepresentation.Instructions.ThreadIdentity) {
-    encoder.thread_identity_into_rax()
+    thread_identity_into_rax()
     write_from(asked.target, encoder.rax)
 }
 
@@ -3021,13 +3023,13 @@ func emit_exit(exit: LowIntermediaryRepresentation.Instructions.Exit) {
     call_import("ExitProcess")
 }
 
-func fix_a_block(fixup: Fixup) {
+func fix_a_block(fixup: Generators.X64.Fixup) {
     var target = block_offsets[fixup.index]
     crash target
     encoder.patch_dword(fixup.at, target - (fixup.at + 4))
 }
 
-func fix_a_call(fixup: Fixup) {
+func fix_a_call(fixup: Generators.X64.Fixup) {
     var target = function_offsets[fixup.target]
     if not target {
         var emittable = Validators.LowIntermediaryRepresentation.Emittable.Validator()
@@ -3037,7 +3039,7 @@ func fix_a_call(fixup: Fixup) {
     encoder.patch_dword(fixup.at, target - (fixup.at + 4))
 }
 
-func fix_a_stop(fixup: Fixup) {
+func fix_a_stop(fixup: Generators.X64.Fixup) {
     encoder.patch_dword(fixup.at, stop_routine - (fixup.at + 4))
 }
 
@@ -3083,4 +3085,22 @@ func hexadecimal_of(value: Integer): String {
         place = place + 1
     }
     return shown
+}
+
+func resumable_prologue(frame_offset: Integer, outgoing: Integer) {
+    encoder.byte(85)
+    encoder.byte(72)
+    encoder.byte(_load_address_opcode)
+    encoder.byte(_rbp_at_rcx_displacement_32_operands)
+    encoder.dword(frame_offset)
+    encoder.lower_the_stack(outgoing)
+}
+
+func thread_identity_into_rax() {
+    encoder.byte(_gs_segment_prefix)
+    encoder.byte(72)
+    encoder.byte(_move_into_register_opcode)
+    encoder.byte(4)
+    encoder.byte(37)
+    encoder.dword(72)
 }

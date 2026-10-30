@@ -201,6 +201,21 @@ passes from settling the singletons to the last live values); then direct calls 
 and the cleaning again on the functions it changed; then, on every function again, releasing in place, vector loops,
 and the last shaping of blocks, live values and copy coalescing.
 
+## The targets
+
+A target is a folder of `generators/` (`windows_x64`), chosen once by which one `spite_compiler.spite` makes; no
+code asks which system it builds for (D1709). What every x64 target writes the same bytes for is shared in
+`generators/x64`: the instruction encoding (`Encoder`, `Fixup`, the divisions by a constant `Magic` and
+`UnsignedMagic`), the vector kernels and the register allocation. What a target alone owns stays in its folder:
+its emitter, its calling convention, its executable format, its fault handler, its allocator of small blocks
+(which asks the system for memory), and its hot-reload host.
+
+The allocator never names a register a convention decides. It reads the target's `X64.CallingConvention`, a table
+the target fills (`windows_x64/convention.spite`): the registers that carry the first arguments, the registers a
+call keeps (in the order values take them), the scratch registers a value may hold where nothing it lives through
+calls, the first decimal register a call keeps (16 when none is kept), and the room a caller leaves above its
+arguments (the shadow space).
+
 ## What the compiler writes itself
 
 `Concurrent`, `Parallel` and their scheduler are not Spite classes: the lowering writes them as low functions

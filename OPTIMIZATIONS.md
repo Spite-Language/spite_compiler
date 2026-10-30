@@ -1032,8 +1032,8 @@ These run in this order on the low representation, then in the x64 generator:
    (`loop_invariants`), copy propagation again, dead code again,
    [copy coalescing](#a-value-computed-only-to-be-copied-is-computed-in-place) (`copy_coalescing`), and dead code
    again;
-5. in `generators/windows_x64`: [block layout](#blocks-are-laid-out-along-the-likely-path),
-   [register allocation](#values-live-in-registers) (`allocation.spite`), and instruction selection: the
+5. in `generators/x64`, shared by the targets: [block layout](#blocks-are-laid-out-along-the-likely-path) and
+   [register allocation](#values-live-in-registers) (`allocation.spite`); in the target's emitter, instruction selection: the
    [immediates and compares](#constants-are-immediates-and-a-compare-is-the-branch),
    [addressing modes](#an-address-sum-is-the-addressing-mode),
    [division by a constant](#dividing-by-a-constant-is-a-multiplication), the
@@ -2267,9 +2267,10 @@ there). A linear scan takes the values in the order they start and gives each a 
 is live in any of the same stretches, so two values share a register in each other's gaps: a value read only in a
 release or a report laid out after the loop does not hold its register through the loop's body.
 
-- The registers given are the seven the Windows x64 calling convention keeps across calls (`rbx`, `rsi`, `rdi`,
-  `r12` to `r15`), saved in the frame by a function that uses them and restored at each return, and the three
-  scratch registers `r10`, `r9` and `r8` (`r9` and `r8` not for a parameter, which may arrive in them) for a value
+- The registers given are the ones the target's calling convention keeps across calls
+  ([the targets](ARCHITECTURE.md#the-targets)), on Windows x64 the seven `rbx`, `rsi`, `rdi`, `r12` to `r15`,
+  saved in the frame by a function that uses them and restored at each return, and the three scratch registers
+  `r10`, `r9` and `r8` (`r9` and `r8` not for a parameter, which may arrive in them) for a value
   none of whose stretches holds a call or an instruction that may call (an allocation, a free, a copy of bytes).
   A checked or dividing arithmetic does not count: its crash report calls the console only on the way to stopping
   the program, and it first copies any number it shows from a scratch register to the number's frame slot. `rax`,
@@ -3651,7 +3652,7 @@ vector registers: eight 32-bit numbers (or four 64-bit ones) per instruction, wi
 at once. The pass that finds them is `low_optimization_passes/vector_loops/pass.spite`; it puts a vector loop in front of the
 loop, and the loop itself is left as it was to run whatever passes remain (fewer than one group, or all of them when
 the vector loop cannot run). The generator writes the vector loop with AVX2 instructions
-(`generators/windows_x64/vector_kernels.spite`).
+(`generators/x64/vector_kernels.spite`).
 
 **When it applies:** the loop's test is `counter < bound`, signed, with a bound the loop does not change; its body is
 one straight run of blocks whose only branches are the tests that halt the program (a list's bounds check), each a
