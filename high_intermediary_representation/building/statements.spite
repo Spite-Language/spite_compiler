@@ -85,6 +85,7 @@ var at_function_root = false
 var last_site_identity = ""
 var shown_parts = List<ShownPart>()
 var shown_texts = List<String>()
+var name_places = List<String>()
 var reads_before = false
 var reported_count = 0
 var report_name = ""
@@ -2624,13 +2625,73 @@ func build_fallback(statement: AbstractSyntaxTree.Shapes.Statements.FallbackStat
     note_a_check_of_a_plain_value(statement.condition, "fallback")
     note_a_repeated_check(statement.condition, statement.line)
     note_a_proven_divisor(statement.condition, statement.line)
+    var parts = List<Expression>()
+    gather_the_parts(statement.condition, parts)
+    var symbols = context.resolver.symbols
+    var path = context.path()
+    if parts.count() < 2 or symbols.is_library_path(path) {
+        var whole_holds = build_a_guard(statement, true)
+        fallback whole_holds
+        return
+    }
+    build_each_part(statement, parts)
+}
+
+# ../../OPTIMIZATIONS.md#a-crashs-condition-lives-beside-the-executable
+func gather_the_parts(condition: Expression?, parts: List<Expression>) {
+    fallback condition
+    if condition.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression and condition.operator == 'and' {
+        gather_the_parts(condition.left, parts)
+        gather_the_parts(condition.right, parts)
+        return
+    }
+    parts.append(condition)
+}
+
+func build_each_part(
+    statement: AbstractSyntaxTree.Shapes.Statements.FallbackStatement,
+    parts: List<Expression>,
+) {
+    var build_reads_before = context.folded_build_reads
+    var every_part_holds = true
+    var index = 0
+    while index < parts.count() and not rest_is_folded_away {
+        var part = parts[index]
+        var guard = AbstractSyntaxTree.Shapes.Statements.FallbackStatement(part)
+        guard.line = statement.line
+        guard.column = statement.column
+        if part.line == statement.line {
+            guard.column = part.column
+        }
+        var holds = build_a_guard(guard, false)
+        every_part_holds = every_part_holds and holds
+        index = index + 1
+    }
+    fallback every_part_holds and not rest_is_folded_away
+    var boolean = context.boolean()
+    var held = HighIntermediaryRepresentation.Values.WholeNumber(boolean, 1)
+    note_a_check_that_always_holds(held, "fallback", statement.condition)
+    note_a_decided_condition(held, "fallback", statement.condition, build_reads_before)
+}
+
+func build_a_guard(
+    statement: AbstractSyntaxTree.Shapes.Statements.FallbackStatement,
+    is_whole: Boolean,
+): Boolean {
     var written_condition = statement.condition
     statement.condition = values.with_its_links(statement.condition)
     var build_reads_before = context.folded_build_reads
     var condition = values.condition_of(statement.condition)
-    note_a_check_that_always_holds(condition, "fallback", written_condition)
-    note_a_check_of_a_proven_value(written_condition, condition, "fallback")
-    note_a_decided_condition(condition, "fallback", written_condition, build_reads_before)
+    if is_whole {
+        note_a_check_that_always_holds(condition, "fallback", written_condition)
+        note_a_check_of_a_proven_value(written_condition, condition, "fallback")
+        note_a_decided_condition(condition, "fallback", written_condition, build_reads_before)
+    }
+    var decided = decided_number_of(condition)
+    var holds = false
+    if decided {
+        holds = decided.number != 0
+    }
     var failed = HighIntermediaryRepresentation.Statements.Block()
     var noting = noted_failure(statement)
     if noting {
@@ -2643,7 +2704,7 @@ func build_fallback(statement: AbstractSyntaxTree.Shapes.Statements.FallbackStat
         failed.line = statement.line
         add(failed)
         rest_is_folded_away = true
-        return
+        return false
     }
     var negated = HighIntermediaryRepresentation.Values.Negation(condition)
     var made = HighIntermediaryRepresentation.Statements.If(negated, failed, null)
@@ -2662,10 +2723,12 @@ func build_fallback(statement: AbstractSyntaxTree.Shapes.Statements.FallbackStat
     note_the_checks("fallback", statement.condition, statement.line)
     var windows = Windows(context, values)
     windows.note_a_guard(statement.condition)
+    return holds
 }
 
 func operands_of(condition: Expression?): String {
     var names = List<String>()
+    name_places = List<String>()
     gather_the_names(condition, names)
     var described = List<String>()
     var index = 0
@@ -2674,7 +2737,9 @@ func operands_of(condition: Expression?): String {
         var identifier = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression(name)
         var read = values.value_of(identifier, null)
         var shown = context.shown(read.value_type)
-        described.append("{name}:{shown}")
+        var place = name_places[index]
+        crash place
+        described.append("{name}:{shown}{place}")
         index = index + 1
     }
     return described.join(" ")
@@ -2899,15 +2964,16 @@ func is_a_collection(answer: Model.Type, shown: String): Boolean {
 }
 
 func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement) {
-    var message = "spite: the program stopped at {context.path()}:{statement.line} in {context.current_function.owner}.{context.current_function.name}"
+    var place = "spite: the program stopped at {context.path()}:{statement.line} in {context.current_function.owner}.{context.current_function.name}"
     shown_parts = List<ShownPart>()
     shown_texts = List<String>()
     reads_before = false
     if always_stops(statement.condition) {
         var always = identity_of_a_site(null, "|crash")
+        var always_message = "{place}, site {always}"
         note_a_crash_site(always, statement.line, statement.column, "crash", null, "")
         var nothing_mentioned = List<String>()
-        var stopping = report_of(message, null, nothing_mentioned, statement.line)
+        var stopping = report_of(always_message, null, nothing_mentioned, statement.line)
         stopping.each(add)
         return
     }
@@ -2918,9 +2984,12 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     note_a_proven_divisor(statement.condition, statement.line)
     refuse_a_false_build_field(statement)
     var identity = identity_of_a_site(statement.condition, "|crash")
+    var message = "{place}, site {identity}"
     var written = statement.condition
     crash written
     context.line = statement.line
+    flush_the_pending()
+    var first_held = built.count()
     var held_before = reported_count
     var rewritten = held_for_the_report(written, 2, 0, true)
     var mentioned = List<String>()
@@ -2948,11 +3017,27 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     made.crashes_unless = printer.text()
     made.decided_condition = unheld
     add(made)
+    if reported_count > held_before {
+        let_go_after_the_check(first_held, statement.line)
+    }
     read_facts(statement.condition)
     narrow_all(facts_paths, facts_types)
     note_the_checks("crash", statement.condition, statement.line)
     var windows = Windows(context, values)
     windows.note_a_guard(statement.condition)
+}
+
+# ../../OPTIMIZATIONS.md#a-reported-calls-answer-is-let-go-after-its-check
+func let_go_after_the_check(first_held: Integer, line: Integer) {
+    var check = HighIntermediaryRepresentation.Statements.Block()
+    check.line = line
+    var index = first_held
+    while index < built.count() {
+        check.statements.append(built[index])
+        index = index + 1
+    }
+    built.truncate(first_held)
+    built.append(check)
 }
 
 func crash_report(): Value? {
@@ -3140,6 +3225,7 @@ func held_call(
     var printer = Printers.Spite.ExpressionPrinter(call)
     var printed = printer.text()
     var placeholder = ShownPart(printed, null)
+    placeholder.place = place_of(call)
     if not shown_texts.contains(printed) and not is_whole {
         shown_parts.append(placeholder)
         shown_texts.append(printed)
@@ -3249,9 +3335,15 @@ func held_unary(
     return AbstractSyntaxTree.Shapes.Expressions.UnaryExpression(unary.operator, operand)
 }
 
+func place_of(written: Expression): String {
+    fallback written.line > 0
+    return "@{written.line}:{written.column}"
+}
+
 func note_a_shown_part(text: String, value: Expression) {
     fallback not shown_texts.contains(text)
     var part = ShownPart(text, value)
+    part.place = place_of(value)
     shown_parts.append(part)
     shown_texts.append(text)
 }
@@ -3362,7 +3454,7 @@ func show_a_part(part: ShownPart) {
     fallback part.value
     var value = values.value_of(part.value, null)
     var shown = context.shown(value.value_type)
-    report_types.append("{part.text}:{shown}")
+    report_types.append("{part.text}:{shown}{part.place}")
     show_a_value(part.text, part.value, value, true)
 }
 
@@ -3643,7 +3735,8 @@ func report_a_link(link: Expression, index: Integer) {
     var printer = Printers.Spite.ExpressionPrinter(link)
     var printed = printer.text()
     var shown = context.shown(value.value_type)
-    report_types.append("{printed}:{shown}")
+    var place = place_of(link)
+    report_types.append("{printed}:{shown}{place}")
     if not value.value_type.is_nullable {
         report_the_links(index + 1)
     } else {
@@ -3769,6 +3862,8 @@ func note_a_shown_name(identifier: AbstractSyntaxTree.Shapes.Expressions.Identif
     var is_known = context.scope.internal_name_of(identifier.name)
     fallback is_known and not names.contains(identifier.name)
     names.append(identifier.name)
+    var place = place_of(identifier)
+    name_places.append(place)
 }
 
 func always_stops(condition: Expression?): Boolean {

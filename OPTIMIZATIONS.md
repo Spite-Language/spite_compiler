@@ -1060,12 +1060,31 @@ is inlined into its caller as a compare, a branch to `checked_half$cold0(value)`
 the same: the cold function's calls carry no frame line of their own, and the call to it carries the guard's line,
 so `spite.frame` lines name the guard's function and its callers as before.
 
+## A reported call's answer is let go after its check
+
+A call in a `crash` condition is run once, into a hidden local the check and the report both read
+([failure.md](../spite_spec/specs/failure.md#what-a-crash-reports)). The hidden locals and the check are built as a
+block of their own, so the answer is let go as soon as the check passes, not when the function ends:
+
+```spite
+func check(seed: Integer) {
+    crash probe(seed).value > 0
+    console.print("after the check")
+}
+```
+
+lets go of the `Probe` that `probe(seed)` answers (its `drop()` runs) before `after the check` is printed. When it
+applies: every `crash` whose report holds a call's answer. What a user can observe: a `drop()` runs right after the
+check, and the memory is free for the rest of the function (`tests/reported_answer_freed`).
+
 ## A crash's condition lives beside the executable
 
 The text of a `crash` or `fallback` (its condition, `values[pick]`, `index >= 0 and index < _length`) is not in the
 executable: every site is a number, and `<program>.crashes`, written beside the executable, maps each number to the
 site's file, line, column, class, function, kind, condition and the names and types of the values its report
-prints (`# spite crashes 1`, then one line per site, tab separated). The executable keeps only what the report
+prints, each with the line and column it is read at (`value:Integer@2:11`; `# spite crashes 1`, then one line per
+site, tab separated). A `fallback` of several parts joined by `and` is a site per part, so its trace line names the
+part that failed. The crash line carries its site's id (`, site 1a2b3c4d`), so `grep` finds it in the map. The executable keeps only what the report
 prints as the program halts: the place and each value with its name.
 
 ```spite

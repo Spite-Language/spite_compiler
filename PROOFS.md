@@ -1134,7 +1134,8 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Falls back**: the calls run in order, as written.
 - **Lives in**: the speed proof `proofs/independent_work`, registered among the high passes right after
   `banded_loops`; the high pass `overlapped_work` right after it only acts on its marks.
-- **Checked by**: tests/overlapped_work, tests/overlapped_work_runs_at_once.
+- **Checked by**: tests/overlapped_work, tests/overlapped_work_runs_at_once, tests/overlapped_work_crashes,
+  tests/overlapped_work_halts.
 
 ### Classes in a list that share nothing written
 
@@ -1149,7 +1150,8 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   number functions; a kept thread pool.
 - **Falls back**: the loop in order.
 - **Lives in**: embedded, the high pass `high_optimization_passes/banded_loops` (`pass_weights.spite`).
-- **Checked by**: tests/band_passes.
+- **Checked by**: tests/band_passes, tests/banded_pass_halts (a pass that halts prints what came before the loop
+  and nothing after it, as running in order does, spite_compiler#222).
 
 ### An object made for its owner is told apart
 
