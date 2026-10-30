@@ -96,7 +96,7 @@ func value_of(
         AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return literal_value(expression, expected)
         AbstractSyntaxTree.Shapes.Expressions.TextLiteral: return text_value(expression)
         AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return member_value(expression)
-        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return call_value(expression)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return call_value(expression, expected)
         AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return index_value(expression)
         AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return binary_value_expecting(expression, expected)
         AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return unary_value(expression, expected)
@@ -2905,6 +2905,7 @@ func present_class_of(value: Value): Model.ClassModel {
 
 func call_value(
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    expected: Model.Type?,
 ): Value {
     var maker = call.callee
     if maker.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
@@ -2921,7 +2922,7 @@ func call_value(
     }
     var class_path = class_path_of(call.callee)
     if not class_path.is_empty() {
-        return constructed(call, class_path)
+        return constructed(call, class_path, expected)
     }
     var callee = call.callee
     if callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
@@ -2937,6 +2938,64 @@ func call_value(
         return indexed_function_call(call, callee)
     }
     return unbuilt()
+}
+
+# ../../../spite_spec/specs/values_and_types.md#casting
+func refuse_a_conversion_by_name(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    made_type: Model.Type,
+    expected: Model.Type?,
+) {
+    fallback call.arguments.count() == 1 and may_be_converted(made_type)
+    var argument = call.arguments[0]
+    var given = value_of(argument, null)
+    var shown = conversion_answer_shown(made_type, given.value_type)
+    fallback not shown.is_empty()
+    var printer = Printers.Spite.ExpressionPrinter(call)
+    var call_text = printer.text()
+    var argument_printer = Printers.Spite.ExpressionPrinter(argument)
+    var argument_text = argument_printer.text()
+    if expected {
+        var wanted = expected.present()
+        if is_the_same_type(wanted, made_type) {
+            typing.refuse_a_cast_the_place_makes(context, call_text, argument_text)
+        }
+    }
+    typing.refuse_a_conversion_by_name(context, call_text, argument_text, shown)
+}
+
+func conversion_answer_shown(made_type: Model.Type, given_type: Model.Type): String {
+    var shown = context.shown(made_type)
+    var from_text = given_type.kind == 'object' and given_type.name == "String"
+    if made_type.kind == 'enumeration' {
+        return "{shown}?"
+    }
+    if made_type.kind == 'scalar' {
+        if from_text {
+            return "{shown}?"
+        }
+        return shown
+    }
+    var made = context.class_of(made_type)
+    var conversion = made.conversion_from(given_type)
+    fallback conversion
+    if conversion.answer and conversion.answer.is_nullable {
+        return "{shown}?"
+    }
+    return shown
+}
+
+func may_be_converted(made_type: Model.Type): Boolean {
+    if made_type.kind == 'enumeration' or made_type.kind == 'scalar' {
+        return true
+    }
+    fallback made_type.kind == 'object'
+    var made = context.class_of(made_type)
+    var constructor = constructor_of(made)
+    fallback not constructor or constructor.parameters.count() != 1
+    var conversion = made.read_conversion()
+    fallback conversion
+    return true
 }
 
 func indexed_function_call(
@@ -3190,6 +3249,7 @@ func refuse_an_unknown_generic_class(
 func constructed(
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     class_path: List<String>,
+    expected: Model.Type?,
 ): Value {
     refuse_an_unknown_generic_class(call, class_path)
     var inferred = inferred_type_of(call, class_path)
@@ -3203,6 +3263,7 @@ func constructed(
         )
     }
     crash made_type
+    refuse_a_conversion_by_name(call, made_type, expected)
     var made = context.class_of(made_type)
     var constraints = Constraints(context, this)
     constraints.check(made)
