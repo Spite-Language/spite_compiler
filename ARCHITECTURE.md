@@ -82,8 +82,6 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    - `guard_asserts`: a guard `fallback` answers only "nothing", and a last `if` is not a hidden guard;
    - `lost_writes`: a write to an object only this function holds is read, and a name read from a list is not
      assigned as its last mention;
-   - `borrowed_items`: a borrowed item is not kept, listed, returned, renamed or read past a resize, and is lent
-     only to a program function it follows, staying counted elsewhere (it records each lent call for `lent_parameters`);
    - `parallel_reach`: a `Parallel` work reaches only what it may, and no lock waits forever.
    A refusal the builder still makes asks this walk first, so the earliest error is the one told.
 2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program (the call
@@ -93,24 +91,23 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    `parallel_reach`, is refused when that function never waits, which the waits of the whole built program tell.
 3. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.
 4. `vector_fit`: every `Vector` the builder recorded making holds a class that fits one.
-5. `lent_parameters`: an item lent to a call is not kept, listed, returned or named again in the callee.
-6. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
+5. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
    answer that would decide itself.
-7. `literal_dictionaries`: a local dictionary written out and only read by keys written out holds exactly its
+6. `literal_dictionaries`: a local dictionary written out and only read by keys written out holds exactly its
    entries; it records each one and marks each read of a key it lacks (a speed proof, and what lets the next proof
    refuse a `crash` on such a read).
-8. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
-9. `every_attribute_is_read`: an attribute nothing reads is a compile error.
-10. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
-11. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
+7. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
+8. `every_attribute_is_read`: an attribute nothing reads is a compile error.
+9. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
+10. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
    facts on the operations).
-12. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
+11. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
-13. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
+12. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
    index holds a known count of items (a speed proof: it records the count on the list's declaration,
    `Declare.frame_items`, which a high pass carries with the statement, and the lowering lays the list out in the
    frame).
-14. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
+13. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
    since the running program's manifest; none answers `unchanged` before anything is lowered.
 
 The sites `recorded_sites` judges hold what the builder resolved where it recorded them (the names in scope with

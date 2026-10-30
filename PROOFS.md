@@ -43,7 +43,7 @@ used.
 
 | Site | Recorded by | What it holds | Judged by |
 |---|---|---|---|
-| `StatementSite` | `statements.spite` (`note_a_block`, `note_a_statement`), every block entered and left and every statement of the program's own code, before it is built | the statement list and index, the blocks around it, the line, and a `ScopeView`: every name in scope with its internal name, its narrowed type and its declared type | `proofs/lost_writes`, `proofs/borrowed_items` |
+| `StatementSite` | `statements.spite` (`note_a_block`, `note_a_statement`), every block entered and left and every statement of the program's own code, before it is built | the statement list and index, the blocks around it, the line, and a `ScopeView`: every name in scope with its internal name, its narrowed type and its declared type | `proofs/lost_writes` |
 | `PresenceSite` | `values.spite` (`note_a_maybe_null`, `note_a_maybe_null_type`), `statements.spite` (`note_a_maybe_boolean`) | a value that may be null where a value is needed: its type, the value (for the list read it came from), what was wanted, the member or operator | `proofs/present_values` |
 | `CheckSite` | `statements.spite` (`note_a_proven_check`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`, `note_a_narrowed_copy`) | the check written and what the scope says already proved it, the checked type, the copy and its source | `proofs/proven_checks` |
 | `CheckSite` | `statements.spite` (`note_an_undone_loop_check`, `note_an_undone_path`) | a path assigned a value that may be null inside a loop: whether it was narrowed before the loop and read in it, or whether the end of the body left it narrowed | `proofs/loop_narrowings` |
@@ -55,8 +55,7 @@ used.
 and the member a member template binds), so a validator names the same place it named while building.
 
 The builder also lists every site in the order it recorded them (`context.recorded_sites`), and the proof
-`proofs/recorded_sites` walks that list, handing each site to the proof of its kind (a statement to `lost_writes`,
-then to `borrowed_items`), so the first error is the one in the earliest code, whichever proof finds it. A refusal
+`proofs/recorded_sites` walks that list, handing each site to the proof of its kind (a statement to `lost_writes`), so the first error is the one in the earliest code, whichever proof finds it. A refusal
 the builder still makes itself first asks the same walk to judge what was recorded before it
 (`Context.judge_what_is_recorded`, from `Typing.Validator.stop`; the proofs stage hands its walk to the high
 representation stage before the build), and the rules of the syntax tree that need the built program run as the
@@ -692,14 +691,12 @@ as when each was refused while building.
 - **Generic templates**: every generic class is made once per set of type arguments before anything asks, so no
   `fits_vector()` is ever asked of an unbound template and the old compiler's "not a generic template" test has
   nothing to refuse here.
-- **Missing**: the borrow study (`borrows.spite`) keeps its own copy of the answer, which
-  does not test `this` yet, so it may refuse a borrow of an `Items` item that is held by reference.
 - **Falls back**: refused for a `Vector<T>`, "'...' uses 'this' as a value, and an item of a Vector is borrowed ...";
   an `Items<T>` holds such items by reference.
 - **Lives in**: the proof `proofs/vector_fit` refuses a `Vector` of a class that does not fit, judging every
   `Vector` the builder recorded making (`context.vector_sites`); the test itself, `constraints.spite`
   (`fits_a_vector`, with `uses_this_as_a_value`, and `is_kept_inline` for each attribute, which the proof asks
-  too, so its refusal and the answer an `Items<T>` folds never disagree), is still asked while building by `values.spite`, `borrows.spite`
+  too, so its refusal and the answer an `Items<T>` folds never disagree), is still asked while building by `values.spite`
   and `reflection.spite`, which choose the form of what they build from it.
 - **Checked by**: tests/items_columns, tests/folded_checks, tests/folded_lends, tests/lent_list_elements,
   tests/reflection_objects; conformance/folded_crash.
@@ -959,88 +956,11 @@ as when each was refused while building.
 
 ## Borrowing and lending
 
-These proofs belong to the ownership analysis of the high representation. The analysis is
-`high_intermediary_representation/building/borrows.spite`; the proof `proofs/borrowed_items` runs it over every
-statement the builder recorded (a `StatementSite`, with the names in scope), and `proofs/lent_parameters` over the
-bodies of the calls it lends to. The counts it saves are in the lowering.
-
-### Borrowed items of a `Vector` or `Items`
-
-- **Status**: partly built (D729): the refusals.
-- **Rule**: `vector[index]` and a template's visited item are borrowed, never kept, listed, returned, made a function
-  value, given a second name or assigned again ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)).
-- **Missing**: the reads are still counted (no uncounted address); walk copies and library member templates are not
-  checked; `InlineMemory` is not a borrowing collection.
-- **Falls back**: refused, "'...' is borrowed from '...' and cannot be kept in the attribute '...': keep
-  '....copy()', an independent object".
-- **Checked by**: conformance/vector_borrow_alias, vector_borrow_assigned, vector_borrow_function_value,
-  vector_borrow_kept, vector_borrow_listed, vector_borrow_returned, vector_borrow_temporary, items_borrows,
-  own_template_borrows, reopened_vector_borrows, vector_this_item; tests/vector_items, items_narrowed,
-  vector_item_written_in_place, game_vectors, generic_vectors.
-
-### No borrowed read past a resize
-
-- **Status**: partly built (D730, D1140, D1399).
-- **Rule**: a borrowed name is not read after anything that may resize its collection, followed through calls; a
-  resize anywhere in a loop ends the borrow for the loop
-  ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)). Assigning the collection again,
-  a local as well as an attribute, is a resize, and so is assigning an object that holds it at any depth, through
-  the program's classes and the items of the library's collections (`world = World()` ends what was borrowed from
-  `world.holder.velocities`), and so is a library call that removes items (`remove_at`, `remove_first`,
-  `remove_last`, `remove_swapping`, `truncate`, `clear`, `remove`, `remove_where...`) from a collection whose items
-  hold one (D1399).
-- **How**: a function's effects found while another call of it is still being followed (a recursion) are kept only
-  for that one question, not cached, so a later question follows it whole (D1399).
-- **Missing**: a value of unknown type fans out to every function of the name (strict, not silent).
-- **Falls back**: refused, "'...' is borrowed from '...', and '...' on line ... may move the items ...".
-- **Checked by**: conformance/vector_borrow_call_grows, vector_borrow_loop, vector_borrow_removed, vector_borrow_local_assigned, vector_borrow_holder_assigned, vector_borrow_owner_assigned,
-  vector_borrow_swap, vector_reserve_borrows, dispatched_resizes, found_item_borrows, items_borrow_remove_swapping;
-  tests/queued_borrows.
-
-### Rows of borrowed items
-
-- **Status**: partly built.
-- **Rule**: a row lives for exactly one call, passed only to a function called by name taking a `type`, never
-  kept, returned, listed, aliased or assigned, and the call may not resize its sources
-  ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)).
-- **Missing**: the row in the frame and uncounted when the callee is not inlined; a walked template's
-  `var stored_row = rows[...]`; the arguments a plural fills; `row.describe` as a function value; a row passed to a
-  library function.
-- **Falls back**: refused for the cases built; otherwise a counted heap row.
-- **Checked by**: conformance/vector_rows, sparse_rows, walked_rows, vector_row_alias,
-  vector_row_attribute_assigned, vector_row_kept, vector_row_mixed, vector_row_passed, vector_row_returned;
-  tests/vector_rows, sparse_rows, walked_rows, walked_row_locals, streamed_rows, vector_row_attributes_written.
-
-### An item lent to the caller
-
-- **Status**: partly built.
-- **Rule**: a `return` of an item read straight from a singleton's `Vector` or fitting `Items` lends it: every
-  return is such an item or null, the caller borrows it, and it is called only by name
-  ([memory.md](../SpiteLanguage/specs/memory.md#borrowed-items-of-a-vectort)). A borrowed item returned through a
-  name (`var h = lookup.of(0); return h`) is refused like any borrowed item (D1139).
-- **Missing**: the uncounted return; `is_fixed_size` and `functions[...]` folded in its conditions.
-- **Falls back**: refused, "'...' lends its caller an item of '...' ...".
-- **Checked by**: conformance/lent_escapes, lent_results, lent_function_type, lent_function_value,
-  lent_result_name_reused, lent_result_other_value, lent_result_returned_further, lent_result_returned_through_a_name; tests/lent_results,
-  narrowed_lends, folded_lends.
-
-### An item lent to a call
-
-- **Status**: partly built (D1400).
-- **Rule**: a borrowed item passed to a program function called by name is lent for the call; the callee is
-  compiled under the borrow rules, and the call may not resize the source. Where the compiler cannot follow the
-  item (a function value, a function of a value typed by a `type` or known only while the program runs, a library
-  function, a variadic position or a union parameter) it is not lent: the item stays counted, as every item of a
-  `List` is, and nothing is refused (D1781 under D1758; before, each was an error, D1400, D1512).
-- **How**: a lent parameter the callee passes on by name to a program function called by name is lent to that
-  function too, for the call, and its body is judged the same way, through any depth of calls (D1141); passed on
-  where it cannot be followed, it is not followed further.
-- **Missing**: nothing borrows since `Vector` and `Items` left (D1707), so the rule waits for the compiler's own
-  inline storage (#205, #274).
-- **Falls back**: the item is counted.
-- **Lives in**: the proof `proofs/borrowed_items` records each lent call in the context (`borrows.spite`,
-  `check_the_lent_body`); the proof `proofs/lent_parameters`, after it, judges the callee's body.
-- **Checked by**: tests/lent_items_passed_on, lent_to_calls, lent_arguments, ignored_lent_argument.
+These proofs let the lowering pass a value uncounted where its holder outlives the use. The borrow study of a
+`Vector` or `Items` item (its refusals of a kept, listed, returned or renamed item, of a read past a resize, of rows
+and of lends: D729, D730, D1139 to D1141, D1399, D1400) could no longer be reached once those classes left (D1707)
+and was removed (#274); a `List` that stores its items inline (#205) keeps counted every item it cannot follow, and
+refuses nothing (D1781).
 
 ### A list element lent to a row
 
