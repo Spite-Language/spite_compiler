@@ -277,7 +277,7 @@ func fitted(
             return fitted(reflected, wanted)
         }
     }
-    refuse_a_walked_symbol_passed_on(value, wanted)
+    refuse_a_walked_name_passed_on(value, wanted)
     var converted = converted_by_its_class(value, wanted)
     if converted {
         return converted
@@ -381,6 +381,9 @@ func refuse_a_written_conversion(wanted: Model.Type) {
 
 # ../../../spite_documentation/classes_and_files.md#constructors-conversions-and-presets
 func converted_by_a_conversion(value: Value, wanted: Model.Type): Value? {
+    if wanted.kind == 'enumeration' {
+        return converted_by_its_owner(value, wanted)
+    }
     fallback wanted.kind == 'object' or wanted.kind == 'scalar'
     var target_type = wanted.present()
     var target = context.class_of(target_type)
@@ -391,6 +394,29 @@ func converted_by_a_conversion(value: Value, wanted: Model.Type): Value? {
     fallback not reads_text or not may_fail or wanted.is_nullable or wanted.kind != 'scalar'
     need(conversion)
     var receiver = unused_receiver_of(target_type)
+    var given = List<Value>()
+    given.append(value)
+    var called_conversion = HighIntermediaryRepresentation.Values.Call(conversion, receiver, given)
+    return fitted(called_conversion, wanted)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#enums-in-full
+func converted_by_its_owner(value: Value, wanted: Model.Type): Value? {
+    var segments = wanted.name.split(".")
+    var last = segments.count() - 1
+    segments.remove_at(last)
+    var owner_key = segments.join(".")
+    var owner = context.program.class_named(owner_key)
+    fallback owner
+    var made_type = wanted.present()
+    var conversion = owner.conversion_into(made_type.name, value.value_type)
+    fallback conversion
+    need(conversion)
+    var receiver = this_value()
+    if context.current_class.key != owner.key {
+        var owner_type = owner.type_of_an_instance()
+        receiver = unused_receiver_of(owner_type)
+    }
     var given = List<Value>()
     given.append(value)
     var called_conversion = HighIntermediaryRepresentation.Values.Call(conversion, receiver, given)
@@ -468,7 +494,7 @@ func refuse_a_missing_conversion(value: Value, wanted: Model.Type) {
     typing.refuse_a_missing_conversion(context, shown_given, shown_wanted)
 }
 
-func refuse_a_walked_symbol_passed_on(value: Value, wanted: Model.Type) {
+func refuse_a_walked_name_passed_on(value: Value, wanted: Model.Type) {
     var walking = context.current_function
     fallback not walking.bound_parameter.is_empty()
     fallback wanted.kind == 'object' and wanted.name.starts_with("Spite.")
@@ -567,7 +593,7 @@ func filled_shape(given: Model.Type, wanted: Model.Type) {
     var shape = context.program.shape_keyed(wanted.name)
     crash shape
     var shown = context.shown(given)
-    if given.kind == 'enumeration' or given.is_symbol {
+    if given.kind == 'enumeration' or given.is_a_walked_name {
         fits_as_an_enum(shape, shown)
     } else {
         fits_as_a_class(shape, given, shown)
@@ -577,7 +603,7 @@ func filled_shape(given: Model.Type, wanted: Model.Type) {
     var index = 0
     while index < fillers.count() {
         var filling = fillers[index]
-        if filling.name == given.name and filling.is_symbol == given.is_symbol {
+        if filling.name == given.name and filling.is_a_walked_name == given.is_a_walked_name {
             known = true
         }
         index = index + 1
@@ -1351,13 +1377,6 @@ func symbol_value(name: String, expected: Model.Type?): Value {
         if expected.kind == 'enumeration' {
             return enum_value(name, expected)
         }
-        if expected.is_symbol {
-            need_text_constants()
-            context.note_a_symbol(name)
-            var made = HighIntermediaryRepresentation.Values.TextConstant(name)
-            made.value_type = expected.present()
-            return made
-        }
         typing.refuse_symbol_for_text(context, name, expected.name)
     }
     typing.refuse_symbol_without_an_enum(context, name)
@@ -1365,7 +1384,6 @@ func symbol_value(name: String, expected: Model.Type?): Value {
 }
 
 func enum_value(name: String, expected: Model.Type): Value {
-    context.note_a_symbol(name)
     var made = enum_model_of(expected)
     var place = made.values.index_of(name)
     if not place {
@@ -1587,7 +1605,7 @@ func name_value(
     var walking = context.current_function
     var names_the_walked = identifier.name == walking.bound_parameter and not walking.bound_parameter.is_empty()
     if names_the_walked {
-        return walked_symbol(walking)
+        return walked_name_value(walking)
     }
     var reflection = Reflection(context, this)
     if identifier.name == "class" {
@@ -1634,13 +1652,13 @@ func own_getter_read(getter: Model.FunctionModel): Value {
     return called(getter, own, no_written)
 }
 
-func walked_symbol(walking: Model.FunctionModel): Value {
+func walked_name_value(walking: Model.FunctionModel): Value {
     if walking.binds_a_class {
         return bound_class_object(walking)
     }
     need_text_constants()
     var made = HighIntermediaryRepresentation.Values.TextConstant(walking.bound_member)
-    made.value_type = context.resolver.symbol_type()
+    made.value_type = context.resolver.walked_name_type()
     return made
 }
 
@@ -1816,12 +1834,16 @@ func member_value(
     if target.value_type.kind == 'function' {
         return function_value_member(member, target)
     }
-    var names_a_symbol = target.value_type.is_symbol and not target.value_type.is_nullable
+    var names_a_symbol = target.value_type.is_a_walked_name and not target.value_type.is_nullable
     if names_a_symbol and member.name == "name" {
         return target
     }
     if member.name == "class" and not has_its_own_class(target) {
         var reflection = Reflection(context, this)
+        if target.value_type.kind == 'enumeration' {
+            reflection.refuse_a_maybe_enum(target)
+            return reflection.enum_object(target.value_type.name)
+        }
         return reflection.class_of_value(target)
     }
     if target.value_type.kind == 'shape' {
@@ -1967,7 +1989,7 @@ func described_function_declaration(
     if asked == "name" {
         return described_text(function.bound_function)
     } else if asked == "hole" {
-        return walked_symbol(function)
+        return walked_name_value(function)
     } else if asked == "index" {
         return HighIntermediaryRepresentation.Values.WholeNumber(integer, function.bound_member_index)
     } else {
@@ -2834,6 +2856,10 @@ func reflected_object_of(
     var folder = context.resolver.symbols.namespace_folder(written)
     if folder {
         return reflection.namespace_object(folder.namespace)
+    }
+    var declared_enum = context.resolver.declared_type_in(class_path, context.current_class)
+    if declared_enum and declared_enum.kind == 'enumeration' {
+        return reflection.enum_object(declared_enum.name)
     }
     var found = context.resolver.symbols.find(written, context.current_class.file.namespace)
     fallback found or scalars.is_a_scalar(written)
@@ -4846,7 +4872,7 @@ func specialized_over_a_pattern(
         refuse_an_unmatched_hole(template, name, written, word, walked_class, bound_function, function_part, holes)
     }
     crash place
-    var symbol = context.resolver.symbol_type()
+    var symbol = context.resolver.walked_name_type()
     var made = context.resolver.specialized(template, name, written, symbol, false, owner)
     made.bound_member_index = place
     made.bound_pattern = function_part
@@ -6231,7 +6257,7 @@ func copy_member_of(shape: Model.ShapeModel, answer: Model.Type, name: String, s
 }
 
 func need_a_copy(filler: Model.Type, name: String, shown: String, shape: Model.ShapeModel) {
-    var is_copied = filler.kind == 'object' and filler.name != "String" and not filler.is_symbol
+    var is_copied = filler.kind == 'object' and filler.name != "String" and not filler.is_a_walked_name
     if not is_copied {
         typing.refuse_not_a_fit(context, shown, shape.name, name)
     }
@@ -7529,7 +7555,7 @@ func index_value(
     var target = value_of(index.target, null)
     var owner = present_class_of(target)
     var named = name_index_of(index.index)
-    if named and owner.bound_types["$element_type"] {
+    if named and lists_reflection(owner) {
         var finder = member_template_of(owner, "find_by_name")
         crash finder
         need(finder)
@@ -7671,6 +7697,13 @@ func answer_null(absent: Model.ClassModel, name: String) {
     context.synthetic_functions.append(built)
 }
 
+func lists_reflection(owner: Model.ClassModel): Boolean {
+    var element = owner.bound_types["$element_type"]
+    fallback element
+    fallback not owner.bound_types["$key_type"]
+    return element.kind == 'object' and element.name.starts_with("Spite.") and not element.is_nullable
+}
+
 func named_key_of(
     owner: Model.ClassModel,
     written: Expression?,
@@ -7739,18 +7772,10 @@ func checked_item(
 func name_index_of(
     written: Expression?,
 ): Value? {
-    if written.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
-        return symbol_name_of(written)
-    }
-    return null
-}
-
-func symbol_name_of(
-    literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression,
-): Value? {
-    fallback literal.kind == 'symbol_literal'
+    var name = key_name_of(written)
+    fallback name
     need_text_constants()
-    var made = HighIntermediaryRepresentation.Values.TextConstant(literal.text)
+    var made = HighIntermediaryRepresentation.Values.TextConstant(name)
     made.value_type = context.text()
     return made
 }
@@ -8262,7 +8287,7 @@ func bound_is(bound: Model.Type, written: String): Boolean {
 }
 
 func is_the_class(bound: Model.Type, written: String): Boolean {
-    fallback not bound.is_nullable and not bound.is_symbol
+    fallback not bound.is_nullable and not bound.is_a_walked_name
     var path = written.split(".")
     var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
     var described = context.resolver.class_type_in(path, no_arguments, context.current_class, context.line)
@@ -10465,7 +10490,7 @@ func key_name_of(written: Expression?): String? {
     if written.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
         return plain_text_of(written)
     }
-    return symbol_text_of(written)
+    return null
 }
 
 func symbol_text_of(written: Expression?): String? {
