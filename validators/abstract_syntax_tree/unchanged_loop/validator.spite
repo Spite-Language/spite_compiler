@@ -1,0 +1,163 @@
+union Statement {
+    AbstractSyntaxTree.Shapes.Statements.ExpressionStatement
+    AbstractSyntaxTree.Shapes.Statements.VariableStatement
+    AbstractSyntaxTree.Shapes.Statements.AssignmentStatement
+    AbstractSyntaxTree.Shapes.Statements.ReturnStatement
+    AbstractSyntaxTree.Shapes.Statements.IfStatement
+    AbstractSyntaxTree.Shapes.Statements.WhileStatement
+    AbstractSyntaxTree.Shapes.Statements.SwitchStatement
+    AbstractSyntaxTree.Shapes.Statements.FallbackStatement
+    AbstractSyntaxTree.Shapes.Statements.CrashStatement
+    AbstractSyntaxTree.Shapes.Statements.LoadStatement
+    AbstractSyntaxTree.Shapes.Statements.Block
+}
+
+union Expression {
+    AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    AbstractSyntaxTree.Shapes.Expressions.LiteralExpression
+    AbstractSyntaxTree.Shapes.Expressions.TextLiteral
+    AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    AbstractSyntaxTree.Shapes.Expressions.IndexExpression
+    AbstractSyntaxTree.Shapes.Expressions.BinaryExpression
+    AbstractSyntaxTree.Shapes.Expressions.UnaryExpression
+    AbstractSyntaxTree.Shapes.Expressions.ListLiteral
+    AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral
+    AbstractSyntaxTree.Shapes.Expressions.EntryLiteral
+}
+
+# ../../../../spite_spec/specs/control_flow.md#control-flow-in-full
+var empty_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+var class_name = ""
+var read_names = List<String>()
+
+func check(starting_walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String) {
+    walk = starting_walk
+    class_name = starting_class_name
+    walk.statements.each(check_found)
+}
+
+func check_found(found: AbstractSyntaxTree.Walk.Found.Statement) {
+    var statement = found.statement
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.WhileStatement {
+        check_loop(found, statement)
+    }
+}
+
+func check_loop(found: AbstractSyntaxTree.Walk.Found.Statement, loop: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
+    var locals = locals_of(walk, found.function_name)
+    fallback never_changes(loop, locals)
+    fallback not calls_anything(loop)
+    crash loop.condition
+    var printer = Printers.Spite.ExpressionPrinter(loop.condition)
+    var condition = printer.text()
+    var quoted = List<String>()
+    var index = 0
+    while index < read_names.count() {
+        var name = read_names[index]
+        quoted.append("'{name}'")
+        index = index + 1
+    }
+    var listed = quoted.join(", ")
+    var text = "'while {condition}' never ends: nothing inside it changes {listed}, and it calls nothing and has no 'return', 'fallback' or 'crash', so the program would spin here for good: change {listed} inside the loop, or leave it with a 'return'"
+    var failure = Validators.Failure()
+    failure.stop_inside(walk.file.path, loop.line, class_name, found.function_name, text)
+}
+
+func locals_of(declared_in: AbstractSyntaxTree.Walk.Walk, function_name: String): List<String> {
+    var locals = List<String>()
+    var function = declared_in.function_named(function_name)
+    if function {
+        var parameter_index = 0
+        while parameter_index < function.parameters.count() {
+            var parameter = function.parameters[parameter_index]
+            locals.append(parameter.name)
+            parameter_index = parameter_index + 1
+        }
+    }
+    var index = 0
+    while index < declared_in.statements.count() {
+        var found = declared_in.statements[index]
+        var statement = found.statement
+        var is_its_own = found.function_name == function_name
+        if is_its_own and statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+            locals.append(statement.name)
+        }
+        index = index + 1
+    }
+    return locals
+}
+
+func never_changes(loop: AbstractSyntaxTree.Shapes.Statements.WhileStatement, locals: List<String>): Boolean {
+    read_names = List<String>()
+    var condition = AbstractSyntaxTree.Walk.Walk(empty_file)
+    condition.read_expression(loop.condition)
+    var index = 0
+    while index < condition.expressions.count() {
+        var found = condition.expressions[index]
+        fallback reads_only_locals(found.expression, locals)
+        index = index + 1
+    }
+    fallback not read_names.is_empty()
+    var body = AbstractSyntaxTree.Walk.Walk(empty_file)
+    body.read_block(loop.body)
+    var statement_index = 0
+    while statement_index < body.statements.count() {
+        var found_statement = body.statements[statement_index]
+        fallback not leaves_or_changes(found_statement.statement)
+        statement_index = statement_index + 1
+    }
+    return true
+}
+
+func reads_only_locals(expression: Expression?, locals: List<String>): Boolean {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        fallback locals.contains(expression.name)
+        if not read_names.contains(expression.name) {
+            read_names.append(expression.name)
+        }
+        return true
+    }
+    var is_an_operation = expression.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression
+    is_an_operation = is_an_operation or expression.class == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression
+    return is_an_operation or expression.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression
+}
+
+func leaves_or_changes(statement: Statement?): Boolean {
+    var leaves = statement.class == AbstractSyntaxTree.Shapes.Statements.ReturnStatement
+    leaves = leaves or statement.class == AbstractSyntaxTree.Shapes.Statements.FallbackStatement
+    leaves = leaves or statement.class == AbstractSyntaxTree.Shapes.Statements.CrashStatement
+    if leaves {
+        return true
+    }
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        return read_names.contains(statement.name)
+    }
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        return assigns_a_read_name(statement.target)
+    }
+    return false
+}
+
+func assigns_a_read_name(target: Expression?): Boolean {
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return read_names.contains(target.name)
+    }
+    return false
+}
+
+func calls_anything(loop: AbstractSyntaxTree.Shapes.Statements.WhileStatement): Boolean {
+    var body = AbstractSyntaxTree.Walk.Walk(empty_file)
+    body.read_block(loop.body)
+    var index = 0
+    while index < body.expressions.count() {
+        var found = body.expressions[index]
+        var expression = found.expression
+        if expression.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}

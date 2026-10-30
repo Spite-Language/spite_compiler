@@ -1400,7 +1400,11 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: partly built.
 - **Rule**: every `while true` is refused, since a loop states the condition it runs under (D1746, "A condition
   known while compiling is an error"); in `Parallel` work and in a locked singleton function an endless `while true`
-  is refused with the reason that is worse there, when it is judged first. The work's functions are followed through every call whose class is known
+  is refused with the reason that is worse there, when it is judged first. A loop whose condition reads only locals
+  (and parameters) that nothing inside it assigns, and that has no `return`, `fallback` or `crash`, is endless too:
+  when it also calls nothing it is refused on its own ("'while running' never ends: nothing inside it changes
+  'running', ..."), and a call cannot change a local, so in `Parallel` work and in a locked singleton function it is
+  read as endless like `while true`. A condition reading an attribute, a member or a call is not judged. The work's functions are followed through every call whose class is known
   while compiling: a function of its own class, of `this`, of a parameter's or an attribute's class, of a path of
   attributes, of a local made by a constructor or answered by a call whose answer's class is known, and a
   constructor called by its class's name; a class of the library is not followed. A singleton reached that way is
@@ -1409,15 +1413,14 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   blocking read or write, a join, through every call): a loop that calls only the console is refused while the site
   is judged, and one that calls anything else is refused once the whole program is built, when the waits are known.
 - **Missing**: a call through a function value, a `type` or a union is not followed.
-- **Missing**: a loop on a condition nothing in it changes (`while running` with no `running = false`) is not
-  read as endless.
+- **Missing**: a loop on an attribute nothing in it changes is not read as endless, since another thread may set it.
 - **Falls back**: refused, "'while true' is decided while compiling and is always true here: ...".
-- **Lives in**: `statements.spite` (`note_a_decided_condition`), the proof `proofs/parallel_reach`
+- **Lives in**: `statements.spite` (`note_a_decided_condition`), `validators/abstract_syntax_tree/unchanged_loop`, the proof `proofs/parallel_reach`
   (`thread_reach.spite`: `refuse_endless_work`, which refuses a loop that only prints and records the others in the
   context, `context.endless_work`), and the proof `proofs/endless_parallel_work`, right after the recorded sites,
   which asks `HighIntermediaryRepresentation.Waits` whether each recorded function waits.
-- **Checked by**: conformance/spinning_loop, conformance/endless_parallel_work, conformance/endless_parallel_work_calls;
-  tests/parallel_loop_that_leaves.
+- **Checked by**: conformance/spinning_loop, conformance/unchanged_loop, conformance/endless_parallel_work,
+  conformance/endless_parallel_work_calls, conformance/endless_locked_loop_on_a_local; tests/parallel_loop_that_leaves.
 
 ### A poll that nothing steps is an error
 
