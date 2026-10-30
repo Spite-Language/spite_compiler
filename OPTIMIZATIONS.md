@@ -3366,6 +3366,11 @@ Measured on `template_chains_run_as_one_loop`: 102 ms before the `map_` joined t
 The steps the fused call replaced are not compiled when nothing else calls them
 ([below](#a-function-only-a-replaced-call-reached-is-not-compiled)).
 
+The fused loop reads the first list in place, so a chain is fused only when no member its steps run can change
+that list ([a fused chain leaves its first list](PROOFS.md#a-fused-chain-leaves-its-first-list)). A member that may
+append to it, remove from it or write its items keeps the chain step by step, each step on its own copy as written,
+and the optimisation report lists it under "Chains run step by step" (`tests/fused_chain_changes_its_list`).
+
 A chain on a `Vector` is fused the same way, on the first vector's class, so `each_` after `filter_` writes into the
 vector's own items and not into a filtered copy (`tests/vector_items_run`).
 

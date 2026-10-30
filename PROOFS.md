@@ -1302,6 +1302,23 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   declaration (`Declare.shares_the_original`); the high pass `shared_copies` right after it only acts on the mark.
 - **Checked by**: tests/shared_copies (output only).
 
+### A fused chain leaves its first list
+
+- **Status**: built.
+- **Rule**: no member a chain's steps run (a `filter_`, `map_` or `find_by_` step, or the last step) reaches, through
+  everything it calls, a write of the chained list's class: its slots (`_write_value`, `_forget_value`), its growth or
+  any of its attributes (`_length` among them). The writes are those `HighIntermediaryRepresentation.Assignments`
+  gathers, keyed by class, so a member that writes any list of that class counts. A member read as an attribute writes
+  nothing (spite_compiler#240).
+- **Buys**: the chain runs as one loop over the first list read in place
+  ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-chain-of-filter_-steps-runs-as-one-loop)).
+- **Falls back**: each step on its own copy, as written, and the optimisation report lists the chain under "Chains run
+  step by step" naming the member. Nothing is an error, and the output is the step-by-step output.
+- **Lives in**: `proofs/chains_leave_their_list`, asked by the high pass `fused_chains` for each chain it would fuse;
+  it reads the program's assignments itself, the first time a chain has a member function, since `call_assignments`
+  runs later.
+- **Checked by**: tests/fused_chain_changes_its_list.
+
 ### Which singletons a `Parallel` reaches
 
 - **Status**: built.
