@@ -1043,6 +1043,25 @@ A function that waits (a resumable function, whose values live in a heap frame a
 the lowering wrote it by every pass, and its values stay in its frame: the frame is sized from its registers
 before these passes run, and a value must be in the frame when the function resumes.
 
+## A late answer keeps only its taken branch
+
+`function_waits` and `function_writes_parameter` are answered only once every function is built (D673), so both
+branches of an `if` on one are built and checked. Once the proof `compile_time_facts` has answered them, the high
+pass `high_optimization_passes/answered_facts` replaces each such `if` (its condition the answer or its `not`) by the
+branch the answer takes, and drops the other, before the functions nothing reaches are removed:
+
+```spite
+if Mixer.function_waits("blend") {
+    started_slowly()
+} else {
+    started_at_once()
+}
+```
+
+keeps only `started_at_once()` when `blend` never waits, and `started_slowly` is not in the executable. When it
+applies: every `if` on a late answer, in every build. What a user can observe: the executable's size; the branch not
+taken must still compile (`tests/late_answer_branch_dropped`).
+
 ## A crash's report is a cold call
 
 The code that reports a failed `crash` (every value it shows, the `spite: the program stopped` line and the

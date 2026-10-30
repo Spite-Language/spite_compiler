@@ -622,7 +622,7 @@ as when each was refused while building.
   ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md)).
 - **Buys**: generic code compiles only the branch its class takes.
 - **Missing**: `function_waits` and `function_writes_parameter` are answered after every function is built, so both
-  branches are built and checked (D673); a codegen number compared with a literal folds only when one side is a
+  branches are built and checked (D673), and the high pass `answered_facts` then keeps only the taken one; a codegen number compared with a literal folds only when one side is a
   call; a function taking a `type` has no copy per class. `x and $flag` and `x or $flag` fold whatever `x` is (in
   plain code a condition that folds is refused, D1746): one
   that only reads names, attributes and tests is left out (D1143), and one that calls something is run on its own,
