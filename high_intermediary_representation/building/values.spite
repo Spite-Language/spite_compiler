@@ -2096,30 +2096,58 @@ func walked_classes_or_values(
     fallback callee.name == "each" and call.arguments.count() == 1
     var listed = callee.target
     var argument = call.arguments[0]
-    if listed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression and argument.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        return walked_listing(listed, argument.name)
+    fallback listed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var own = this_value()
+        return walked_listing(listed, context.current_class, argument.name, own)
+    }
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walked_listing_by(listed, argument)
     }
     return null
 }
 
-func walked_listing(
+# ../../../spite_documentation/metaprogramming.md#walking-a-folder-or-an-enum
+func walked_listing_by(
     listed: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
-    walker_name: String,
+    walker_written: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): Value? {
     var lists_values = listed.name == "values" or listed.name == "classes"
     fallback lists_values
-    var walker = context.current_class.function_named(walker_name)
+    var path = tested_class_path_of(listed.target)
+    fallback not path.is_empty()
+    var holder_path = class_path_of(walker_written.target)
+    fallback holder_path.is_empty()
+    var holder = value_of(walker_written.target, null)
+    var holder_type = holder.value_type
+    fallback holder_type.kind == 'object' and not holder_type.is_nullable and context.has_a_class(holder_type)
+    var holder_model = context.class_of(holder_type)
+    var walker = holder_model.function_named(walker_written.name)
+    fallback walker
+    var held = held_once(holder)
+    return walked_listing(listed, holder_model, walker_written.name, held)
+}
+
+func walked_listing(
+    listed: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    owner: Model.ClassModel,
+    walker_name: String,
+    receiver: Value,
+): Value? {
+    var lists_values = listed.name == "values" or listed.name == "classes"
+    fallback lists_values
+    var walker = owner.function_named(walker_name)
     fallback walker
     fallback walker.template_index < 0 and walker.parameters.count() == 1
     var path = tested_class_path_of(listed.target)
     fallback not path.is_empty()
     if listed.name == "values" {
-        return walked_values(walker, path)
+        return walked_values(walker, path, receiver)
     }
-    return walked_classes(walker, path)
+    return walked_classes(walker, path, owner, receiver)
 }
 
-func walked_values(walker: Model.FunctionModel, path: List<String>): Value? {
+func walked_values(walker: Model.FunctionModel, path: List<String>, receiver: Value): Value? {
     var declared = declared_enum_of(path)
     fallback declared
     fallback declared.kind == 'enumeration'
@@ -2131,8 +2159,7 @@ func walked_values(walker: Model.FunctionModel, path: List<String>): Value? {
         var value = enum_value(value_name, declared)
         var arguments = List<Value>()
         arguments.append(value)
-        var own = this_value()
-        var walk_call = HighIntermediaryRepresentation.Values.Call(walker, own, arguments)
+        var walk_call = HighIntermediaryRepresentation.Values.Call(walker, receiver, arguments)
         var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(walk_call)
         evaluated.line = context.line
         context.pending.append(evaluated)
@@ -2142,7 +2169,12 @@ func walked_values(walker: Model.FunctionModel, path: List<String>): Value? {
     return HighIntermediaryRepresentation.Values.NullConstant(nothing)
 }
 
-func walked_classes(walker: Model.FunctionModel, path: List<String>): Value? {
+func walked_classes(
+    walker: Model.FunctionModel,
+    path: List<String>,
+    owner: Model.ClassModel,
+    receiver: Value,
+): Value? {
     var namespace = path.join(".")
     var folder = context.resolver.symbols.namespace_folder(namespace)
     fallback folder
@@ -2153,11 +2185,10 @@ func walked_classes(walker: Model.FunctionModel, path: List<String>): Value? {
     var index = 0
     while index < names.count() {
         var shown = names[index]
-        var made = class_walk_copy(walker, shown, index)
+        var made = class_walk_copy(walker, shown, index, owner)
         need(made)
         var arguments = List<Value>()
-        var own = this_value()
-        var walk_call = HighIntermediaryRepresentation.Values.Call(made, own, arguments)
+        var walk_call = HighIntermediaryRepresentation.Values.Call(made, receiver, arguments)
         var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(walk_call)
         evaluated.line = context.line
         context.pending.append(evaluated)
@@ -2167,10 +2198,15 @@ func walked_classes(walker: Model.FunctionModel, path: List<String>): Value? {
     return HighIntermediaryRepresentation.Values.NullConstant(nothing)
 }
 
-func class_walk_copy(walker: Model.FunctionModel, shown: String, index: Integer): Model.FunctionModel {
+func class_walk_copy(
+    walker: Model.FunctionModel,
+    shown: String,
+    index: Integer,
+    owner: Model.ClassModel,
+): Model.FunctionModel {
     var owner_name = shown.replace(".", "_")
     var called_name = "{walker.name}_over_{owner_name}"
-    var known = context.current_class.function_named(called_name)
+    var known = owner.function_named(called_name)
     if known {
         return known
     }
@@ -2178,12 +2214,12 @@ func class_walk_copy(walker: Model.FunctionModel, shown: String, index: Integer)
     crash model
     var member_type = Model.Type('object', model.key)
     walker.template_index = 0
-    var made = context.resolver.specialized(walker, called_name, shown, member_type, false, context.current_class)
+    var made = context.resolver.specialized(walker, called_name, shown, member_type, false, owner)
     walker.template_index = -1
     made.is_a_walk_copy = true
     made.bound_member_index = index
     made.binds_a_class = true
-    context.current_class.declared_functions.append(made)
+    owner.declared_functions.append(made)
     return made
 }
 
