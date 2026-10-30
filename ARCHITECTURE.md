@@ -28,7 +28,8 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
                                            validators/abstract_syntax_tree that need the built program among them
     high_optimization_passes               the high passes, in their order (below)
     low_intermediary_representation        the lowering; then validators/low_intermediary_representation
-    low_optimization_passes                the low passes, in their order (below)
+    low_optimization_passes                the low passes, in their order (below); then
+                                           validators/low_intermediary_representation/written_functions
     outputs                                the texts (high and low representations, generated classes, the
                                            optimisation report, the crash map), then generators/windows_x64's `run`
                                            and the executable with its function map
