@@ -3905,36 +3905,6 @@ func Serve() {
 }
 ```
 
-## Operators on a Number find its class while the program runs
-
-`+`, `-`, `*`, `/`, `%`, `<`, `>`, `<=` and `>=` on a value typed `Number` that is not a parameter (an item of a
-`List<Number>`, an attribute) test the class the value holds, in the order of the number classes, and run that
-class's own arithmetic, with its rules: a right side of a class that would be cut to fit halts, "spite: 'a + b' works
-in an Integer, the class of its left side, and its right side is a Double, which would be cut to fit, at ...". The
-answer is a `Number` again (a `Boolean` for a comparison). A parameter typed `Number` is still compiled once per class
-that reaches it, with no test at all; only a value whose class is known only while the program runs is tested.
-
-The same test runs a number class's other functions that take nothing (`absolute()`, `to_string()`,
-`to_integer()` and the rest every number class declares, D1405): the answer is a `Number` when each class answers its
-own class (`absolute()`), and that type when every class answers the same one (`to_string()` is a `String`).
-
-**What a program can observe:** only time: one test per number class before the class that matches. A `Number` filled
-by a program's own class that declares the operators halts, naming the operation, since its function is not chosen
-while the program runs (`tests/number_values`, `tests/number_value_functions`).
-
-```spite
-var console = Console()
-
-func Totals() {
-    var numbers = List<Number>()
-    numbers.append(3)
-    numbers.append(2.5)
-    var first = numbers[0]
-    crash first
-    console.print(first + first)
-}
-```
-
 ## Identical functions are folded into one
 
 Once every other low pass has run, the compiler compares the functions it is about to write, instruction by

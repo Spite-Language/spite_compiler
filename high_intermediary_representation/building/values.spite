@@ -251,9 +251,6 @@ func fitted(
         }
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
     }
-    if is_the_number_shape(given) and wanted.kind == 'scalar' {
-        return number_shape_cast(value, wanted)
-    }
     if is_wider(wanted, given) {
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'widen', value)
     }
@@ -694,7 +691,7 @@ func need_a_filling_function(
         }
         function = made_copy(filler, member.name, given_count)
     }
-    var is_open = shape.key == "Anything" or shape.key == "Number"
+    var is_open = shape.key == "Anything"
     if not function and is_open and member.name == "to_string" {
         function = filler.function_named("to_debug")
     }
@@ -708,7 +705,7 @@ func need_a_filling_function(
 
 # ../../PROOFS.md#a-value-fits-a-type
 func is_a_written_member(member: Model.FunctionModel, shape: Model.ShapeModel): Boolean {
-    var is_open = shape.key == "Anything" or shape.key == "Number"
+    var is_open = shape.key == "Anything"
     fallback not is_open and not member.name.starts_with("_") and not is_a_copy_name(member.name)
     return member.name != "to_debug"
 }
@@ -884,7 +881,7 @@ func is_a_member_of_the_union(found: Model.Type, needed: Model.Type): Boolean {
 }
 
 func has_the_shape_members(found: Model.Type, needed: Model.Type): Boolean {
-    if needed.name == "Anything" or needed.name == "Number" {
+    if needed.name == "Anything" {
         return true
     }
     var shape = context.program.shape_keyed(needed.name)
@@ -2594,7 +2591,7 @@ func namespace_named(
 func folded_class_flag(
     member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
 ): Value? {
-    var asks_a_flag = member.name == "is_fixed_size" or member.name == "is_singleton" or member.name == "is_made_plainly"
+    var asks_a_flag = member.name == "is_fixed_size" or member.name == "is_singleton" or member.name == "is_made_plainly" or member.name == "is_number"
     var target = member.target
     var bound_name = ""
     if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
@@ -2603,6 +2600,10 @@ func folded_class_flag(
     fallback asks_a_flag and bound_name.starts_with("$")
     var bound = context.current_class.bound_types[bound_name]
     fallback bound
+    if member.name == "is_number" {
+        var is_number = is_a_number_class(bound)
+        return flag_value(is_number)
+    }
     fallback bound.kind == 'object' and not bound.is_nullable and context.has_a_class(bound)
     var model = context.class_of(bound)
     var holds = model.is_singleton
@@ -2613,12 +2614,24 @@ func folded_class_flag(
     if member.name == "is_made_plainly" {
         holds = model.is_made_plainly()
     }
+    return flag_value(holds)
+}
+
+func flag_value(holds: Boolean): Value {
     var flag = 0
     if holds {
         flag = 1
     }
     var boolean = context.boolean()
     return HighIntermediaryRepresentation.Values.WholeNumber(boolean, flag)
+}
+
+# ../../../spite_documentation/values_and_types.md#a-number-library-declares-the-type-it-needs
+func is_a_number_class(bound: Model.Type): Boolean {
+    fallback bound.kind == 'scalar' and not bound.is_nullable
+    var scalar = scalars.of(bound.name)
+    fallback scalar
+    return scalar.name != "Boolean"
 }
 
 func generic_enum_values(
@@ -3954,10 +3967,6 @@ func member_call(
     }
     if receiver.value_type.kind == 'function' and callee.name == "call_function" {
         return value_call_of(receiver, call.arguments)
-    }
-    var converted_number = number_conversion_call(receiver, callee.name, call.arguments)
-    if converted_number {
-        return converted_number
     }
     if receiver.value_type.kind == 'shape' {
         var typed = context.program.shape_keyed(receiver.value_type.name)
@@ -6407,9 +6416,6 @@ func called(
     receiver: Value,
     written: List<Expression>,
 ): Value {
-    if takes_numbers(function) and written.count() == function.parameters.count() {
-        return number_call(function, receiver, written)
-    }
     var schema = schema_of(function)
     if schema {
         return schema
@@ -6579,193 +6585,6 @@ func schema_of(function: Model.FunctionModel): Value? {
     var hashed = schema.hash_of(described)
     var long = context.scalar_type("Long")
     return HighIntermediaryRepresentation.Values.WholeNumber(long, hashed)
-}
-
-func takes_numbers(function: Model.FunctionModel): Boolean {
-    fallback function.has_a_body() and function.number_copy_of.is_empty()
-    fallback function.declaration
-    return writes_a_number(function.declaration)
-}
-
-func writes_a_number(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): Boolean {
-    var index = 0
-    while index < declaration.parameters.count() {
-        var parameter = declaration.parameters[index]
-        if is_written_number(parameter.declared_type) {
-            return true
-        }
-        index = index + 1
-    }
-    return false
-}
-
-func is_written_number(written: Type?): Boolean {
-    if written.class == AbstractSyntaxTree.Shapes.Types.NamedType {
-        var path = written.path.join(".")
-        return path == "Number"
-    }
-    return false
-}
-
-# ../../../spite_documentation/classes_and_files.md#constructors-conversions-and-presets
-func number_shape_cast(value: Value, wanted: Model.Type): Value {
-    var present = wanted.present()
-    var names = Mapping.Names()
-    var reader = names.snake_case_of(present.name)
-    var name = "_as_{reader}"
-    need_a_number_cast(name, present)
-    var no_arguments = List<Value>()
-    var cast = shape_method_call(value, name, no_arguments)
-    return fitted(cast, wanted)
-}
-
-func need_a_number_cast_in(filler: Model.Type, name: String, shape: Model.ShapeModel) {
-    var model = context.class_of(filler)
-    var function = model.function_named(name)
-    if not function {
-        typing.refuse_not_a_fit(context, model.shown, shape.name, name)
-    }
-    crash function
-    need(function)
-}
-
-func need_a_number_cast(name: String, answer: Model.Type) {
-    var shape = context.program.shape_keyed("Number")
-    crash shape
-    fallback not shape.member_named(name)
-    var member = Model.FunctionModel(name, shape.key)
-    member.answer = answer
-    shape.members.append(member)
-    var fillers = context.program.fillers_of(shape.key)
-    var index = 0
-    while index < fillers.count() {
-        var filler = fillers[index]
-        need_a_number_cast_in(filler, name, shape)
-        index = index + 1
-    }
-}
-
-func is_the_number_shape(of_type: Model.Type): Boolean {
-    return of_type.kind == 'shape' and of_type.name == "Number" and not of_type.is_nullable
-}
-
-func number_call(
-    function: Model.FunctionModel,
-    receiver: Value,
-    written: List<Expression>,
-): Value {
-    var arguments = List<Value>()
-    var type_names = List<String>()
-    var positions = List<Integer>()
-    var index = 0
-    while index < function.parameters.count() {
-        var parameter = function.parameters[index]
-        var argument = written[index]
-        if is_the_number_shape(parameter.parameter_type) {
-            add_a_number(argument, parameter, index, arguments, type_names, positions)
-        } else {
-            var fitted_argument = fitted_value_of(argument, parameter.parameter_type)
-            type_names.append(parameter.parameter_type.name)
-            arguments.append(fitted_argument)
-        }
-        index = index + 1
-    }
-    if positions.is_empty() {
-        var copy = number_copy(function, type_names)
-        return HighIntermediaryRepresentation.Values.Call(copy, receiver, arguments)
-    }
-    var dispatched = HighIntermediaryRepresentation.Values.Call(function, receiver, arguments)
-    dispatched.number_positions = positions
-    dispatched.number_types = type_names
-    context.number_dispatches.append(dispatched)
-    copies_for(dispatched)
-    return dispatched
-}
-
-func add_a_number(
-    argument: Expression?,
-    parameter: Model.ParameterModel,
-    index: Integer,
-    arguments: List<Value>,
-    type_names: List<String>,
-    positions: List<Integer>,
-) {
-    var given = value_of(argument, null)
-    var given_type = given.value_type
-    if given_type.kind == 'scalar' and not given_type.is_nullable {
-        type_names.append(given_type.name)
-        arguments.append(given)
-        return
-    }
-    var shaped = fitted(given, parameter.parameter_type)
-    type_names.append("")
-    positions.append(index)
-    arguments.append(shaped)
-}
-
-func copies_for(dispatched: HighIntermediaryRepresentation.Values.Call) {
-    var chosen = List<String>()
-    dispatched.number_types.each(chosen.append)
-    copies_from(dispatched, chosen, 0)
-}
-
-func copies_from(
-    dispatched: HighIntermediaryRepresentation.Values.Call,
-    chosen: List<String>,
-    position_index: Integer,
-) {
-    if position_index == dispatched.number_positions.count() {
-        make_number_copy(dispatched.function, chosen)
-        return
-    }
-    var position = dispatched.number_positions[position_index]
-    crash position
-    var fillers = context.program.fillers_of("Number")
-    var index = 0
-    while index < fillers.count() {
-        var filler = fillers[index]
-        var picked = List<String>()
-        chosen.each(picked.append)
-        picked[position] = filler.name
-        copies_from(dispatched, picked, position_index + 1)
-        index = index + 1
-    }
-}
-
-func number_copy(function: Model.FunctionModel, type_names: List<String>): Model.FunctionModel {
-    make_number_copy(function, type_names)
-    var owner = context.program.class_named(function.owner)
-    crash owner
-    var name = function.number_copy_name(type_names)
-    var made = owner.function_named(name)
-    crash made
-    return made
-}
-
-func make_number_copy(function: Model.FunctionModel, type_names: List<String>) {
-    var owner = context.program.class_named(function.owner)
-    crash owner
-    var name = function.number_copy_name(type_names)
-    fallback not owner.function_named(name)
-    var made = Model.FunctionModel(name, function.owner)
-    made.declaration = function.declaration
-    made.answer = function.answer
-    made.number_copy_of = function.name
-    var index = 0
-    while index < function.parameters.count() {
-        var parameter = function.parameters[index]
-        var parameter_type = parameter.parameter_type
-        if is_the_number_shape(parameter_type) {
-            var type_name = type_names[index]
-            crash type_name
-            parameter_type = Model.Type('scalar', type_name)
-        }
-        var copied = Model.ParameterModel(parameter.name, parameter_type, parameter.is_variadic)
-        made.parameters.append(copied)
-        index = index + 1
-    }
-    owner.declared_functions.append(made)
-    need(made)
 }
 
 func method_call(
@@ -7967,9 +7786,6 @@ func binary_value(
         refuse_a_constant_overflow(made)
         return made
     }
-    if is_the_number_shape(left.value_type) {
-        return number_dispatch(binary, operator, left, right)
-    }
     refuse_an_operator_on_a_shape(binary, operator, left)
     var answered = operator_call(operator, left, right)
     var printed = Printers.Spite.ExpressionPrinter(binary)
@@ -8252,8 +8068,6 @@ func codegen_test_of(
 func bound_is(bound: Model.Type, written: String): Boolean {
     if written == "Null" {
         return bound.is_nullable
-    } else if written == "Number" {
-        return bound.kind == 'scalar' and bound.name != "Boolean" and not bound.is_nullable
     } else if written == "List" {
         return bound.name.starts_with("List_of_") and not bound.is_nullable
     } else if written == "Dictionary" {
@@ -8452,17 +8266,6 @@ func refuse_a_cut_conversion(
     fallback not changes_only_its_sign(left_type, right_type)
     var printer = Printers.Spite.ExpressionPrinter(binary)
     var shown = printer.text()
-    var function = context.current_function
-    if not function.number_copy_of.is_empty() {
-        var left_article = article_for(left_type.name)
-        var right_article = article_for(right_type.name)
-        var path = context.path()
-        var message = "spite: '{shown}' works in {left_article} {left_type.name}, the class of its left side, and its right side is {right_article} {right_type.name}, which would be cut to fit, at {path}:{context.line} in {function.owner}.{function.number_copy_of}"
-        var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
-        stopped.line = context.line
-        context.pending.append(stopped)
-        return
-    }
     crash binary.left
     crash binary.right
     var left_printer = Printers.Spite.ExpressionPrinter(binary.left)
@@ -8778,199 +8581,6 @@ func operator_of(kind: AbstractSyntaxTree.Tokens.Token.Kind): HighIntermediaryRe
     }
 }
 
-# ../../OPTIMIZATIONS.md#operators-on-a-number-find-its-class-while-the-program-runs
-func number_dispatch(
-    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
-    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
-    left: Value,
-    right: Value,
-): Value {
-    var printer = Printers.Spite.ExpressionPrinter(binary)
-    var shown = printer.text()
-    var number_type = left.value_type
-    var answer_type = answer_type_of(operator, number_type)
-    var held_left = held_operand(left)
-    var held_right = held_operand(right)
-    var start = number_start(answer_type)
-    temporary_count = temporary_count + 1
-    var name = context.scope.declare("number_{temporary_count}", answer_type)
-    var declared = HighIntermediaryRepresentation.Statements.Declare(name, answer_type, start)
-    declared.line = context.line
-    context.pending.append(declared)
-    var path = context.path()
-    var function = context.current_function
-    var place = "at {path}:{context.line} in {function.owner}.{function.name}"
-    var other = "spite: '{shown}' reaches a Number of a class that is not a number class, whose operators are not chosen while the program runs, {place}"
-    var stopped = HighIntermediaryRepresentation.Statements.Stop(other)
-    var chain = HighIntermediaryRepresentation.Statements.Block()
-    chain.statements.append(stopped)
-    var names = number_class_names()
-    var index = names.count() - 1
-    while index >= 0 {
-        var class_name = names[index]
-        crash class_name
-        var left_class = context.scalar_type(class_name)
-        var tested = HighIntermediaryRepresentation.Values.Class.Membership(held_left, left_class)
-        var unboxed = HighIntermediaryRepresentation.Values.Conversion(left_class, 'unbox', held_left)
-        var branch = number_branch(operator, unboxed, held_right, name, answer_type, shown, place)
-        var otherwise = chain
-        chain = HighIntermediaryRepresentation.Statements.Block()
-        var test = HighIntermediaryRepresentation.Statements.If(tested, branch, otherwise)
-        chain.statements.append(test)
-        index = index - 1
-    }
-    var first = chain.statements[0]
-    crash first
-    context.pending.append(first)
-    return HighIntermediaryRepresentation.Values.LocalRead(answer_type, name)
-}
-
-func number_conversion_call(
-    receiver: Value,
-    name: String,
-    written: List<Expression>,
-): Value? {
-    fallback is_the_number_shape(receiver.value_type) and written.is_empty()
-    if name != "to_long" and name != "to_double" {
-        return number_function_call(receiver, name)
-    }
-    var answer_type = context.scalar_type("Long")
-    if name == "to_double" {
-        answer_type = context.scalar_type("Double")
-    }
-    var held = held_operand(receiver)
-    var start = default_of_a_type(answer_type)
-    crash start
-    temporary_count = temporary_count + 1
-    var local_name = context.scope.declare("number_{temporary_count}", answer_type)
-    var declared = HighIntermediaryRepresentation.Statements.Declare(local_name, answer_type, start)
-    declared.line = context.line
-    context.pending.append(declared)
-    var path = context.path()
-    var function = context.current_function
-    var other = "spite: '{name}()' reaches a Number of a class that is not a number class, whose functions are not chosen while the program runs, at {path}:{context.line} in {function.owner}.{function.name}"
-    var stopped = HighIntermediaryRepresentation.Statements.Stop(other)
-    var chain = HighIntermediaryRepresentation.Statements.Block()
-    chain.statements.append(stopped)
-    var names = number_class_names()
-    var index = names.count() - 1
-    while index >= 0 {
-        var class_name = names[index]
-        crash class_name
-        var held_class = context.scalar_type(class_name)
-        var tested = HighIntermediaryRepresentation.Values.Class.Membership(held, held_class)
-        var unboxed = HighIntermediaryRepresentation.Values.Conversion(held_class, 'unbox', held)
-        var converted = fitted(unboxed, answer_type)
-        var assigned = HighIntermediaryRepresentation.Statements.Assign.Assign(local_name, converted)
-        assigned.line = context.line
-        var branch = HighIntermediaryRepresentation.Statements.Block()
-        branch.statements.append(assigned)
-        var otherwise = chain
-        chain = HighIntermediaryRepresentation.Statements.Block()
-        var test = HighIntermediaryRepresentation.Statements.If(tested, branch, otherwise)
-        chain.statements.append(test)
-        index = index - 1
-    }
-    var first = chain.statements[0]
-    crash first
-    context.pending.append(first)
-    return HighIntermediaryRepresentation.Values.LocalRead(answer_type, local_name)
-}
-
-# ../../OPTIMIZATIONS.md#operators-on-a-number-find-its-class-while-the-program-runs
-func number_function_call(
-    receiver: Value,
-    name: String,
-): Value? {
-    var answer_type = number_function_answer(receiver.value_type, name)
-    fallback answer_type
-    var held = held_operand(receiver)
-    var start = default_of_a_type(answer_type)
-    if is_the_number_shape(answer_type) {
-        start = number_start(answer_type)
-    }
-    crash start
-    temporary_count = temporary_count + 1
-    var local_name = context.scope.declare("number_{temporary_count}", answer_type)
-    var declared = HighIntermediaryRepresentation.Statements.Declare(local_name, answer_type, start)
-    declared.line = context.line
-    context.pending.append(declared)
-    var path = context.path()
-    var function = context.current_function
-    var other = "spite: '{name}()' reaches a Number of a class that is not a number class, whose functions are not chosen while the program runs, at {path}:{context.line} in {function.owner}.{function.name}"
-    var stopped = HighIntermediaryRepresentation.Statements.Stop(other)
-    var chain = HighIntermediaryRepresentation.Statements.Block()
-    chain.statements.append(stopped)
-    var names = number_class_names()
-    var index = names.count() - 1
-    while index >= 0 {
-        var class_name = names[index]
-        crash class_name
-        var held_class = context.scalar_type(class_name)
-        var tested = HighIntermediaryRepresentation.Values.Class.Membership(held, held_class)
-        var unboxed = HighIntermediaryRepresentation.Values.Conversion(held_class, 'unbox', held)
-        var no_arguments = List<Value>()
-        var answered = method_call(unboxed, name, no_arguments)
-        var converted = fitted(answered, answer_type)
-        var assigned = HighIntermediaryRepresentation.Statements.Assign.Assign(local_name, converted)
-        assigned.line = context.line
-        var branch = HighIntermediaryRepresentation.Statements.Block()
-        branch.statements.append(assigned)
-        var otherwise = chain
-        chain = HighIntermediaryRepresentation.Statements.Block()
-        var test = HighIntermediaryRepresentation.Statements.If(tested, branch, otherwise)
-        chain.statements.append(test)
-        index = index - 1
-    }
-    var first = chain.statements[0]
-    crash first
-    context.pending.append(first)
-    return HighIntermediaryRepresentation.Values.LocalRead(answer_type, local_name)
-}
-
-func number_function_answer(number_type: Model.Type, name: String): Model.Type? {
-    var shared: Model.Type? = null
-    var is_its_own = true
-    var is_shared = true
-    var names = number_class_names()
-    var index = 0
-    while index < names.count() {
-        var class_name = names[index]
-        var held_class = context.scalar_type(class_name)
-        var model = context.class_of(held_class)
-        var function = model.function_named(name)
-        fallback function
-        fallback function.parameters.is_empty()
-        fallback function.answer
-        var answer: Model.Type = function.answer
-        if not answer.is_the_same_as(held_class) {
-            is_its_own = false
-        }
-        if shared {
-            if not answer.is_the_same_as(shared) {
-                is_shared = false
-            }
-        } else {
-            shared = answer
-        }
-        index = index + 1
-    }
-    if is_its_own {
-        return number_type
-    }
-    fallback is_shared
-    return shared
-}
-
-func number_start(answer_type: Model.Type): Value {
-    if answer_type.kind == 'scalar' {
-        return HighIntermediaryRepresentation.Values.WholeNumber(answer_type, 0)
-    }
-    var integer = context.scalar_type("Integer")
-    var zero = HighIntermediaryRepresentation.Values.WholeNumber(integer, 0)
-    return fitted(zero, answer_type)
-}
-
 func held_operand(value: Value): Value {
     var is_plain = value.class == HighIntermediaryRepresentation.Values.LocalRead or value.class == HighIntermediaryRepresentation.Values.WholeNumber
     if is_plain or value.class == HighIntermediaryRepresentation.Values.DecimalNumber {
@@ -8982,86 +8592,6 @@ func held_operand(value: Value): Value {
     declared.line = context.line
     context.pending.append(declared)
     return HighIntermediaryRepresentation.Values.LocalRead(value.value_type, name)
-}
-
-func number_class_names(): List<String> {
-    return ["Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong", "Float", "Double"]
-}
-
-func number_branch(
-    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
-    left: Value,
-    right: Value,
-    name: String,
-    answer_type: Model.Type,
-    shown: String,
-    place: String,
-): HighIntermediaryRepresentation.Statements.Block {
-    var branch = HighIntermediaryRepresentation.Statements.Block()
-    if not is_the_number_shape(right.value_type) {
-        var made = number_operation(operator, left, right, name, answer_type, shown, place)
-        branch.statements.append(made)
-        return branch
-    }
-    var other = "spite: '{shown}' reaches a Number of a class that is not a number class on its right side, whose operators are not chosen while the program runs, {place}"
-    var stopped = HighIntermediaryRepresentation.Statements.Stop(other)
-    var chain = HighIntermediaryRepresentation.Statements.Block()
-    chain.statements.append(stopped)
-    var names = number_class_names()
-    var index = names.count() - 1
-    while index >= 0 {
-        var class_name = names[index]
-        crash class_name
-        var right_class = context.scalar_type(class_name)
-        var tested = HighIntermediaryRepresentation.Values.Class.Membership(right, right_class)
-        var unboxed = HighIntermediaryRepresentation.Values.Conversion(right_class, 'unbox', right)
-        var made_right = number_operation(operator, left, unboxed, name, answer_type, shown, place)
-        var inner = HighIntermediaryRepresentation.Statements.Block()
-        inner.statements.append(made_right)
-        var otherwise = chain
-        chain = HighIntermediaryRepresentation.Statements.Block()
-        var test = HighIntermediaryRepresentation.Statements.If(tested, inner, otherwise)
-        chain.statements.append(test)
-        index = index - 1
-    }
-    return chain
-}
-
-func number_operation(
-    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
-    left: Value,
-    right: Value,
-    name: String,
-    answer_type: Model.Type,
-    shown: String,
-    place: String,
-): Statement {
-    var left_type = left.value_type
-    var right_type = right.value_type
-    var fitted_right = right
-    if left_type.name != right_type.name {
-        fitted_right = fitted(right, left_type)
-    }
-    var cuts = false
-    if fitted_right.class == HighIntermediaryRepresentation.Values.Conversion {
-        var kind = fitted_right.kind
-        cuts = kind == 'narrow' or kind == 'narrow_decimal' or kind == 'to_whole'
-    }
-    if cuts {
-        var left_article = article_for(left_type.name)
-        var right_article = article_for(right_type.name)
-        var message = "spite: '{shown}' works in {left_article} {left_type.name}, the class of its left side, and its right side is {right_article} {right_type.name}, which would be cut to fit, {place}"
-        var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
-        stopped.line = context.line
-        return stopped
-    }
-    var operation_type = answer_type_of(operator, left_type)
-    var made = HighIntermediaryRepresentation.Values.MachineOperation(operation_type, operator, left, fitted_right)
-    made.shown = shown
-    var answered = fitted(made, answer_type)
-    var assigned = HighIntermediaryRepresentation.Statements.Assign.Assign(name, answered)
-    assigned.line = context.line
-    return assigned
 }
 
 func operator_call(
