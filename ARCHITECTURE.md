@@ -33,10 +33,6 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
                                            optimisation report, the crash map), then generators/windows_x64's `run`
                                            and the executable with its function map
 
-When the program pins one repository at two versions (`mapping/versions.spite`), mapping and symbols run twice: the
-first pass records which package pins what, and the second maps each version's classes under
-`<repository>_<commit>`. A program without two versions runs them once.
-
 The outputs stage runs the generator after writing the texts, so a refusal while emitting still leaves the
 representations to read. With `--check` the low stages and the generator do not run, and the outputs stage writes
 only what the high representation gives. No stage reaches back into an earlier one.

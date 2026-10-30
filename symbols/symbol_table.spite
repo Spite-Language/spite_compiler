@@ -13,6 +13,8 @@ var files = Dictionary<String, AbstractSyntaxTree.Shapes.SourceFile>()
 var merged_files = Dictionary<String, AbstractSyntaxTree.Shapes.SourceFile>()
 var merged_declarations = List<Declaration>()
 var merged_places = Dictionary<String, Integer>()
+var merged_paths = Dictionary<String, String>()
+var disagreements = List<Disagreement>()
 var merging_path = ""
 var merging_class = ""
 var replaced_attributes = List<AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration>()
@@ -44,10 +46,6 @@ var breakpoint_sites = Dictionary<String, String>()
 
 func SymbolTable(starting_map: Mapping.FolderMap) {
     map = starting_map
-}
-
-func package_versions(): Mapping.Versions {
-    return map.versions
 }
 
 func entry_class(folder: String): Mapping.ClassFile {
@@ -478,7 +476,6 @@ func read_one_load(loaded: AbstractSyntaxTree.Shapes.Statements.LoadStatement, c
             var pinning_folder = origin_folder(class_file.path, loading_folder, pins)
             var copying = Mapping.PinnedCopy(pins, pinning_folder)
             var copy = copying.fetched()
-            note_a_version(pins, copying, copy, class_file.path, loaded.line)
             var copied_package = package_of("{copy}/")
             copy_origins[copied_package] = copying.top_folder
             folder = copy
@@ -492,45 +489,6 @@ func read_one_load(loaded: AbstractSyntaxTree.Shapes.Statements.LoadStatement, c
         map.add_root(folder, class_file.path, loaded.line)
         follow_the_root(folder, from_the_library)
     }
-}
-
-# ../../spite_spec/specs/packages.md#packages-namespaces-and-loading
-func note_a_version(
-    pins: Validators.Mapping.GitLoad.Validator,
-    copying: Mapping.PinnedCopy,
-    copy: String,
-    path: String,
-    line: Integer,
-) {
-    var package = package_of(path)
-    var versions = map.versions
-    versions.record(
-        copying.repository_place,
-        package,
-        copying.full_commit,
-        copy,
-        path,
-        line,
-        pins.written,
-        pins.repository,
-        pins.commit,
-    )
-}
-
-# ../../spite_spec/specs/packages.md#packages-namespaces-and-loading
-func reads_again(): Boolean {
-    var versions = map.versions
-    fallback not versions.is_settled
-    versions.settle()
-    var index = 0
-    while index < versions.pin_count() {
-        var other = versions.conflict_of(index)
-        var refusing = Validators.Mapping.GitLoad.Validator()
-        refusing.refuse_a_commit_in_two_versions(versions, index, other)
-        index = index + 1
-    }
-    versions.learn_the_classes(map)
-    return versions.are_needed()
 }
 
 # ../../spite_spec/specs/packages.md#packages-namespaces-and-loading
@@ -553,8 +511,8 @@ func origin_folder(path: String, loading_folder: String, pins: Validators.Mappin
 }
 
 func package_of(path: String): String {
-    var versions = map.versions
-    return versions.package_of(path)
+    var packages = Mapping.Packages()
+    return packages.package_of(path)
 }
 
 func beside(folder: String, written: String): String {
@@ -650,6 +608,8 @@ func merge_the_class(written_files: List<Mapping.ClassFile>) {
     var class_files = in_merge_order(written_files)
     merged_declarations = List<Declaration>()
     merged_places = Dictionary<String, Integer>()
+    merged_paths = Dictionary<String, String>()
+    disagreements = List<Disagreement>()
     var index = 0
     while index < class_files.count() {
         var class_file = class_files[index]
@@ -661,6 +621,7 @@ func merge_the_class(written_files: List<Mapping.ClassFile>) {
         }
         index = index + 1
     }
+    disagreements.each(refuse_a_disagreement)
     var last = class_files.count() - 1
     var winner = class_files[last]
     var library = Validators.LibraryFile()
@@ -699,7 +660,11 @@ func in_merge_order(written_files: List<Mapping.ClassFile>): List<Mapping.ClassF
     }
     ordered = common_first(ordered)
     var loaded_order = in_load_order(others)
-    loaded_order.each(ordered.append)
+    var packages = Mapping.Packages()
+    var pinned = loaded_order.filter(packages.is_pinned_class)
+    var own = loaded_order.filter(packages.is_own_class)
+    pinned.each(ordered.append)
+    own.each(ordered.append)
     return ordered
 }
 
@@ -768,11 +733,94 @@ func keep_the_declaration(declaration: Declaration) {
         var replaced = merged_declarations[place]
         crash replaced
         note_a_reopened_attribute(replaced, declaration)
+        note_a_disagreement(name, replaced, declaration)
         merged_declarations[place] = declaration
     } else {
         merged_places[name] = merged_declarations.count()
         merged_declarations.append(declaration)
     }
+    merged_paths[name] = merging_path
+}
+
+# ../../spite_spec/specs/packages.md#packages-namespaces-and-loading
+func note_a_disagreement(name: String, replaced: Declaration, replacing: Declaration) {
+    var earlier_path = merged_paths[name]
+    crash earlier_path
+    var packages = Mapping.Packages()
+    fallback packages.other_commits_of_one_repository(earlier_path, merging_path)
+    var earlier_line = line_of(replaced)
+    var later_line = line_of(replacing)
+    var earlier_text = declaration_text(earlier_path, earlier_line)
+    var later_text = declaration_text(merging_path, later_line)
+    fallback earlier_text != later_text
+    var disagreement = Disagreement(merging_class, name, earlier_path, earlier_line, merging_path, later_line)
+    disagreements.append(disagreement)
+}
+
+func refuse_a_disagreement(disagreement: Disagreement) {
+    var kept_path = merged_paths[disagreement.name]
+    crash kept_path
+    var packages = Mapping.Packages()
+    fallback packages.is_pinned(kept_path)
+    var refusing = Validators.Mapping.MergedVersions.Validator()
+    refusing.refuse(disagreement)
+}
+
+func declaration_text(path: String, line: Integer): String {
+    var file = files[path]
+    crash file
+    var text = text_of_the_class(path)
+    var written_lines = text.split("\n")
+    var next_line = written_lines.count() + 1
+    var index = 0
+    while index < file.declarations.count() {
+        var other = file.declarations[index]
+        var other_line = line_of(other)
+        if other_line > line and other_line < next_line {
+            next_line = other_line
+        }
+        index = index + 1
+    }
+    var kept = List<String>()
+    index = line - 1
+    while index < next_line - 1 and index < written_lines.count() {
+        var written = written_lines[index]
+        var trimmed = written.trim()
+        if not trimmed.is_empty() and not trimmed.starts_with("#") {
+            kept.append(trimmed)
+        }
+        index = index + 1
+    }
+    return kept.join("\n")
+}
+
+func line_of(declaration: Declaration): Integer {
+    if declaration == AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration {
+        var attribute = declaration
+        return attribute.line
+    }
+    if declaration == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration {
+        var function = declaration
+        return function.line
+    }
+    if declaration == AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration {
+        var enumeration = declaration
+        return enumeration.line
+    }
+    if declaration == AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration {
+        var shape = declaration
+        return shape.line
+    }
+    if declaration == AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration {
+        var shape = declaration
+        return shape.line
+    }
+    if declaration == AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration {
+        var value = declaration
+        return value.line
+    }
+    var marker = declaration
+    return marker.line
 }
 
 # ../../spite_spec/specs/classes_and_files.md
@@ -932,11 +980,6 @@ func find_files(written: String, from_namespace: String): List<Mapping.ClassFile
     if is_machinery(written) {
         add_the_machinery(written)
     }
-    var versions = map.versions
-    if versions.are_needed() {
-        var pinned = pinned_versions(from_namespace)
-        return find_in_versions(written, from_namespace, pinned)
-    }
     var searched = from_namespace
     var keep_going = not searched.is_empty()
     while keep_going {
@@ -957,98 +1000,6 @@ func find_files(written: String, from_namespace: String): List<Mapping.ClassFile
         index = index + 1
     }
     return map.class_files_of(written)
-}
-
-# ../../spite_spec/specs/packages.md#packages-namespaces-and-loading
-func find_in_versions(written: String, from_namespace: String, pinned: List<String>): List<Mapping.ClassFile> {
-    var searched = from_namespace
-    var keep_going = not searched.is_empty()
-    while keep_going {
-        var here = find_here_or_in(searched, written, pinned)
-        if here.count() > 0 {
-            return here
-        }
-        searched = enclosing(searched)
-        keep_going = not searched.is_empty()
-    }
-    var roots = map.root_namespaces()
-    var index = 0
-    while index < roots.count() {
-        var found = find_here(roots[index], written)
-        if found.count() > 0 {
-            return found
-        }
-        index = index + 1
-    }
-    return find_here_or_in("", written, pinned)
-}
-
-func find_here_or_in(searched: String, written: String, pinned: List<String>): List<Mapping.ClassFile> {
-    var here = find_here(searched, written)
-    if here.count() > 0 {
-        return here
-    }
-    var index = 0
-    while index < pinned.count() {
-        var version = pinned[index]
-        var inside = version
-        if not searched.is_empty() {
-            inside = "{version}.{searched}"
-        }
-        var found = find_here(inside, written)
-        if found.count() > 0 {
-            return found
-        }
-        index = index + 1
-    }
-    return here
-}
-
-func pinned_versions(from_namespace: String): List<String> {
-    var versions = map.versions
-    var owners = map.class_files_of(from_namespace)
-    if owners.is_empty() {
-        return versions.prefixes_pinned_by("")
-    }
-    var pinned = List<String>()
-    var index = 0
-    while index < owners.count() {
-        var owner = owners[index]
-        var package = versions.package_of(owner.path)
-        var by_the_package = versions.prefixes_pinned_by(package)
-        var inner = 0
-        while inner < by_the_package.count() {
-            var prefix = by_the_package[inner]
-            if not pinned.contains(prefix) {
-                pinned.append(prefix)
-            }
-            inner = inner + 1
-        }
-        index = index + 1
-    }
-    return pinned
-}
-
-# ../../spite_spec/specs/packages.md#packages-namespaces-and-loading
-func unpinned_versions_holding(written: String, from_namespace: String): String {
-    var versions = map.versions
-    fallback versions.are_needed()
-    var pinned = pinned_versions(from_namespace)
-    var every = versions.every_prefix()
-    var holding = List<String>()
-    var index = 0
-    while index < every.count() {
-        var version = every[index]
-        var only_that = List<String>()
-        only_that.append(version)
-        var found = find_in_versions(written, from_namespace, only_that)
-        if not pinned.contains(version) and found.count() > 0 {
-            holding.append(version)
-        }
-        index = index + 1
-    }
-    fallback not holding.is_empty()
-    return versions.listing_of(holding)
 }
 
 func is_machinery(written: String): Boolean {
