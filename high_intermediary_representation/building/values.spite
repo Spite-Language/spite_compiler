@@ -251,6 +251,9 @@ func fitted(
         }
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
     }
+    if is_the_number_shape(given) and wanted.kind == 'scalar' {
+        return number_shape_cast(value, wanted)
+    }
     if is_wider(wanted, given) {
         return HighIntermediaryRepresentation.Values.Conversion(wanted, 'widen', value)
     }
@@ -305,16 +308,7 @@ func conversion_name_of(wanted: Model.Type): String {
     var segments = wanted.name.split(".")
     var last = segments.last()
     crash last
-    var names = Mapping.Names()
-    var reader = names.snake_case_of(last)
-    var count = segments.count()
-    if wanted.kind == 'enumeration' and count >= 2 {
-        var owner = segments[count - 2]
-        crash owner
-        var owner_reader = names.snake_case_of(owner)
-        return "to_{owner_reader}_{reader}"
-    }
-    return "to_{reader}"
+    return "{last}(from: String)"
 }
 
 # ../../../spite_spec/specs/values_and_types.md#enums-in-full
@@ -354,14 +348,17 @@ func converted_by_its_class(
 ): Value? {
     var given = value.value_type
     fallback can_be_converted(given, wanted)
+    var through_a_conversion = converted_by_a_conversion(value, wanted)
+    if through_a_conversion {
+        return through_a_conversion
+    }
     var reads_text = given.kind == 'object' and given.name == "String"
     var read_in_place = wanted.kind == 'scalar' or wanted.kind == 'enumeration'
     fallback not reads_text or not read_in_place or wanted.is_nullable
-    var conversion = conversion_name_of(wanted)
     if reads_text and wanted.kind == 'enumeration' {
         return text_read_into_an_enum(value, wanted)
     }
-    if given.kind == 'enumeration' and conversion == "to_integer" {
+    if given.kind == 'enumeration' and wanted.kind == 'scalar' and wanted.name == "Integer" {
         var integer = context.scalar_type("Integer")
         var widened = HighIntermediaryRepresentation.Values.Conversion(integer, 'widen', value)
         return fitted(widened, wanted)
@@ -374,13 +371,80 @@ func converted_by_its_class(
         var numbered = number_read_into_an_enum(value, present_enum)
         return fitted(numbered, wanted)
     }
-    var function = owner.function_named(conversion)
-    fallback function and function.parameters.is_empty()
-    fallback function.answer
-    fallback function.answer.kind == wanted.kind and function.answer.name == wanted.name
-    var no_arguments = List<Value>()
-    var called_conversion = method_call(value, conversion, no_arguments)
+    return null
+}
+
+func refuse_a_written_conversion(wanted: Model.Type) {
+    var shown = context.shown(wanted)
+    typing.refuse_a_written_conversion(context, shown)
+}
+
+# ../../../spite_documentation/classes_and_files.md#constructors-conversions-and-presets
+func converted_by_a_conversion(value: Value, wanted: Model.Type): Value? {
+    fallback wanted.kind == 'object' or wanted.kind == 'scalar'
+    var target_type = wanted.present()
+    var target = context.class_of(target_type)
+    var conversion = target.conversion_from(value.value_type)
+    fallback conversion
+    var reads_text = value.value_type.kind == 'object' and value.value_type.name == "String"
+    var may_fail = conversion.answer and conversion.answer.is_nullable
+    fallback not reads_text or not may_fail or wanted.is_nullable or wanted.kind != 'scalar'
+    need(conversion)
+    var receiver = unused_receiver_of(target_type)
+    var given = List<Value>()
+    given.append(value)
+    var called_conversion = HighIntermediaryRepresentation.Values.Call(conversion, receiver, given)
     return fitted(called_conversion, wanted)
+}
+
+func unused_receiver_of(made_type: Model.Type): Value {
+    if made_type.kind == 'scalar' {
+        return HighIntermediaryRepresentation.Values.WholeNumber(made_type, 0)
+    }
+    var made = context.class_of(made_type)
+    context.need_defaults(made.key)
+    var no_arguments = List<Value>()
+    return HighIntermediaryRepresentation.Values.MakeObject(made_type, null, no_arguments)
+}
+
+func preset_called(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Value? {
+    var callee = call.callee
+    if callee == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return preset_of(call, callee)
+    }
+    return null
+}
+
+func preset_of(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): Value? {
+    fallback call.arguments.is_empty()
+    var first = member.name.slice(0, 1)
+    crash first
+    fallback first != first.lower_case()
+    var class_path = class_path_of(member.target)
+    fallback not class_path.is_empty()
+    var written = class_path.join(".")
+    var namespace = context.current_class.file.namespace
+    var made_class = context.resolver.symbols.find("{written}.{member.name}", namespace)
+    fallback not made_class
+    var found = context.resolver.symbols.find(written, namespace)
+    fallback found or scalars.is_a_scalar(written)
+    var no_type_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described = context.resolver.class_type_in(class_path, no_type_arguments, context.current_class, context.line)
+    fallback described.kind == 'object' or described.kind == 'scalar'
+    var model = context.class_of(described)
+    var preset = model.preset_named(member.name)
+    if not preset and described.kind == 'scalar' {
+        var constants = constants_of(model)
+        typing.refuse_an_unknown_number_constant(context, written, member.name, constants)
+    }
+    fallback preset
+    need(preset)
+    var receiver = unused_receiver_of(described)
+    var no_arguments = List<Value>()
+    return HighIntermediaryRepresentation.Values.Call(preset, receiver, no_arguments)
 }
 
 func text_read_into_an_enum(
@@ -401,8 +465,7 @@ func refuse_a_missing_conversion(value: Value, wanted: Model.Type) {
     fallback can_be_converted(given, wanted)
     var shown_given = context.shown(given)
     var shown_wanted = context.shown(wanted)
-    var conversion = conversion_name_of(wanted)
-    typing.refuse_a_missing_conversion(context, shown_given, shown_wanted, conversion)
+    typing.refuse_a_missing_conversion(context, shown_given, shown_wanted)
 }
 
 func refuse_a_walked_symbol_passed_on(value: Value, wanted: Model.Type) {
@@ -1073,7 +1136,7 @@ func literal_value(
 }
 
 func whole_number_value(written: String, expected: Model.Type?): Value {
-    var number = written.to_long()
+    var number: Long? = written
     if not number {
         typing.refuse_a_literal_too_large(context, written)
     }
@@ -1119,7 +1182,7 @@ func decimal_value(written: String, expected: Model.Type?): Value {
 }
 
 func refuse_a_decimal_too_large(written: String, type_name: String) {
-    var parsed = written.to_double()
+    var parsed: Double? = written
     crash parsed
     var doubled = parsed + parsed
     var is_too_large = parsed > 1.0 and doubled == parsed
@@ -1548,7 +1611,7 @@ func boolean_constant(holds: Boolean): Value {
 }
 
 func whole_constant(plain: Model.Type, written: String): Value {
-    var number = written.to_long()
+    var number: Long? = written
     crash number
     return HighIntermediaryRepresentation.Values.WholeNumber(plain, number)
 }
@@ -1725,8 +1788,9 @@ func member_value(
     refuse_a_private_name(owner, member.name)
     var attribute = owner.attribute_named(member.name)
     var getter = owner.function_named("get_{member.name}")
-    if getter and target.value_type.kind == 'scalar' {
-        typing.refuse_constant_on_value(context, owner.shown, member.name)
+    var spelled_preset = pascal_case_of(member.name)
+    if owner.preset_named(spelled_preset) {
+        typing.refuse_constant_on_value(context, owner.shown, spelled_preset)
     }
     var is_outside = owner.key != context.current_class.key
     if not getter and is_outside {
@@ -2305,7 +2369,7 @@ func build_value_of(given: String, field_type: Model.Type): Value? {
     if scalar.is_decimal {
         return HighIntermediaryRepresentation.Values.DecimalNumber(field_type, given)
     }
-    var number = given.to_long()
+    var number: Long? = given
     fallback number
     return HighIntermediaryRepresentation.Values.WholeNumber(field_type, number)
 }
@@ -2494,10 +2558,7 @@ func reflected_member(
     var no_type_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
     var found = context.resolver.symbols.find(written, context.current_class.file.namespace)
     if found or scalars.is_a_scalar(written) {
-        var number_constant = class_constant(described_path, no_type_arguments, member.name)
-        if number_constant {
-            return number_constant
-        }
+        refuse_a_preset_read(described_path, no_type_arguments, member.name)
     }
     var object = reflected_object_of(member.target)
     fallback object
@@ -2649,19 +2710,18 @@ func width_in_a_type(held: Model.Type): Integer {
     return 8
 }
 
-func class_constant(
+func refuse_a_preset_read(
     path: List<String>,
     no_type_arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>,
     name: String,
-): Value? {
+) {
     var described = context.resolver.class_type_in(path, no_type_arguments, context.current_class, context.line)
-    fallback described.kind == 'scalar'
+    fallback described.kind == 'scalar' or described.kind == 'object'
     var model = context.class_of(described)
-    var getter = model.function_named("get_{name}")
-    fallback getter
-    var receiver = HighIntermediaryRepresentation.Values.WholeNumber(described, 0)
-    var no_written = List<Expression>()
-    return called(getter, receiver, no_written)
+    var spelled = pascal_case_of(name)
+    fallback model.preset_named(spelled)
+    var written = path.join(".")
+    typing.refuse_a_called_constant(context, "{written}.{name}", "{written}.{spelled}()")
 }
 
 func reflected_object_of(
@@ -2695,9 +2755,9 @@ func refuse_a_call_on_a_number_class(
     fallback not reflection_model.function_named(callee.name)
     var number = number_class_of(class_path)
     var constants = constants_of(number)
-    var getter = number.function_named("get_{callee.name}")
-    if getter {
-        typing.refuse_a_called_constant(context, "{written}.{callee.name}")
+    var spelled = pascal_case_of(callee.name)
+    if number.preset_named(spelled) {
+        typing.refuse_a_called_constant(context, "{written}.{callee.name}", "{written}.{spelled}()")
     }
     var function = number.function_named(callee.name)
     if function {
@@ -2717,11 +2777,8 @@ func constants_of(number: Model.ClassModel): String {
     var index = 0
     while index < number.declared_functions.count() {
         var function = number.declared_functions[index]
-        if function.name.starts_with("get_") {
-            var name_length = function.name.length()
-            var constant = function.name.slice(4, name_length)
-            crash constant
-            names.append(constant)
+        if function.is_a_preset {
+            names.append("{function.name}()")
         }
         index = index + 1
     }
@@ -2779,20 +2836,7 @@ func refuse_a_class_object_call(object: HighIntermediaryRepresentation.Values.Cl
 }
 
 func refuse_a_value_function_on_a_number_class(described: Model.ClassModel, plain: String, name: String) {
-    var constants = List<String>()
-    var index = 0
-    while index < described.declared_functions.count() {
-        var function = described.declared_functions[index]
-        var is_a_constant = function.name.starts_with("get_") and function.parameters.is_empty()
-        if is_a_constant {
-            var length = function.name.length()
-            var constant = function.name.slice(4, length)
-            crash constant
-            constants.append(constant)
-        }
-        index = index + 1
-    }
-    var listed = constants.join(", ")
+    var listed = constants_of(described)
     typing.refuse_a_value_function_on_a_number_class(context, plain, name, listed)
 }
 
@@ -2867,6 +2911,10 @@ func call_value(
         if maker.name.starts_with("$") {
             return made_from_a_bound_type(call, maker.name)
         }
+    }
+    var preset = preset_called(call)
+    if preset {
+        return preset
     }
     var class_path = class_path_of(call.callee)
     if not class_path.is_empty() {
@@ -3247,8 +3295,8 @@ func enum_read_from(
     crash enum_words
     var enum_type = enum_named_by_its_path(enum_words)
     fallback enum_type
-    var wanted = enum_type.nullable()
-    return fitted(receiver, wanted)
+    refuse_a_written_conversion(enum_type)
+    return null
 }
 
 func class_form_call(
@@ -4325,7 +4373,7 @@ func constant_attribute_owner_of(target: Expression?): String {
 }
 
 func text_read_as_an_enum(
-    receiver: Value,
+    _receiver: Value,
     owner: Model.ClassModel,
     name: String,
     written_count: Integer,
@@ -4336,13 +4384,13 @@ func text_read_as_an_enum(
     crash snake
     var found = enum_named_by_its_path(snake)
     fallback found
-    var wanted = found.nullable()
-    return fitted(receiver, wanted)
+    refuse_a_written_conversion(found)
+    return null
 }
 
 # ../../../spite_spec/specs/values_and_types.md#enums-in-full
 func number_read_as_an_enum(
-    receiver: Value,
+    _receiver: Value,
     owner: Model.ClassModel,
     name: String,
     written_count: Integer,
@@ -4354,7 +4402,8 @@ func number_read_as_an_enum(
     crash snake
     var found = enum_named_by_its_path(snake)
     fallback found
-    return number_read_into_an_enum(receiver, found)
+    refuse_a_written_conversion(found)
+    return null
 }
 
 # ../../../spite_spec/specs/values_and_types.md#enums-in-full
@@ -6389,6 +6438,44 @@ func is_written_number(written: Type?): Boolean {
         return path == "Number"
     }
     return false
+}
+
+# ../../../spite_documentation/classes_and_files.md#constructors-conversions-and-presets
+func number_shape_cast(value: Value, wanted: Model.Type): Value {
+    var present = wanted.present()
+    var names = Mapping.Names()
+    var reader = names.snake_case_of(present.name)
+    var name = "_as_{reader}"
+    need_a_number_cast(name, present)
+    var no_arguments = List<Value>()
+    var cast = shape_method_call(value, name, no_arguments)
+    return fitted(cast, wanted)
+}
+
+func need_a_number_cast_in(filler: Model.Type, name: String, shape: Model.ShapeModel) {
+    var model = context.class_of(filler)
+    var function = model.function_named(name)
+    if not function {
+        typing.refuse_not_a_fit(context, model.shown, shape.name, name)
+    }
+    crash function
+    need(function)
+}
+
+func need_a_number_cast(name: String, answer: Model.Type) {
+    var shape = context.program.shape_keyed("Number")
+    crash shape
+    fallback not shape.member_named(name)
+    var member = Model.FunctionModel(name, shape.key)
+    member.answer = answer
+    shape.members.append(member)
+    var fillers = context.program.fillers_of(shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        need_a_number_cast_in(filler, name, shape)
+        index = index + 1
+    }
 }
 
 func is_the_number_shape(of_type: Model.Type): Boolean {
@@ -9677,7 +9764,7 @@ func literal_place_of(literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpr
     if literal.kind != 'integer_literal' {
         return -1
     }
-    var place = literal.text.to_integer()
+    var place: Integer? = literal.text
     if not place {
         return -1
     }
