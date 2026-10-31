@@ -66,10 +66,15 @@ var region_signs = List<Boolean>()
 var region_stored = List<Boolean>()
 var region_loaded = List<Boolean>()
 var region_refused = List<Boolean>()
+var region_plain = List<Boolean>()
+var region_by_place = List<Boolean>()
+var alias_names = List<String>()
+var alias_entries = List<Integer>()
 var promotes = true
 var quiet_labels = List<Integer>()
 var cold = List<Boolean>()
 var noting_block = 0
+var crosses_any = false
 var promoted_headers = List<Integer>()
 var promoted_regions = List<String>()
 
@@ -442,7 +447,12 @@ func promote_the_regions() {
     region_stored.clear()
     region_loaded.clear()
     region_refused.clear()
+    region_plain.clear()
+    region_by_place.clear()
+    alias_names.clear()
+    alias_entries.clear()
     promotes = true
+    crosses_any = false
     find_the_cold_blocks()
     var block_index = 0
     while block_index < block_count {
@@ -455,14 +465,54 @@ func promote_the_regions() {
         block_index = block_index + 1
     }
     fallback promotes and leaves_only_into_its_own_exits()
+    fallback not region_plain.contains(true) or plain_places_hold()
     var index = 0
     while index < regions.count() {
-        var promotable = region_stored[index] == true and region_refused[index] != true
-        if promotable and not was_promoted(index) and has_a_safe_base(index) {
+        if is_promotable(index) and not was_promoted(index) and has_a_safe_base(index) {
             promote_a_region(index)
         }
         index = index + 1
     }
+}
+
+# ../../OPTIMIZATIONS.md#an-attribute-a-loop-updates-lives-in-a-register-until-the-loop-ends
+func plain_places_hold(): Boolean {
+    fallback not uses_threads
+    var base = region_bases[0]
+    var index = 0
+    while index < regions.count() {
+        fallback region_bases[index] == base
+        fallback region_plain[index] != true or region_refused[index] != true
+        var other = index + 1
+        while other < regions.count() {
+            fallback not places_overlap(index, other)
+            other = other + 1
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func places_overlap(first: Integer, second: Integer): Boolean {
+    var first_start = region_offsets[first]
+    var second_start = region_offsets[second]
+    var first_width = region_widths[first]
+    var second_width = region_widths[second]
+    crash first_start
+    crash second_start
+    crash first_width
+    crash second_width
+    var first_bytes = bits_in(first_width) / 8
+    var second_bytes = bits_in(second_width) / 8
+    return first_start < second_start + second_bytes and second_start < first_start + first_bytes
+}
+
+func is_promotable(index: Integer): Boolean {
+    var region = regions[index]
+    crash region
+    fallback region_refused[index] != true
+    fallback not crosses_any or no_other_thread_writes(region)
+    return region_stored[index] == true or crosses_any
 }
 
 func was_promoted(index: Integer): Boolean {
@@ -483,7 +533,7 @@ func find_the_cold_blocks() {
     cold.clear()
     var block_index = 0
     while block_index < block_count {
-        var rare = inside[block_index] == true and not uses_threads and not dominates(block_index, latch_block)
+        var rare = inside[block_index] == true and not dominates(block_index, latch_block)
         cold.append(rare)
         block_index = block_index + 1
     }
@@ -559,7 +609,7 @@ func crosses_the_held(instruction: Instruction, block_index: Integer): Boolean {
         LowIntermediaryRepresentation.Instructions.ForeignAddress: return false
         LowIntermediaryRepresentation.Instructions.DataAddress: return false
         LowIntermediaryRepresentation.Instructions.FunctionAddress: return false
-        LowIntermediaryRepresentation.Instructions.Free: return false
+        LowIntermediaryRepresentation.Instructions.Free: return frees_its_own(instruction.pointer)
         LowIntermediaryRepresentation.Instructions.OpenLibrary: return false
         LowIntermediaryRepresentation.Instructions.Jump: return false
         LowIntermediaryRepresentation.Instructions.Branch: return false
@@ -571,8 +621,8 @@ func crosses_the_held(instruction: Instruction, block_index: Integer): Boolean {
         LowIntermediaryRepresentation.Instructions.JoinThread: return false
         LowIntermediaryRepresentation.Instructions.AtomicAdd: return false
         LowIntermediaryRepresentation.Instructions.CompareExchange: return false
-        LowIntermediaryRepresentation.Instructions.Stop: return false
-        LowIntermediaryRepresentation.Instructions.Exit: return false
+        LowIntermediaryRepresentation.Instructions.Stop: return instruction.continues
+        LowIntermediaryRepresentation.Instructions.Exit: return true
         LowIntermediaryRepresentation.Instructions.VectorLoop: return false
         LowIntermediaryRepresentation.Instructions.Select: return false
     }
@@ -618,10 +668,17 @@ func note_a_region(instruction: Instruction) {
     }
 }
 
+func frees_its_own(pointer: Integer): Boolean {
+    return pointer >= 0 and pointer < defined_inside.count() and defined_inside[pointer] == true
+}
+
 func note_a_plain(instruction: Instruction) {
-    if not reads_only(instruction) and not crosses_the_held(instruction, noting_block) {
-        promotes = false
+    fallback not reads_only(instruction)
+    if crosses_the_held(instruction, noting_block) {
+        crosses_any = true
+        return
     }
+    promotes = false
 }
 
 func note_a_load_place(loaded: LowIntermediaryRepresentation.Instructions.Load) {
@@ -629,7 +686,10 @@ func note_a_load_place(loaded: LowIntermediaryRepresentation.Instructions.Load) 
         promotes = false
         return
     }
-    fallback not crosses_the_held(loaded, noting_block)
+    if crosses_the_held(loaded, noting_block) {
+        crosses_any = true
+        return
+    }
     note_a_place(loaded.region, loaded.address, loaded.offset, loaded.width, loaded.is_signed, false)
 }
 
@@ -638,7 +698,10 @@ func note_a_store_place(stored: LowIntermediaryRepresentation.Instructions.Store
         promotes = false
         return
     }
-    fallback not crosses_the_held(stored, noting_block)
+    if crosses_the_held(stored, noting_block) {
+        crosses_any = true
+        return
+    }
     note_a_place(stored.region, stored.address, stored.offset, stored.width, true, true)
 }
 
@@ -650,32 +713,87 @@ func note_a_place(
     signed: Boolean,
     stores: Boolean,
 ) {
-    if region.is_empty() {
-        promotes = false
-        return
+    var plain = region.is_empty()
+    var named = region
+    if plain {
+        named = "@ r{address} + {offset}"
     }
-    var found = regions.index_of(region)
+    var every_pass = dominates(noting_block, latch_block)
+    var found = entry_named(named)
     if not found {
-        regions.append(region)
+        found = entry_at(address, offset)
+        if found {
+            join_the_entry(found, named, plain, every_pass)
+        }
+    }
+    if not found {
+        regions.append(named)
         region_bases.append(address)
         region_offsets.append(offset)
         region_widths.append(width)
         region_signs.append(signed)
         region_stored.append(stores)
         region_loaded.append(not stores)
+        region_plain.append(plain)
+        region_by_place.append(plain)
         var outside = address >= 0 and address < defined_inside.count() and defined_inside[address] != true
-        var held = outside and may_hold_in_a_register(region)
+        var held = outside and (plain and every_pass or not plain and may_hold_in_a_register(region))
         region_refused.append(not held)
         return
     }
     var same_place = region_bases[found] == address and region_offsets[found] == offset
-    if not same_place or region_widths[found] != width {
+    if not same_place or region_widths[found] != width or plain and not every_pass {
         region_refused[found] = true
+    }
+    if not same_place {
+        refuse_the_entry_at(address, offset)
     }
     if stores {
         region_stored[found] = true
     } else {
         note_a_loaded_sign(found, signed)
+    }
+}
+
+func entry_named(named: String): Integer? {
+    var found = regions.index_of(named)
+    if found {
+        return found
+    }
+    var alias = alias_names.index_of(named)
+    fallback alias
+    return alias_entries[alias]
+}
+
+func refuse_the_entry_at(address: Integer, offset: Integer) {
+    var other = entry_at(address, offset)
+    fallback other
+    region_refused[other] = true
+}
+
+func entry_at(address: Integer, offset: Integer): Integer? {
+    var index = 0
+    while index < regions.count() {
+        if region_bases[index] == address and region_offsets[index] == offset {
+            return index
+        }
+        index = index + 1
+    }
+    return null
+}
+
+# ../../OPTIMIZATIONS.md#an-attribute-a-loop-updates-lives-in-a-register-until-the-loop-ends
+func join_the_entry(found: Integer, named: String, plain: Boolean, every_pass: Boolean) {
+    region_by_place[found] = true
+    alias_names.append(named)
+    alias_entries.append(found)
+    if plain {
+        region_plain[found] = true
+        if not every_pass {
+            region_refused[found] = true
+        }
+    } else if not may_hold_in_a_register(named) {
+        region_refused[found] = true
     }
 }
 
@@ -854,20 +972,23 @@ func promote_a_region(index: Integer) {
     var held = fresh_register()
     var loaded = LowIntermediaryRepresentation.Instructions.Load(held, address, offset, width)
     loaded.is_signed = signed
-    loaded.region = region
+    if region_by_place[index] != true {
+        loaded.region = region
+    }
     hoist(loaded)
     promoted_headers.append(header)
     promoted_regions.append(region)
+    var stores = region_stored[index] == true
     var block_index = 0
     while block_index < block_count {
         var block = function.blocks[block_index]
         crash block
         if inside[block_index] == true {
-            var kept = held_in(block, block_index, loaded)
+            var kept = held_in(block, block_index, loaded, stores)
             block.instructions = kept
-        } else if is_an_exit(block_index) {
+        } else if stores and is_an_exit(block_index) {
             var stored = LowIntermediaryRepresentation.Instructions.Store(address, offset, held, width)
-            stored.region = region
+            stored.region = loaded.region
             block.instructions.insert(0, stored)
         }
         block_index = block_index + 1
@@ -896,8 +1017,8 @@ func held_in(
     block: LowIntermediaryRepresentation.LowBlock,
     block_index: Integer,
     loaded: LowIntermediaryRepresentation.Instructions.Load,
+    stores: Boolean,
 ): List<Instruction> {
-    var region = loaded.region
     var held = loaded.target
     var width = loaded.width
     var signed = loaded.is_signed
@@ -906,8 +1027,8 @@ func held_in(
     while index < block.instructions.count() {
         var instruction = block.instructions[index]
         if crosses_the_held(instruction, block_index) {
-            store_and_load_around(kept, instruction, loaded)
-        } else if not is_in_the_region(instruction, region) {
+            store_and_load_around(kept, instruction, loaded, stores)
+        } else if not is_at_the_place(instruction, loaded) {
             kept.append(instruction)
         } else if instruction.class == LowIntermediaryRepresentation.Instructions.Load {
             var read = LowIntermediaryRepresentation.Instructions.Copy(instruction.target, held)
@@ -920,15 +1041,66 @@ func held_in(
     return kept
 }
 
-func store_and_load_around(kept: List<Instruction>, instruction: Instruction, loaded: LowIntermediaryRepresentation.Instructions.Load) {
-    var stored = LowIntermediaryRepresentation.Instructions.Store(loaded.address, loaded.offset, loaded.target, loaded.width)
-    stored.region = loaded.region
-    kept.append(stored)
+func store_and_load_around(
+    kept: List<Instruction>,
+    instruction: Instruction,
+    loaded: LowIntermediaryRepresentation.Instructions.Load,
+    stores: Boolean,
+) {
+    if stores {
+        var stored = LowIntermediaryRepresentation.Instructions.Store(loaded.address, loaded.offset, loaded.target, loaded.width)
+        stored.region = loaded.region
+        kept.append(stored)
+    }
     kept.append(instruction)
+    fallback not flow.ends_the_block(instruction)
     var reloaded = LowIntermediaryRepresentation.Instructions.Load(loaded.target, loaded.address, loaded.offset, loaded.width)
     reloaded.is_signed = loaded.is_signed
     reloaded.region = loaded.region
     kept.append(reloaded)
+}
+
+func is_at_the_place(instruction: Instruction, loaded: LowIntermediaryRepresentation.Instructions.Load): Boolean {
+    if not loaded.region.is_empty() {
+        return is_in_the_region(instruction, loaded.region)
+    }
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Load: return instruction.address == loaded.address and instruction.offset == loaded.offset
+        LowIntermediaryRepresentation.Instructions.Store: return instruction.address == loaded.address and instruction.offset == loaded.offset
+        LowIntermediaryRepresentation.Instructions.Constant: return false
+        LowIntermediaryRepresentation.Instructions.Copy: return false
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return false
+        LowIntermediaryRepresentation.Instructions.Compare: return false
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return false
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: return false
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return false
+        LowIntermediaryRepresentation.Instructions.Call: return false
+        LowIntermediaryRepresentation.Instructions.CallAt: return false
+        LowIntermediaryRepresentation.Instructions.ForeignAddress: return false
+        LowIntermediaryRepresentation.Instructions.DataAddress: return false
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return false
+        LowIntermediaryRepresentation.Instructions.Allocate: return false
+        LowIntermediaryRepresentation.Instructions.Retain: return false
+        LowIntermediaryRepresentation.Instructions.Free: return false
+        LowIntermediaryRepresentation.Instructions.Resize: return false
+        LowIntermediaryRepresentation.Instructions.CopyBytes: return false
+        LowIntermediaryRepresentation.Instructions.OpenLibrary: return false
+        LowIntermediaryRepresentation.Instructions.Jump: return false
+        LowIntermediaryRepresentation.Instructions.Branch: return false
+        LowIntermediaryRepresentation.Instructions.Return: return false
+        LowIntermediaryRepresentation.Instructions.FrameAddress: return false
+        LowIntermediaryRepresentation.Instructions.ThreadIdentity: return false
+        LowIntermediaryRepresentation.Instructions.FrameRoom: return false
+        LowIntermediaryRepresentation.Instructions.StartThread: return false
+        LowIntermediaryRepresentation.Instructions.JoinThread: return false
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return false
+        LowIntermediaryRepresentation.Instructions.ImportCall: return false
+        LowIntermediaryRepresentation.Instructions.CompareExchange: return false
+        LowIntermediaryRepresentation.Instructions.Stop: return false
+        LowIntermediaryRepresentation.Instructions.Exit: return false
+        LowIntermediaryRepresentation.Instructions.VectorLoop: return false
+        LowIntermediaryRepresentation.Instructions.Select: return false
+    }
 }
 
 func is_in_the_region(instruction: Instruction, region: String): Boolean {

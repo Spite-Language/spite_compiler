@@ -2160,12 +2160,21 @@ attributes of a class [no other thread touches](#an-attribute-a-loop-only-reads-
 object's attribute is still loaded and stored on every pass. The regions a loop only reads are read once before it,
 by the same rule.
 
-A call, an allocation, or a load or store that carries no region is allowed on a cold path of the loop: a block that
-does not run on every pass (it does not dominate the way back to the loop's start) and is in no loop inside it. Each
-attribute kept in a register is stored just before such an instruction and loaded again just after it, so what is
-called reads and writes the attribute's memory as before and the loop goes on with what it left there. A list's
-growth (`rare.append(total)`) and a call to a function that is not inlined are both such paths. In a program with
-threads no such path is allowed.
+A call, an allocation, a load or store that carries no region, the freeing of something the loop made, an exit or a
+report that lets the program go on is allowed on a cold path of the loop: a block that does not run on every pass (it
+does not dominate the way back to the loop's start) and is in no loop inside it. Each attribute kept in a register
+is stored just before such an instruction and loaded again just after it, so what is called reads and writes the
+attribute's memory as before and the loop goes on with what it left there. A list's growth (`rare.append(total)`)
+and a call to a function that is not inlined are both such paths. A loop with such a path also keeps the attributes
+it only reads in registers, loaded before the loop and again after each such instruction. In a program with threads
+all this holds for the attributes of a class no other thread touches.
+
+Two widenings of the rule that every access carries a region. Accesses at one offset of one register whose regions
+differ (the branches a call through a union takes, `Circle.total` and `Square.total` at the same place) are one
+place, kept in one register and stored without a region. And a loop whose every access goes through one register,
+at offsets that do not overlap, keeps the places it writes in registers even when they carry no region (an object
+reached through a shape, `counting.total`), when each such place is reached on every pass and the program has no
+threads.
 
 ```spite
 func advance() {
