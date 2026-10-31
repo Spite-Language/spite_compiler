@@ -12,7 +12,8 @@ no compiler setting against the `Build` the program declares (`validators/comman
 
 - `folder`: always `.`, the folder the compiler runs in (D1775).
 - `flags`: each flag given, a compiler setting with its checked value; `written_flags` and `bare_flags` as written.
-  A field of the program's own `Build` with no flag is read from its variable (`PLAYER_COUNT`).
+  A field of the program's own `Build` with no flag is read from its variable (`PLAYER_COUNT`), then from the
+  `.env` file of the folder built (`SettingsFile`, which build conditions read too).
   A compiler setting that is on while `_flags` holds nothing and its variable is unset stops the run: that
   compiler was built by one that does not fill `_flags`, and would otherwise ignore every flag.
 - `runs_the_program()`: neither `--check` nor `--build` was given, so the program is run once it is built.

@@ -30,6 +30,8 @@ substitution of the instance it belongs to, and the answers the name resolution 
 - every attribute becomes a `HighAttribute`: its name, how many bytes it takes, where it sits in the
   block, and the value it is made with. The class's `block_size` is the size of the block they make;
 - a line it cannot lower stops the run (`validators/high_intermediary_representation/buildable`).
+- the entry's constructor starts by making `Environment()`, so every program that loads the library reads and
+  checks its settings before its own code runs (D1820).
 
 The types it lowers are the whole numbers: a literal, a name, an addition or a multiplication, a
 comparison, an `and` or an `or`, and a call. Everything else stops the run until it is written.
