@@ -33,6 +33,7 @@ STONES=(
     "5efb72f 40a940e 6eab258 13a3419"
     "d2e6208 40a940e 29fb800 a255986"
     "10ed2e0 3c823ba dc2e5cc f96bbf7"
+    "acadacc 531e9b1 63b0b93 39d3918"
 )
 
 bridge_c8e2e45() {
