@@ -1,0 +1,349 @@
+union Statement {
+    HighIntermediaryRepresentation.Statements.Declare
+    HighIntermediaryRepresentation.Statements.Assign.Assign
+    HighIntermediaryRepresentation.Statements.Assign.Attribute
+    HighIntermediaryRepresentation.Statements.Assign.ThroughShape
+    HighIntermediaryRepresentation.Statements.Evaluate
+    HighIntermediaryRepresentation.Statements.If
+    HighIntermediaryRepresentation.Statements.While
+    HighIntermediaryRepresentation.Statements.Return
+    HighIntermediaryRepresentation.Statements.Stop
+    HighIntermediaryRepresentation.Statements.Block
+}
+
+union Value {
+    HighIntermediaryRepresentation.Values.WholeNumber
+    HighIntermediaryRepresentation.Values.DecimalNumber
+    HighIntermediaryRepresentation.Values.TextConstant
+    HighIntermediaryRepresentation.Values.NullConstant
+    HighIntermediaryRepresentation.Values.LocalRead
+    HighIntermediaryRepresentation.Values.ThisRead
+    HighIntermediaryRepresentation.Values.AttributeRead
+    HighIntermediaryRepresentation.Values.Call
+    HighIntermediaryRepresentation.Values.MakeObject
+    HighIntermediaryRepresentation.Values.MachineOperation
+    HighIntermediaryRepresentation.Values.Negation
+    HighIntermediaryRepresentation.Values.ForeignCall
+    HighIntermediaryRepresentation.Values.Class.Membership
+    HighIntermediaryRepresentation.Values.PresenceTest
+    HighIntermediaryRepresentation.Values.Conversion
+    HighIntermediaryRepresentation.Values.Function.Value
+    HighIntermediaryRepresentation.Values.Function.ValueCall
+    HighIntermediaryRepresentation.Values.NumberRoom
+    HighIntermediaryRepresentation.Values.ShapeCall
+    HighIntermediaryRepresentation.Values.EnumText
+    HighIntermediaryRepresentation.Values.EnumFromText
+    HighIntermediaryRepresentation.Values.Class.Object
+    HighIntermediaryRepresentation.Values.Class.OfValue
+    HighIntermediaryRepresentation.Values.Function.Fact
+}
+
+# ../../OPTIMIZATIONS.md#a-buffer-grows-where-its-count-does
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+
+func RoomForms(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func is_a_buffer(model: Model.ClassModel): Boolean {
+    fallback model.key == "Buffer"
+    fallback model.attribute_named("item_count")
+    fallback model.attribute_named("_capacity")
+    return true
+}
+
+func is_a_list(model: Model.ClassModel): Boolean {
+    var forms = HeldOnceForms(context, values)
+    fallback forms.is_a_list(model)
+    fallback model.attribute_named("_capacity")
+    fallback model.attribute_named("_buffer")
+    return true
+}
+
+func holds_room(attribute: Model.AttributeModel): Boolean {
+    var owner = context.program.class_named(attribute.owner)
+    fallback owner
+    fallback attribute.name == "item_count" or attribute.name == "_capacity"
+    return is_a_buffer(owner)
+}
+
+func room_before_a_write(value: Value): HighIntermediaryRepresentation.Statements.Evaluate? {
+    fallback value.class == HighIntermediaryRepresentation.Values.Call and value.function.name == "_write_value"
+    fallback value.receiver and value.receiver.class == HighIntermediaryRepresentation.Values.ThisRead
+    var owner = context.program.class_named(value.function.owner)
+    fallback owner and is_a_list(owner)
+    var at = value.arguments[0]
+    fallback at and at.class == HighIntermediaryRepresentation.Values.AttributeRead
+    fallback at.object and at.object.class == HighIntermediaryRepresentation.Values.ThisRead
+    fallback at.attribute.name == "_length" and at.attribute.owner == owner.key
+    var integer = context.scalar_type("Integer")
+    var own = HighIntermediaryRepresentation.Values.ThisRead(value.receiver.value_type)
+    var own_again = HighIntermediaryRepresentation.Values.ThisRead(value.receiver.value_type)
+    var counted = HighIntermediaryRepresentation.Values.AttributeRead(own_again, at.attribute)
+    var one = HighIntermediaryRepresentation.Values.WholeNumber(integer, 1)
+    var wanted = HighIntermediaryRepresentation.Values.MachineOperation(integer, 'add', counted, one)
+    var arguments = List<Value>()
+    arguments.append(wanted)
+    var reserving = reserve_of(owner)
+    var reserved = HighIntermediaryRepresentation.Values.Call(reserving, own, arguments)
+    return HighIntermediaryRepresentation.Statements.Evaluate(reserved)
+}
+
+func needs_no_room(value: Value): Boolean {
+    fallback value.class == HighIntermediaryRepresentation.Values.WholeNumber
+    return value.number <= 0
+}
+
+func again(value: Value): Value? {
+    if value.class == HighIntermediaryRepresentation.Values.ThisRead {
+        return HighIntermediaryRepresentation.Values.ThisRead(value.value_type)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return HighIntermediaryRepresentation.Values.LocalRead(value.value_type, value.name)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return HighIntermediaryRepresentation.Values.WholeNumber(value.value_type, value.number)
+    }
+    fallback value.class == HighIntermediaryRepresentation.Values.AttributeRead
+    crash value.object
+    var is_plain = value.object.class == HighIntermediaryRepresentation.Values.ThisRead or value.object.class == HighIntermediaryRepresentation.Values.LocalRead
+    fallback is_plain
+    var object_again = again(value.object)
+    crash object_again
+    var read = HighIntermediaryRepresentation.Values.AttributeRead(object_again, value.attribute)
+    read.value_type = value.value_type
+    return read
+}
+
+func room_for(object: Value, attribute: Model.AttributeModel, count: Value): HighIntermediaryRepresentation.Statements.Evaluate {
+    var owner = context.program.class_named(attribute.owner)
+    crash owner
+    var arguments = List<Value>()
+    arguments.append(count)
+    if attribute.name == "_capacity" {
+        var resizing = resize_room_of(owner)
+        var resized = HighIntermediaryRepresentation.Values.Call(resizing, object, arguments)
+        return HighIntermediaryRepresentation.Statements.Evaluate(resized)
+    }
+    var reserving = reserve_of(owner)
+    var reserved = HighIntermediaryRepresentation.Values.Call(reserving, object, arguments)
+    return HighIntermediaryRepresentation.Statements.Evaluate(reserved)
+}
+
+func resize_room_of(buffer: Model.ClassModel): Model.FunctionModel {
+    var name = "_resize_room"
+    var known = buffer.function_named(name)
+    if known {
+        return known
+    }
+    var integer = context.scalar_type("Integer")
+    var made = Model.FunctionModel(name, buffer.key)
+    var size_parameter = Model.ParameterModel("size", integer, false)
+    made.parameters.append(size_parameter)
+    buffer.declared_functions.append(made)
+    return made
+}
+
+func reserve_of(owner: Model.ClassModel): Model.FunctionModel {
+    var name = "_reserve"
+    var known = owner.function_named(name)
+    if known {
+        values.need(known)
+        return known
+    }
+    var integer = context.scalar_type("Integer")
+    var made = Model.FunctionModel(name, owner.key)
+    made.is_synthetic = true
+    var wanted_parameter = Model.ParameterModel("wanted", integer, false)
+    made.parameters.append(wanted_parameter)
+    owner.declared_functions.append(made)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    var growing = grown_room(owner)
+    var own_type = owner.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var capacity = owner.attribute_named("_capacity")
+    crash capacity
+    place_at(made, capacity)
+    var boolean = context.boolean()
+    var wanted = HighIntermediaryRepresentation.Values.LocalRead(integer, "wanted")
+    var held = HighIntermediaryRepresentation.Values.AttributeRead(own, capacity)
+    var fits = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'less_or_equal', wanted, held)
+    var leaving = HighIntermediaryRepresentation.Statements.Block()
+    var left = HighIntermediaryRepresentation.Statements.Return(null)
+    leaving.statements.append(left)
+    var keeping = HighIntermediaryRepresentation.Statements.If(fits, leaving, null)
+    body.statements.append(keeping)
+    body.statements.append(growing)
+    place_the_lines(body, made.placed_at_line)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func grown_room(owner: Model.ClassModel): HighIntermediaryRepresentation.Statements.Block {
+    var integer = context.scalar_type("Integer")
+    var own_type = owner.type_of_an_instance()
+    var capacity = owner.attribute_named("_capacity")
+    crash capacity
+    var block = HighIntermediaryRepresentation.Statements.Block()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var held = HighIntermediaryRepresentation.Values.AttributeRead(own, capacity)
+    var two = HighIntermediaryRepresentation.Values.WholeNumber(integer, 2)
+    var doubled = HighIntermediaryRepresentation.Values.MachineOperation(integer, 'multiply', held, two)
+    var grown_declared = HighIntermediaryRepresentation.Statements.Declare("grown", integer, doubled)
+    block.statements.append(grown_declared)
+    var wanted = HighIntermediaryRepresentation.Values.LocalRead(integer, "wanted")
+    at_least(block, wanted)
+    if is_a_list(owner) {
+        var four = HighIntermediaryRepresentation.Values.WholeNumber(integer, 4)
+        at_least(block, four)
+        list_room(block, owner)
+    } else {
+        buffer_room(block, owner)
+    }
+    var grown = HighIntermediaryRepresentation.Values.LocalRead(integer, "grown")
+    var own_again = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var kept = HighIntermediaryRepresentation.Statements.Assign.Attribute(own_again, capacity, grown)
+    block.statements.append(kept)
+    return block
+}
+
+func at_least(block: HighIntermediaryRepresentation.Statements.Block, least: Value) {
+    var integer = context.scalar_type("Integer")
+    var boolean = context.boolean()
+    var grown = HighIntermediaryRepresentation.Values.LocalRead(integer, "grown")
+    var is_less = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'less', grown, least)
+    var raising = HighIntermediaryRepresentation.Statements.Block()
+    var least_again = again(least)
+    crash least_again
+    var raised = HighIntermediaryRepresentation.Statements.Assign.Assign("grown", least_again)
+    raising.statements.append(raised)
+    var testing = HighIntermediaryRepresentation.Statements.If(is_less, raising, null)
+    block.statements.append(testing)
+}
+
+func buffer_room(block: HighIntermediaryRepresentation.Statements.Block, buffer: Model.ClassModel) {
+    var integer = context.scalar_type("Integer")
+    var resizing = resize_room_of(buffer)
+    var own_type = buffer.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var grown = HighIntermediaryRepresentation.Values.LocalRead(integer, "grown")
+    var sizes = List<Value>()
+    sizes.append(grown)
+    var resized = HighIntermediaryRepresentation.Values.Call(resizing, own, sizes)
+    var resizing_room = HighIntermediaryRepresentation.Statements.Evaluate(resized)
+    block.statements.append(resizing_room)
+}
+
+func list_room(block: HighIntermediaryRepresentation.Statements.Block, listing: Model.ClassModel) {
+    var integer = context.scalar_type("Integer")
+    var own_type = listing.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var room = listing.attribute_named("_buffer")
+    crash room
+    var room_model = context.class_of(room.attribute_type)
+    var reserving = reserve_of(room_model)
+    var forms = HeldOnceForms(context, values)
+    var sizing = forms.intrinsic(listing, "_item_size", integer)
+    var no_values = List<Value>()
+    var size = HighIntermediaryRepresentation.Values.Call(sizing, own, no_values)
+    var grown = HighIntermediaryRepresentation.Values.LocalRead(integer, "grown")
+    var bytes = HighIntermediaryRepresentation.Values.MachineOperation(integer, 'multiply', grown, size)
+    var wanted = List<Value>()
+    wanted.append(bytes)
+    var own_again = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var storage = HighIntermediaryRepresentation.Values.AttributeRead(own_again, room)
+    var reserved = HighIntermediaryRepresentation.Values.Call(reserving, storage, wanted)
+    var reserving_room = HighIntermediaryRepresentation.Statements.Evaluate(reserved)
+    block.statements.append(reserving_room)
+}
+
+func make_room_for_of(text: Model.ClassModel): Model.FunctionModel {
+    var name = "_make_room_for"
+    var known = text.function_named(name)
+    if known {
+        values.need(known)
+        return known
+    }
+    var integer = context.scalar_type("Integer")
+    var wide = context.scalar_type("Long")
+    var made = Model.FunctionModel(name, text.key)
+    made.is_synthetic = true
+    var added_parameter = Model.ParameterModel("added", wide, false)
+    made.parameters.append(added_parameter)
+    text.declared_functions.append(made)
+    var room = text.attribute_named("_buffer")
+    crash room
+    place_at(made, room)
+    var length = text.attribute_named("_length")
+    crash length
+    var room_model = context.class_of(room.attribute_type)
+    var reserving = reserve_of(room_model)
+    var own_type = text.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var counted = HighIntermediaryRepresentation.Values.AttributeRead(own, length)
+    var widened = HighIntermediaryRepresentation.Values.Conversion(wide, 'widen', counted)
+    var added = HighIntermediaryRepresentation.Values.LocalRead(wide, "added")
+    var summed = HighIntermediaryRepresentation.Values.MachineOperation(wide, 'add', widened, added)
+    var narrowed = HighIntermediaryRepresentation.Values.Conversion(integer, 'narrow', summed)
+    var wanted = List<Value>()
+    wanted.append(narrowed)
+    var own_again = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var storage = HighIntermediaryRepresentation.Values.AttributeRead(own_again, room)
+    var reserved = HighIntermediaryRepresentation.Values.Call(reserving, storage, wanted)
+    var reserving_room = HighIntermediaryRepresentation.Statements.Evaluate(reserved)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements.append(reserving_room)
+    place_the_lines(body, made.placed_at_line)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func place_at(made: Model.FunctionModel, attribute: Model.AttributeModel) {
+    fallback attribute.declaration
+    made.placed_at_line = attribute.declaration.line
+}
+
+func place_the_lines(block: HighIntermediaryRepresentation.Statements.Block?, line: Integer) {
+    fallback block
+    block.line = line
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        place_a_line(statement, line)
+        index = index + 1
+    }
+}
+
+func place_a_line(statement: Statement, line: Integer) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: statement.line = line
+        HighIntermediaryRepresentation.Statements.Assign.Assign: statement.line = line
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: statement.line = line
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: statement.line = line
+        HighIntermediaryRepresentation.Statements.Evaluate: statement.line = line
+        HighIntermediaryRepresentation.Statements.If: place_the_branches(statement, line)
+        HighIntermediaryRepresentation.Statements.While: place_the_loop(statement, line)
+        HighIntermediaryRepresentation.Statements.Return: statement.line = line
+        HighIntermediaryRepresentation.Statements.Stop: statement.line = line
+        HighIntermediaryRepresentation.Statements.Block: place_the_lines(statement, line)
+    }
+}
+
+func place_the_branches(branch: HighIntermediaryRepresentation.Statements.If, line: Integer) {
+    branch.line = line
+    place_the_lines(branch.then_branch, line)
+    place_the_lines(branch.else_branch, line)
+}
+
+func place_the_loop(loop: HighIntermediaryRepresentation.Statements.While, line: Integer) {
+    loop.line = line
+    place_the_lines(loop.body, line)
+}

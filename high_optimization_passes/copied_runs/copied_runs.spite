@@ -1,0 +1,266 @@
+union Statement {
+    HighIntermediaryRepresentation.Statements.Declare
+    HighIntermediaryRepresentation.Statements.Assign.Assign
+    HighIntermediaryRepresentation.Statements.Assign.Attribute
+    HighIntermediaryRepresentation.Statements.Assign.ThroughShape
+    HighIntermediaryRepresentation.Statements.Evaluate
+    HighIntermediaryRepresentation.Statements.If
+    HighIntermediaryRepresentation.Statements.While
+    HighIntermediaryRepresentation.Statements.Return
+    HighIntermediaryRepresentation.Statements.Stop
+    HighIntermediaryRepresentation.Statements.Block
+}
+
+union Value {
+    HighIntermediaryRepresentation.Values.WholeNumber
+    HighIntermediaryRepresentation.Values.DecimalNumber
+    HighIntermediaryRepresentation.Values.TextConstant
+    HighIntermediaryRepresentation.Values.NullConstant
+    HighIntermediaryRepresentation.Values.LocalRead
+    HighIntermediaryRepresentation.Values.ThisRead
+    HighIntermediaryRepresentation.Values.AttributeRead
+    HighIntermediaryRepresentation.Values.Call
+    HighIntermediaryRepresentation.Values.MakeObject
+    HighIntermediaryRepresentation.Values.MachineOperation
+    HighIntermediaryRepresentation.Values.Negation
+    HighIntermediaryRepresentation.Values.ForeignCall
+    HighIntermediaryRepresentation.Values.Class.Membership
+    HighIntermediaryRepresentation.Values.PresenceTest
+    HighIntermediaryRepresentation.Values.Conversion
+    HighIntermediaryRepresentation.Values.Function.Value
+    HighIntermediaryRepresentation.Values.Function.ValueCall
+    HighIntermediaryRepresentation.Values.NumberRoom
+    HighIntermediaryRepresentation.Values.ShapeCall
+    HighIntermediaryRepresentation.Values.EnumText
+    HighIntermediaryRepresentation.Values.EnumFromText
+    HighIntermediaryRepresentation.Values.Class.Object
+    HighIntermediaryRepresentation.Values.Class.OfValue
+    HighIntermediaryRepresentation.Values.Function.Fact
+}
+
+var no_program = Model.ProgramModel()
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
+var read_name = "Buffer._read_byte_at"
+var written_name = "Buffer._write_byte_at"
+
+# ../../OPTIMIZATIONS.md#bytes-are-copied-in-one-block
+func optimized(high: HighIntermediaryRepresentation.HighProgram) {
+    fallback high.will_be_lowered()
+    program = high
+    var index = 0
+    while index < high.built_functions.count() {
+        var built = high.built_functions[index]
+        copy_in(built.body)
+        index = index + 1
+    }
+}
+
+func copy_in(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        var copying = copy_at(statement)
+        if copying {
+            block.statements[index] = copying
+        }
+        index = index + 1
+    }
+}
+
+func copy_at(statement: Statement): HighIntermediaryRepresentation.Statements.If? {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return null
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return null
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return null
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: return null
+        HighIntermediaryRepresentation.Statements.Evaluate: return null
+        HighIntermediaryRepresentation.Statements.If: return copy_in_branches(statement)
+        HighIntermediaryRepresentation.Statements.While: return copy_or_walk(statement)
+        HighIntermediaryRepresentation.Statements.Return: return null
+        HighIntermediaryRepresentation.Statements.Stop: return null
+        HighIntermediaryRepresentation.Statements.Block: return copy_in_inner(statement)
+    }
+}
+
+func copy_in_branches(branch: HighIntermediaryRepresentation.Statements.If): HighIntermediaryRepresentation.Statements.If? {
+    copy_in(branch.then_branch)
+    copy_in(branch.else_branch)
+    return null
+}
+
+func copy_in_inner(inner: HighIntermediaryRepresentation.Statements.Block): HighIntermediaryRepresentation.Statements.If? {
+    copy_in(inner)
+    return null
+}
+
+func copy_or_walk(loop: HighIntermediaryRepresentation.Statements.While): HighIntermediaryRepresentation.Statements.If? {
+    var copying = copy_of(loop)
+    if copying {
+        return copying
+    }
+    copy_in(loop.body)
+    return null
+}
+
+func copy_of(loop: HighIntermediaryRepresentation.Statements.While): HighIntermediaryRepresentation.Statements.If? {
+    fallback loop.condition and loop.condition.class == HighIntermediaryRepresentation.Values.MachineOperation
+    fallback loop.condition.operator == 'less'
+    fallback loop.condition.left and loop.condition.left.class == HighIntermediaryRepresentation.Values.LocalRead
+    var index_name = loop.condition.left.name
+    fallback loop.condition.right and is_steady(loop.condition.right, index_name)
+    fallback loop.body.statements.count() == 3
+    var reading = loop.body.statements[0]
+    var writing = loop.body.statements[1]
+    var stepping = loop.body.statements[2]
+    fallback reading.class == HighIntermediaryRepresentation.Statements.Declare
+    fallback reading.value and reading.value.class == HighIntermediaryRepresentation.Values.Call
+    fallback is_a_byte_access(reading.value.function, read_name) and reading.value.arguments.count() == 1
+    fallback reading.value.receiver and is_a_steady_buffer(reading.value.receiver, index_name)
+    var source_at = reading.value.arguments[0]
+    var source_start = start_of(source_at, index_name)
+    fallback source_start
+    fallback writing.class == HighIntermediaryRepresentation.Statements.Evaluate
+    fallback writing.value and writing.value.class == HighIntermediaryRepresentation.Values.Call
+    fallback is_a_byte_access(writing.value.function, written_name) and writing.value.arguments.count() == 2
+    fallback writing.value.receiver and is_a_steady_buffer(writing.value.receiver, index_name)
+    var target_at = writing.value.arguments[0]
+    var written = writing.value.arguments[1]
+    var target_start = start_of(target_at, index_name)
+    fallback target_start
+    fallback written.class == HighIntermediaryRepresentation.Values.LocalRead and written.name == reading.name
+    fallback is_a_step(stepping, index_name)
+    var index_type = loop.condition.left.value_type
+    var copier = copier_of(writing.value.receiver.value_type, index_type)
+    var end = again(loop.condition.right)
+    crash end
+    var target = again(writing.value.receiver)
+    crash target
+    var source = again(reading.value.receiver)
+    crash source
+    var arguments = List<Value>()
+    var target_from = from(target_start, index_name, index_type)
+    arguments.append(target_from)
+    arguments.append(source)
+    var source_from = from(source_start, index_name, index_type)
+    arguments.append(source_from)
+    var at_index = HighIntermediaryRepresentation.Values.LocalRead(index_type, index_name)
+    var left = HighIntermediaryRepresentation.Values.MachineOperation(index_type, 'subtract', end, at_index)
+    arguments.append(left)
+    var copied = HighIntermediaryRepresentation.Values.Call(copier, target, arguments)
+    var copying = HighIntermediaryRepresentation.Statements.Evaluate(copied)
+    copying.line = writing.line
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements.append(copying)
+    var end_again = again(loop.condition.right)
+    crash end_again
+    var finished = HighIntermediaryRepresentation.Statements.Assign.Assign(index_name, end_again)
+    finished.line = stepping.line
+    body.statements.append(finished)
+    var tested_index = HighIntermediaryRepresentation.Values.LocalRead(index_type, index_name)
+    var end_tested = again(loop.condition.right)
+    crash end_tested
+    var any_left = HighIntermediaryRepresentation.Values.MachineOperation(loop.condition.value_type, 'less', tested_index, end_tested)
+    var made = HighIntermediaryRepresentation.Statements.If(any_left, body, null)
+    made.line = loop.line
+    return made
+}
+
+func is_a_byte_access(function: Model.FunctionModel, key: String): Boolean {
+    return function.key() == key and not function.has_a_body()
+}
+
+func is_a_step(stepping: Statement, index_name: String): Boolean {
+    fallback stepping.class == HighIntermediaryRepresentation.Statements.Assign.Assign and stepping.name == index_name
+    fallback stepping.value and stepping.value.class == HighIntermediaryRepresentation.Values.MachineOperation
+    fallback stepping.value.operator == 'add'
+    fallback stepping.value.left and stepping.value.left.class == HighIntermediaryRepresentation.Values.LocalRead
+    fallback stepping.value.left.name == index_name
+    fallback stepping.value.right and stepping.value.right.class == HighIntermediaryRepresentation.Values.WholeNumber
+    return stepping.value.right.number == 1
+}
+
+func is_steady(value: Value, index_name: String): Boolean {
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return true
+    }
+    fallback value.class == HighIntermediaryRepresentation.Values.LocalRead
+    return value.name != index_name
+}
+
+func is_a_steady_buffer(value: Value, index_name: String): Boolean {
+    if value.class == HighIntermediaryRepresentation.Values.ThisRead {
+        return true
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return value.name != index_name
+    }
+    fallback value.class == HighIntermediaryRepresentation.Values.AttributeRead
+    fallback value.object
+    if value.object.class == HighIntermediaryRepresentation.Values.ThisRead {
+        return true
+    }
+    fallback value.object.class == HighIntermediaryRepresentation.Values.LocalRead
+    return value.object.name != index_name
+}
+
+func start_of(at: Value, index_name: String): Value? {
+    if at.class == HighIntermediaryRepresentation.Values.LocalRead and at.name == index_name {
+        return HighIntermediaryRepresentation.Values.WholeNumber(at.value_type, 0)
+    }
+    fallback at.class == HighIntermediaryRepresentation.Values.MachineOperation and at.operator == 'add'
+    fallback at.right and at.right.class == HighIntermediaryRepresentation.Values.LocalRead
+    fallback at.right.name == index_name
+    fallback at.left and is_steady(at.left, index_name)
+    return at.left
+}
+
+func from(start: Value, index_name: String, index_type: Model.Type): Value {
+    var at_index = HighIntermediaryRepresentation.Values.LocalRead(index_type, index_name)
+    if start.class == HighIntermediaryRepresentation.Values.WholeNumber and start.number == 0 {
+        return at_index
+    }
+    var start_again = again(start)
+    crash start_again
+    return HighIntermediaryRepresentation.Values.MachineOperation(index_type, 'add', start_again, at_index)
+}
+
+func again(value: Value): Value? {
+    if value.class == HighIntermediaryRepresentation.Values.ThisRead {
+        return HighIntermediaryRepresentation.Values.ThisRead(value.value_type)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return HighIntermediaryRepresentation.Values.LocalRead(value.value_type, value.name)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return HighIntermediaryRepresentation.Values.WholeNumber(value.value_type, value.number)
+    }
+    fallback value.class == HighIntermediaryRepresentation.Values.AttributeRead
+    crash value.object
+    var object_again = again(value.object)
+    crash object_again
+    var read = HighIntermediaryRepresentation.Values.AttributeRead(object_again, value.attribute)
+    read.value_type = value.value_type
+    return read
+}
+
+func copier_of(buffer_type: Model.Type, index_type: Model.Type): Model.FunctionModel {
+    var buffer = program.model.class_named("Buffer")
+    crash buffer
+    var known = buffer.function_named("_copy_bytes")
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel("_copy_bytes", buffer.key)
+    var at = Model.ParameterModel("at", index_type, false)
+    made.parameters.append(at)
+    var present_buffer = buffer_type.present()
+    var source = Model.ParameterModel("source", present_buffer, false)
+    made.parameters.append(source)
+    var source_at = Model.ParameterModel("source_at", index_type, false)
+    made.parameters.append(source_at)
+    var wanted = Model.ParameterModel("wanted", index_type, false)
+    made.parameters.append(wanted)
+    buffer.declared_functions.append(made)
+    return made
+}

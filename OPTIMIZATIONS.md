@@ -474,9 +474,23 @@ more bytes per `Buffer`, and the time.
 
 ## Bytes are copied in one block
 
-The library's text and bytes functions copy runs of bytes with `Buffer._copy_bytes(at, source, source_at,
-wanted)`, a function with no body that the compiler writes as one block copy: `rep movsb`, or, when the two runs
-overlap with the target after the source, the same copy run backwards. `String`'s `_append_text`, `slice`, `sum`,
+The library copies a run of bytes the plain way, one byte read and written per pass of a loop (D1735):
+
+```spite
+var index = 0
+while index < wanted {
+    var copied = other._read_byte_at(start + index)
+    _write_byte_at(kept + index, copied)
+    index = index + 1
+}
+```
+
+The compiler (`high_optimization_passes/copied_runs`) makes such a loop one block copy, `rep movsb`, through
+`Buffer._copy_bytes`, an intrinsic it declares itself. The copy runs forwards like the loop, so even runs that
+overlap end as the loop leaves them; the compiler's own copies of whole objects, which never overlap that way, also
+run backwards when the target is after the source. A loop of that shape is one that reads one byte of a buffer at
+a start plus the index, writes it to a buffer at a start plus the index, and steps the index by one up to an end,
+where the buffers, the starts and the end are names the loop does not assign. `String`'s `_append_text`, `slice`, `sum`,
 `replace`, `split`, `trim`, `to_buffer`, `upper_case` and `lower_case`, and `Buffer`'s `append_buffer`, `copy`,
 `read_buffer_at` and `read_string_at` are each one copy per run instead of a call per byte. `equals`, `starts_with`, `ends_with`,
 `contains`, `index_of`, `split` and `replace` compare eight bytes at a time (one 64-bit load from each side), and
@@ -1445,6 +1459,41 @@ loop, and functions that read or write only bytes already appended (`count`, `ge
 given a run of bytes (`append_buffer`) or written past its count (`take_written`).
 
 **What a program can observe:** fewer allocations under `--debug-memory` (`tests/trimmed_buffer`), and the time.
+
+## A buffer grows where its count does
+
+How a `Buffer`, a `List` and a `String` make room is the compiler's, never code the library or a program can name
+(D1735). The library says only what the bytes are: `Buffer(size)` sets `_capacity`, the room it was given; an append
+raises `item_count` and writes the bytes below it; a list writes its new item at `_length`. The compiler writes the
+rest in `high_intermediary_representation/building/room_forms.spite`:
+
+- setting a buffer's `_capacity` first makes that much room, through `_resize_room`, an intrinsic the compiler
+  declares on `Buffer` itself;
+- raising a buffer's `item_count` first calls `Buffer._reserve(count)`, and writing a list's item at its `_length`
+  first calls `List._reserve(_length + 1)`, functions the compiler writes: when the room is short it grows to twice
+  what it held, or to what is wanted when that is more (a list to at least four items), so a run of appends copies
+  each byte a constant number of times;
+- a join in one piece grows its text once for all its pieces through `String._make_room_for`, which it writes the
+  same way.
+
+The functions are placed at the attribute they serve, so a crash inside one names that line, and they are
+[tested in place](#a-call-that-returns-at-once-on-a-test-is-tested-in-place) and inlined like the library's own.
+
+```spite
+func squares(count: Integer): List<Integer> {
+    var made = List<Integer>()
+    var index = 0
+    while index < count {
+        made.append(index * index)
+        index = index + 1
+    }
+    return made
+}
+```
+
+**When it applies:** every count a buffer raises and every write at a list's end. Setting a count or a capacity to
+a written `0` makes no room. **What a program can observe:** nothing but the time and the room, which is at most
+twice the bytes held.
 
 ## A list's objects sit inside its storage
 
