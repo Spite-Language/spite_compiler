@@ -2396,6 +2396,19 @@ the two were one value.
 
 **What a program can observe:** only the time.
 
+## A decimal leaves its register only where it must
+
+A decimal no decimal register is free for over its whole life is split as a whole number is: it lives in a
+decimal register in every block where none of its stretches calls and in its frame slot where one does ([around
+its calls](#a-value-leaves-a-scratch-register-only-around-a-call)), or in a decimal register in its deepest loop and
+its slot outside ([by loop depth](#a-value-spilled-outside-a-loop-lives-in-a-register-inside-it)), when what the
+register saves outweighs the moves. A register `xmm6` to `xmm15`, which a call keeps, may hold it over stretches
+that call; `xmm3` to `xmm5` only over stretches that do not. On an edge where its homes differ it moves through
+`rax` (`movd`/`movq` and a store, or a load and `movd`/`movq`), the stores of the edge before its loads. Not for a
+decimal live across a vector loop.
+
+**What a program can observe:** only the time.
+
 ## A decimal constant gives up its register to a value
 
 A decimal constant (`0.001`, a `Vector3`'s `1.0`) lives in a decimal register like any decimal. When a value needs a

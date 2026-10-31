@@ -270,20 +270,37 @@ func moves_on_the_edge(from_block: Integer, to_block: Integer): Boolean {
 
 func differs_on_the_edge(register: Integer, from_block: Integer, to_block: Integer): Boolean {
     fallback is_split[register] == true
-    return home_in(register, from_block) != home_in(register, to_block)
+    return place_in(register, from_block) != place_in(register, to_block)
+}
+
+func place_in(register: Integer, block_index: Integer): Integer {
+    var home = homes[register]
+    crash home
+    if home < 0 {
+        return -1
+    }
+    var split = block_index >= 0 and is_split[register] == true
+    if split and slot_keys[key_of(register, block_index)] == true {
+        return -1
+    }
+    return home
 }
 
 # ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
-func decimal_home_of(register: Integer): Integer {
+func decimal_home_in(register: Integer, block_index: Integer): Integer {
     if register < 0 or register >= homes.count() {
         return -1
     }
-    var home = homes[register]
-    crash home
+    var home = place_in(register, block_index)
     if home >= 16 {
         return home - 16
     }
     return -1
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
+func decimal_home_of(register: Integer): Integer {
+    return decimal_home_in(register, current_block)
 }
 
 func decimal_size_of(register: Integer): Integer {
@@ -1312,6 +1329,7 @@ func place(register: Integer) {
     fallback not joins_its_left(register)
     fallback decimal_size <= 0 or not placed_in_a_decimal(register)
     fallback decimal_size <= 0 or not took_a_constants_decimal(register)
+    fallback decimal_size <= 0 or not takes_a_split_decimal(register)
     fallback not takes_a_whole_volatile(register, true, 1)
     var index = 0
     while index < keeping.count() {
@@ -1530,7 +1548,9 @@ func takes_a_whole_volatile(register: Integer, starts_here: Boolean, tried: Inte
 func takes_a_split_volatile(register: Integer): Boolean {
     var decimal_size = decimal_sizes[register]
     crash decimal_size
-    fallback decimal_size <= 0
+    if decimal_size > 0 {
+        return takes_a_split_decimal(register)
+    }
     var slot_blocks = clobbered_blocks(register)
     fallback not slot_blocks.is_empty() and split_pays(register, slot_blocks)
     var kept_starts = List<Integer>()
@@ -1849,9 +1869,7 @@ func spill_the_cheapest(register: Integer) {
 
 # ../../OPTIMIZATIONS.md#a-value-spilled-outside-a-loop-lives-in-a-register-inside-it
 func takes_a_loop_split(register: Integer): Boolean {
-    var decimal_size = decimal_sizes[register]
-    crash decimal_size
-    fallback decimal_size <= 0 and not crosses_a_vector_loop(register)
+    fallback not crosses_a_vector_loop(register)
     var depth = deepest_use_of(register)
     while depth >= 1 {
         if takes_a_split_at(register, depth) {
@@ -1869,6 +1887,11 @@ func takes_a_split_at(register: Integer, depth: Integer): Boolean {
     var kept_ends = List<Integer>()
     keep_the_stretches(register, slot_blocks, kept_starts, kept_ends)
     fallback not kept_starts.is_empty()
+    var decimal_size = decimal_sizes[register]
+    crash decimal_size
+    if decimal_size > 0 {
+        return took_a_decimal_over(register, slot_blocks, kept_starts, kept_ends)
+    }
     var index = 0
     while index < keeping.count() {
         var candidate = keeping[index]
@@ -2014,6 +2037,39 @@ func gave_way(holder: Integer, kept_blocks: List<Integer>, gain: Long): Boolean 
     fallback not holder_starts.is_empty()
     split_around(holder, holder_slots, holder_starts, holder_ends)
     return true
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-leaves-its-register-only-where-it-must
+func takes_a_split_decimal(register: Integer): Boolean {
+    fallback not crosses_a_vector_loop(register)
+    var slot_blocks = clobbered_blocks(register)
+    fallback not slot_blocks.is_empty() and split_pays(register, slot_blocks)
+    var kept_starts = List<Integer>()
+    var kept_ends = List<Integer>()
+    keep_the_stretches(register, slot_blocks, kept_starts, kept_ends)
+    fallback not kept_starts.is_empty()
+    return took_a_decimal_over(register, slot_blocks, kept_starts, kept_ends)
+}
+
+func took_a_decimal_over(
+    register: Integer,
+    slot_blocks: List<Integer>,
+    kept_starts: List<Integer>,
+    kept_ends: List<Integer>,
+): Boolean {
+    var clobbered = stretches_clobbered(kept_starts, kept_ends)
+    var candidate = 3
+    while candidate < 16 {
+        var slot = 16 + candidate
+        var usable = candidate >= first_kept_decimal or not clobbered
+        if usable and is_free_over(slot, kept_starts, kept_ends) {
+            split_around(register, slot_blocks, kept_starts, kept_ends)
+            give(slot, register)
+            return true
+        }
+        candidate = candidate + 1
+    }
+    return false
 }
 
 func deepest_use_of(register: Integer): Integer {
