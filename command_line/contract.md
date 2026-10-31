@@ -17,9 +17,9 @@ no compiler setting against the `Build` the program declares (`validators/comman
   A compiler setting that is on while `_flags` holds nothing and its variable is unset stops the run: that
   compiler was built by one that does not fill `_flags`, and would otherwise ignore every flag.
 - `runs_the_program()`: neither `--check` nor `--build` was given, so the program is run once it is built.
-- `high_intermediary_representation_folder`: from `--high-ir=folder`, where the high representation of each class
-  is written.
-- `low_intermediary_representation_folder`: from `--low-ir=folder`, the same for the low representation.
+- `writes_high_ir`: from `--high-ir`, a Boolean; the whole program's high representation is written to
+  `.spite/build/<name>.high_ir.txt`.
+- `writes_low_ir`: from `--low-ir`, the same for the low representation, `.spite/build/<name>.low_ir.txt`.
 `Restart()` runs the compiler again with the flags it was given, in the same folder and environment, and ends
 this run with that run's exit code: a fix found after building restarts the compile on the fixed files (D1833).
 `Build.program` is the full path of the folder built. The program it runs is given no flags: its settings come from

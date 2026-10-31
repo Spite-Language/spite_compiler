@@ -25,8 +25,8 @@ owns it, not to a printer.
 | `diagnostics` | a `Diagnostics.Report` | each problem as `file:line: error: text (in Class.function)`, each fix as `file:line: fixed: text (in Class.function)`, and each note as `note: text` |
 | `fixed_source` | a file's text and the `Diagnostics.Fix`es a validator found in it | the text with each fix's lines replaced by its one line, at the first line's indentation |
 | `reordered_source` | a file's text, where each declaration starts and its rank in the file order | the declarations in that order, each with the comment lines right above it |
-| `high_intermediary_representation` | one `HighClass` | the class, its attributes and its functions, one statement a line (`--high-ir=folder`) |
-| `low_intermediary_representation` | the name of a class and its `LowFunction`s | each function and its instructions, one a line (`--low-ir=folder`) |
+| `high_intermediary_representation` | one `HighClass` | the class, its attributes and its functions, one statement a line (`--high-ir`, into `.spite/build/<name>.high_ir.txt`) |
+| `low_intermediary_representation` | the name of a class and its `LowFunction`s | each function and its instructions, one a line (`--low-ir`, into `.spite/build/<name>.low_ir.txt`) |
 
 | `final_class` | a class's merged `SourceFile` and the link to each file that supplied a declaration | the class as Spite, each attribute and function under a `#` link to its file (`--final-classes=folder`) |
 | `instantiated_class` | one `ClassModel` of a generic instantiation | the instantiation as a `type` with the members it has |
