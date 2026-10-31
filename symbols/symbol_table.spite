@@ -73,10 +73,26 @@ func read_class(class_file: Mapping.ClassFile) {
         tree = reparsing.run()
         tokens = reparsing.tokens
     }
+    var ordered = ordered_text(class_file, formatted, tree, is_generated)
+    if ordered != formatted {
+        formatted = ordered
+        var reordering = AbstractSyntaxTree.AbstractSyntaxTree(class_file.path, class_file.namespace, formatted)
+        tree = reordering.run()
+        tokens = reordering.tokens
+    }
     read_the_loads(class_file, tree)
     if not is_generated {
         var rules = Validators.AbstractSyntaxTree.EveryRule()
+        rules.may_fix = may_rewrite(class_file.path, is_generated)
         var walk = rules.check(tree, class_file.simple_name, this)
+        if not rules.fixes.is_empty() {
+            formatted = fixed_text(class_file.path, formatted, rules.fixes)
+            var fixing = AbstractSyntaxTree.AbstractSyntaxTree(class_file.path, class_file.namespace, formatted)
+            tree = fixing.run()
+            tokens = fixing.tokens
+            var checking = Validators.AbstractSyntaxTree.EveryRule()
+            walk = checking.check(tree, class_file.simple_name, this)
+        }
         walks.append(walk)
         walked_classes.append(class_file.simple_name)
         note_the_asserts(class_file.path, tokens)
@@ -225,14 +241,49 @@ func formatted_text(
     comments: List<AbstractSyntaxTree.Shapes.Comment>,
     is_generated: Boolean,
 ): String {
-    var library = Validators.LibraryFile()
-    var is_a_pinned_copy = path.contains(".spite/git/")
-    var is_the_programs = not is_generated and not is_library_path(path) and not library.holds(path) and not is_a_pinned_copy
-    if not is_the_programs {
+    if not may_rewrite(path, is_generated) {
         return text
     }
     var formatter = Formatting.Formatter()
     return formatter.formatted(path, text, tokens, comments)
+}
+
+func may_rewrite(path: String, is_generated: Boolean): Boolean {
+    var library = Validators.LibraryFile()
+    var is_a_pinned_copy = path.contains(".spite/git/")
+    return not is_generated and not is_library_path(path) and not library.holds(path) and not is_a_pinned_copy
+}
+
+# ../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
+func fixed_text(path: String, text: String, fixes: List<Diagnostics.Fix>): String {
+    var printer = Printers.FixedSource.Printer(text, fixes)
+    var fixed = printer.text()
+    var problems = fixes.map_problems()
+    var fixer = Formatting.Fixer()
+    return fixer.fixed(path, fixed, problems)
+}
+
+# ../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
+func ordered_text(
+    class_file: Mapping.ClassFile,
+    text: String,
+    tree: AbstractSyntaxTree.Shapes.SourceFile,
+    is_generated: Boolean,
+): String {
+    if not may_rewrite(class_file.path, is_generated) {
+        return text
+    }
+    var ordering = Validators.AbstractSyntaxTree.DeclarationOrder.Validator()
+    var misplaced = ordering.misplaced(tree, class_file.simple_name)
+    if misplaced.is_empty() {
+        return text
+    }
+    var starts = ordering.starts(tree)
+    var ranks = ordering.ranks(tree, class_file.simple_name)
+    var printer = Printers.ReorderedSource.Printer(text, starts, ranks)
+    var ordered = printer.text()
+    var fixer = Formatting.Fixer()
+    return fixer.fixed(class_file.path, ordered, misplaced)
 }
 
 func text_of_the_class(path: String): String {

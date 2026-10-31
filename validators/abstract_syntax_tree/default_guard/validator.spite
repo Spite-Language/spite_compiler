@@ -15,6 +15,9 @@ union Expression {
 var empty_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
 var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
 var class_name = ""
+var may_fix = false
+var fixes = List<Diagnostics.Fix>()
+var else_if_lines = List<Integer>()
 var collection_names = ["List", "Dictionary", "Vector", "Items"]
 var number_names = ["Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong", "Float", "Double"]
 var question_names = ["has_function", "argument_count", "function_waits", "function_writes_parameter"]
@@ -22,7 +25,18 @@ var question_names = ["has_function", "argument_count", "function_waits", "funct
 func check(starting_walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String) {
     walk = starting_walk
     class_name = starting_class_name
+    else_if_lines = List<Integer>()
+    walk.statements.each(note_an_else_if)
     walk.statements.each(check_found)
+}
+
+func note_an_else_if(found: AbstractSyntaxTree.Walk.Found.Statement) {
+    var statement = found.statement
+    fallback statement.class == AbstractSyntaxTree.Shapes.Statements.IfStatement
+    fallback statement.else_branch
+    fallback statement.else_branch.is_an_else_if and statement.else_branch.statements.count() == 1
+    var inner = statement.else_branch.statements[0]
+    else_if_lines.append(inner.line)
 }
 
 func check_found(found: AbstractSyntaxTree.Walk.Found.Statement) {
@@ -108,7 +122,9 @@ func check_return(
             "this 'if' only leaves the constructor, and a constructor is setup, not logic: take already resolved values, or write 'crash {asserted}' when this is a bug",
         )
     }
-    refuse(found, guard.line, "this 'if' only returns: write 'fallback {asserted}' and let the rest run unindented")
+    var fixed = "this 'if' only returned; wrote 'fallback {asserted}' in its place"
+    var refused = "this 'if' only returns: write 'fallback {asserted}' and let the rest run unindented"
+    fix_or_refuse(found, guard, asserted, fixed, refused)
 }
 
 func check_default(
@@ -123,11 +139,43 @@ func check_default(
     fallback is_a_default
     var printer = Printers.Spite.ExpressionPrinter(value)
     var written = printer.text()
-    refuse(
-        found,
-        guard.line,
-        "this 'if' only returns '{written}', which is what 'fallback' returns when its condition fails: write 'fallback {asserted}' and let the rest run unindented",
-    )
+    var fixed = "this 'if' only returned '{written}', which is what 'fallback' returns when its condition fails; wrote 'fallback {asserted}' in its place"
+    var refused = "this 'if' only returns '{written}', which is what 'fallback' returns when its condition fails: write 'fallback {asserted}' and let the rest run unindented"
+    fix_or_refuse(found, guard, asserted, fixed, refused)
+}
+
+# ../../../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
+func fix_or_refuse(
+    found: AbstractSyntaxTree.Walk.Found.Statement,
+    guard: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+    asserted: String,
+    fixed: String,
+    refused: String,
+) {
+    crash guard.then_branch
+    var last_line = guard.then_branch.end_line
+    var is_an_else_if = else_if_lines.contains(guard.line)
+    if not may_fix or is_an_else_if or holds_a_comment(guard.line, last_line) {
+        refuse(found, guard.line, refused)
+    }
+    var problem = Diagnostics.Problem(walk.file.path, guard.line, fixed)
+    problem.class_name = class_name
+    problem.function_name = found.function_name
+    problem.is_fix = true
+    var fix = Diagnostics.Fix(problem, guard.line, last_line, "fallback {asserted}")
+    fixes.append(fix)
+}
+
+func holds_a_comment(first_line: Integer, last_line: Integer): Boolean {
+    var index = 0
+    while index < walk.file.comments.count() {
+        var comment = walk.file.comments[index]
+        if comment.line >= first_line and comment.line <= last_line {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func is_the_default(
