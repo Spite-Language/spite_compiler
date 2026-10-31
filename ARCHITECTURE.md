@@ -258,8 +258,8 @@ it from a fresh clone:
    `--install` puts it in `.spite/spite.exe`. A seed built from this same source is already the fixed point, so
    its first build writes the seed's own bytes.
 
-Day to day nobody runs the chain: from the folder above, `spite_compiler/.spite/spite.exe spite_compiler --build
---executable-path=spite_compiler/.spite/spite_next.exe` builds the next compiler from the current source, and the
+Day to day nobody runs the chain: in this folder, `.spite/spite.exe --build
+--executable-path=.spite/spite_next.exe` builds the next compiler from the current source, and the
 next one is kept when it rebuilds itself to the same bytes. A change the current compiler cannot build (a rule
 it would apply to its own source, or a library it would not recognise) is built through a compiler that accepts
 both forms, and that change publishes a new seed: its fixed point as a new `seed-<date>` release, named in

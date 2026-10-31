@@ -36,6 +36,7 @@ STONES=(
     "acadacc 531e9b1 63b0b93 39d3918"
     "30824b7 e8df532 3259d3b f755736"
     "f9de322 eab10ec b45a2d9 cce8cd9"
+    "b62bcad da18edf d4fdad2 cce8cd9"
 )
 
 bridge_c8e2e45() {
@@ -186,6 +187,7 @@ stone() {
         "bridge_$2" "$sources/spite_compiler"
     fi
     rm -f "$work/stone_$2.exe" "$work/stone_$2.functions"
+    # every stone's compiler is older than D1775 and takes the folder it builds by position
     (cd "$sources" && "$1" spite_compiler --build --executable-path=spite_compiler/.spite/stone.exe) ||
         fail "$1 could not build the stepping stone $2"
     cp "$sources/spite_compiler/.spite/stone.exe" "$work/stone_$2.exe"
@@ -207,14 +209,19 @@ if [ "${walk_the_stones:-}" = yes ]; then
 fi
 
 build() {
-    # build <compiler> <round>: the compiler builds this checkout's source into .spite/bootstrap/spite_<round>.exe
+    # build <compiler> <round> [by_position]: the compiler builds this checkout's source, the folder it runs in
+    # (D1775), into .spite/bootstrap/spite_<round>.exe; a stone's compiler, older than that, is given the folder
     rm -f "$work/spite_$2.exe" "$work/spite_$2.functions"
-    (cd "$parent" && "$1" "$name" --build --executable-path="$name/.spite/bootstrap/spite_$2.exe")
+    if [ "${3:-}" = by_position ]; then
+        (cd "$parent" && "$1" "$name" --build --executable-path="$name/.spite/bootstrap/spite_$2.exe")
+    else
+        (cd "$root" && "$1" --build --executable-path=".spite/bootstrap/spite_$2.exe")
+    fi
     [ -f "$work/spite_$2.exe" ] || fail "$1 wrote no compiler"
 }
 
 echo "bootstrap: the seed builds the source"
-build "$seed" 1
+build "$seed" 1 ${walk_the_stones:+by_position}
 previous="$work/spite_1.exe"
 round=2
 while [ $round -le 4 ]; do

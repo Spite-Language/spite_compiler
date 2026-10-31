@@ -16,20 +16,23 @@ Clone the repositories side by side under one folder, under their own names:
 The script downloads the seed compiler (the last one this source built itself) into `spite_compiler/.spite/`,
 builds the source with it until two builds write the same bytes, and installs that compiler as
 `spite_compiler/.spite/spite.exe` (`ARCHITECTURE.md`, "How the compiler is built"). After that the compiler
-builds itself, from the folder above this one:
+builds itself, run in this folder (the compiler builds the folder it runs in):
 
-    spite_compiler/.spite/spite.exe spite_compiler --build --executable-path=spite_compiler/.spite/spite_next.exe
+    .spite/spite.exe --build --executable-path=.spite/spite_next.exe
 
 The compiler carries every class it adds to a program inside its own executable (`ARCHITECTURE.md`), so a release
 is `spite.exe` and the library.
 
 ## Run it
 
-    .spite/spite.exe <program folder>
-    .spite/spite.exe <program folder> --high-ir=folder --low-ir=folder
+    cd <program folder>
+    spite
+    spite --high-ir --low-ir
 
-The executable goes to `<program>/.spite/build/<name>.exe`, and its exit code is what the entry constructor
-answers. `--high-ir` and `--low-ir` write each class's representation, one `.ir` file per class.
+`spite` is this repository's `.spite/spite.exe`. Nothing is given by position: the compiler builds the folder it
+runs in, and every value is a named setting. The executable goes to `<program>/.spite/build/<name>.exe`, and its exit code is what the entry constructor
+answers. `--high-ir` and `--low-ir` also write the program's representations beside it, `<name>.high_ir.txt` and
+`<name>.low_ir.txt`.
 
 A program names everything it loads in its first lines, the standard library by its path from the program's
 folder. There is no launcher and no library search:
@@ -41,9 +44,9 @@ folder. There is no launcher and no library search:
 
 From the clone of [spite_spec](https://github.com/Spite-Language/spite_spec) beside this one:
 
-    ../spite_compiler/.spite/spite.exe runner --build
+    (cd runner && ../../spite_compiler/.spite/spite.exe --build)
     runner/.spite/build/runner.exe
-    runner/.spite/build/runner.exe tests/sum
+    runner/.spite/build/runner.exe --tests=tests/sum
 
 ## Read next
 
