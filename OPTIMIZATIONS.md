@@ -2570,9 +2570,12 @@ func read_twice(values: List<Integer>, at: Integer): Integer {
 The read in the `return` tests `at` against the count again only if the count was read again in between; when it is
 the same register (nothing wrote the list), the second test is the first one's answer and is not made.
 
+A comparison made in another block than its branch, one that dominates the branch (its answer kept in a register
+written once), decides the branch itself: the branch becomes a jump to the side the earlier answer gives, and the
+comparison is left for its other readers. The comparisons that decide are the same.
+
 It does not apply to a register written twice (a loop's counter: its value at the later test may be another pass's),
-to a comparison made in another block than its branch, to a decimal comparison, or to a function of more than 2000
-blocks.
+to a decimal comparison, or to a function of more than 2000 blocks.
 
 **What a program can observe:** only the time; the crash the first test makes is the same.
 
