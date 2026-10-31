@@ -469,11 +469,12 @@ as when each was refused while building.
   writes dominate an earlier branch on the same comparison of the same registers (or its opposite: `<` against
   `>=`, `==` against `!=`), is answered while compiling when the block one side of that earlier branch enters has no
   other way in and dominates the later branch. The answer is that side's: the comparison is answered when it is
-  made in the branch's block, and the branch itself is decided when it is made in another.
+  made in the branch's block, and the branch itself is decided when it is made in another. A decimal comparison is
+  answered by the same comparison of the same decimals; only `==` and `!=` count as opposites (a `NaN` makes `<`
+  and `>=` both false).
 - **Buys**: a second bound test of an index already tested (`crash values[at]` then `values[at]`) and any repeated
   test of the same values are not made; the branch becomes a jump.
-- **Missing**: a register written twice (a loop's counter), a decimal comparison, a function of more than 2000
-  blocks.
+- **Missing**: a register written twice (a loop's counter), a function of more than 2000 blocks.
 - **Falls back**: the test is made again.
 - **Lives in**: the low proof `proofs/dominating_tests`, run in each cleaning after the signed-test proof, which
   adds its answers to the same record on each function; the pass `low_optimization_passes/proven_bounds` writes

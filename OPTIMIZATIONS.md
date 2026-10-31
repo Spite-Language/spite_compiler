@@ -1202,7 +1202,9 @@ never copied: it is the cold path of every append, and copied into a loop it fil
 calls the function it is given is inlined, and once the closure it is given is known the call becomes direct. After
 [a call given a known closure gets its own copy of the callee](#a-call-given-a-known-closure-gets-its-own-copy-of-the-callee),
 inlining runs once more, so that copy is inlined into the loop that calls it and the closure, read by nothing any
-more, is never made.
+more, is never made. A callee whose `if` already became [a pick with no branch](#an-if-that-only-adds-or-picks-a-value-has-no-branch)
+is copied with its picks, so the late inlining still copies a function whose loop was unrolled and whose tests were
+turned into picks by the first cleaning.
 
 It does not apply to a function the compiler wrote (the scheduler's, a list's machinery) that calls others, to a
 function that has a loop of its own, other than a lock's wait that sleeps until another thread lets go (its call
@@ -2437,7 +2439,13 @@ A copy, a whole-number arithmetic other than a division, or a decimal arithmetic
 only there and reads, as its left operand, a value whose life ends at that instruction (nothing reads it after, on
 any path), takes that operand's register when nothing else holding the register is live with it. The operation is
 then made in place (`subss xmm6, xmm3` instead of `movaps xmm7, xmm6` and `subss xmm7, xmm3`, `add rbx, 1` instead
-of a move first, a copy that is no instruction at all), and one register fewer is live at that point. It does not
+of a move first, a copy that is no instruction at all), and one register fewer is live at that point.
+
+A register written in several places (a variable whose writes stayed one value) gets the same hint from one of its
+writes: the first, in the layout, whose left operand's life ends there and does not go on into another block. The
+allocator still gives the register one place for its whole life, so the hint holds only when that place is free
+wherever the register lives and the operand is not live with it anywhere else; the representation is not changed,
+so the passes that need a register written once still see each register as it was. It does not
 apply to an operand that is a constant, an operand split between a register and its slot, a value and an operand of
 different kinds (a decimal and a whole number), or a scratch register over a stretch that calls. A checked
 arithmetic made in place that overflows takes its operand back before the crash report reads it, as it did when
@@ -2466,6 +2474,32 @@ head and is one register again, as before.
 
 It leaves out a function that waits (its values live in its frame), one with a vector loop, and a register some path
 reads before anything writes it.
+
+**What a program can observe:** only the time.
+
+## A join's copies go before the comparison its branch reads
+
+A block that ends in a branch on a comparison made just before it (`index < limit`, then `if` on its answer) gets the
+copies of the joins it leads into before that comparison, not between it and the branch, when no copy writes what
+the comparison reads or reads what it writes. The comparison then stays beside its branch, so the two are one
+compare and jump: a copy in between made the comparison's answer a register of its own, written with `setl` and
+`movzx` on every pass of a loop and holding a register through it.
+
+**What a program can observe:** only the time.
+
+## A copy's two sides share a register while they hold one value
+
+Two registers a copy joins are made one even when both are live after the copy, as long as that copy is the only
+place their lives meet: from the copy on they hold one value until either is written again, so one register serves
+both. A loop's sum (`sum = sum + index % 7`) is a new register at the addition, copied back to the loop's register
+at the end of each pass and read once more after the loop; with the copy before the loop's branch both sides were
+live after it, so the sum lived in two registers and was moved on every pass. Now the addition writes the loop's
+register in place, as it did before every write became a value of its own.
+
+It joins only a copy of a value an arithmetic wrote once, or of a register already joined with one (a number
+worked out, never an object, whose register the passes after it still need to tell apart from the variable's), only where neither side was already joined this way,
+and only when no other write of either falls where both are live, so a value is never given a register another
+value still needs.
 
 **What a program can observe:** only the time.
 
@@ -2550,6 +2584,17 @@ registers, and the item is moved in once.
 
 **What a program can observe:** nothing but time; a crash report reads a decimal from wherever it lives.
 
+## A decimal operation on constants is its answer
+
+A decimal arithmetic or comparison both of whose operands are constants (each register written once) is replaced by
+its answer in the folding the cleaning runs, wherever it stands: a `Float` or `Double` worked out from known values
+inside a loop, which the evaluation at the start does not reach, is one constant before the loop instead of an
+operation on every pass. The answer is computed as the evaluation computes it, at the operation's width; an
+operation whose answer would be `NaN`, a division by zero or the square root of a negative number is left for the
+run.
+
+**What a program can observe:** only the time.
+
 ## A decimal constant is read from the program's data
 
 A decimal constant moved into a decimal register is one `movss` (or `movsd`) from a copy of its bits in the program's
@@ -2592,8 +2637,12 @@ A comparison made in another block than its branch, one that dominates the branc
 written once), decides the branch itself: the branch becomes a jump to the side the earlier answer gives, and the
 comparison is left for its other readers. The comparisons that decide are the same.
 
+A decimal comparison is answered by the same comparison of the same two decimals (the same width), on either side.
+Only `==` and `!=` are each other's opposite for decimals: a `NaN` makes `<` and `>=` both false, so the false side
+of `x < y` says nothing of a later `x >= y`.
+
 It does not apply to a register written twice (a loop's counter: its value at the later test may be another pass's),
-to a decimal comparison, or to a function of more than 2000 blocks.
+or to a function of more than 2000 blocks.
 
 **What a program can observe:** only the time; the crash the first test makes is the same.
 

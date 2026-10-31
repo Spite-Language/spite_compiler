@@ -45,6 +45,9 @@ var renaming = LowOptimizationPasses.Renaming()
 var register_total = 0
 var parents = List<Integer>()
 var holds_a_parameter = List<Boolean>()
+var overlaps = List<Boolean>()
+var computed_once = List<Boolean>()
+var joins_overlapping = false
 var piece_starts = List<List<Integer>>()
 var piece_ends = List<List<Integer>>()
 var open_ends = List<Integer>()
@@ -89,6 +92,7 @@ func coalesce() {
     lives.read_the_lives(function, edges, register_total)
     parents = List<Integer>()
     holds_a_parameter = List<Boolean>()
+    overlaps = List<Boolean>()
     piece_starts = List<List<Integer>>()
     piece_ends = List<List<Integer>>()
     open_ends = List<Integer>()
@@ -96,6 +100,7 @@ func coalesce() {
     while register < register_total {
         parents.append(register)
         holds_a_parameter.append(register < function.parameter_count)
+        overlaps.append(false)
         var starts = List<Integer>()
         piece_starts.append(starts)
         var ends = List<Integer>()
@@ -104,25 +109,76 @@ func coalesce() {
         register = register + 1
     }
     find_the_pieces()
+    find_the_computed()
+    joins_overlapping = false
+    var any = join_the_copies()
+    joins_overlapping = true
+    var more = join_the_copies()
+    any = any or more
+    fallback any
+    rename_to_the_roots()
+    number_the_registers()
+}
+
+func join_the_copies(): Boolean {
     var any = false
+    var base = 0
     var block_index = 0
     while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
         if edges.is_reachable(block_index) {
-            var block = function.blocks[block_index]
             var index = 0
             while index < block.instructions.count() {
                 var instruction = block.instructions[index]
-                if instruction.class == LowIntermediaryRepresentation.Instructions.Copy and joined(instruction.target, instruction.source) {
+                var written_at = base + 2 * index + 2
+                if instruction.class == LowIntermediaryRepresentation.Instructions.Copy and joined(instruction.target, instruction.source, written_at) {
                     any = true
                 }
                 index = index + 1
             }
         }
+        base = base + 2 * block.instructions.count() + 2
         block_index = block_index + 1
     }
-    fallback any
-    rename_to_the_roots()
-    number_the_registers()
+    return any
+}
+
+func find_the_computed() {
+    computed_once = List<Boolean>()
+    var writes = List<Integer>()
+    var register = 0
+    while register < register_total {
+        computed_once.append(false)
+        writes.append(0)
+        register = register + 1
+    }
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            operands.read(instruction)
+            var computes = instruction.class == LowIntermediaryRepresentation.Instructions.Arithmetic
+            computes = computes or instruction.class == LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic
+            note_the_writes(writes, computes)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func note_the_writes(writes: List<Integer>, computes: Boolean) {
+    var index = 0
+    while index < operands.defines.count() {
+        var register = operands.defines[index]
+        crash register
+        var count = writes[register]
+        crash count
+        writes[register] = count + 1
+        computed_once[register] = count == 0 and computes and register >= function.parameter_count
+        index = index + 1
+    }
 }
 
 func find_the_pieces() {
@@ -238,7 +294,7 @@ func root_of(register: Integer): Integer {
     return current
 }
 
-func joined(target: Integer, source: Integer): Boolean {
+func joined(target: Integer, source: Integer, written_at: Integer): Boolean {
     fallback target >= 0 and source >= 0 and target != source
     var first = root_of(target)
     var second = root_of(source)
@@ -246,7 +302,13 @@ func joined(target: Integer, source: Integer): Boolean {
     var first_holds = holds_a_parameter[first] == true
     var second_holds = holds_a_parameter[second] == true
     fallback not first_holds or not second_holds
-    fallback not pieces_meet(first, second)
+    var overlapping = false
+    if pieces_meet(first, second) {
+        fallback joins_overlapping and computed_once[second] == true
+        fallback overlaps[first] != true and overlaps[second] != true
+        fallback meet_only_after(first, second, written_at)
+        overlapping = true
+    }
     var kept = first
     var gone = second
     if second_holds or not first_holds and second < first {
@@ -256,6 +318,40 @@ func joined(target: Integer, source: Integer): Boolean {
     merge_the_pieces(kept, gone)
     parents[gone] = kept
     holds_a_parameter[kept] = first_holds or second_holds
+    overlaps[kept] = overlapping or overlaps[first] == true or overlaps[second] == true
+    computed_once[kept] = computed_once[first] == true or computed_once[second] == true
+    return true
+}
+
+# ../../OPTIMIZATIONS.md#a-copys-two-sides-share-a-register-while-they-hold-one-value
+func meet_only_after(target_root: Integer, source_root: Integer, written_at: Integer): Boolean {
+    var target_starts = piece_starts[target_root]
+    var target_ends = piece_ends[target_root]
+    var source_starts = piece_starts[source_root]
+    var source_ends = piece_ends[source_root]
+    crash target_starts
+    crash target_ends
+    crash source_starts
+    crash source_ends
+    var target_index = 0
+    var source_index = 0
+    while target_index < target_starts.count() and source_index < source_starts.count() {
+        var target_start = target_starts[target_index]
+        var target_end = target_ends[target_index]
+        var source_start = source_starts[source_index]
+        var source_end = source_ends[source_index]
+        crash target_start
+        crash target_end
+        crash source_start
+        crash source_end
+        var meets = target_end >= source_start and source_end >= target_start
+        fallback not meets or target_start == written_at and source_start < written_at
+        if target_end < source_end {
+            target_index = target_index + 1
+        } else {
+            source_index = source_index + 1
+        }
+    }
     return true
 }
 
