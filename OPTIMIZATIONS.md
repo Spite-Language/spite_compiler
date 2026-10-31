@@ -3297,7 +3297,7 @@ func blend(seed: Integer): Double {
     var total: Double = 0.0
     var step: Double = seed
     var index = 0
-    while index < 3000000 {
+    while index < 1_000_000 {
         total = total * 0.999999 + step
         index = index + 1
     }
