@@ -493,7 +493,7 @@ When it applies: every call of these functions. What a user can observe: the tim
 
 ## A number's own value is its register
 
-Inside a number's class, `_value()` reads the number from the `Buffer` the class declares as `_buffer`. The
+Inside a number's class, `get_this()` reads the number from the `Buffer` the class declares as `_buffer`. The
 compiler writes a read at 0 of the number's own type from that room as the number itself, with no `Buffer` made,
 so `index.to_string()`, `count.to_long()` and the rest of the numbers' functions cost no allocation. A read of
 another type or offset (a number's bytes) still makes the room, and lets it go once read.
@@ -504,7 +504,7 @@ func digits(count: Integer): String {
 }
 ```
 
-What a user can observe: no allocation for `_value()`, and the time.
+What a user can observe: no allocation for `get_this()`, and the time.
 
 ## Letting go of an object of a known class is direct
 
@@ -1410,6 +1410,24 @@ func largest(...values: List<Integer>): Integer {
 Inlined into `var biggest = largest(round % 10, round % 7, round % 13, round % 3)`, the list is registers and its
 buffer is room in the caller's frame: the four items fit inside it, so the call allocates nothing.
 
+## A buffer starts with the room it is proven to use
+
+`Buffer(size)` is a starting size, a suggestion and never a promise (D1757): where the compiler proves that fewer
+bytes are ever used, the buffer starts with those, and it never starts one larger than asked.
+
+**When it applies:** to a local made by `Buffer(n)` with `n` a number, declared once and outside every loop, never
+assigned again, whose every read is a call of its own on it: appends of one number (`append`, `append_integer_little_endian`
+and the like, each adding as many bytes as the number's class holds, read from its `set_this`), made outside every
+loop, and functions that read or write only bytes already appended (`count`, `get_at`, `set_at`, the `read_` and
+`write_` functions, `truncate`, `clear`, `copy`). The bytes appended in all are its start, when they are fewer than
+`n`. A start that fits the room inside the buffer (48 bytes) then needs no block at all
+([a buffer that never leaves its function lives in the frame](#a-buffer-that-never-leaves-its-function-lives-in-the-frame)).
+
+**When it does not apply:** a buffer passed, stored, answered or handed to a foreign call, appended to in a loop,
+given a run of bytes (`append_buffer`) or written past its count (`take_written`).
+
+**What a program can observe:** fewer allocations under `--debug-memory` (`tests/trimmed_buffer`), and the time.
+
 ## A list's objects sit inside its storage
 
 A `List` of a class of the program whose objects are only ever put into it fresh and read back from it holds the
@@ -1845,7 +1863,7 @@ with it takes an immediate.
 
 ## A number's own bits are read in place
 
-A number class reads its value through the bytes of its room (`Float._value()` is
+A number class reads its value through the bytes of its room (`Float.get_this()` is
 `_buffer._read_float_at(0)`), and the room of a number is made only when its bytes are needed. A read of the room
 at offset 0, of the number's own width and sign, is the number itself: no `Buffer` is made, written and read back.
 
@@ -1855,8 +1873,8 @@ func half_of(value: Float): Float {
 }
 ```
 
-`divide` reads both operands with `_value()`, and each read is the register that holds the number. Before, every
-`_value()` allocated a `Buffer` of four bytes, stored the number in it and loaded it again, so every library
+`divide` reads both operands with `get_this()`, and each read is the register that holds the number. Before, every
+`get_this()` allocated a `Buffer` of four bytes, stored the number in it and loaded it again, so every library
 function of a number (`sum`, `minimum`, `to_string`, `bits`, the maths) paid an allocation per operand. When it does
 not apply: a read at another offset or of another width, and `to_buffer()`, which still copies the bytes into a
 `Buffer` the caller keeps. What a user can observe: the time, and no allocation under `--debug-memory`.

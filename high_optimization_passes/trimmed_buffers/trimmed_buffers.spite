@@ -1,0 +1,212 @@
+union Statement {
+    HighIntermediaryRepresentation.Statements.Declare
+    HighIntermediaryRepresentation.Statements.Assign.Assign
+    HighIntermediaryRepresentation.Statements.Assign.Attribute
+    HighIntermediaryRepresentation.Statements.Assign.ThroughShape
+    HighIntermediaryRepresentation.Statements.Evaluate
+    HighIntermediaryRepresentation.Statements.If
+    HighIntermediaryRepresentation.Statements.While
+    HighIntermediaryRepresentation.Statements.Return
+    HighIntermediaryRepresentation.Statements.Stop
+    HighIntermediaryRepresentation.Statements.Block
+}
+
+union Value {
+    HighIntermediaryRepresentation.Values.WholeNumber
+    HighIntermediaryRepresentation.Values.DecimalNumber
+    HighIntermediaryRepresentation.Values.TextConstant
+    HighIntermediaryRepresentation.Values.NullConstant
+    HighIntermediaryRepresentation.Values.LocalRead
+    HighIntermediaryRepresentation.Values.ThisRead
+    HighIntermediaryRepresentation.Values.AttributeRead
+    HighIntermediaryRepresentation.Values.Call
+    HighIntermediaryRepresentation.Values.MakeObject
+    HighIntermediaryRepresentation.Values.MachineOperation
+    HighIntermediaryRepresentation.Values.Negation
+    HighIntermediaryRepresentation.Values.ForeignCall
+    HighIntermediaryRepresentation.Values.Class.Membership
+    HighIntermediaryRepresentation.Values.PresenceTest
+    HighIntermediaryRepresentation.Values.Conversion
+    HighIntermediaryRepresentation.Values.Function.Value
+    HighIntermediaryRepresentation.Values.Function.ValueCall
+    HighIntermediaryRepresentation.Values.NumberRoom
+    HighIntermediaryRepresentation.Values.ShapeCall
+    HighIntermediaryRepresentation.Values.EnumText
+    HighIntermediaryRepresentation.Values.EnumFromText
+    HighIntermediaryRepresentation.Values.Class.Object
+    HighIntermediaryRepresentation.Values.Class.OfValue
+    HighIntermediaryRepresentation.Values.Function.Fact
+}
+
+var walking: HighOptimizationPasses.Rewriting? = null
+var scalars = Model.Scalars()
+var asked = Dictionary<String, HighIntermediaryRepresentation.Values.MakeObject>()
+var declared = List<String>()
+var spoiled = List<String>()
+var reads = Dictionary<String, Integer>()
+var kept_reads = Dictionary<String, Integer>()
+var appended = Dictionary<String, Integer>()
+var loops_around = 0
+var read_only = ["count", "is_empty", "get_at", "set_at", "truncate", "clear", "copy"]
+
+# ../../OPTIMIZATIONS.md#a-buffer-starts-with-the-room-it-is-proven-to-use
+func optimized(high: HighIntermediaryRepresentation.HighProgram) {
+    fallback high.will_be_lowered()
+    var rewriting = HighOptimizationPasses.Rewriting(this)
+    walking = rewriting
+    var index = 0
+    while index < high.built_functions.count() {
+        var built = high.built_functions[index]
+        trim_in(built)
+        index = index + 1
+    }
+}
+
+func trim_in(built: HighIntermediaryRepresentation.HighFunction) {
+    asked = Dictionary<String, HighIntermediaryRepresentation.Values.MakeObject>()
+    declared = List<String>()
+    spoiled = List<String>()
+    reads = Dictionary<String, Integer>()
+    kept_reads = Dictionary<String, Integer>()
+    appended = Dictionary<String, Integer>()
+    loops_around = 0
+    walk_block(built.body)
+    var names = asked.keys()
+    names.each(trim)
+}
+
+func trim(name: String) {
+    var made = asked[name]
+    crash made
+    fallback not spoiled.contains(name)
+    var read_count = count_in(reads, name)
+    fallback read_count == count_in(kept_reads, name)
+    var used = count_in(appended, name)
+    var first = made.arguments[0]
+    crash first
+    fallback first.class == HighIntermediaryRepresentation.Values.WholeNumber
+    fallback first.number > used
+    var smaller = HighIntermediaryRepresentation.Values.WholeNumber(first.value_type, used)
+    made.arguments[0] = smaller
+}
+
+func count_in(counts: Dictionary<String, Integer>, name: String): Integer {
+    var found = counts[name]
+    if found {
+        return found
+    }
+    return 0
+}
+
+func walk_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(walk_statement)
+}
+
+func walk_statement(statement: Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: walk_a_declaration(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: walk_an_assignment(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: walk_plainly(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: walk_plainly(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: walk_plainly(statement)
+        HighIntermediaryRepresentation.Statements.If: walk_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: walk_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Return: walk_plainly(statement)
+        HighIntermediaryRepresentation.Statements.Stop: walk_plainly(statement)
+        HighIntermediaryRepresentation.Statements.Block: walk_block(statement)
+    }
+}
+
+func walk_plainly(statement: Statement) {
+    crash walking
+    walking.rewrite_statement(statement)
+}
+
+func read_the_value(value: Value?): Value? {
+    crash walking
+    return walking.rewritten_or_none(value)
+}
+
+func walk_a_declaration(declaration: HighIntermediaryRepresentation.Statements.Declare) {
+    if declared.contains(declaration.name) {
+        spoiled.append(declaration.name)
+    }
+    declared.append(declaration.name)
+    if declaration.value and declaration.value.class == HighIntermediaryRepresentation.Values.MakeObject {
+        note_a_buffer(declaration.name, declaration.value)
+    }
+    walk_plainly(declaration)
+}
+
+func note_a_buffer(name: String, made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var made_type = made.value_type
+    fallback made_type.kind == 'object' and made_type.name == "Buffer" and not made_type.is_nullable
+    fallback made.constructor and made.arguments.count() == 1 and made.foreign_place.is_empty()
+    if loops_around > 0 {
+        spoiled.append(name)
+    }
+    asked[name] = made
+}
+
+func walk_an_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign) {
+    spoiled.append(assigned.name)
+    walk_plainly(assigned)
+}
+
+func walk_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    branch.condition = read_the_value(branch.condition)
+    branch.decided_condition = read_the_value(branch.decided_condition)
+    walk_block(branch.then_branch)
+    walk_block(branch.else_branch)
+}
+
+func walk_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    loops_around = loops_around + 1
+    loop.condition = read_the_value(loop.condition)
+    walk_block(loop.body)
+    loops_around = loops_around - 1
+}
+
+func rewritten(value: Value): Value {
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        add_to(reads, value.name, 1)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Call {
+        note_a_call(value)
+    }
+    return value
+}
+
+func note_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    fallback call.receiver and call.receiver.class == HighIntermediaryRepresentation.Values.LocalRead
+    fallback call.function.owner == "Buffer"
+    var name = call.function.name
+    var reads_only = read_only.contains(name) or name.starts_with("read_") or name.starts_with("write_")
+    if reads_only {
+        add_to(kept_reads, call.receiver.name, 1)
+        return
+    }
+    var width = appended_width_of(call.function)
+    fallback width > 0
+    add_to(kept_reads, call.receiver.name, 1)
+    add_to(appended, call.receiver.name, width)
+    if loops_around > 0 {
+        spoiled.append(call.receiver.name)
+    }
+}
+
+func appended_width_of(function: Model.FunctionModel): Integer {
+    fallback function.name.starts_with("append") and function.parameters.count() == 1
+    var parameter = function.parameters[0]
+    var parameter_type = parameter.parameter_type
+    fallback parameter_type.kind == 'scalar' and not parameter_type.is_nullable
+    var scalar = scalars.of(parameter_type.name)
+    fallback scalar and scalar.is_a_number
+    return scalar.size
+}
+
+func add_to(counts: Dictionary<String, Integer>, name: String, added: Integer) {
+    var before = count_in(counts, name)
+    counts[name] = before + added
+}
