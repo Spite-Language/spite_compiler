@@ -2158,6 +2158,13 @@ attributes of a class [no other thread touches](#an-attribute-a-loop-only-reads-
 object's attribute is still loaded and stored on every pass. The regions a loop only reads are read once before it,
 by the same rule.
 
+A call, an allocation, or a load or store that carries no region is allowed on a cold path of the loop: a block that
+does not run on every pass (it does not dominate the way back to the loop's start) and is in no loop inside it. Each
+attribute kept in a register is stored just before such an instruction and loaded again just after it, so what is
+called reads and writes the attribute's memory as before and the loop goes on with what it left there. A list's
+growth (`rare.append(total)`) and a call to a function that is not inlined are both such paths. In a program with
+threads no such path is allowed.
+
 ```spite
 func advance() {
     var step = 0
@@ -2175,6 +2182,23 @@ func advance() {
 `angle` and `turns` live in registers for the thousand passes (`angle` in a decimal register), `speed` is read once
 before the loop, and `angle` and `turns` are written once, after it, also when `advance` runs in a
 [band](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands).
+
+```spite
+func count_up(limit: Integer) {
+    var step = 0
+    while step < limit {
+        total = total + step
+        if step % 97 == 0 {
+            rare.append(total)
+            trim(_limit)
+        }
+        step = step + 1
+    }
+}
+```
+
+`total` lives in a register for every pass; it is stored before the list grows and before `trim`, which reads and
+writes it, and loaded again after each.
 
 ```spite
 func add(amount: Integer) {
