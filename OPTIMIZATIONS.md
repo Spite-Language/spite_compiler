@@ -2361,9 +2361,26 @@ call](#a-value-leaves-a-scratch-register-only-around-a-call). It applies when th
 saves in the loop weigh more than the moves on its edges (each weighed as 32 to the power of the loops that hold
 it), and not to a decimal or to a value live across a vector loop. A counter of an outer loop read in an inner
 loop full of other values then costs one load at the inner loop's entry instead of one per use in each pass.
+When the deepest loop does not pay or has no register free, each shallower loop that holds a use is tried in turn,
+from the deepest to the outermost, so a value read in an outer loop but not in its inner one still gets a register
+in the outer loop.
 
 **What a program can observe:** only the time; a crash report reads each number from where it lives in the block
 the check was in.
+
+## A value that barely uses a loop gives its register to one that does
+
+A value that holds a kept register for its whole life, read once on the way into a hot loop and once after it,
+keeps the register through the loop's body, where a value the loop reads every pass then lives in its frame slot.
+When a spilled value is [split by loop depth](#a-value-spilled-outside-a-loop-lives-in-a-register-inside-it) and
+no register is free over the blocks it would keep, one value alone in its way on a kept register is split instead:
+it gives up the register in those blocks (stored on the way in, loaded on the way out) and the spilled value takes
+it there, when what the spilled value's uses save, less its moves, weighs more than the holder's uses in those
+blocks and its moves (each weighed as 32 to the power of the loops that hold it). Not for a parameter, a decimal, a
+value already split, one that took its operand's register, or one live across a vector loop; on each edge the
+stores come before the loads, so the two never overwrite each other.
+
+**What a program can observe:** only the time.
 
 ## A result takes the register of the operand it ends
 
