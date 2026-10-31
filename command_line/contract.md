@@ -20,6 +20,8 @@ no compiler setting against the `Build` the program declares (`validators/comman
 - `high_intermediary_representation_folder`: from `--high-ir=folder`, where the high representation of each class
   is written.
 - `low_intermediary_representation_folder`: from `--low-ir=folder`, the same for the low representation.
+`Restart()` runs the compiler again with the flags it was given, in the same folder and environment, and ends
+this run with that run's exit code: a fix found after building restarts the compile on the fixed files (D1833).
 `Build.program` is the full path of the folder built. The program it runs is given no flags: its settings come from
 the environment.
 
