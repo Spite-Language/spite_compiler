@@ -1,0 +1,329 @@
+union Instruction {
+    LowIntermediaryRepresentation.Instructions.Constant
+    LowIntermediaryRepresentation.Instructions.Copy
+    LowIntermediaryRepresentation.Instructions.Arithmetic
+    LowIntermediaryRepresentation.Instructions.Compare
+    LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic
+    LowIntermediaryRepresentation.Instructions.Decimal.Compare
+    LowIntermediaryRepresentation.Instructions.Decimal.Conversion
+    LowIntermediaryRepresentation.Instructions.Load
+    LowIntermediaryRepresentation.Instructions.Store
+    LowIntermediaryRepresentation.Instructions.Call
+    LowIntermediaryRepresentation.Instructions.CallAt
+    LowIntermediaryRepresentation.Instructions.ForeignAddress
+    LowIntermediaryRepresentation.Instructions.DataAddress
+    LowIntermediaryRepresentation.Instructions.FunctionAddress
+    LowIntermediaryRepresentation.Instructions.Allocate
+    LowIntermediaryRepresentation.Instructions.Retain
+    LowIntermediaryRepresentation.Instructions.Free
+    LowIntermediaryRepresentation.Instructions.Resize
+    LowIntermediaryRepresentation.Instructions.CopyBytes
+    LowIntermediaryRepresentation.Instructions.OpenLibrary
+    LowIntermediaryRepresentation.Instructions.Jump
+    LowIntermediaryRepresentation.Instructions.Branch
+    LowIntermediaryRepresentation.Instructions.Return
+    LowIntermediaryRepresentation.Instructions.FrameAddress
+    LowIntermediaryRepresentation.Instructions.ThreadIdentity
+    LowIntermediaryRepresentation.Instructions.FrameRoom
+    LowIntermediaryRepresentation.Instructions.StartThread
+    LowIntermediaryRepresentation.Instructions.JoinThread
+    LowIntermediaryRepresentation.Instructions.AtomicAdd
+    LowIntermediaryRepresentation.Instructions.ImportCall
+    LowIntermediaryRepresentation.Instructions.CompareExchange
+    LowIntermediaryRepresentation.Instructions.Stop
+    LowIntermediaryRepresentation.Instructions.Exit
+    LowIntermediaryRepresentation.Instructions.VectorLoop
+    LowIntermediaryRepresentation.Instructions.Select
+}
+
+# ../../OPTIMIZATIONS.md#each-write-of-a-variable-is-a-value-of-its-own
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var edges = LowOptimizationPasses.BlockEdges()
+var dominance = LowOptimizationPasses.Dominance()
+var lives = LowOptimizationPasses.RegisterLives()
+var renaming = LowOptimizationPasses.Renaming()
+var register_total = 0
+var next_register = 0
+var versioned = List<Boolean>()
+var current = List<Integer>()
+var logged_registers = List<Integer>()
+var logged_versions = List<Integer>()
+var largest_cells: Long = 40000000
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if is_renamed() {
+        function.register_count = next_register
+    }
+    return function
+}
+
+func is_renamed(): Boolean {
+    fallback is_written_in_place()
+    edges.read_the_function(function)
+    fallback edges.is_regular and edges.reachable_predecessor_count(0) == 0
+    register_total = operands.most_register_of(function)
+    var cells: Long = register_total
+    fallback cells * function.blocks.count() <= largest_cells
+    next_register = register_total
+    if function.register_count > next_register {
+        next_register = function.register_count
+    }
+    var block_count = function.blocks.count()
+    dominance.read_the_blocks(edges, block_count)
+    fallback dominance.is_complete
+    lives.read_the_lives(function, edges, register_total)
+    fallback choose_the_versioned()
+    place_the_joins()
+    walk_the_tree()
+    return true
+}
+
+func is_written_in_place(): Boolean {
+    fallback not function.is_resumable and not function.blocks.is_empty()
+    fallback not function.placed_objects and not function.proven_tests and not function.register_ranges
+    var index = 0
+    while index < function.blocks.count() {
+        var block = function.blocks[index]
+        fallback block.joins.is_empty()
+        fallback not block.instructions.any(is_a_vector_loop)
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_vector_loop(instruction: Instruction): Boolean {
+    return instruction.class == LowIntermediaryRepresentation.Instructions.VectorLoop
+}
+
+func choose_the_versioned(): Boolean {
+    versioned = List<Boolean>()
+    current = List<Integer>()
+    renaming.renames = List<Integer>()
+    renaming.definition_renames = List<Integer>()
+    var any = false
+    var register = 0
+    while register < register_total {
+        var count = lives.definition_count_of(register)
+        var is_parameter = register < function.parameter_count
+        var chosen = count >= 2 and (is_parameter or not lives.is_live_in(register, 0))
+        versioned.append(chosen)
+        if chosen {
+            any = true
+        }
+        var entry = -1
+        if is_parameter {
+            entry = register
+        }
+        current.append(entry)
+        renaming.renames.append(-1)
+        renaming.definition_renames.append(-1)
+        register = register + 1
+    }
+    return any
+}
+
+func place_the_joins() {
+    var marks = List<Integer>()
+    var index = 0
+    while index < function.blocks.count() {
+        marks.append(-1)
+        index = index + 1
+    }
+    var register = 0
+    while register < register_total {
+        if versioned[register] == true {
+            place_the_joins_of(register, marks)
+        }
+        register = register + 1
+    }
+}
+
+func place_the_joins_of(register: Integer, marks: List<Integer>) {
+    var waiting = List<Integer>()
+    var defining = lives.defining_blocks[register]
+    crash defining
+    defining.each(waiting.append)
+    if register < function.parameter_count {
+        waiting.append(0)
+    }
+    while not waiting.is_empty() {
+        var block = waiting.remove_last()
+        crash block
+        var frontier = dominance.frontiers[block]
+        crash frontier
+        var index = 0
+        while index < frontier.count() {
+            var meeting = frontier[index]
+            crash meeting
+            var marked = marks[meeting]
+            crash marked
+            if marked != register {
+                marks[meeting] = register
+                waiting.append(meeting)
+                if lives.is_live_in(register, meeting) {
+                    var joining = LowIntermediaryRepresentation.Instructions.Join(-1, register)
+                    var met = function.blocks[meeting]
+                    crash met
+                    met.joins.append(joining)
+                }
+            }
+            index = index + 1
+        }
+    }
+}
+
+func walk_the_tree() {
+    var waiting = List<Integer>()
+    var marks = List<Integer>()
+    waiting.append(0)
+    marks.append(-1)
+    while not waiting.is_empty() {
+        var top = waiting.count() - 1
+        var block = waiting[top]
+        var mark = marks[top]
+        crash block
+        crash mark
+        if mark < 0 {
+            marks[top] = logged_registers.count()
+            rename_the_block(block)
+            var below = dominance.children[block]
+            crash below
+            var index = 0
+            while index < below.count() {
+                var child = below[index]
+                crash child
+                waiting.append(child)
+                marks.append(-1)
+                index = index + 1
+            }
+        } else {
+            restore_to(mark)
+            crash waiting.remove_last()
+            crash marks.remove_last()
+        }
+    }
+}
+
+func restore_to(mark: Integer) {
+    while logged_registers.count() > mark {
+        var register = logged_registers.remove_last()
+        var version = logged_versions.remove_last()
+        crash register
+        crash version
+        current[register] = version
+    }
+}
+
+func push_a_version(register: Integer, version: Integer) {
+    var previous = current[register]
+    crash previous
+    logged_registers.append(register)
+    logged_versions.append(previous)
+    current[register] = version
+}
+
+func fresh_register(): Integer {
+    var made = next_register
+    next_register = next_register + 1
+    return made
+}
+
+func rename_the_block(block_index: Integer) {
+    var block = function.blocks[block_index]
+    crash block
+    var index = 0
+    while index < block.joins.count() {
+        var joining = block.joins[index]
+        joining.target = fresh_register()
+        push_a_version(joining.original, joining.target)
+        index = index + 1
+    }
+    index = 0
+    while index < block.instructions.count() {
+        var instruction = block.instructions[index]
+        rename_the_instruction(instruction)
+        index = index + 1
+    }
+    var leaving = edges.successors[block_index]
+    crash leaving
+    index = 0
+    while index < leaving.count() {
+        var successor = leaving[index]
+        crash successor
+        fill_the_joins(block_index, successor)
+        index = index + 1
+    }
+}
+
+func rename_the_instruction(instruction: Instruction) {
+    operands.read(instruction)
+    var uses = operands.uses.copy()
+    var defines = operands.defines.copy()
+    var any = false
+    var index = 0
+    while index < uses.count() {
+        var register = uses[index]
+        crash register
+        if versioned[register] == true {
+            var version = current[register]
+            crash version
+            crash version >= 0
+            renaming.renames[register] = version
+            any = true
+        }
+        index = index + 1
+    }
+    if any {
+        renaming.rename(instruction)
+        uses.each(forget_a_rename)
+    }
+    any = false
+    index = 0
+    while index < defines.count() {
+        var register = defines[index]
+        crash register
+        if versioned[register] == true {
+            renaming.definition_renames[register] = fresh_register()
+            any = true
+        }
+        index = index + 1
+    }
+    fallback any
+    renaming.rename_definitions(instruction)
+    index = 0
+    while index < defines.count() {
+        var register = defines[index]
+        crash register
+        var version = renaming.definition_renames[register]
+        crash version
+        if version >= 0 {
+            push_a_version(register, version)
+            renaming.definition_renames[register] = -1
+        }
+        index = index + 1
+    }
+}
+
+func forget_a_rename(register: Integer) {
+    renaming.renames[register] = -1
+}
+
+func fill_the_joins(from_block: Integer, to_block: Integer) {
+    var block = function.blocks[to_block]
+    crash block
+    var index = 0
+    while index < block.joins.count() {
+        var joining = block.joins[index]
+        var version = current[joining.original]
+        crash version
+        crash version >= 0
+        joining.sources.append(version)
+        joining.blocks.append(from_block)
+        index = index + 1
+    }
+}

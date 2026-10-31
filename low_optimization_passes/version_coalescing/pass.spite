@@ -1,0 +1,431 @@
+union Instruction {
+    LowIntermediaryRepresentation.Instructions.Constant
+    LowIntermediaryRepresentation.Instructions.Copy
+    LowIntermediaryRepresentation.Instructions.Arithmetic
+    LowIntermediaryRepresentation.Instructions.Compare
+    LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic
+    LowIntermediaryRepresentation.Instructions.Decimal.Compare
+    LowIntermediaryRepresentation.Instructions.Decimal.Conversion
+    LowIntermediaryRepresentation.Instructions.Load
+    LowIntermediaryRepresentation.Instructions.Store
+    LowIntermediaryRepresentation.Instructions.Call
+    LowIntermediaryRepresentation.Instructions.CallAt
+    LowIntermediaryRepresentation.Instructions.ForeignAddress
+    LowIntermediaryRepresentation.Instructions.DataAddress
+    LowIntermediaryRepresentation.Instructions.FunctionAddress
+    LowIntermediaryRepresentation.Instructions.Allocate
+    LowIntermediaryRepresentation.Instructions.Retain
+    LowIntermediaryRepresentation.Instructions.Free
+    LowIntermediaryRepresentation.Instructions.Resize
+    LowIntermediaryRepresentation.Instructions.CopyBytes
+    LowIntermediaryRepresentation.Instructions.OpenLibrary
+    LowIntermediaryRepresentation.Instructions.Jump
+    LowIntermediaryRepresentation.Instructions.Branch
+    LowIntermediaryRepresentation.Instructions.Return
+    LowIntermediaryRepresentation.Instructions.FrameAddress
+    LowIntermediaryRepresentation.Instructions.ThreadIdentity
+    LowIntermediaryRepresentation.Instructions.FrameRoom
+    LowIntermediaryRepresentation.Instructions.StartThread
+    LowIntermediaryRepresentation.Instructions.JoinThread
+    LowIntermediaryRepresentation.Instructions.AtomicAdd
+    LowIntermediaryRepresentation.Instructions.ImportCall
+    LowIntermediaryRepresentation.Instructions.CompareExchange
+    LowIntermediaryRepresentation.Instructions.Stop
+    LowIntermediaryRepresentation.Instructions.Exit
+    LowIntermediaryRepresentation.Instructions.VectorLoop
+    LowIntermediaryRepresentation.Instructions.Select
+}
+
+# ../../OPTIMIZATIONS.md#each-write-of-a-variable-is-a-value-of-its-own
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var operands = LowOptimizationPasses.Operands()
+var edges = LowOptimizationPasses.BlockEdges()
+var lives = LowOptimizationPasses.RegisterLives()
+var renaming = LowOptimizationPasses.Renaming()
+var register_total = 0
+var parents = List<Integer>()
+var holds_a_parameter = List<Boolean>()
+var piece_starts = List<List<Integer>>()
+var piece_ends = List<List<Integer>>()
+var open_ends = List<Integer>()
+var made_registers = List<Integer>()
+var made_starts = List<Integer>()
+var made_ends = List<Integer>()
+var largest_cells: Long = 40000000
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if is_readable() {
+        coalesce()
+    }
+    return function
+}
+
+func is_readable(): Boolean {
+    fallback not function.is_resumable and not function.blocks.is_empty()
+    fallback not function.placed_objects and not function.proven_tests and not function.register_ranges
+    var index = 0
+    while index < function.blocks.count() {
+        var block = function.blocks[index]
+        crash block.joins.is_empty()
+        fallback not block.instructions.any(is_a_vector_loop)
+        index = index + 1
+    }
+    edges.read_the_function(function)
+    fallback edges.is_regular
+    register_total = operands.most_register_of(function)
+    var cells: Long = register_total
+    return cells * function.blocks.count() <= largest_cells
+}
+
+func is_a_vector_loop(instruction: Instruction): Boolean {
+    return instruction.class == LowIntermediaryRepresentation.Instructions.VectorLoop
+}
+
+func coalesce() {
+    lives.read_the_lives(function, edges, register_total)
+    parents = List<Integer>()
+    holds_a_parameter = List<Boolean>()
+    piece_starts = List<List<Integer>>()
+    piece_ends = List<List<Integer>>()
+    open_ends = List<Integer>()
+    var register = 0
+    while register < register_total {
+        parents.append(register)
+        holds_a_parameter.append(register < function.parameter_count)
+        var starts = List<Integer>()
+        piece_starts.append(starts)
+        var ends = List<Integer>()
+        piece_ends.append(ends)
+        open_ends.append(-1)
+        register = register + 1
+    }
+    find_the_pieces()
+    var any = false
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        if edges.is_reachable(block_index) {
+            var block = function.blocks[block_index]
+            var index = 0
+            while index < block.instructions.count() {
+                var instruction = block.instructions[index]
+                if instruction.class == LowIntermediaryRepresentation.Instructions.Copy and joined(instruction.target, instruction.source) {
+                    any = true
+                }
+                index = index + 1
+            }
+        }
+        block_index = block_index + 1
+    }
+    fallback any
+    rename_to_the_roots()
+    number_the_registers()
+}
+
+func find_the_pieces() {
+    var base = 0
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var end = base + 2 * block.instructions.count() + 1
+        if edges.is_reachable(block_index) {
+            find_the_pieces_of(block_index, block, base, end)
+        }
+        base = end + 1
+        block_index = block_index + 1
+    }
+}
+
+func find_the_pieces_of(block_index: Integer, block: LowIntermediaryRepresentation.LowBlock, base: Integer, end: Integer) {
+    made_registers.clear()
+    made_starts.clear()
+    made_ends.clear()
+    var opened = List<Integer>()
+    var leaving = lives.leaving[block_index]
+    crash leaving
+    var index = 0
+    while index < leaving.count() {
+        var register = leaving[index]
+        crash register
+        open_ends[register] = end
+        opened.append(register)
+        index = index + 1
+    }
+    var at = block.instructions.count() - 1
+    while at >= 0 {
+        var instruction = block.instructions[at]
+        crash instruction
+        operands.read(instruction)
+        var written_at = base + 2 * at + 2
+        var read_at = base + 2 * at + 1
+        index = 0
+        while index < operands.defines.count() {
+            var register = operands.defines[index]
+            crash register
+            var open = open_ends[register]
+            crash open
+            if open >= 0 {
+                add_a_piece(register, written_at, open)
+                open_ends[register] = -1
+            } else {
+                add_a_piece(register, written_at, written_at)
+            }
+            index = index + 1
+        }
+        index = 0
+        while index < operands.uses.count() {
+            var register = operands.uses[index]
+            crash register
+            var open = open_ends[register]
+            crash open
+            if open < 0 {
+                open_ends[register] = read_at
+                opened.append(register)
+            }
+            index = index + 1
+        }
+        at = at - 1
+    }
+    index = 0
+    while index < opened.count() {
+        var register = opened[index]
+        crash register
+        var open = open_ends[register]
+        crash open
+        if open >= 0 {
+            add_a_piece(register, base, open)
+            open_ends[register] = -1
+        }
+        index = index + 1
+    }
+    index = made_registers.count() - 1
+    while index >= 0 {
+        var register = made_registers[index]
+        var start = made_starts[index]
+        var stop = made_ends[index]
+        crash register
+        crash start
+        crash stop
+        var starts = piece_starts[register]
+        var ends = piece_ends[register]
+        crash starts
+        crash ends
+        starts.append(start)
+        ends.append(stop)
+        index = index - 1
+    }
+}
+
+func add_a_piece(register: Integer, start: Integer, stop: Integer) {
+    made_registers.append(register)
+    made_starts.append(start)
+    made_ends.append(stop)
+}
+
+func root_of(register: Integer): Integer {
+    var current = register
+    var parent = parents[current]
+    crash parent
+    while parent != current {
+        current = parent
+        var further = parents[current]
+        crash further
+        parent = further
+    }
+    return current
+}
+
+func joined(target: Integer, source: Integer): Boolean {
+    fallback target >= 0 and source >= 0 and target != source
+    var first = root_of(target)
+    var second = root_of(source)
+    fallback first != second
+    var first_holds = holds_a_parameter[first] == true
+    var second_holds = holds_a_parameter[second] == true
+    fallback not first_holds or not second_holds
+    fallback not pieces_meet(first, second)
+    var kept = first
+    var gone = second
+    if second_holds or not first_holds and second < first {
+        kept = second
+        gone = first
+    }
+    merge_the_pieces(kept, gone)
+    parents[gone] = kept
+    holds_a_parameter[kept] = first_holds or second_holds
+    return true
+}
+
+func pieces_meet(first: Integer, second: Integer): Boolean {
+    var first_starts = piece_starts[first]
+    var first_ends = piece_ends[first]
+    var second_starts = piece_starts[second]
+    var second_ends = piece_ends[second]
+    crash first_starts
+    crash first_ends
+    crash second_starts
+    crash second_ends
+    var first_index = 0
+    var second_index = 0
+    while first_index < first_starts.count() and second_index < second_starts.count() {
+        var first_start = first_starts[first_index]
+        var first_end = first_ends[first_index]
+        var second_start = second_starts[second_index]
+        var second_end = second_ends[second_index]
+        crash first_start
+        crash first_end
+        crash second_start
+        crash second_end
+        if first_end < second_start {
+            first_index = first_index + 1
+        } else if second_end < first_start {
+            second_index = second_index + 1
+        } else {
+            return true
+        }
+    }
+    return false
+}
+
+func merge_the_pieces(kept: Integer, gone: Integer) {
+    var first_starts = piece_starts[kept]
+    var first_ends = piece_ends[kept]
+    var second_starts = piece_starts[gone]
+    var second_ends = piece_ends[gone]
+    crash first_starts
+    crash first_ends
+    crash second_starts
+    crash second_ends
+    var starts = List<Integer>()
+    var ends = List<Integer>()
+    var first_index = 0
+    var second_index = 0
+    while first_index < first_starts.count() or second_index < second_starts.count() {
+        var takes_the_first = second_index >= second_starts.count()
+        if first_index < first_starts.count() and not takes_the_first {
+            var first_start = first_starts[first_index]
+            var second_start = second_starts[second_index]
+            crash first_start
+            crash second_start
+            takes_the_first = first_start <= second_start
+        }
+        if takes_the_first {
+            var start = first_starts[first_index]
+            var stop = first_ends[first_index]
+            crash start
+            crash stop
+            starts.append(start)
+            ends.append(stop)
+            first_index = first_index + 1
+        } else {
+            var start = second_starts[second_index]
+            var stop = second_ends[second_index]
+            crash start
+            crash stop
+            starts.append(start)
+            ends.append(stop)
+            second_index = second_index + 1
+        }
+    }
+    piece_starts[kept] = starts
+    piece_ends[kept] = ends
+    var emptied_starts = List<Integer>()
+    var emptied_ends = List<Integer>()
+    piece_starts[gone] = emptied_starts
+    piece_ends[gone] = emptied_ends
+}
+
+func rename_to_the_roots() {
+    renaming.renames = List<Integer>()
+    renaming.definition_renames = List<Integer>()
+    var register = 0
+    while register < register_total {
+        var root = root_of(register)
+        var replacement = -1
+        if root != register {
+            replacement = root
+        }
+        renaming.renames.append(replacement)
+        renaming.definition_renames.append(replacement)
+        register = register + 1
+    }
+    rename_every_block()
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.remove_where(is_a_copy_to_itself)
+        block_index = block_index + 1
+    }
+}
+
+func is_a_copy_to_itself(instruction: Instruction): Boolean {
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Copy {
+        return instruction.target == instruction.source
+    }
+    return false
+}
+
+func rename_every_block() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(rename_one)
+        block_index = block_index + 1
+    }
+}
+
+func rename_one(instruction: Instruction) {
+    renaming.rename(instruction)
+    renaming.rename_definitions(instruction)
+}
+
+func number_the_registers() {
+    var numbers = List<Integer>()
+    var register = 0
+    while register < register_total {
+        var number = -1
+        if register < function.parameter_count {
+            number = register
+        }
+        numbers.append(number)
+        register = register + 1
+    }
+    var next_number = function.parameter_count
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            operands.read(instruction)
+            next_number = number_each(operands.uses, numbers, next_number)
+            next_number = number_each(operands.defines, numbers, next_number)
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    renaming.renames = numbers
+    renaming.definition_renames = numbers
+    rename_every_block()
+    function.register_count = next_number
+}
+
+func number_each(registers: List<Integer>, numbers: List<Integer>, first_number: Integer): Integer {
+    var next_number = first_number
+    var index = 0
+    while index < registers.count() {
+        var register = registers[index]
+        crash register
+        var number = numbers[register]
+        crash number
+        if number < 0 {
+            numbers[register] = next_number
+            next_number = next_number + 1
+        }
+        index = index + 1
+    }
+    return next_number
+}

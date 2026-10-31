@@ -2422,6 +2422,28 @@ the two were one value.
 
 **What a program can observe:** only the time.
 
+## Each write of a variable is a value of its own
+
+At the start of the cleaning every register a function writes more than once is renamed: each write makes a register
+of its own, and where paths that hold different ones meet, a join at the head of the block picks the one of the
+path taken (the static single assignment form, joins placed on the dominance frontiers where the variable is
+still read). A join then becomes copies on its incoming edges, placed where [the allocator's split
+moves](#a-value-leaves-a-scratch-register-only-around-a-call) go: at the end of a predecessor with no other
+successor, or else on a block of their own on the edge. Last, each copy whose two sides are never live at the same
+point (in a block, a value read for the last time where another is written does not meet it) makes them one
+register again, and the registers left are numbered from the parameters up.
+
+A variable is then as many registers as it has separate lives: `var line = first` read in one place and
+`line = second` read in another, with nothing reading the first after the second is written, are two values the
+allocator places apart, so one can live in a register while the other is spilled, or each can take the register
+free where it lives. A loop's counter, written before the loop and at its end and read in it, joins at the loop's
+head and is one register again, as before.
+
+It leaves out a function that waits (its values live in its frame), one with a vector loop, and a register some path
+reads before anything writes it.
+
+**What a program can observe:** only the time.
+
 ## A decimal leaves its register only where it must
 
 A decimal no decimal register is free for over its whole life is split as a whole number is: it lives in a

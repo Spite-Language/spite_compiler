@@ -1,0 +1,194 @@
+union Instruction {
+    LowIntermediaryRepresentation.Instructions.Constant
+    LowIntermediaryRepresentation.Instructions.Copy
+    LowIntermediaryRepresentation.Instructions.Arithmetic
+    LowIntermediaryRepresentation.Instructions.Compare
+    LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic
+    LowIntermediaryRepresentation.Instructions.Decimal.Compare
+    LowIntermediaryRepresentation.Instructions.Decimal.Conversion
+    LowIntermediaryRepresentation.Instructions.Load
+    LowIntermediaryRepresentation.Instructions.Store
+    LowIntermediaryRepresentation.Instructions.Call
+    LowIntermediaryRepresentation.Instructions.CallAt
+    LowIntermediaryRepresentation.Instructions.ForeignAddress
+    LowIntermediaryRepresentation.Instructions.DataAddress
+    LowIntermediaryRepresentation.Instructions.FunctionAddress
+    LowIntermediaryRepresentation.Instructions.Allocate
+    LowIntermediaryRepresentation.Instructions.Retain
+    LowIntermediaryRepresentation.Instructions.Free
+    LowIntermediaryRepresentation.Instructions.Resize
+    LowIntermediaryRepresentation.Instructions.CopyBytes
+    LowIntermediaryRepresentation.Instructions.OpenLibrary
+    LowIntermediaryRepresentation.Instructions.Jump
+    LowIntermediaryRepresentation.Instructions.Branch
+    LowIntermediaryRepresentation.Instructions.Return
+    LowIntermediaryRepresentation.Instructions.FrameAddress
+    LowIntermediaryRepresentation.Instructions.ThreadIdentity
+    LowIntermediaryRepresentation.Instructions.FrameRoom
+    LowIntermediaryRepresentation.Instructions.StartThread
+    LowIntermediaryRepresentation.Instructions.JoinThread
+    LowIntermediaryRepresentation.Instructions.AtomicAdd
+    LowIntermediaryRepresentation.Instructions.ImportCall
+    LowIntermediaryRepresentation.Instructions.CompareExchange
+    LowIntermediaryRepresentation.Instructions.Stop
+    LowIntermediaryRepresentation.Instructions.Exit
+    LowIntermediaryRepresentation.Instructions.VectorLoop
+    LowIntermediaryRepresentation.Instructions.Select
+}
+
+# ../../OPTIMIZATIONS.md#each-write-of-a-variable-is-a-value-of-its-own
+var function = LowIntermediaryRepresentation.LowFunction("", 0)
+var edges = LowOptimizationPasses.BlockEdges()
+var adds_blocks = false
+
+func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
+    function = starting_function
+}
+
+func transformed(): LowIntermediaryRepresentation.LowFunction {
+    if has_joins() {
+        lower_the_joins()
+    }
+    return function
+}
+
+func has_joins(): Boolean {
+    var index = 0
+    while index < function.blocks.count() {
+        var block = function.blocks[index]
+        if not block.joins.is_empty() {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func lower_the_joins() {
+    edges.read_the_function(function)
+    crash edges.is_regular
+    adds_blocks = ends_closed()
+    var count = function.blocks.count()
+    var block_index = 0
+    while block_index < count {
+        var block = function.blocks[block_index]
+        if not block.joins.is_empty() {
+            lower_the_joins_of(block_index, block)
+            block.joins = List<LowIntermediaryRepresentation.Instructions.Join>()
+        }
+        block_index = block_index + 1
+    }
+}
+
+func ends_closed(): Boolean {
+    var last_block = function.blocks.last()
+    crash last_block
+    var last = last_block.instructions.last()
+    if not last {
+        var last_index = function.blocks.count() - 1
+        return not edges.is_reachable(last_index)
+    }
+    return edges.ends_the_block(last)
+}
+
+func lower_the_joins_of(block_index: Integer, block: LowIntermediaryRepresentation.LowBlock) {
+    var coming = edges.predecessors[block_index]
+    crash coming
+    var index = 0
+    while index < coming.count() {
+        var predecessor = coming[index]
+        crash predecessor
+        if edges.is_reachable(predecessor) {
+            var copies = copies_from(block, predecessor)
+            if not copies.is_empty() {
+                place_on_the_edge(predecessor, block_index, copies)
+            }
+        }
+        index = index + 1
+    }
+}
+
+func copies_from(block: LowIntermediaryRepresentation.LowBlock, predecessor: Integer): List<Instruction> {
+    var copies = List<Instruction>()
+    var written = List<Integer>()
+    var index = 0
+    while index < block.joins.count() {
+        var joining = block.joins[index]
+        var at = joining.blocks.index_of(predecessor)
+        crash at
+        var source = joining.sources[at]
+        crash source
+        crash not written.contains(source)
+        if source != joining.target {
+            var copy = LowIntermediaryRepresentation.Instructions.Copy(joining.target, source)
+            copies.append(copy)
+            written.append(joining.target)
+        }
+        index = index + 1
+    }
+    return copies
+}
+
+func place_on_the_edge(predecessor: Integer, block_index: Integer, copies: List<Instruction>) {
+    var leaving = edges.successors[predecessor]
+    crash leaving
+    var from_block = function.blocks[predecessor]
+    crash from_block
+    if leaving.count() == 1 or not adds_blocks {
+        place_at_the_end(from_block, copies)
+        return
+    }
+    var last = from_block.instructions.last()
+    crash last
+    if last.class == LowIntermediaryRepresentation.Instructions.Branch {
+        add_a_stub(predecessor, block_index, copies, last)
+        return
+    }
+    crash
+}
+
+func add_a_stub(
+    predecessor: Integer,
+    block_index: Integer,
+    copies: List<Instruction>,
+    last: LowIntermediaryRepresentation.Instructions.Branch,
+) {
+    var from_block = function.blocks[predecessor]
+    crash from_block
+    var stub = LowIntermediaryRepresentation.LowBlock()
+    stub.place = from_block.place
+    copies.each(stub.instructions.append)
+    var onward = LowIntermediaryRepresentation.Instructions.Jump(block_index)
+    stub.instructions.append(onward)
+    var stub_index = function.blocks.count()
+    function.blocks.append(stub)
+    if last.when_true == block_index {
+        last.when_true = stub_index
+    }
+    if last.when_false == block_index {
+        last.when_false = stub_index
+    }
+}
+
+func place_at_the_end(block: LowIntermediaryRepresentation.LowBlock, copies: List<Instruction>) {
+    var made = List<Instruction>()
+    var count = block.instructions.count()
+    var kept = count
+    var last = block.instructions.last()
+    if last and edges.ends_the_block(last) {
+        kept = count - 1
+    }
+    var index = 0
+    while index < kept {
+        var instruction = block.instructions[index]
+        crash instruction
+        made.append(instruction)
+        index = index + 1
+    }
+    copies.each(made.append)
+    if kept < count {
+        crash last
+        made.append(last)
+    }
+    block.instructions = made
+}

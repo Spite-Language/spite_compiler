@@ -194,8 +194,9 @@ identical bytes.
 
 `low_optimization_passes/low_optimization_passes.spite` lists them, with the low proofs before the passes that
 read them: the cold reports, the singletons made at the start, a first folding and threading, compile-time evaluation, inlining, compile-time evaluation again and the
-specialised calls; then the placement (known headers, object placement) and the cleaning (twenty-five function
-passes from settling the singletons to the last live values); then direct calls and the late inlining, the placement
+specialised calls; then the placement (known headers, object placement) and the cleaning (thirty-five function
+passes from settling the singletons to the last live values, the registers written more than once renamed into
+one per write and joined again near the start); then direct calls and the late inlining, the placement
 and the cleaning again on the functions it changed; then, on every function again, releasing in place, vector loops,
 and the last shaping of blocks, live values and copy coalescing.
 
@@ -305,7 +306,7 @@ A text that is an identity (a type's key, an instance's name) is not printing: i
 
 `<stage>/<name>/<name>.spite` holds the pass's entry class, which fits the stage's type. What several low passes
 and low proofs read the same way is a reader at the top of `low_optimization_passes/` (`Operands`, `Flow`,
-`BlockEdges`, `SingletonTests`), not part of any one pass. A unit pass reads one
+`BlockEdges`, `Dominance`, `RegisterLives`, `SingletonTests`), not part of any one pass. A unit pass reads one
 function or class at a time; a program pass needs the whole program (tree shaking, inlining across classes,
 placement of objects that leave their function). Each optimisation and each proof is a pass of its own (D1086,
 D1087), and nothing that builds a representation also optimises it.
