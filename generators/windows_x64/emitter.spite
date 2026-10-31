@@ -104,6 +104,7 @@ var code_end = 0
 var body_offsets = Dictionary<String, Integer>()
 var function_ends = Dictionary<String, Integer>()
 var slot_labels = Dictionary<String, Integer>()
+var decimal_labels = Dictionary<Long, Integer>()
 var routine_fixups = List<Generators.X64.Fixup>()
 var routines_end = 0
 var _arithmetic_with_small_immediate_opcode = 131
@@ -725,6 +726,7 @@ func emit_the_moves(from_block: Integer, to_block: Integer) {
 }
 
 func store_on_the_edge(register: Integer, from_block: Integer) {
+    fallback not allocation.is_rematerialised(register)
     var from_home = allocation.home_in(register, from_block)
     if from_home >= 0 {
         encoder.store_virtual(register, from_home)
@@ -741,7 +743,7 @@ func store_on_the_edge(register: Integer, from_block: Integer) {
 func load_on_the_edge(register: Integer, to_block: Integer) {
     var to_home = allocation.home_in(register, to_block)
     if to_home >= 0 {
-        encoder.load_virtual(to_home, register)
+        read_from_the_slot(to_home, register)
         return
     }
     var to_decimal = allocation.decimal_home_in(register, to_block)
@@ -750,6 +752,18 @@ func load_on_the_edge(register: Integer, to_block: Integer) {
         encoder.load_virtual(encoder.rax, register)
         encoder.xmm_from_register(to_decimal, encoder.rax, is_double)
     }
+}
+
+# ../../OPTIMIZATIONS.md#a-value-read-from-a-singleton-that-never-changes-is-read-again-rather-than-spilled
+func read_from_the_slot(register: Integer, virtual: Integer) {
+    if allocation.is_rematerialised(virtual) {
+        var label = allocation.data_label_of_load(virtual)
+        var at = encoder.load_at_label(register)
+        var fixup = Generators.X64.Fixup(at, "", label)
+        data_fixups.append(fixup)
+        return
+    }
+    encoder.load_virtual(register, virtual)
 }
 
 func moves_at_the_tail(to_block: Integer): Boolean {
@@ -905,6 +919,13 @@ func read_into(register: Integer, virtual: Integer) {
         }
         return
     }
+    if allocation.is_rematerialised(virtual) {
+        var label = allocation.data_label_of_load(virtual)
+        var at = encoder.load_at_label(register)
+        var fixup = Generators.X64.Fixup(at, "", label)
+        data_fixups.append(fixup)
+        return
+    }
     encoder.load_virtual(register, virtual)
 }
 
@@ -922,6 +943,7 @@ func write_from(virtual: Integer, register: Integer) {
         }
         return
     }
+    fallback not allocation.is_rematerialised(virtual)
     encoder.store_virtual(virtual, register)
 }
 
@@ -1138,8 +1160,8 @@ func emit_constant(constant: LowIntermediaryRepresentation.Instructions.Constant
     fallback not allocation.constant_of(constant.target)
     var decimal = allocation.decimal_home_of(constant.target)
     if decimal >= 0 {
-        encoder.move_small_immediate(encoder.rax, constant.number)
-        write_from(constant.target, encoder.rax)
+        var size = allocation.decimal_size_of(constant.target)
+        load_a_decimal_constant(decimal, constant.number, size == 8)
         return
     }
     var home = allocation.home_of(constant.target)
@@ -1677,9 +1699,45 @@ func decimal_register_of(virtual: Integer, scratch: Integer, is_double: Boolean)
     if home >= 0 {
         return home
     }
-    read_into(encoder.rax, virtual)
-    encoder.xmm_from_register(scratch, encoder.rax, is_double)
+    if allocation.constant_of(virtual) {
+        var value = allocation.value_of(virtual)
+        load_a_decimal_constant(scratch, value, is_double)
+        return scratch
+    }
+    var general = allocation.home_of(virtual)
+    if general >= 0 {
+        encoder.xmm_from_register(scratch, general, is_double)
+        return scratch
+    }
+    var displacement = encoder.slot_of(virtual)
+    encoder.load_decimal_from(scratch, encoder.rbp, displacement, is_double)
     return scratch
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-constant-is-read-from-the-programs-data
+func load_a_decimal_constant(xmm: Integer, bits: Long, is_double: Boolean) {
+    if bits == 0 {
+        encoder.clear_xmm(xmm)
+        return
+    }
+    var label = decimal_label_of(bits)
+    var at = encoder.load_decimal_at_label(xmm, is_double)
+    var fixup = Generators.X64.Fixup(at, "", label)
+    data_fixups.append(fixup)
+}
+
+func decimal_label_of(bits: Long): Integer {
+    var known = decimal_labels[bits]
+    if known {
+        return known
+    }
+    var bytes = Buffer(0)
+    bytes.append_long_little_endian(bits)
+    program.data.append(bytes)
+    var label = program.data.count() - 1
+    program.constant_labels.append(label)
+    decimal_labels[bits] = label
+    return label
 }
 
 func decimal_into(xmm: Integer, virtual: Integer, is_double: Boolean) {
@@ -1695,6 +1753,16 @@ func decimal_from(virtual: Integer, xmm: Integer, is_double: Boolean) {
         if home != xmm {
             encoder.move_xmm(home, xmm)
         }
+        return
+    }
+    var general = allocation.home_of(virtual)
+    if general >= 0 {
+        encoder.register_from_xmm(general, xmm, is_double)
+        return
+    }
+    if is_double {
+        var displacement = encoder.slot_of(virtual)
+        encoder.store_decimal_to(encoder.rbp, displacement, xmm, true)
         return
     }
     encoder.register_from_xmm(encoder.rax, xmm, is_double)
@@ -2364,6 +2432,13 @@ func prepare_the_address(address: Integer, offset: Integer) {
 }
 
 func emit_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    var reloaded = allocation.is_rematerialised(loaded.target)
+    fallback not reloaded or allocation.home_of(loaded.target) >= 0
+    var label = allocation.data_label_of(loaded.address)
+    if label >= 0 {
+        emit_a_data_load(loaded, label)
+        return
+    }
     prepare_the_address(loaded.address, loaded.offset)
     if loaded.is_swapped {
         encoder.load_from(encoder.rax, addressed_base, addressed_displacement, loaded.width, false)
@@ -2389,6 +2464,29 @@ func emit_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
     encoder.load_from(encoder.rax, addressed_base, addressed_displacement, loaded.width, loaded.is_signed)
     encoder.stop_indexing()
     write_from(loaded.target, encoder.rax)
+}
+
+# ../../OPTIMIZATIONS.md#a-read-of-the-programs-data-is-one-instruction
+func emit_a_data_load(loaded: LowIntermediaryRepresentation.Instructions.Load, label: Integer) {
+    var decimal = allocation.decimal_home_of(loaded.target)
+    if decimal >= 0 {
+        var decimal_size = allocation.decimal_size_of(loaded.target)
+        var decimal_at = encoder.load_decimal_at_label(decimal, decimal_size == 8)
+        var decimal_fixup = Generators.X64.Fixup(decimal_at, "", label)
+        data_fixups.append(decimal_fixup)
+        return
+    }
+    var home = allocation.home_of(loaded.target)
+    var register = encoder.rax
+    if home >= 0 {
+        register = home
+    }
+    var at = encoder.load_at_label(register)
+    var fixup = Generators.X64.Fixup(at, "", label)
+    data_fixups.append(fixup)
+    if home < 0 {
+        write_from(loaded.target, encoder.rax)
+    }
 }
 
 func emit_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
@@ -2551,6 +2649,7 @@ func keep_the_first_owner(found: LowIntermediaryRepresentation.Instructions.Fore
 }
 
 func emit_data_address(address: LowIntermediaryRepresentation.Instructions.DataAddress) {
+    fallback not allocation.is_elided_target(address.target)
     var at = encoder.load_address_of(encoder.rax)
     var fixup = Generators.X64.Fixup(at, "", address.label)
     data_fixups.append(fixup)

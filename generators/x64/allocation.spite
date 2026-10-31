@@ -101,6 +101,10 @@ var vector_operands = List<List<Integer>>()
 var joined_lefts = List<Integer>()
 var joined_positions = List<Integer>()
 var joined_blocks = List<Integer>()
+var data_labels = List<Integer>()
+var rematerialised = List<Boolean>()
+var rematerialised_blocks = List<Integer>()
+var rematerialised_labels = List<Integer>()
 
 # ../../ARCHITECTURE.md#the-targets
 func Allocation(starting_function: LowIntermediaryRepresentation.LowFunction, convention: CallingConvention) {
@@ -130,6 +134,10 @@ func allocate() {
         address_indexes.append(-1)
         address_scales.append(1)
         address_displacements.append(0)
+        data_labels.append(-1)
+        rematerialised.append(false)
+        rematerialised_blocks.append(0)
+        rematerialised_labels.append(-1)
         index = index + 1
     }
     fallback not function.is_resumable
@@ -515,7 +523,32 @@ func is_elided(instruction: Instruction): Boolean {
     if instruction.class == LowIntermediaryRepresentation.Instructions.Arithmetic {
         return is_elided_target(instruction.target)
     }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.DataAddress {
+        return is_elided_target(instruction.target)
+    }
     return false
+}
+
+# ../../OPTIMIZATIONS.md#a-read-of-the-programs-data-is-one-instruction
+func data_label_of(register: Integer): Integer {
+    if register < 0 or register >= register_total {
+        return -1
+    }
+    var label = data_labels[register]
+    crash label
+    return label
+}
+
+# ../../OPTIMIZATIONS.md#a-value-read-from-a-singleton-that-never-changes-is-read-again-rather-than-spilled
+func data_label_of_load(register: Integer): Integer {
+    var label = rematerialised_labels[register]
+    crash label
+    return label
+}
+
+func is_rematerialised(register: Integer): Boolean {
+    fallback register >= 0 and register < register_total
+    return rematerialised[register] == true
 }
 
 func is_elided_target(register: Integer): Boolean {
@@ -559,6 +592,7 @@ func expanded_uses(uses: List<Integer>): List<Integer> {
     var index = 0
     while index < uses.count() {
         var register = uses[index]
+        var is_data = data_label_of(register) >= 0
         if is_folded_address(register) {
             var base = base_of(register)
             made.append(base)
@@ -566,7 +600,7 @@ func expanded_uses(uses: List<Integer>): List<Integer> {
             if folded_index >= 0 {
                 made.append(folded_index)
             }
-        } else {
+        } else if not is_data {
             made.append(register)
         }
         index = index + 1
@@ -585,6 +619,9 @@ func find_the_addresses() {
             if address >= 0 {
                 fold_the_address(block, index, address)
             }
+            if instruction.class == LowIntermediaryRepresentation.Instructions.Load {
+                fold_a_data_address(block, block_index, index, instruction)
+            }
             index = index + 1
         }
         block_index = block_index + 1
@@ -602,6 +639,41 @@ func address_of(instruction: Instruction): Integer {
         return instruction.address
     }
     return -1
+}
+
+# ../../OPTIMIZATIONS.md#a-read-of-the-programs-data-is-one-instruction
+func fold_a_data_address(
+    block: LowIntermediaryRepresentation.LowBlock,
+    block_index: Integer,
+    using: Integer,
+    loaded: LowIntermediaryRepresentation.Instructions.Load,
+) {
+    var address = loaded.address
+    fallback not loaded.is_swapped and loaded.offset == 0 and loaded.width == 'bits_64' and is_single(address)
+    fallback not is_folded_address(address)
+    var at = defining_index(block, using, address)
+    fallback at >= 0
+    var found = block.instructions[at]
+    crash found
+    if found.class == LowIntermediaryRepresentation.Instructions.DataAddress {
+        data_labels[address] = found.label
+        elided_targets[address] = true
+        note_a_rematerialised(block_index, loaded, found.label)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-value-read-from-a-singleton-that-never-changes-is-read-again-rather-than-spilled
+func note_a_rematerialised(block_index: Integer, loaded: LowIntermediaryRepresentation.Instructions.Load, label: Integer) {
+    var target = loaded.target
+    fallback loaded.is_invariant and target >= function.parameter_count and target < register_total
+    var count = definitions[target]
+    var decimal_size = decimal_sizes[target]
+    crash count
+    crash decimal_size
+    fallback count == 1 and decimal_size == 0
+    rematerialised[target] = true
+    rematerialised_labels[target] = label
+    rematerialised_blocks[target] = block_index
 }
 
 func is_single(register: Integer): Boolean {
@@ -1330,6 +1402,7 @@ func place(register: Integer) {
     fallback decimal_size <= 0 or not placed_in_a_decimal(register)
     fallback decimal_size <= 0 or not took_a_constants_decimal(register)
     fallback decimal_size <= 0 or not takes_a_split_decimal(register)
+    fallback decimal_size <= 0
     fallback not takes_a_whole_volatile(register, true, 1)
     var index = 0
     while index < keeping.count() {
@@ -2161,6 +2234,13 @@ func length_of(register: Integer): Integer {
 }
 
 func weight_of(register: Integer): Integer {
+    if is_rematerialised(register) {
+        var block_index = rematerialised_blocks[register]
+        crash block_index
+        var depth = depths[block_index]
+        crash depth
+        return weight_at_depth(depth)
+    }
     var weight = weights[register]
     crash weight
     return weight

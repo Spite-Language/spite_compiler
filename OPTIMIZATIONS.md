@@ -2451,6 +2451,25 @@ reads before anything writes it.
 
 **What a program can observe:** only the time.
 
+## A read of the program's data is one instruction
+
+A 64-bit load from the start of a piece of the program's data (a singleton's slot), whose address is made just
+before it and read nowhere else, is one `mov` relative to the instruction (`mov rbx, [rip+...]`), or one `movsd`
+into a decimal register, instead of a `lea` of the address into a register and a load through it.
+
+**What a program can observe:** only the time.
+
+## A value read from a singleton that never changes is read again rather than spilled
+
+A value loaded from a singleton's slot that nothing changes once the singleton is made (a singleton [the entry class
+makes](#a-singleton-the-entry-class-makes-is-never-tested-again) or one made before a loop, read after it is made) costs nothing to read again: reading it
+from the data is one instruction, the same as reading a frame slot. When the allocator has to spill a value, such a
+value weighs only its load, so it goes before any value whose reads would each become a load of its slot. A value
+spilled this way is never stored: its load is not made where it is written, and each read reads the data again (on a
+path into a block where it has a register, the register is loaded from the data rather than the slot).
+
+**What a program can observe:** only the time; a crash report reads such a value from the data.
+
 ## A decimal leaves its register only where it must
 
 A decimal no decimal register is free for over its whole life is split as a whole number is: it lives in a
@@ -2482,9 +2501,12 @@ maths then works on those registers directly (`addss xmm6, xmm7`), with no move 
 on either side. `xmm3` to `xmm5` hold a value whose interval holds no call (nor anything that may call); `xmm6` to
 `xmm15`, which the Windows x64 calling convention keeps across calls, are saved whole (16 bytes) in the frame by a
 function that uses them and restored at each return. A value used anywhere else (a parameter, an operand of
-whole-number maths or of an address, a branch's condition) keeps a whole-number register or its frame slot, as do
-the values left over when the decimal registers run out; a value read where a whole number is needed (a store, an
-argument) is moved there at that point.
+whole-number maths or of an address, a branch's condition) keeps a whole-number register or its frame slot; a value
+read where a whole number is needed (a store, an argument) is moved there at that point. A decimal left over when
+the decimal registers run out keeps its frame slot, never a whole-number register that whole numbers would need:
+decimal maths reads it straight from the slot (`movss xmm0, [rbp-40]`) and a `Double` is written straight back, one
+instruction each way instead of two through `rax` (a `Float` is still written through `rax`, so the slot's high half
+stays zero for whatever reads it whole).
 
 A decimal constant read only by decimal maths is a value of its own in a decimal register rather than an immediate
 moved in at each use, and [a loop](#what-a-loop-does-not-change-is-computed-before-it) makes it once, before it
@@ -2510,7 +2532,14 @@ registers, and the item is moved in once.
 
 **What a program can observe:** nothing but time; a crash report reads a decimal from wherever it lives.
 
-**Not built:** a decimal constant read from the program's data.
+## A decimal constant is read from the program's data
+
+A decimal constant moved into a decimal register is one `movss` (or `movsd`) from a copy of its bits in the program's
+data, read relative to the instruction, instead of a 64-bit immediate moved into `rax` and then into the register;
+the program keeps one copy of each constant. Zero (`0.0`, all bits clear) is no read at all: `xorps` clears the
+register, which the processor does without waiting on what the register held.
+
+**What a program can observe:** only the time.
 
 ## A decimal is read and written straight from memory
 
