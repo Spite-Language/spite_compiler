@@ -419,7 +419,9 @@ assign on their left. When the text is held only by that name (its count is 1 wh
 appended to it where it is, with the [one-piece join](#text-joined-in-one-piece)'s code: their lengths are added,
 the room is grown once if they do not fit (at least doubled, so a loop of appends copies each byte a constant
 number of times), and the bytes are copied in. When something else holds the text too, it is copied first, with
-twice its length as room, and the name is given the copy, so what the other holder sees never changes.
+twice its length as room, and the name is given the copy, so what the other holder sees never changes. The test and
+the copy are `String._ready_to_grow`, which the compiler writes itself (`high_intermediary_representation/building/held_once_forms.spite`,
+D1735).
 
 ```
 func words(count: Integer): String {
@@ -3505,8 +3507,8 @@ func group() {
 
 A `clear()` of a list of lists followed by a counted loop (the counter a whole number, or declared just before the
 loop from a literal, counted by one up to a literal) whose body only makes a new empty list of the item class and
-appends it is one call, `List._renew_lists(wanted)` (`high_intermediary_representation/building/statements.spite`,
-the library's `common/list.spite`): every item only this list holds is emptied in place and kept, its storage with
+appends it is one call, `List._renew_lists(wanted)` (`high_intermediary_representation/building/statements.spite`;
+the compiler writes the function itself in `building/held_once_forms.spite`, never the library, D1735): every item only this list holds is emptied in place and kept, its storage with
 it, in the slot the loop would have filled with a new list; an item held anywhere else is replaced by a new list,
 and the items past `wanted` are let go. The loop then appends nothing more than it would have, and its counter
 ends at the bound. The next fill appends into lists that already have the room they grew to, so no list is made,

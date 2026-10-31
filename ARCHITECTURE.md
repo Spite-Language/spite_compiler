@@ -82,14 +82,11 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    - `loop_narrowings`: an assignment inside a loop does not undo a narrowing the next pass reads;
    - `guard_asserts`: a guard `fallback` answers only "nothing", and a last `if` is not a hidden guard;
    - `lost_writes`: a write to an object only this function holds is read, and a name read from a list is not
-     assigned as its last mention;
-   - `parallel_reach`: a `Parallel` work reaches only what it may, and no lock waits forever.
+     assigned as its last mention.
    A refusal the builder still makes asks this walk first, so the earliest error is the one told.
 2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program (the call
    inside a call, unused names, and the lone hole, which reads whether each hole the builder built is text), and the
-   reopening that changes an attribute's type (`validators/mapping/reopened_type`, comparing the resolved types). Then
-   `endless_parallel_work`: a `while true` that never leaves in a function a `Parallel` runs, recorded by
-   `parallel_reach`, is refused when that function never waits, which the waits of the whole built program tell.
+   reopening that changes an attribute's type (`validators/mapping/reopened_type`, comparing the resolved types).
 3. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.
 4. `vector_fit`: every `Vector` the builder recorded making holds a class that fits one.
 5. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an

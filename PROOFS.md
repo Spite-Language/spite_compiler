@@ -48,7 +48,6 @@ used.
 | `CheckSite` | `statements.spite` (`note_a_proven_check`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`, `note_a_narrowed_copy`) | the check written and what the scope says already proved it, the checked type, the copy and its source | `proofs/proven_checks` |
 | `CheckSite` | `statements.spite` (`note_an_undone_loop_check`, `note_an_undone_path`) | a path assigned a value that may be null inside a loop: whether it was narrowed before the loop and read in it, or whether the end of the body left it narrowed | `proofs/loop_narrowings` |
 | `GuardSite` | `statements.spite` (`default_return`, `note_a_terminal_if`) | a guard `fallback` with no "nothing" to answer, or an `if` that may be the last statement | `proofs/guard_asserts` |
-| `ParallelSite` | `values.spite` (`handle_value`, `member_call`) | a `Parallel(...)`, the block around it and a `ScopeView` | `proofs/parallel_reach` |
 | `SwitchSite`, `VectorSite` | `statements.spite`, `constraints.spite` | a switch's cases and members, a `Vector` made | `proofs/switch_cover`, `proofs/vector_fit` |
 
 `building/function_entry.spite` puts a proof back inside the function of a site (its class, its function, its line,
@@ -1218,17 +1217,16 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   runs later.
 - **Checked by**: tests/fused_chain_changes_its_list.
 
-### Which singletons a `Parallel` reaches
+### Which singletons another thread reaches
 
 - **Status**: built.
-- **Rule**: walk the calls from every function a `Parallel` or the pool can run, and from every function handed to C
+- **Rule**: walk the calls from every function the pool can run, and from every function handed to C
   as a `ForeignCallback`, which C may call on a thread of its own (D1137); a reached singleton is made safe, an
   unreached one takes no lock. A reached function that reads or writes an attribute of a singleton of the program
   directly, from another class, reaches that singleton too (D1138).
 - **Falls back**: locked.
 - **Lives in**: `high_intermediary_representation/waits.spite`, recorded by the high pass `singleton_locks`.
-- **Checked by**: tests/singleton_forms, tests/singleton_race, tests/unshared_locks, tests/singleton_lock_calls,
-  tests/singleton_outside_writes, tests/foreign_callbacks.
+- **Checked by**: tests/foreign_callbacks.
 
 ### No other thread touches a singleton
 
@@ -1263,7 +1261,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   touch: it holds the same value for the rest of the program.
 - **Missing**: a call between two locked functions takes the lock again.
 - **Falls back**: the lock, taken again by its owner. A lock that would wait forever is still judged by the
-  attributes a function names (`proofs/parallel_reach`), so a function naming an attribute nothing changes is
+  attributes a function names, so a function naming an attribute nothing changes is
   refused there as before.
 - **Lives in**: `high_intermediary_representation/waits.spite` (`touch_what_reads_a_changing_attribute`),
   `function_lowering.spite`.
@@ -1306,52 +1304,19 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   `waits.spite` (`is_a_locked_class`).
 - **Checked by**: tests/singleton_outside_writes.
 
-### A lock that would wait forever is an error
-
-- **Status**: built.
-- **Rule**: a locked function that waits for a `Parallel` whose work calls back into the same singleton, or a loop
-  that never ends inside a locked function, is refused.
-- **Falls back**: refused, "'...' waits for '...' while it holds ...'s lock ...: each would wait for the other
-  forever ...". A handle passed or returned is not judged.
-- **Lives in**: the proof `proofs/parallel_reach` (`thread_reach.spite`), judging every `ParallelSite`.
-- **Checked by**: conformance/locked_wait, conformance/endless_locked_loop; tests/locked_waits,
-  tests/locked_bare_return.
-
 ### A loop that can never end is an error
 
 - **Status**: partly built.
 - **Rule**: every `while true` is refused, since a loop states the condition it runs under (D1746, "A condition
-  known while compiling is an error"); in `Parallel` work and in a locked singleton function an endless `while true`
-  is refused with the reason that is worse there, when it is judged first. A loop whose condition reads only locals
+  known while compiling is an error"). A loop whose condition reads only locals
   (and parameters) that nothing inside it assigns, and that has no `return`, `fallback` or `crash`, is endless too:
   when it also calls nothing it is refused on its own ("'while running' never ends: nothing inside it changes
-  'running', ..."), and a call cannot change a local, so in `Parallel` work and in a locked singleton function it is
-  read as endless like `while true`. A condition reading an attribute, a member or a call is not judged. The work's functions are followed through every call whose class is known
-  while compiling: a function of its own class, of `this`, of a parameter's or an attribute's class, of a path of
-  attributes, of a local made by a constructor or answered by a call whose answer's class is known, and a
-  constructor called by its class's name; a class of the library is not followed. A singleton reached that way is
-  read for a lock held around an endless loop, and for a call back into a lock its caller holds.
-  In `Parallel` work a loop is refused when the function holding it never waits, by the waits fact (a sleep, a
-  blocking read or write, a join, through every call): a loop that calls only the console is refused while the site
-  is judged, and one that calls anything else is refused once the whole program is built, when the waits are known.
+  'running', ..."). A condition reading an attribute, a member or a call is not judged.
 - **Missing**: a call through a function value, a `type` or a union is not followed.
 - **Missing**: a loop on an attribute nothing in it changes is not read as endless, since another thread may set it.
 - **Falls back**: refused, "'while true' is decided while compiling and is always true here: ...".
-- **Lives in**: `statements.spite` (`note_a_decided_condition`), `validators/abstract_syntax_tree/unchanged_loop`, the proof `proofs/parallel_reach`
-  (`thread_reach.spite`: `refuse_endless_work`, which refuses a loop that only prints and records the others in the
-  context, `context.endless_work`), and the proof `proofs/endless_parallel_work`, right after the recorded sites,
-  which asks `HighIntermediaryRepresentation.Waits` whether each recorded function waits.
-- **Checked by**: conformance/spinning_loop, conformance/unchanged_loop, conformance/endless_parallel_work,
-  conformance/endless_parallel_work_calls, conformance/endless_locked_loop_on_a_local; tests/parallel_loop_that_leaves.
-
-### A poll that nothing steps is an error
-
-- **Status**: built.
-- **Rule**: a `while` that reads `handle.finished` and calls nothing is refused
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
-- **Falls back**: a loop that calls something halts after 1,000,000 polls with no frame stepped.
-- **Lives in**: embedded, `statements.spite` (`refuse_an_unstepped_poll`).
-- **Checked by**: conformance/unstepped_poll; tests/poll_without_step_halts, tests/finished_polling.
+- **Lives in**: `statements.spite` (`note_a_decided_condition`), `validators/abstract_syntax_tree/unchanged_loop`
+- **Checked by**: conformance/spinning_loop, conformance/unchanged_loop; tests/parallel_loop_that_leaves.
 
 ### A write to an object only this function holds must be read
 
@@ -1375,41 +1340,24 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Checked by**: conformance/replaced_items, conformance/memory_replaced_branch,
   conformance/memory_replaced_answered, conformance/memory_replaced_unwritten; tests/memory_replaced_allowed.
 
-### What a `Parallel` may reach
-
-- **Status**: partly built.
-- **Rule**: a `Parallel` work reaches only its own value attributes, its locals and
-  singletons; it writes a value attribute only of an object handed over to it, never of `this`, an attribute, a
-  parameter or a local used again ([concurrency.md](../SpiteLanguage/specs/concurrency.md)).
-- **Missing**: reach is followed only through calls of the work's own class.
-- **Falls back**: refused, "'...' runs '...' on another thread, so it may reach only ...", or "'Parallel(kept.bump)'
-  writes 'count' of this 'Counter' on another thread while this thread may write it too, so one write would be lost
-  ...".
-- **Lives in**: the proof `proofs/parallel_reach` (`work_reach.spite`), judging every `Parallel` the builder recorded
-  (a `ParallelSite`).
-- **Checked by**: conformance/parallel_function_reach, parallel_handover, parallel_shared_writes,
-  parallel_shared_value_writes, parallel_held_value_writes, foreign_callback_thread_reach; tests/parallel_work,
-  parallel_handover, parallel_receivers.
-
-### Which calls suspend a `Concurrent`
+### Which calls suspend work the compiler starts
 
 - **Status**: built.
-- **Rule**: a function given to a `Concurrent` that can wait, and every waiting function it calls, gets a resumable
-  copy.
+- **Rule**: a function the compiler starts as a state machine (a wait in a frame, reads in a row) that can wait, and
+  every waiting function it calls, gets a resumable copy.
 - **Falls back**: a wait the study does not see as such runs the event loop in place.
 - **Lives in**: `high_intermediary_representation/waits.spite`, `lowering/machine_writing.spite`.
-- **Checked by**: tests/concurrent_waits, waits_never_hang, wait_order, wait_index_order, concurrent_wait_cycle,
-  concurrent_wait_cycle_in_place, dropped_handle_waits.
+- **Checked by**: tests/frame_waits, tests/frame_waits_kept.
 
 ### A wait in a frame is started
 
 - **Status**: built.
 - **Rule**: in a loop that sleeps, a call with no arguments and no answer that can wait is started as a
-  `Concurrent`, unless either side writes back a value read before a wait
+  state machine of the compiler's own, unless either side writes back a value read before a wait
   ([concurrency.md](../SpiteLanguage/specs/concurrency.md#a-wait-in-a-frame-does-not-hold-the-frame)).
 - **Falls back**: it waits where it is written, listed under "Waits that hold the frame".
 - **Lives in**: `high_intermediary_representation/building/frame_starts.spite`.
-- **Checked by**: tests/frame_waits, tests/frame_waits_kept, tests/waiting_systems.
+- **Checked by**: tests/frame_waits, tests/frame_waits_kept.
 
 ### Reads in a row are independent
 
