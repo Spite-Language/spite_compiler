@@ -40,8 +40,14 @@ var summaries = Dictionary<String, List<BackReferenceStore>>()
 var named_counts = Dictionary<String, Integer>()
 var is_summarizing = false
 var expands_while_summarizing = false
-var summary_rounds = 3
 var appending = ["append", "insert", "prepend", "add", "set_at"]
+var deepest_key = 4
+var most_rounds = 64
+var callers = Dictionary<String, List<String>>()
+var changed_names = List<String>()
+var summarized_functions = Dictionary<String, FunctionModel>()
+var summarizing_name = ""
+var reading_key = ""
 
 func holds_no_count(program: ProgramModel, attribute: AttributeModel): Boolean {
     var key = "{attribute.owner}.{attribute.name}"
@@ -65,14 +71,63 @@ func learn(program: ProgramModel) {
     program.order.each(note_the_constructors)
     program.order.each(count_the_names)
     is_summarizing = true
+    program.order.each(summarize_the_class)
+    expands_while_summarizing = true
+    var waiting = summarized_functions.keys()
     var round = 0
-    while round < summary_rounds {
-        program.order.each(summarize_the_class)
-        expands_while_summarizing = true
+    while not waiting.is_empty() and round < most_rounds {
+        changed_names = List<String>()
+        waiting.each(summarize_a_named_function)
+        waiting = callers_of_the_changed()
         round = round + 1
     }
     is_summarizing = false
     program.order.each(read_the_class)
+}
+
+# ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
+func callers_of_the_changed(): List<String> {
+    var waiting = List<String>()
+    var index = 0
+    while index < changed_names.count() {
+        var changed = changed_names[index]
+        var calling = callers[changed]
+        if calling {
+            add_the_new(waiting, calling)
+        }
+        index = index + 1
+    }
+    return waiting
+}
+
+func add_the_new(waiting: List<String>, calling: List<String>) {
+    var index = 0
+    while index < calling.count() {
+        var name = calling[index]
+        if not waiting.contains(name) {
+            waiting.append(name)
+        }
+        index = index + 1
+    }
+}
+
+func summarize_a_named_function(name: String) {
+    var function = summarized_functions[name]
+    fallback function
+    summarize_a_function(function)
+}
+
+func note_a_caller(name: String) {
+    fallback not summarizing_name.is_empty() and not expands_while_summarizing
+    var calling = callers[name]
+    if not calling {
+        var made = List<String>()
+        callers[name] = made
+        calling = made
+    }
+    crash calling
+    fallback not calling.contains(summarizing_name)
+    calling.append(summarizing_name)
 }
 
 func count_the_names(model: ClassModel) {
@@ -98,7 +153,10 @@ func summarize_a_function(function: FunctionModel) {
     fallback not function.is_constructor and named_counts[function.name] == 1
     fallback function.declaration
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
-    start_reading(declaration)
+    summarized_functions[function.name] = function
+    summarizing_name = function.name
+    start_reading(function, declaration)
+    summarizing_name = ""
     var names = List<String>()
     var index = 0
     while index < declaration.parameters.count() {
@@ -112,15 +170,43 @@ func summarize_a_function(function: FunctionModel) {
         var store = stores[store_index]
         var holder = summarized_key(store.holder, names)
         var value = summarized_key(store.value, names)
-        if holder and value {
+        if holder and value and is_kept_in_a_summary(summary, holder, store.attribute, value) {
             var kept = BackReferenceStore(holder, store.attribute, value)
             summary.append(kept)
         }
         store_index = store_index + 1
     }
+    var known_count = 0
+    var known = summaries[function.name]
+    if known {
+        known_count = known.count()
+    }
+    if summary.count() != known_count {
+        changed_names.append(function.name)
+    }
     if not summary.is_empty() {
         summaries[function.name] = summary
     }
+}
+
+# ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
+func is_kept_in_a_summary(
+    summary: List<BackReferenceStore>,
+    holder: String,
+    attribute: String,
+    value: String,
+): Boolean {
+    var holder_parts = holder.split(".")
+    var value_parts = value.split(".")
+    fallback holder_parts.count() <= deepest_key and value_parts.count() <= deepest_key
+    var index = 0
+    while index < summary.count() {
+        var known = summary[index]
+        var is_the_same = known.holder == holder and known.attribute == attribute and known.value == value
+        fallback not is_the_same
+        index = index + 1
+    }
+    return true
 }
 
 func summarized_key(key: String, parameter_names: List<String>): String? {
@@ -155,6 +241,9 @@ func expand_a_call(
     receiver_key: String,
     arguments: List<Expression>,
 ) {
+    if is_summarizing {
+        note_a_caller(name)
+    }
     fallback expands_while_summarizing or not is_summarizing
     var summary = summaries[name]
     fallback summary
@@ -171,11 +260,17 @@ func expand_a_call(
         var store = summary[store_index]
         var holder = placed_key(store.holder, receiver_key, argument_keys)
         var value = placed_key(store.value, receiver_key, argument_keys)
-        if holder and value {
+        var is_another_reading = is_made_by_this_reading(store.holder) or is_made_by_this_reading(store.value)
+        if holder and value and not is_another_reading {
             add_a_store(holder, store.attribute, value)
         }
         store_index = store_index + 1
     }
+}
+
+# ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
+func is_made_by_this_reading(key: String): Boolean {
+    return key.starts_with("#{reading_key}:")
 }
 
 func placed_key(key: String, receiver_key: String, argument_keys: List<String>): String? {
@@ -220,7 +315,7 @@ func note_a_constructor(function: FunctionModel) {
     fallback function.is_constructor and not forwarded.contains(function.name)
     fallback function.declaration
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
-    start_reading(declaration)
+    start_reading(function, declaration)
     var kept = List<String>()
     var index = 0
     while index < declaration.parameters.count() {
@@ -252,11 +347,14 @@ func read_the_class(model: ClassModel) {
 func read_a_function(function: FunctionModel) {
     fallback function.declaration
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
-    start_reading(declaration)
+    start_reading(function, declaration)
     stores.each(link_back)
 }
 
-func start_reading(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+func start_reading(function: FunctionModel, declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    var function_key = function.key()
+    reading_key = function_key.replace(".", ":")
+    made_count = 0
     stores = List<BackReferenceStore>()
     locals = List<String>()
     aliases = Dictionary<String, String>()
@@ -519,7 +617,7 @@ func made_by(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): String
     var made = ""
     if kept {
         made_count = made_count + 1
-        made = "#{made_count}"
+        made = "#{reading_key}:{made_count}"
         forward_the_arguments(made, kept, call.arguments)
     }
     return made

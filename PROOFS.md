@@ -905,10 +905,16 @@ as when each was refused while building.
   call of a program function whose name only one class declares adds that function's own stores, with `this` and
   its parameters replaced by the call's receiver and arguments, so `team.recruit(player)` beside `player.play_for(team)`
   links the two as `team.players.append(player)` beside `player.team = team` would (D1396). A function's own stores
-  include those of the program functions it calls, found in three rounds over the program (each round expanding
-  the calls by the summaries of the round before), so a link made three calls down counts (D1663). A link found in one
+  include those of the program functions it calls, followed to a fixed point: one round over the program, then
+  rounds over only the callers of a function whose summary grew, until none grows (at most 64 rounds; past them
+  the links found so far stand and the rest keep their counts), so a link made any number of
+  calls down counts (D1663, spite_compiler#26). An object a function makes is named by that function and its place
+  in it (`#Team:sign:1`), the same on every reading, so a summary read again is equal and the rounds end; a summary
+  keeps each store once, and only stores whose keys reach at most four parts deep (`this.a.b.c`), so it cannot grow
+  without end. A call whose summary names an object the reading function itself makes (through recursion) adds
+  nothing of that object, since it is another call's object under the same name. A link found in one
   function decides the attribute for the whole program.
-- **Missing**: a link through a function named by two classes (the library's included: a `join` is `String.join`'s name too), a call more than three deep, two objects neither of which
+- **Missing**: a link through a function named by two classes (the library's included: a `join` is `String.join`'s name too), a store through keys more than four parts deep, two objects neither of which
   the function made linked directly (not through a collection), one attribute pointing both ways (`partner`), a
   cycle through a union or a `type`, and a back attribute that cannot be null: each keeps its counts and leaks,
   which `--debug-memory` names at exit.
