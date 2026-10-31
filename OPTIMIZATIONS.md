@@ -941,6 +941,18 @@ func hits(fighter: Combatant): Integer {
 `attack` and `defense` sit at the same two offsets in `Player` and `Monster`, so `hits` reads two numbers and
 never asks which class it was given.
 
+## A call through a union tests only the class
+
+A call through a union (`figure.add(step)`, `figure: Figure`) reads the class word of the object and goes to the
+member of the class it finds. When the union value cannot be null (its type is `Figure`, not `Figure?`), nothing tests
+it for null first: the compare and the branch to a stop are gone. A value proven present tests for null only when
+the value it was proven from is a `T?`. With no test of the object in the loop, the attributes such a call updates
+[stay in registers](#an-attribute-a-loop-updates-lives-in-a-register-until-the-loop-ends) through it; the stop when
+no class matches is a way out that only stops the program, and does not keep them in memory.
+
+It does not apply to a `Figure?`, proven present at the call: that one is still tested. What a user can observe:
+nothing but the time.
+
 ## `String`'s words cost a text nothing
 
 `String`'s irregular and uncountable words are its attributes `irregulars` and `uncountables`, and a program
