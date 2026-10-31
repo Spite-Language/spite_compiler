@@ -283,6 +283,11 @@ needs. The folder is named after the rule, and the validator holds every word of
 - A rule lives at the earliest level that has the facts it needs, and runs as soon as those facts exist: a file's
   rules run right after the file is parsed, before the next file is read.
 - A validator never changes what it is given.
+- Each layer reaches its rules through one entry, `validators/<layer>/every_rule.spite`, called the way a pass is
+  (D1750): the syntax tree's `check` per file, name resolution's `check` once the model is resolved, the high
+  representation's `check_an_evaluation` and the like as the builder meets each statement, and the low
+  representation's `check` once it is optimised. A check still written inside a step moves behind its layer's
+  entry (spite_compiler#243).
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
   its line and function, made once. A message quotes code through `printers/spite`.
 - A rule that needs the whole program runs once the program is complete; a rule about one class runs per class,
