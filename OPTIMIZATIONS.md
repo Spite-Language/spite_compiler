@@ -1316,7 +1316,9 @@ not make it leave. A group that does not leave is placed in one of three ways, t
 3. **In the frame.** Otherwise, when the class releases nothing when freed and is at most 4096 bytes, and the
    function makes at most one object of the group at a time or makes it outside every loop, the allocation becomes
    room in the function's frame (`FrameRoom`, cleared to zero where it is made) and its address in a register;
-   its retains and releases are dropped.
+   its retains and releases are dropped, and so is the write of its count when nothing reads it (no load of the
+   count in the function, and no callee it is handed to loads it, reads through an address made from it or copies
+   its bytes).
 
 An object of a group placed in registers that is answered by `return` is made at the return, with every attribute
 written from its registers and a count of one, so a function that builds its answer through a loop of temporary

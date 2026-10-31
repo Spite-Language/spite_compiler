@@ -839,9 +839,10 @@ as when each was refused while building.
   `Buffer` points at the room inside it, keeps nothing) and reads the class's free function, and records on the
   function how each object that never leaves it is placed (`LowFunction.placed_objects`: in shared registers, in
   registers of its own, in the frame, or, for a `Buffer`, in the frame marked as living inside another value) with
-  the fields it has. It runs once more right after the first cleaning, for an object stored only into one placed
-  then. The pass `low_optimization_passes/object_placement` right after it only writes
-  what was recorded.
+  the fields it has, and whether anything reads an object's count: a load of its count in the function, or a callee
+  that loads it (or reads through an address made from it, or copies its bytes). It runs once more right after the
+  first cleaning, for an object stored only into one placed then. The pass `low_optimization_passes/object_placement`
+  right after it only writes what was recorded, and an object in the frame whose count nothing reads gets no count.
 - **Checked by**: tests/generic_vectors, tests/written_codegen_in_frame, tests/owned_objects (output only).
 
 ### Local and variadic lists in the frame
