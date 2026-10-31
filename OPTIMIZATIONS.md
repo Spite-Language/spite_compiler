@@ -2420,6 +2420,13 @@ different kinds (a decimal and a whole number), or a scratch register over a str
 arithmetic made in place that overflows takes its operand back before the crash report reads it, as it did when
 the two were one value.
 
+A result written in several places (a loop's variable, after [its writes are joined
+again](#each-write-of-a-variable-is-a-value-of-its-own)) is not left out: before the allocator, such a whole-number
+arithmetic other than a division, or a decimal arithmetic, becomes one register with its left operand when the two are
+never live at the same point, the same test that joins a copy's two sides, unless the operand is a constant written
+once. `total = start + step` in a loop, with `start` read for the last time there, is then made in `start`'s register
+on every pass instead of a move into `total`'s.
+
 **What a program can observe:** only the time.
 
 ## Each write of a variable is a value of its own
