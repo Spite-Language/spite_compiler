@@ -2496,9 +2496,10 @@ at the end of each pass and read once more after the loop; with the copy before 
 live after it, so the sum lived in two registers and was moved on every pass. Now the addition writes the loop's
 register in place, as it did before every write became a value of its own.
 
-It joins only a copy of a value an arithmetic wrote once, or of a register already joined with one (a number
-worked out, never an object, whose register the passes after it still need to tell apart from the variable's), only where neither side was already joined this way,
-and only when no other write of either falls where both are live, so a value is never given a register another
+It runs once, after every other pass has shaped the function and just before the last liveness, so the proofs and
+passes that need a register written once (the ranges that drop an overflow check, the placement of objects) still
+see the sum's two registers apart. It joins only a copy of a value an arithmetic wrote once (a number worked out,
+never an object), only where neither side was already joined this way, and only when no other write of either falls where both are live, so a value is never given a register another
 value still needs.
 
 **What a program can observe:** only the time.
