@@ -196,7 +196,7 @@ identical bytes.
 read them: the cold reports, the singletons made at the start, a first folding and threading, compile-time evaluation, inlining, compile-time evaluation again and the
 specialised calls; then the placement (known headers, object placement) and the cleaning (thirty-five function
 passes from settling the singletons to the last live values, the registers written more than once renamed into
-one per write and joined again near the start); then direct calls and the late inlining, the placement
+one per write and joined again once copies are read through); then direct calls and the late inlining, the placement
 and the cleaning again on the functions it changed; then, on every function again, releasing in place, vector loops,
 and the last shaping of blocks, live values and copy coalescing.
 

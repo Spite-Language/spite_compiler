@@ -2426,12 +2426,14 @@ the two were one value.
 
 ## Each write of a variable is a value of its own
 
-At the start of the cleaning every register a function writes more than once is renamed: each write makes a register
+In the cleaning, once copies are [read through](#a-copy-is-read-through-wherever-it-still-holds) and a
+`Float`'s narrowing masks are gone, every register a function writes more than once is renamed: each write makes a register
 of its own, and where paths that hold different ones meet, a join at the head of the block picks the one of the
 path taken (the static single assignment form, joins placed on the dominance frontiers where the variable is
-still read). A join then becomes copies on its incoming edges, placed where [the allocator's split
-moves](#a-value-leaves-a-scratch-register-only-around-a-call) go: at the end of a predecessor with no other
-successor, or else on a block of their own on the edge. Last, each copy whose two sides are never live at the same
+still read). A join then becomes copies at the end of each block that leads into it, before its jump or branch: a copy
+there is dead on the branch's other side, which no read of the join's register is reached through. A block of
+their own on the edge, where [the allocator's split moves](#a-value-leaves-a-scratch-register-only-around-a-call)
+go, would be laid after the last block and jump back, which the passes after it read as a loop. Last, each copy whose two sides are never live at the same
 point (in a block, a value read for the last time where another is written does not meet it) makes them one
 register again, and the registers left are numbered from the parameters up.
 
