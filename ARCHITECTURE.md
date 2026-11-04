@@ -215,6 +215,13 @@ code asks which system it builds for (D1709). What every x64 target writes the s
 its emitter, its calling convention, its executable format, its fault handler, its allocator of small blocks
 (which asks the system for memory), and its hot-reload host.
 
+The emitter (`windows_x64/emitter.spite`) holds the exhaustive `switch` over the low instructions and the walk over
+functions and blocks. Its fields live in one object, `EmitterState`, which every helper class takes (never the
+`Emitter`, which would be a reference cycle): `instructions/<instruction>.spite` writes one kind of instruction
+(`instructions/decimal/` the decimal ones), and `fixups`, `frames`, `edge_moves`, `block_analysis`, `places`,
+`runtime_routines`, `decimals`, `cold_stops` and `division` hold what several of them share. A constant two classes
+use lives in `opcodes.spite`. A jump is written in the emitter, since a rotated loop emits the test of its head again.
+
 The allocator never names a register a convention decides. It reads the target's `X64.CallingConvention`, a table
 the target fills (`windows_x64/convention.spite`): the registers that carry the first arguments, the registers a
 call keeps (in the order values take them), the scratch registers a value may hold where nothing it lives through
