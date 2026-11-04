@@ -36,7 +36,6 @@ union Instruction {
     LowIntermediaryRepresentation.Instructions.Select
 }
 
-var _jump_if_carry_code = 130
 var _set_if_above_code = 151
 var _set_if_equal_code = 148
 var _set_if_not_equal_code = 149
@@ -62,10 +61,10 @@ var _wait_forever: Long = 4294967295
 var _filled_word_pattern: Long = 2779096485
 var state = EmitterState()
 var encoder = Generators.X64.Encoder()
+var arithmetic_instruction = Generators.WindowsX64.Instructions.Arithmetic(state)
 var block_analysis = BlockAnalysis(state)
 var cold_stops = ColdStops(state)
 var decimals = Decimals(state)
-var division = Division(state)
 var edge_moves = EdgeMoves(state)
 var fixups = Fixups(state)
 var frames = Frames(state)
@@ -271,7 +270,7 @@ func emit_an_instruction(instruction: Instruction) {
     switch instruction {
         LowIntermediaryRepresentation.Instructions.Constant: emit_constant(instruction)
         LowIntermediaryRepresentation.Instructions.Copy: emit_copy(instruction)
-        LowIntermediaryRepresentation.Instructions.Arithmetic: emit_arithmetic(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: arithmetic_instruction.emit(instruction)
         LowIntermediaryRepresentation.Instructions.Compare: emit_compare(instruction)
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: emit_decimal_arithmetic(instruction)
         LowIntermediaryRepresentation.Instructions.Decimal.Compare: emit_a_decimal_compare(instruction)
@@ -355,330 +354,6 @@ func emit_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
     }
     var source = frames.register_of(copy.source, encoder.rax)
     frames.write_from(copy.target, source)
-}
-
-func emit_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
-    fallback not state.allocation.is_elided_target(arithmetic.target)
-    var divides = arithmetic.operator == 'divide' or arithmetic.operator == 'remainder'
-    if divides {
-        division.emit_division(arithmetic)
-        return
-    }
-    fallback not emitted_in_place(arithmetic)
-    fallback not emitted_narrow(arithmetic)
-    var shifts = arithmetic.operator == 'shift_left' or arithmetic.operator == 'shift_right'
-    var needs_rcx = shifts or arithmetic.operator == 'multiply' and is_wide_unsigned(arithmetic)
-    var immediate = takes_an_immediate(arithmetic)
-    var source = encoder.rcx
-    if not immediate and needs_rcx {
-        frames.read_into(encoder.rcx, arithmetic.right)
-    }
-    if not immediate and not needs_rcx {
-        source = frames.register_of(arithmetic.right, encoder.rcx)
-    }
-    frames.read_into(encoder.rax, arithmetic.left)
-    if immediate {
-        emit_with_an_immediate(arithmetic, encoder.rax)
-    } else {
-        emit_registers(arithmetic, encoder.rax, source)
-    }
-    emit_checked(arithmetic)
-    frames.write_from(arithmetic.target, encoder.rax)
-}
-
-func emitted_narrow(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    fallback arithmetic.is_checked and arithmetic.width == 'bits_32'
-    var adds = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
-    var multiplies = arithmetic.operator == 'multiply' and arithmetic.is_signed
-    fallback adds or multiplies
-    var immediate = frames.small_constant(arithmetic.right)
-    var source = encoder.rcx
-    if not immediate {
-        source = frames.register_of(arithmetic.right, encoder.rcx)
-    }
-    var home = state.allocation.home_of(arithmetic.target)
-    var working = narrow_working_register(arithmetic, home, source, immediate)
-    var kind = 0
-    var overwrites_left = state.allocation.home_of(arithmetic.left) == working
-    if working != encoder.rax and overwrites_left and not state.allocation.constant_of(arithmetic.left) {
-        kind = 3
-    }
-    frames.read_into(working, arithmetic.left)
-    if immediate {
-        var value = state.allocation.value_of(arithmetic.right)
-        emit_narrow_with_an_immediate(arithmetic, working, value)
-    } else {
-        emit_narrow_registers(arithmetic, working, source)
-    }
-    var condition = _jump_if_carry_code
-    if arithmetic.is_signed {
-        condition = 128
-    }
-    cold_stops.defer_a_stop(condition, arithmetic, kind, working, source, immediate)
-    if arithmetic.is_signed {
-        encoder.sign_extend_double_word(working, working)
-    }
-    if working != encoder.rax {
-        return true
-    }
-    if home >= 0 {
-        encoder.move_register(home, encoder.rax)
-    } else {
-        frames.write_from(arithmetic.target, encoder.rax)
-    }
-    return true
-}
-
-func emit_narrow_with_an_immediate(
-    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    working: Integer,
-    value: Long,
-) {
-    switch arithmetic.operator {
-        'add': encoder.operation_immediate_narrow(0, working, value)
-        'subtract': encoder.operation_immediate_narrow(5, working, value)
-        'multiply': encoder.multiply_immediate_narrow(working, working, value)
-        'divide': encoder.multiply_immediate_narrow(working, working, value)
-        'remainder': encoder.multiply_immediate_narrow(working, working, value)
-        'bits_and': encoder.multiply_immediate_narrow(working, working, value)
-        'bits_or': encoder.multiply_immediate_narrow(working, working, value)
-        'bits_xor': encoder.multiply_immediate_narrow(working, working, value)
-        'shift_left': encoder.multiply_immediate_narrow(working, working, value)
-        'shift_right': encoder.multiply_immediate_narrow(working, working, value)
-        'square_root': encoder.multiply_immediate_narrow(working, working, value)
-    }
-}
-
-func emit_narrow_registers(
-    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    working: Integer,
-    source: Integer,
-) {
-    switch arithmetic.operator {
-        'add': encoder.register_operation_narrow(1, working, source)
-        'subtract': encoder.register_operation_narrow(41, working, source)
-        'multiply': encoder.multiply_registers_narrow(working, source)
-        'divide': encoder.multiply_registers_narrow(working, source)
-        'remainder': encoder.multiply_registers_narrow(working, source)
-        'bits_and': encoder.multiply_registers_narrow(working, source)
-        'bits_or': encoder.multiply_registers_narrow(working, source)
-        'bits_xor': encoder.multiply_registers_narrow(working, source)
-        'shift_left': encoder.multiply_registers_narrow(working, source)
-        'shift_right': encoder.multiply_registers_narrow(working, source)
-        'square_root': encoder.multiply_registers_narrow(working, source)
-    }
-}
-
-# ../../OPTIMIZATIONS.md#a-checked-32-bit-sum-works-in-its-targets-register
-func narrow_working_register(
-    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    home: Integer,
-    source: Integer,
-    immediate: Boolean,
-): Integer {
-    if home < 0 or not immediate and source == home {
-        return encoder.rax
-    }
-    var left_home = state.allocation.home_of(arithmetic.left)
-    if state.allocation.constant_of(arithmetic.left) {
-        left_home = -1
-    }
-    var invertible = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
-    if left_home == home and not invertible {
-        return encoder.rax
-    }
-    return home
-}
-
-func is_wide_unsigned(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    return arithmetic.width == 'bits_64' and not arithmetic.is_signed and arithmetic.is_checked
-}
-
-func takes_an_immediate(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    fallback frames.small_constant(arithmetic.right)
-    switch arithmetic.operator {
-        'add': return true
-        'subtract': return true
-        'bits_and': return true
-        'bits_or': return true
-        'bits_xor': return true
-        'multiply': return not is_wide_unsigned(arithmetic)
-        'shift_left': return not arithmetic.is_checked
-        'shift_right': return not arithmetic.is_checked
-        'divide': return false
-        'remainder': return false
-        'square_root': return false
-    }
-}
-
-func emit_with_an_immediate(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, register: Integer) {
-    var value = state.allocation.value_of(arithmetic.right)
-    switch arithmetic.operator {
-        'add': encoder.operation_immediate(0, register, value)
-        'subtract': encoder.operation_immediate(5, register, value)
-        'bits_and': encoder.operation_immediate(4, register, value)
-        'bits_or': encoder.operation_immediate(1, register, value)
-        'bits_xor': encoder.operation_immediate(6, register, value)
-        'multiply': emit_multiply_by(arithmetic, register, value)
-        'shift_left': emit_shift_by(4, register, value)
-        'divide': emit_shift_right_by(arithmetic, register, value)
-        'remainder': emit_shift_right_by(arithmetic, register, value)
-        'shift_right': emit_shift_right_by(arithmetic, register, value)
-        'square_root': emit_shift_right_by(arithmetic, register, value)
-    }
-}
-
-func emit_registers(
-    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    target: Integer,
-    source: Integer,
-) {
-    switch arithmetic.operator {
-        'add': encoder.register_operation(1, target, source)
-        'subtract': encoder.register_operation(41, target, source)
-        'bits_and': encoder.register_operation(33, target, source)
-        'bits_or': encoder.register_operation(9, target, source)
-        'bits_xor': encoder.register_operation(49, target, source)
-        'multiply': emit_multiply_registers(arithmetic, target, source)
-        'shift_left': emit_shift_left_by_cl(target)
-        'divide': emit_shift_right_by_cl(arithmetic, target)
-        'remainder': emit_shift_right_by_cl(arithmetic, target)
-        'shift_right': emit_shift_right_by_cl(arithmetic, target)
-        'square_root': emit_shift_right_by_cl(arithmetic, target)
-    }
-}
-
-func emit_multiply_registers(
-    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    target: Integer,
-    source: Integer,
-) {
-    if is_wide_unsigned(arithmetic) {
-        crash target == encoder.rax and source == encoder.rcx
-        encoder.multiply_unsigned_by_rcx()
-        return
-    }
-    encoder.multiply_registers(target, source)
-}
-
-func emit_shift_left_by_cl(target: Integer) {
-    crash target == encoder.rax
-    encoder.shift_rax_left_by_cl()
-}
-
-func emit_shift_right_by_cl(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, target: Integer) {
-    crash target == encoder.rax
-    emit_shift_right(arithmetic.is_signed)
-}
-
-func emit_multiply_by(
-    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    register: Integer,
-    value: Long,
-) {
-    var shift = division.power_of_two(value)
-    if not arithmetic.is_checked and shift > 0 {
-        encoder.shift_immediate(4, register, shift)
-        return
-    }
-    encoder.multiply_immediate(register, register, value)
-}
-
-func emit_shift_by(extension: Integer, register: Integer, value: Long) {
-    var masked = value.bits_and(63)
-    var count: Integer = masked
-    encoder.shift_immediate(extension, register, count)
-}
-
-func emit_shift_right_by(
-    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    register: Integer,
-    value: Long,
-) {
-    if arithmetic.is_signed {
-        emit_shift_by(7, register, value)
-    } else {
-        emit_shift_by(5, register, value)
-    }
-}
-
-func emitted_in_place(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    var target = state.allocation.home_of(arithmetic.target)
-    var wide_enough = arithmetic.width == 'bits_64' or keeps_its_width(arithmetic)
-    fallback target >= 0 and wide_enough
-    var immediate = takes_an_immediate(arithmetic)
-    var registered = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
-    registered = registered or arithmetic.operator == 'bits_and' or arithmetic.operator == 'bits_or'
-    registered = registered or arithmetic.operator == 'bits_xor'
-    var multiplies = arithmetic.operator == 'multiply' and not is_wide_unsigned(arithmetic)
-    registered = registered or multiplies
-    fallback immediate or registered
-    var left_home = state.allocation.home_of(arithmetic.left)
-    if state.allocation.constant_of(arithmetic.left) {
-        left_home = -1
-    }
-    var right_home = state.allocation.home_of(arithmetic.right)
-    if state.allocation.constant_of(arithmetic.right) {
-        right_home = -1
-    }
-    fallback immediate or right_home != target
-    var overwrites_left = left_home == target
-    var invertible = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
-    fallback not arithmetic.is_checked or not overwrites_left or invertible
-    var source = encoder.rcx
-    if not immediate {
-        source = frames.register_of(arithmetic.right, encoder.rcx)
-    }
-    frames.read_into(target, arithmetic.left)
-    if immediate {
-        emit_with_an_immediate(arithmetic, target)
-    } else {
-        emit_registers(arithmetic, target, source)
-    }
-    if not arithmetic.is_checked {
-        return true
-    }
-    var condition = 128
-    if is_wide_unsigned(arithmetic) {
-        condition = _jump_if_carry_code
-    }
-    var kind = 0
-    if overwrites_left {
-        kind = 1
-    }
-    cold_stops.defer_a_stop(condition, arithmetic, kind, target, source, immediate)
-    return true
-}
-
-# ../../OPTIMIZATIONS.md#an-unchecked-32-bit-sum-is-one-instruction
-func keeps_its_width(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    fallback not arithmetic.is_checked and arithmetic.width == 'bits_32'
-    var bitwise = arithmetic.operator == 'bits_and' or arithmetic.operator == 'bits_or'
-    bitwise = bitwise or arithmetic.operator == 'bits_xor'
-    var sums = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
-    return bitwise and arithmetic.is_signed or sums and not arithmetic.wraps
-}
-
-func emit_checked(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
-    var wide_unsigned = is_wide_unsigned(arithmetic)
-    if not arithmetic.is_checked {
-        wrap_to_the_width(arithmetic)
-        return
-    }
-    if wide_unsigned {
-        var carry = _jump_if_carry_code
-        cold_stops.defer_a_stop(carry, arithmetic, 0, 0, 0, false)
-        return
-    }
-    if arithmetic.width == 'bits_64' {
-        var overflow = 128
-        cold_stops.defer_a_stop(overflow, arithmetic, 0, 0, 0, false)
-        return
-    }
-    encoder.fits_back(arithmetic.width, arithmetic.is_signed)
-    encoder.compare_rdx_rax()
-    var not_equal = opcodes.jump_if_not_equal_code
-    cold_stops.defer_a_stop(not_equal, arithmetic, 0, 0, 0, false)
 }
 
 func emit_decimal_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic) {
@@ -819,28 +494,6 @@ func resize_the_decimal(to_double: Boolean) {
     } else {
         encoder.double_into_float()
     }
-}
-
-func emit_multiply(wide_unsigned: Boolean) {
-    if wide_unsigned {
-        encoder.multiply_unsigned_by_rcx()
-    } else {
-        encoder.multiply_rax_rcx()
-    }
-}
-
-func emit_shift_right(is_signed: Boolean) {
-    if is_signed {
-        encoder.shift_rax_right_keeping_the_sign_by_cl()
-    } else {
-        encoder.shift_rax_right_by_cl()
-    }
-}
-
-func wrap_to_the_width(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
-    fallback arithmetic.width != 'bits_64'
-    encoder.fits_back(arithmetic.width, arithmetic.is_signed)
-    encoder.move_rdx_into_rax()
 }
 
 func emit_compare(compare: LowIntermediaryRepresentation.Instructions.Compare) {
