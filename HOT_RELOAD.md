@@ -26,9 +26,13 @@ Target: a changed function reloads in well under 0.1 s of swapping, after the co
    layout; every enum's values; and a digest of each of the program's files. A reload compiles against it.
 3. **The reloader**, `Spite.HotReload`, Spite the compiler adds to the build (`.spite/build/spite/hot_reload.spite`)
    with `Spite.ReloadPoint`, which the start of the program makes: it watches the program's folders with
-   `FileSystemWatcher`, and the check point every loop of the program's own code ends with (one load of a flag a
-   helper thread raises every 25 ms) asks it whether a saved file waits. Then it runs the compiler that built the
-   program with the program's own flags and `--reload-at=<address>`, and swaps in what comes back.
+   `FileSystemWatcher`, and a check point asks it whether a saved file waits, waiting for a file still being
+   written to settle (`settled_changes`). A check point is one load of a flag a helper thread raises every 25 ms; it
+   ends every loop of the program's own code, sits just before and after each call from it into a library function
+   that waits, the same waits started work moves on at (`Waits.reaches_a_wait`: `Console.read_line`, `File` reads,
+   writes and `lock`, sockets), and runs inside `Program.sleep`, which the
+   helper wakes. Then it runs the compiler that built the program with the program's own flags and
+   `--reload-at=<address>`, and swaps in what comes back.
 4. **The reload compile**, `spite <folder> <flags> --executable-path=<program> --reload-at=<address>`: it reads the
    manifest, compiles the program, and compares the digest of every function's machine code with the manifest's.
    A digest leaves out the four bytes of every reference that leaves the function and puts in its place what it
