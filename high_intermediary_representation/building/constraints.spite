@@ -42,7 +42,6 @@ var no_table = Symbols.SymbolTable(no_folders)
 var no_resolver = NameResolution.Resolver(no_table)
 var context = Context(no_program, no_resolver)
 var values = Values(context)
-var typing = Validators.HighIntermediaryRepresentation.Typing.Validator()
 var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
 var made = Model.ClassModel("", "", no_file)
 var this_names = List<String>()
@@ -71,36 +70,33 @@ func check_the_dictionary_keys() {
     fallback made.shown.starts_with("Dictionary<")
     var key = made.bound_types["$key_type"]
     fallback key
-    if key.kind == 'union' {
-        var union_shown = context.shown(key)
-        var union_name = values.plain_name_of(union_shown)
-        typing.refuse_a_union_key(context, union_name)
-    }
-    fallback key.kind == 'object' and not key.is_nullable and key.name != "String"
-    fallback context.has_a_class(key)
-    var keyed = context.class_of(key)
-    fallback keyed.function_named("equals")
-    var shown = context.shown(key)
-    typing.refuse_equal_keys(context, shown)
+    var rule = Validators.HighIntermediaryRepresentation.GenericConstraint.Validator()
+    rule.check_a_dictionary_key(context, key)
 }
 
 func check_the_written_form() {
     var format_classes = ["BinaryWriter", "BinaryReader", "JsonWriter", "JsonReader"]
-    var plain = typing.plain_class_name(made.shown)
+    var plain = plain_class_name(made.shown)
     fallback format_classes.contains(plain)
     var written = made.bound_types["$value_type"]
     fallback written
     var is_binary = plain.starts_with("Binary")
-    var verb = "write"
-    if plain.ends_with("Reader") {
-        verb = "read"
-    }
     var shown = context.shown(written)
     var what = values.plain_name_of(shown)
     var seen = List<String>()
     var reason = unwritable_reason(written, what, is_binary, seen)
-    fallback not reason.is_empty()
-    typing.refuse_an_unwritable_form(context, plain, verb, what, reason)
+    var rule = Validators.HighIntermediaryRepresentation.GenericConstraint.Validator()
+    rule.check_a_written_form(context, plain, what, reason)
+}
+
+func plain_class_name(shown: String): String {
+    var opening = shown.index_of("<")
+    if not opening {
+        return shown
+    }
+    var sliced = shown.slice(0, opening)
+    crash sliced
+    return sliced
 }
 
 func unwritable_reason(written: Model.Type, path: String, is_binary: Boolean, seen: List<String>): String {
@@ -244,11 +240,6 @@ func note_an_attribute_name(attribute: Model.AttributeModel) {
     attribute_names.append(attribute.name)
 }
 
-func refuse_an_escape(element: Model.Type, function_name: String) {
-    var shown = context.shown(element)
-    typing.refuse_a_vector_this(context, shown, function_name)
-}
-
 func note_an_alias(found: AbstractSyntaxTree.Walk.Found.Statement) {
     note_a_statement_alias(found.statement, found.function_name)
 }
@@ -360,24 +351,34 @@ func check_a_constraint(declared: AbstractSyntaxTree.Shapes.Declarations.Generic
     fallback given.kind != 'union' and given.kind != 'shape'
     var wanted = context.resolver.type_in(declared.bound, made, declared.line)
     fallback wanted.kind == 'shape' and wanted.name != "Anything"
-    if given.is_nullable {
-        refuse_a_nullable(given, wanted, declared.name)
-    }
+    var wanted_parts = wanted.name.split(".")
+    var shape_name = wanted_parts.last()
+    crash shape_name
+    var owner = owner_name()
+    var rule = Validators.HighIntermediaryRepresentation.GenericConstraint.Validator()
+    rule.check_a_nullable_fit(context, given, shape_name, owner, declared.name)
     var shape = context.program.shape_keyed(wanted.name)
     crash shape
     var index = 0
     while index < shape.members.count() {
         var member = shape.members[index]
-        if not is_filled(given, member) {
-            refuse(given, shape.name, declared.name, member.name)
-        }
-        refuse_a_mistyped_member(given, member, shape)
+        var filled = is_filled(given, member)
+        rule.check_a_filled_member(context, filled, given, shape.name, owner, declared.name, member.name)
+        check_the_member_types(given, member, shape)
         index = index + 1
     }
 }
 
+func owner_name(): String {
+    var plain = plain_class_name(made.shown)
+    var segments = plain.split(".")
+    var owner = segments.last()
+    crash owner
+    return owner
+}
+
 # ../../PROOFS.md#a-value-fits-a-type
-func refuse_a_mistyped_member(given: Model.Type, member: Model.FunctionModel, shape: Model.ShapeModel) {
+func check_the_member_types(given: Model.Type, member: Model.FunctionModel, shape: Model.ShapeModel) {
     fallback given.kind == 'object' and context.has_a_class(given)
     var filler = context.class_of(given)
     var shown = context.shown(given)
@@ -390,18 +391,6 @@ func refuse_a_mistyped_member(given: Model.Type, member: Model.FunctionModel, sh
     var function = filler.function_named(member.name)
     fallback function
     values.refuse_a_mistyped_function(function, member, filler, shape, shown)
-}
-
-func refuse_a_nullable(given: Model.Type, wanted: Model.Type, generic_name: String) {
-    var shown = context.shown(given)
-    var wanted_parts = wanted.name.split(".")
-    var shape_name = wanted_parts.last()
-    crash shape_name
-    var plain = typing.plain_class_name(made.shown)
-    var segments = plain.split(".")
-    var owner = segments.last()
-    crash owner
-    typing.refuse_a_nullable_constraint(context, shown, shape_name, owner, generic_name)
 }
 
 func is_filled(given: Model.Type, member: Model.FunctionModel): Boolean {
@@ -430,13 +419,4 @@ func is_filled(given: Model.Type, member: Model.FunctionModel): Boolean {
         return true
     }
     return false
-}
-
-func refuse(given: Model.Type, shape_name: String, generic_name: String, member_name: String) {
-    var shown = context.shown(given)
-    var plain = typing.plain_class_name(made.shown)
-    var segments = plain.split(".")
-    var owner = segments.last()
-    crash owner
-    typing.refuse_constraint(context, shown, shape_name, owner, generic_name, member_name)
 }
