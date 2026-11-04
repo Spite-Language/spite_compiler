@@ -20,7 +20,7 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
     mapping                                the program's folders; then validators/mapping
     symbols                                the entry class and every class it names, a class at a time as names ask
                                            for it, each read through abstract_syntax_tree's `run` (lexed, parsed,
-                                           formatted by printers/formatted_source and read again); then
+                                           formatted by printers/spite's FilePrinter and read again); then
                                            validators/abstract_syntax_tree
     name_resolution                        the model; then validators/name_resolution
     high_intermediary_representation       every reached function built (building only builds)
@@ -316,10 +316,12 @@ needs. The folder is named after the rule, and the validator holds every word of
 `printers/<what>/printer.spite` holds a class `Printer(input)` answering `text(): String`. A printer never writes
 a file and never changes its input.
 
-- `printers/spite` prints a tree as Spite, to quote code in a message; `--final-classes` uses it on a merged class.
-- `printers/formatted_source` is the formatter: it prints a file's tokens and comments in the one layout (D901),
-  and `formatting/formatter.spite` checks the result (`validators/abstract_syntax_tree/formatting`), writes it
-  back and prints `formatted <path>`.
+- `printers/spite` prints a tree as Spite: a statement or an expression to quote code in a message, and a whole
+  file (`FilePrinter`, with `LineBreaking` for lines over 120 columns) as the one way a file is printed: the
+  same tree always prints the same text, with the comments the tree holds (a function's, the class's heading).
+  `formatting/formatter.spite` prints each of the program's files, checks that the text reads back to the same
+  text with every comment (`validators/abstract_syntax_tree/formatting`), writes it and prints
+  `formatted <path>`; `--final-classes` writes its merged classes as `printers/final_class` prints them.
 - `printers/diagnostics`, `printers/high_intermediary_representation`, `printers/low_intermediary_representation`,
   `printers/optimization_report`, `printers/machine_code`. `--high-ir` and `--low-ir` write the two
   representations next to the executable, as `<program>.high_ir.txt` and `<program>.low_ir.txt`.

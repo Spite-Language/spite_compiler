@@ -59,6 +59,9 @@ var no_statements = List<Statement>()
 var parsed_function = ""
 var stops = Dictionary<Integer, String>()
 var placed_stops = List<Integer>()
+var comments = List<AbstractSyntaxTree.Shapes.Comment>()
+var comment_index = 0
+var beyond_every_line = 2147483647
 var _open_brace_code = 123
 var _close_brace_code = 125
 
@@ -70,12 +73,154 @@ func Parser(starting_path: String, starting_namespace: String, starting_tokens: 
 
 func parse_file(): AbstractSyntaxTree.Shapes.SourceFile {
     var file = AbstractSyntaxTree.Shapes.SourceFile(path, namespace)
+    comment_index = 0
     while not finished() {
+        var first = current()
+        var previous_line = 0
+        if position > 0 {
+            var before = tokens[position - 1]
+            crash before
+            previous_line = before.line
+        }
         var written = declaration()
+        place_the_comments(file, written, previous_line, first.line)
         file.declarations.append(written)
         end_of_statement()
     }
+    place_the_last_comments(file)
     return file
+}
+
+# ../../../spite_spec/specs/style.md#comments
+func place_the_comments(
+    file: AbstractSyntaxTree.Shapes.SourceFile,
+    written: Declaration,
+    previous_line: Integer,
+    first_line: Integer,
+) {
+    var above = comments_before(previous_line, first_line)
+    var blank_lines = first_line - previous_line - 1 - above.count()
+    var index = file.declarations.count()
+    if index > 0 and blank_lines > 0 {
+        file.blank_before.append(index)
+    }
+    fallback not above.is_empty()
+    var is_a_function = written.class == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration
+    var kept = List<AbstractSyntaxTree.Shapes.Comment>()
+    if index == 0 {
+        kept = heading_and_rest(file, above, first_line, is_a_function)
+    } else {
+        kept = above
+    }
+    fallback not kept.is_empty()
+    if written.class == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration {
+        add_the_texts(kept, written.comments)
+        return
+    }
+    var place = place_of(written)
+    misplace(file, kept, place)
+}
+
+func heading_and_rest(
+    file: AbstractSyntaxTree.Shapes.SourceFile,
+    above: List<AbstractSyntaxTree.Shapes.Comment>,
+    first_line: Integer,
+    is_a_function: Boolean,
+): List<AbstractSyntaxTree.Shapes.Comment> {
+    var start = above.count()
+    if is_a_function {
+        var expected = first_line - 1
+        while start > 0 and is_on_line(above, start - 1, expected) {
+            start = start - 1
+            expected = expected - 1
+        }
+    }
+    var kept = List<AbstractSyntaxTree.Shapes.Comment>()
+    var index = 0
+    while index < above.count() {
+        var comment = above[index]
+        if index < start {
+            file.heading.append(comment.text)
+        } else {
+            kept.append(comment)
+        }
+        index = index + 1
+    }
+    return kept
+}
+
+func is_on_line(above: List<AbstractSyntaxTree.Shapes.Comment>, index: Integer, line: Integer): Boolean {
+    var comment = above[index]
+    crash comment
+    return comment.line == line
+}
+
+func place_the_last_comments(file: AbstractSyntaxTree.Shapes.SourceFile) {
+    var last_line = 0
+    if tokens.count() > 1 {
+        var last = tokens[tokens.count() - 2]
+        crash last
+        last_line = last.line
+    }
+    var rest = comments_before(last_line, beyond_every_line)
+    fallback not rest.is_empty()
+    if file.declarations.is_empty() {
+        add_the_texts(rest, file.heading)
+        return
+    }
+    misplace(file, rest, "at the end of the file")
+}
+
+func add_the_texts(kept: List<AbstractSyntaxTree.Shapes.Comment>, texts: List<String>) {
+    var index = 0
+    while index < kept.count() {
+        var comment = kept[index]
+        texts.append(comment.text)
+        index = index + 1
+    }
+}
+
+func misplace(
+    file: AbstractSyntaxTree.Shapes.SourceFile,
+    kept: List<AbstractSyntaxTree.Shapes.Comment>,
+    place: String,
+) {
+    var index = 0
+    while index < kept.count() {
+        var comment = kept[index]
+        file.misplaced_comments.append(comment)
+        file.misplaced_places.append(place)
+        index = index + 1
+    }
+}
+
+func place_of(written: Declaration): String {
+    switch written {
+        AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration: return "above the singleton line"
+        AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration: return "above a generic line"
+        AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration: return "above an enum"
+        AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration: return "above a union"
+        AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration: return "above a type"
+        AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration: return "above an attribute"
+        AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration: return "above a function"
+    }
+}
+
+func comments_before(previous_line: Integer, first_line: Integer): List<AbstractSyntaxTree.Shapes.Comment> {
+    var found = List<AbstractSyntaxTree.Shapes.Comment>()
+    var keep_going = true
+    while keep_going and comment_index < comments.count() {
+        var comment = comments[comment_index]
+        if comment.line >= first_line {
+            keep_going = false
+        } else {
+            if comment.line > previous_line {
+                found.append(comment)
+            }
+            comment_index = comment_index + 1
+        }
+    }
+    return found
 }
 
 func declaration(): Declaration {
@@ -902,11 +1047,7 @@ func expression(): Expression {
     return or_expression()
 }
 
-func binary_of(
-    left: Expression,
-    operator: AbstractSyntaxTree.Tokens.Token.Kind,
-    right: Expression,
-): Expression {
+func binary_of(left: Expression, operator: AbstractSyntaxTree.Tokens.Token.Kind, right: Expression): Expression {
     var made = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(left, operator, right)
     made.line = left.line
     made.column = left.column
@@ -1131,9 +1272,7 @@ func postfix_expression(): Expression {
     return value
 }
 
-func after_primary(
-    before: Expression,
-): Expression? {
+func after_primary(before: Expression): Expression? {
     var kind = current().kind
     switch kind {
         'dot': return member_after(before)
@@ -1192,9 +1331,7 @@ func after_primary(
     }
 }
 
-func member_after(
-    before: Expression,
-): Expression {
+func member_after(before: Expression): Expression {
     step()
     var token = current()
     var kind = token.kind
@@ -1213,9 +1350,7 @@ func member_after(
     return member
 }
 
-func index_after(
-    before: Expression,
-): Expression {
+func index_after(before: Expression): Expression {
     step()
     var index = expression()
     closing_bracket_expected()
@@ -1257,9 +1392,7 @@ func read_arguments(arguments: List<Expression>) {
     }
 }
 
-func generic_call_after(
-    before: Expression,
-): Expression? {
+func generic_call_after(before: Expression): Expression? {
     var saved = position
     step()
     var arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
@@ -1410,6 +1543,7 @@ func primary_expression(): Expression {
 func literal_after(token: AbstractSyntaxTree.Tokens.Token): Expression {
     step()
     var literal = AbstractSyntaxTree.Shapes.Expressions.LiteralExpression(token.kind, token.text)
+    literal.written = token.lexeme
     literal.line = token.line
     literal.column = token.column
     return literal
