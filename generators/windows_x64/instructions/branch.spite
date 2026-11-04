@@ -1,0 +1,67 @@
+var _jump_if_parity_code = 138
+var state = Generators.WindowsX64.EmitterState()
+var encoder = Generators.X64.Encoder()
+var edge_moves = Generators.WindowsX64.EdgeMoves(state)
+var frames = Generators.WindowsX64.Frames(state)
+var opcodes = Generators.WindowsX64.Opcodes()
+
+func Branch(starting_state: Generators.WindowsX64.EmitterState) {
+    state = starting_state
+    encoder = starting_state.encoder
+    edge_moves = Generators.WindowsX64.EdgeMoves(starting_state)
+    frames = Generators.WindowsX64.Frames(starting_state)
+    opcodes = Generators.WindowsX64.Opcodes()
+}
+
+func jump_when_unordered(branch: LowIntermediaryRepresentation.Instructions.Branch) {
+    var parity = _jump_if_parity_code
+    if state.flags_unordered_is_true {
+        edge_moves.jump_to_block_if_through_moves(parity, branch.when_true)
+    } else {
+        edge_moves.jump_to_block_if_through_moves(parity, branch.when_false)
+    }
+}
+
+func emit(branch: LowIntermediaryRepresentation.Instructions.Branch) {
+    if state.allocation.constant_of(branch.condition) {
+        var value = state.allocation.value_of(branch.condition)
+        if value != 0 {
+            edge_moves.go_to_block(branch.when_true)
+        } else {
+            edge_moves.go_to_block(branch.when_false)
+        }
+        return
+    }
+    var condition = opcodes.jump_if_not_equal_code
+    var flagged = branch.condition == state.flags_register
+    if state.allocation.is_fused(branch.condition) or flagged {
+        condition = state.flags_condition - 16
+    } else {
+        var tested = frames.register_of(branch.condition, encoder.rax)
+        encoder.test_register(tested)
+    }
+    if branch.when_true == branch.when_false {
+        edge_moves.go_to_block(branch.when_true)
+        return
+    }
+    var on_the_flags = state.allocation.is_fused(branch.condition) or flagged
+    if state.flags_have_parity and on_the_flags {
+        jump_when_unordered(branch)
+    }
+    var true_moves = edge_moves.moves_at_the_tail(branch.when_true)
+    var false_moves = edge_moves.moves_at_the_tail(branch.when_false)
+    var stays_on_true = edge_moves.falls_into(branch.when_true)
+    if true_moves and not false_moves {
+        stays_on_true = true
+    } else if false_moves and not true_moves {
+        stays_on_true = false
+    }
+    if stays_on_true {
+        var opposite = edge_moves.inverted(condition)
+        edge_moves.jump_to_block_if_through_moves(opposite, branch.when_false)
+        edge_moves.go_to_block(branch.when_true)
+        return
+    }
+    edge_moves.jump_to_block_if_through_moves(condition, branch.when_true)
+    edge_moves.go_to_block(branch.when_false)
+}
