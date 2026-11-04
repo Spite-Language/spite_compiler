@@ -1,15 +1,82 @@
-func refuse_a_crossing(context: HighIntermediaryRepresentation.Building.Context, shown: String) {
+func check_a_crossing(context: HighIntermediaryRepresentation.Building.Context, crossing: Model.Type) {
+    fallback not crosses(context, crossing)
+    var full_name = context.shown(crossing)
+    var shown = plain_name(full_name)
     stop(
         context,
         "a {shown} cannot cross into C: a foreign function takes numbers, Boolean, enum values, text and a type whose attributes are all numbers",
     )
 }
 
-func refuse_a_call_through_a_parameter(context: HighIntermediaryRepresentation.Building.Context) {
+func crosses(context: HighIntermediaryRepresentation.Building.Context, crossing: Model.Type): Boolean {
+    var kind = crossing.kind
+    if kind == 'scalar' or kind == 'enumeration' {
+        return true
+    }
+    if kind == 'shape' {
+        return shape_holds_numbers(context, crossing)
+    }
+    fallback kind == 'object'
+    if crossing.name == "String" or crossing.name == "Buffer" {
+        return true
+    }
+    return holds_numbers(context, crossing)
+}
+
+func shape_holds_numbers(context: HighIntermediaryRepresentation.Building.Context, crossing: Model.Type): Boolean {
+    var shape = context.program.shape_keyed(crossing.name)
+    crash shape
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        crash member.answer
+        var is_a_number = member.answer.kind == 'scalar' and not member.answer.is_nullable
+        fallback not member.is_an_attribute or is_a_number
+        index = index + 1
+    }
+    return true
+}
+
+func holds_numbers(context: HighIntermediaryRepresentation.Building.Context, crossing: Model.Type): Boolean {
+    fallback context.has_a_class(crossing)
+    var model = context.class_of(crossing)
+    fallback model.function_named("_read_value")
+    var element = model.bound_types["$element_type"]
+    fallback element
+    return element.kind == 'scalar' and not element.is_nullable
+}
+
+func check_a_library_holder(context: HighIntermediaryRepresentation.Building.Context, is_a_parameter: Boolean) {
+    fallback is_a_parameter
     stop(
         context,
         "a foreign function is called through the attribute or variable that holds its DynamicLibrary(...), so the compiler knows which library to bind it in",
     )
+}
+
+func check_a_callback(
+    context: HighIntermediaryRepresentation.Building.Context,
+    function_type: Model.Type,
+    written: String,
+    names: List<String>,
+) {
+    var index = 0
+    while index < function_type.parameters.count() {
+        var parameter = function_type.parameters[index]
+        var name = names[index]
+        crash name
+        if not is_a_c_number(parameter) {
+            var shown = context.shown(parameter)
+            refuse_a_callback_parameter(context, written, name, shown)
+        }
+        index = index + 1
+    }
+    fallback function_type.answer
+    check_a_callback_answer(context, function_type.answer, written)
+}
+
+func is_a_c_number(of_type: Model.Type): Boolean {
+    return of_type.kind == 'scalar' and not of_type.is_nullable
 }
 
 func refuse_a_callback_parameter(
@@ -25,16 +92,42 @@ func refuse_a_callback_parameter(
     )
 }
 
-func refuse_a_callback_answer(
+func check_a_callback_answer(
     context: HighIntermediaryRepresentation.Building.Context,
+    answer: Model.Type,
     written: String,
-    shown: String,
 ) {
+    fallback not answer.is_nothing()
+    fallback not is_a_c_number(answer)
+    var shown = context.shown(answer)
     var article = article_of(shown)
     stop(
         context,
         "'{written}' is called by C, which takes back a number, a Boolean or nothing: it returns {article} {shown}",
     )
+}
+
+func check_two_arguments(context: HighIntermediaryRepresentation.Building.Context, count: Integer) {
+    fallback count != 2
+    refuse_an_unnamed_callback(context)
+}
+
+func check_a_written_place(context: HighIntermediaryRepresentation.Building.Context, place: String?) {
+    if not place {
+        refuse_an_unnamed_callback(context)
+    }
+    crash place
+    var is_known = place == "no_context" or place == "context_first" or place == "context_last"
+    fallback not is_known
+    stop(
+        context,
+        "'{place}' is not where C passes a callback its context: write 'no_context', 'context_first' or 'context_last'",
+    )
+}
+
+func check_a_named_function(context: HighIntermediaryRepresentation.Building.Context, is_named: Boolean) {
+    fallback not is_named
+    refuse_an_unnamed_callback(context)
 }
 
 func refuse_an_unnamed_callback(context: HighIntermediaryRepresentation.Building.Context) {
@@ -44,33 +137,33 @@ func refuse_an_unnamed_callback(context: HighIntermediaryRepresentation.Building
     )
 }
 
-func refuse_an_unknown_place(context: HighIntermediaryRepresentation.Building.Context, written: String) {
-    stop(
-        context,
-        "'{written}' is not where C passes a callback its context: write 'no_context', 'context_first' or 'context_last'",
-    )
-}
-
-func refuse_a_contextless_owner(
+func check_a_context(
     context: HighIntermediaryRepresentation.Building.Context,
+    place: String,
+    owner_model: Model.ClassModel,
     function_name: String,
-    owner: String,
 ) {
+    fallback place == "no_context" and not owner_model.is_singleton
+    var owner = plain_name(owner_model.shown)
     stop(
         context,
         "'ForeignCallback({function_name}, 'no_context')' gives C no context to find its '{owner}' by, so '{function_name}' must belong to a singleton: move it into a singleton that tells them apart by what C passes, or hand C the context with 'context_first' or 'context_last'",
     )
 }
 
-func refuse_a_shared_attribute(
+func check_a_reached_attribute(
     context: HighIntermediaryRepresentation.Building.Context,
     written: String,
     function_name: String,
     reaching: String,
-    owner: String,
-    attribute: String,
-    shown: String,
+    owner_model: Model.ClassModel,
+    found: Model.AttributeModel?,
 ) {
+    fallback found
+    fallback not holds_a_value(context, found.attribute_type)
+    var owner = plain_name(owner_model.shown)
+    var shown = context.shown(found.attribute_type)
+    var attribute = found.name
     var reached = "'{attribute}' holds a {shown}"
     if reaching != function_name {
         reached = "'{attribute}', which it reaches through '{reaching}', holds a {shown}"
@@ -79,6 +172,27 @@ func refuse_a_shared_attribute(
         context,
         "'{written}' may be called by C on a thread of its own, so '{function_name}' may reach only the attributes of its own '{owner}' that hold values, its locals and singletons: {reached}, which another thread may share. Keep it in a singleton the callback calls, which is made safe for threads, or give the callback numbers and text of its own",
     )
+}
+
+func holds_a_value(context: HighIntermediaryRepresentation.Building.Context, held: Model.Type): Boolean {
+    var kind = held.kind
+    if kind == 'scalar' or kind == 'enumeration' {
+        return true
+    }
+    fallback kind == 'object'
+    if held.name == "String" {
+        return true
+    }
+    fallback context.has_a_class(held)
+    var model = context.class_of(held)
+    return model.is_singleton
+}
+
+func plain_name(shown: String): String {
+    var parts = shown.split(".")
+    var last = parts.last()
+    crash last
+    return last
 }
 
 func article_of(shown: String): String {
