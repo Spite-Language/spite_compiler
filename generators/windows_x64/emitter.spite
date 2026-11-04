@@ -36,77 +36,6 @@ union Instruction {
     LowIntermediaryRepresentation.Instructions.Select
 }
 
-var program = LowIntermediaryRepresentation.LoweredProgram()
-var encoder = Generators.X64.Encoder()
-var function_offsets = Dictionary<String, Integer>()
-var block_offsets = List<Integer>()
-var block_fixups = List<Generators.X64.Fixup>()
-var call_fixups = List<Generators.X64.Fixup>()
-var import_fixups = List<Generators.X64.Fixup>()
-var data_fixups = List<Generators.X64.Fixup>()
-var slot_fixups = List<Generators.X64.Fixup>()
-var stop_fixups = List<Generators.X64.Fixup>()
-var foreign_names = List<String>()
-var library_imports = List<String>()
-var library_fixups = List<Generators.X64.Fixup>()
-var stop_routine = 0
-var text_writer = 0
-var number_writer = 0
-var current_key = ""
-var current_is_resumable = false
-var current_outgoing = 0
-var current_header = 0
-var current_answer_decimal_size = 0
-var parameter_registers = List<Integer>()
-var no_function = LowIntermediaryRepresentation.LowFunction("", 0)
-var convention = Generators.X64.CallingConvention()
-var allocation = Generators.X64.Allocation(no_function, convention)
-var current_block = 0
-var addressed_base = 0
-var addressed_displacement = 0
-var cold_jumps = List<Integer>()
-var cold_arithmetics = List<LowIntermediaryRepresentation.Instructions.Arithmetic>()
-var cold_kinds = List<Integer>()
-var cold_targets = List<Integer>()
-var cold_sources = List<Integer>()
-var cold_immediates = List<Boolean>()
-var cold_blocks = List<Integer>()
-var current_block_index = 0
-var stub_jumps = List<Integer>()
-var stub_froms = List<Integer>()
-var stub_tos = List<Integer>()
-var flags_condition = 0
-var flags_register = -1
-var flags_have_parity = false
-var flags_unordered_is_true = false
-var current_instructions = List<Instruction>()
-var instruction_position = 0
-var skips_the_next = false
-var frame_slots = 0
-var decimal_save_base = 0
-var room_slots = 0
-var current_place = ""
-var current_block_place = ""
-var loop_heads = List<Boolean>()
-var call_offsets = List<Integer>()
-var call_text_numbers = List<Integer>()
-var call_texts = List<String>()
-var call_numbers = Dictionary<String, Integer>()
-var call_frames = LowIntermediaryRepresentation.CallFrames()
-var place_starts = List<Integer>()
-var place_texts = List<String>()
-var small_blocks = SmallBlocks(encoder, program, data_fixups, import_fixups)
-var kernels = Generators.X64.VectorKernels(encoder, program, data_fixups)
-var current_ends_a_thread = false
-var span_keys = List<String>()
-var span_starts = List<Integer>()
-var code_end = 0
-var body_offsets = Dictionary<String, Integer>()
-var function_ends = Dictionary<String, Integer>()
-var slot_labels = Dictionary<String, Integer>()
-var decimal_labels = Dictionary<Long, Integer>()
-var routine_fixups = List<Generators.X64.Fixup>()
-var routines_end = 0
 var _arithmetic_with_small_immediate_opcode = 131
 var _subtract_from_rsp_operand = 236
 var _writer_frame_size = 120
@@ -179,88 +108,91 @@ var _move_string_byte_opcode = 164
 var _jump_if_parity_code = 138
 var _wait_forever: Long = 4294967295
 var _filled_word_pattern: Long = 2779096485
+var state = EmitterState()
+var encoder = Generators.X64.Encoder()
 
 func Emitter(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
-    program = starting_program
-    small_blocks = SmallBlocks(encoder, program, data_fixups, import_fixups)
-    kernels = Generators.X64.VectorKernels(encoder, program, data_fixups)
+    encoder = state.encoder
+    state.program = starting_program
+    state.small_blocks = SmallBlocks(encoder, state.program, state.data_fixups, state.import_fixups)
+    state.kernels = Generators.X64.VectorKernels(encoder, state.program, state.data_fixups)
     var windows_convention = Convention()
-    convention = windows_convention.table()
-    parameter_registers = convention.argument_registers
+    state.convention = windows_convention.table()
+    state.parameter_registers = state.convention.argument_registers
 }
 
 func emitted(): Buffer {
-    span_keys.append("_stop_and_small_blocks")
-    span_starts.append(0)
+    state.span_keys.append("_stop_and_small_blocks")
+    state.span_starts.append(0)
     emit_the_stop_routine()
-    small_blocks.emit_the_routines(stop_routine)
-    if program.vector_loops > 0 {
-        kernels.emit_the_detection()
+    state.small_blocks.emit_the_routines(state.stop_routine)
+    if state.program.vector_loops > 0 {
+        state.kernels.emit_the_detection()
     }
-    routines_end = encoder.position()
-    program.lowered_functions.each(emit_function)
-    code_end = encoder.position()
-    if program.place_table >= 0 {
+    state.routines_end = encoder.position()
+    state.program.lowered_functions.each(emit_function)
+    state.code_end = encoder.position()
+    if state.program.place_table >= 0 {
         write_the_places()
     }
-    if program.call_table >= 0 {
+    if state.program.call_table >= 0 {
         write_the_calls()
     }
-    call_fixups.each(fix_a_call)
-    stop_fixups.each(fix_a_stop)
+    state.call_fixups.each(fix_a_call)
+    state.stop_fixups.each(fix_a_stop)
     return encoder.code
 }
 
 func note_the_place(start: Integer, place: String) {
     fallback not place.is_empty()
-    var count = place_texts.count()
+    var count = state.place_texts.count()
     if count > 0 {
-        var last = place_texts[count - 1]
+        var last = state.place_texts[count - 1]
         crash last
         fallback last != place
     }
-    place_starts.append(start)
-    place_texts.append(place)
+    state.place_starts.append(start)
+    state.place_texts.append(place)
 }
 
 func note_a_call_site(line: Integer, frames: List<String>) {
-    fallback program.call_table >= 0
+    fallback state.program.call_table >= 0
     var lines = List<String>()
-    var own = call_frames.frame_line(current_block_place, line)
+    var own = state.call_frames.frame_line(state.current_block_place, line)
     if not own.is_empty() {
         lines.append(own)
     }
-    call_frames.add_every(lines, frames)
+    state.call_frames.add_every(lines, frames)
     var number = -1
     if not lines.is_empty() {
         var text = lines.join("\n")
         number = number_of_a_call_text(text)
     }
     var at = encoder.position()
-    call_offsets.append(at)
-    call_text_numbers.append(number)
+    state.call_offsets.append(at)
+    state.call_text_numbers.append(number)
 }
 
 func number_of_a_call_text(text: String): Integer {
-    if call_numbers.contains(text) {
-        var known = call_numbers[text]
+    if state.call_numbers.contains(text) {
+        var known = state.call_numbers[text]
         crash known
         return known
     }
-    var number = call_texts.count()
-    call_texts.append(text)
-    call_numbers[text] = number
+    var number = state.call_texts.count()
+    state.call_texts.append(text)
+    state.call_numbers[text] = number
     return number
 }
 
 func write_the_calls() {
     var table = Buffer(0)
-    var count: Long = call_offsets.count()
+    var count: Long = state.call_offsets.count()
     table.append_long_little_endian(count)
     var index = 0
-    while index < call_offsets.count() {
-        var offset = call_offsets[index]
-        var number = call_text_numbers[index]
+    while index < state.call_offsets.count() {
+        var offset = state.call_offsets[index]
+        var number = state.call_text_numbers[index]
         crash number
         var start: Long = offset
         var numbered: Long = number
@@ -269,13 +201,13 @@ func write_the_calls() {
         index = index + 1
     }
     var texts = Buffer(0)
-    var text_count: Long = call_texts.count()
+    var text_count: Long = state.call_texts.count()
     texts.append_long_little_endian(text_count)
     var placed: Long = text_count * 8 + 8
     var text_index = 0
-    while text_index < call_texts.count() {
+    while text_index < state.call_texts.count() {
         texts.append_long_little_endian(placed)
-        var measured = call_texts[text_index]
+        var measured = state.call_texts[text_index]
         var measured_bytes = measured.to_buffer()
         var measured_length = measured_bytes.count()
         var padded = (measured_length + 7) / 8 * 8
@@ -283,8 +215,8 @@ func write_the_calls() {
         text_index = text_index + 1
     }
     text_index = 0
-    while text_index < call_texts.count() {
-        var text = call_texts[text_index]
+    while text_index < state.call_texts.count() {
+        var text = state.call_texts[text_index]
         var bytes = text.to_buffer()
         var length: Long = bytes.count()
         texts.append_long_little_endian(length)
@@ -307,28 +239,28 @@ func write_the_calls() {
         table.append(copied)
         byte_index = byte_index + 1
     }
-    program.data[program.call_table] = table
+    state.program.data[state.program.call_table] = table
 }
 
 # ../../HOT_RELOAD.md#crash-reports-inside-reloaded-code
 func write_the_places() {
     var table = Buffer(0)
-    var count: Long = place_texts.count() + 1
+    var count: Long = state.place_texts.count() + 1
     table.append_long_little_endian(count)
     var no_reload: Long = 0
     table.append_long_little_endian(no_reload)
     var placed_index = 0
-    while placed_index < place_texts.count() {
-        var place = place_texts[placed_index]
-        var offset = place_starts[placed_index]
+    while placed_index < state.place_texts.count() {
+        var place = state.place_texts[placed_index]
+        var offset = state.place_starts[placed_index]
         crash offset
         var start: Long = offset
         append_a_place(table, start, place)
         placed_index = placed_index + 1
     }
-    var end: Long = code_end
+    var end: Long = state.code_end
     append_a_place(table, end, "-\t-\t-")
-    program.data[program.place_table] = table
+    state.program.data[state.program.place_table] = table
 }
 
 func append_a_place(table: Buffer, start: Long, place: String) {
@@ -349,7 +281,7 @@ func append_a_place(table: Buffer, start: Long, place: String) {
 }
 
 func emit_the_stop_routine() {
-    text_writer = encoder.position()
+    state.text_writer = encoder.position()
     encoder.byte(72)
     encoder.byte(_arithmetic_with_small_immediate_opcode)
     encoder.byte(_subtract_from_rsp_operand)
@@ -365,7 +297,7 @@ func emit_the_stop_routine() {
     encoder.byte(36)
     encoder.byte(56)
     emit_the_writing_tail()
-    number_writer = encoder.position()
+    state.number_writer = encoder.position()
     var routine = [
         72
         _arithmetic_with_small_immediate_opcode
@@ -460,8 +392,8 @@ func emit_the_stop_routine() {
     ]
     routine.each(emit_a_byte)
     emit_the_writing_tail()
-    stop_routine = encoder.position()
-    if program.gates_crashes {
+    state.stop_routine = encoder.position()
+    if state.program.gates_crashes {
         emit_the_gated_stop_start()
     } else {
         encoder.byte(72)
@@ -469,7 +401,7 @@ func emit_the_stop_routine() {
         encoder.byte(_subtract_from_rsp_operand)
         encoder.byte(40)
     }
-    call_routine(text_writer)
+    call_routine(state.text_writer)
     encoder.move_small_immediate(encoder.rcx, 1)
     call_import("ExitProcess")
 }
@@ -499,10 +431,10 @@ func emit_the_gated_stop_start() {
 }
 
 func gate_the_crash() {
-    if program.gates_crashes {
+    if state.program.gates_crashes {
         var at = encoder.call_relative()
         var fixup = Generators.X64.Fixup(at, "_crash_gate", 0)
-        call_fixups.append(fixup)
+        state.call_fixups.append(fixup)
     }
 }
 
@@ -549,26 +481,26 @@ func emit_the_writing_tail() {
 func call_routine(routine: Integer) {
     var at = encoder.call_relative()
     encoder.patch_dword(at, routine - (at + 4))
-    if program.hot_reload {
+    if state.program.hot_reload {
         var fixup = Generators.X64.Fixup(at, "", routine)
-        routine_fixups.append(fixup)
+        state.routine_fixups.append(fixup)
     }
 }
 
 func write_a_label(label: Integer) {
     var at = encoder.load_address_of(encoder.rcx)
     var fixup = Generators.X64.Fixup(at, "", label)
-    data_fixups.append(fixup)
-    var bytes = program.data[label]
+    state.data_fixups.append(fixup)
+    var bytes = state.program.data[label]
     crash bytes
     var length = bytes.count()
     encoder.move_small_immediate(encoder.rdx, length)
-    call_routine(text_writer)
+    call_routine(state.text_writer)
 }
 
 func write_a_number(register: Integer, is_signed: Boolean) {
-    var home = allocation.home_of(register)
-    if allocation.is_a_volatile_home(home) {
+    var home = state.allocation.home_of(register)
+    if state.allocation.is_a_volatile_home(home) {
         encoder.load_virtual(encoder.rcx, register)
     } else {
         read_into(encoder.rcx, register)
@@ -578,7 +510,7 @@ func write_a_number(register: Integer, is_signed: Boolean) {
         signed_flag = 1
     }
     encoder.move_small_immediate(encoder.rdx, signed_flag)
-    call_routine(number_writer)
+    call_routine(state.number_writer)
 }
 
 func stop_with_pieces(texts: List<String>, numbers: List<Integer>, signed_numbers: List<Integer>) {
@@ -607,8 +539,8 @@ func keep_the_numbers(numbers: List<Integer>) {
     while index < numbers.count() {
         var number = numbers[index]
         crash number
-        var home = allocation.home_of(number)
-        if allocation.is_a_volatile_home(home) {
+        var home = state.allocation.home_of(number)
+        if state.allocation.is_a_volatile_home(home) {
             encoder.store_virtual(number, home)
         }
         index = index + 1
@@ -617,9 +549,9 @@ func keep_the_numbers(numbers: List<Integer>) {
 
 func label_of_text(text: String): Integer {
     var bytes = text.to_buffer()
-    program.data.append(bytes)
-    var label = program.data.count() - 1
-    program.constant_labels.append(label)
+    state.program.data.append(bytes)
+    var label = state.program.data.count() - 1
+    state.program.constant_labels.append(label)
     return label
 }
 
@@ -635,75 +567,75 @@ func article_of(name: String): String {
 func call_import(name: String) {
     var at = encoder.call_through_memory()
     var fixup = Generators.X64.Fixup(at, name, 0)
-    import_fixups.append(fixup)
+    state.import_fixups.append(fixup)
 }
 
 func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
-    current_key = function.key
-    if program.hot_reload {
+    state.current_key = function.key
+    if state.program.hot_reload {
         encoder.align_to(32)
     } else {
         encoder.align_to(16)
     }
-    function_offsets[function.key] = encoder.position()
-    span_keys.append(function.key)
+    state.function_offsets[function.key] = encoder.position()
+    state.span_keys.append(function.key)
     var span_start = encoder.position()
-    span_starts.append(span_start)
-    current_place = function.place
+    state.span_starts.append(span_start)
+    state.current_place = function.place
     var start = encoder.position()
     var shown_place = function.place
     if shown_place.is_empty() {
         shown_place = "-\t-\t-"
     }
     note_the_place(start, shown_place)
-    if program.hot_reload {
+    if state.program.hot_reload {
         jump_through_the_slot(function.key)
     }
-    block_fixups = List<Generators.X64.Fixup>()
-    allocation = Generators.X64.Allocation(function, convention)
-    allocation.allocate()
-    if program.vector_loops > 0 {
-        kernels.plan_the_saved(function, allocation)
+    state.block_fixups = List<Generators.X64.Fixup>()
+    state.allocation = Generators.X64.Allocation(function, state.convention)
+    state.allocation.allocate()
+    if state.program.vector_loops > 0 {
+        state.kernels.plan_the_saved(function, state.allocation)
     }
-    current_block = 0
-    var outgoing = convention.shadow_space + 8 * most_arguments_of(function)
-    current_is_resumable = function.is_resumable
-    current_ends_a_thread = function.ends_a_thread
-    current_answer_decimal_size = function.answer_decimal_size
+    state.current_block = 0
+    var outgoing = state.convention.shadow_space + 8 * most_arguments_of(function)
+    state.current_is_resumable = function.is_resumable
+    state.current_ends_a_thread = function.ends_a_thread
+    state.current_answer_decimal_size = function.answer_decimal_size
     if function.is_resumable {
-        current_outgoing = (outgoing + 15) / 16 * 16
-        current_header = 0 - 48 - 8 * function.register_count
-        resumable_prologue(0 - current_header, current_outgoing)
+        state.current_outgoing = (outgoing + 15) / 16 * 16
+        state.current_header = 0 - 48 - 8 * function.register_count
+        resumable_prologue(0 - state.current_header, state.current_outgoing)
     } else {
-        frame_slots = allocation.register_total
-        if frame_slots < function.register_count {
-            frame_slots = function.register_count
+        state.frame_slots = state.allocation.register_total
+        if state.frame_slots < function.register_count {
+            state.frame_slots = function.register_count
         }
-        decimal_save_base = frame_slots
-        frame_slots = frame_slots + 2 * allocation.saved_decimals.count()
-        room_slots = rooms_of(function)
-        var frame = 8 * (frame_slots + allocation.saved.count() + room_slots) + outgoing
+        state.decimal_save_base = state.frame_slots
+        state.frame_slots = state.frame_slots + 2 * state.allocation.saved_decimals.count()
+        state.room_slots = rooms_of(function)
+        var frame = 8 * (state.frame_slots + state.allocation.saved.count() + state.room_slots) + outgoing
         var rounded = (frame + 15) / 16 * 16
         encoder.prologue(rounded)
         save_the_kept_registers()
-        if function.key == program.entry {
-            kernels.call_the_detection()
+        if function.key == state.program.entry {
+            state.kernels.call_the_detection()
         }
-        allocation.current_block = 0
+        state.allocation.current_block = 0
         take_the_parameters(function)
     }
-    block_offsets = List<Integer>()
+    state.block_offsets = List<Integer>()
     var block_count = 0
     while block_count < function.blocks.count() {
-        block_offsets.append(0)
+        state.block_offsets.append(0)
         block_count = block_count + 1
     }
     find_the_loop_heads(function)
     var position = 0
-    while position < allocation.layout.count() {
-        current_block = position
-        var block_index = allocation.layout[position]
-        if loop_heads[block_index] == true {
+    while position < state.allocation.layout.count() {
+        state.current_block = position
+        var block_index = state.allocation.layout[position]
+        if state.loop_heads[block_index] == true {
             encoder.align_to(32)
         } else if follows_a_rotating_head(function, position, block_index) {
             encoder.align_to(16)
@@ -712,12 +644,12 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
         position = position + 1
     }
     var cold = encoder.position()
-    note_the_place(cold, current_place)
-    current_block = allocation.layout.count() + 1
+    note_the_place(cold, state.current_place)
+    state.current_block = state.allocation.layout.count() + 1
     emit_the_cold_stops()
     emit_the_edge_stubs()
-    block_fixups.each(fix_a_block)
-    function_ends[function.key] = encoder.position()
+    state.block_fixups.each(fix_a_block)
+    state.function_ends[function.key] = encoder.position()
 }
 
 # ../../HOT_RELOAD.md#the-parts
@@ -728,28 +660,28 @@ func jump_through_the_slot(key: String) {
         room.append(0)
         index = index + 1
     }
-    program.data.append(room)
-    var label = program.data.count() - 1
-    program.name_state(label, "slot.{key}")
-    slot_labels[key] = label
+    state.program.data.append(room)
+    var label = state.program.data.count() - 1
+    state.program.name_state(label, "slot.{key}")
+    state.slot_labels[key] = label
     encoder.byte(_group_five_opcode)
     encoder.byte(37)
     var at = encoder.position()
     encoder.dword(0)
     var fixup = Generators.X64.Fixup(at, "", label)
-    data_fixups.append(fixup)
-    body_offsets[key] = encoder.position()
+    state.data_fixups.append(fixup)
+    state.body_offsets[key] = encoder.position()
 }
 
 # ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
 func emit_the_moves(from_block: Integer, to_block: Integer) {
-    var entering = allocation.entering_registers[to_block]
+    var entering = state.allocation.entering_registers[to_block]
     crash entering
     var index = 0
     while index < entering.count() {
         var register = entering[index]
         crash register
-        if allocation.differs_on_the_edge(register, from_block, to_block) {
+        if state.allocation.differs_on_the_edge(register, from_block, to_block) {
             store_on_the_edge(register, from_block)
         }
         index = index + 1
@@ -758,7 +690,7 @@ func emit_the_moves(from_block: Integer, to_block: Integer) {
     while index < entering.count() {
         var register = entering[index]
         crash register
-        if allocation.differs_on_the_edge(register, from_block, to_block) {
+        if state.allocation.differs_on_the_edge(register, from_block, to_block) {
             load_on_the_edge(register, to_block)
         }
         index = index + 1
@@ -766,29 +698,29 @@ func emit_the_moves(from_block: Integer, to_block: Integer) {
 }
 
 func store_on_the_edge(register: Integer, from_block: Integer) {
-    fallback not allocation.is_rematerialised(register)
-    var from_home = allocation.home_in(register, from_block)
+    fallback not state.allocation.is_rematerialised(register)
+    var from_home = state.allocation.home_in(register, from_block)
     if from_home >= 0 {
         encoder.store_virtual(register, from_home)
         return
     }
-    var from_decimal = allocation.decimal_home_in(register, from_block)
+    var from_decimal = state.allocation.decimal_home_in(register, from_block)
     if from_decimal >= 0 {
-        var is_double = allocation.decimal_size_of(register) == 8
+        var is_double = state.allocation.decimal_size_of(register) == 8
         encoder.register_from_xmm(encoder.rax, from_decimal, is_double)
         encoder.store_virtual(register, encoder.rax)
     }
 }
 
 func load_on_the_edge(register: Integer, to_block: Integer) {
-    var to_home = allocation.home_in(register, to_block)
+    var to_home = state.allocation.home_in(register, to_block)
     if to_home >= 0 {
         read_from_the_slot(to_home, register)
         return
     }
-    var to_decimal = allocation.decimal_home_in(register, to_block)
+    var to_decimal = state.allocation.decimal_home_in(register, to_block)
     if to_decimal >= 0 {
-        var is_double = allocation.decimal_size_of(register) == 8
+        var is_double = state.allocation.decimal_size_of(register) == 8
         encoder.load_virtual(encoder.rax, register)
         encoder.xmm_from_register(to_decimal, encoder.rax, is_double)
     }
@@ -796,24 +728,24 @@ func load_on_the_edge(register: Integer, to_block: Integer) {
 
 # ../../OPTIMIZATIONS.md#a-value-read-from-a-singleton-that-never-changes-is-read-again-rather-than-spilled
 func read_from_the_slot(register: Integer, virtual: Integer) {
-    if allocation.is_rematerialised(virtual) {
-        var label = allocation.data_label_of_load(virtual)
+    if state.allocation.is_rematerialised(virtual) {
+        var label = state.allocation.data_label_of_load(virtual)
         var at = encoder.load_at_label(register)
         var fixup = Generators.X64.Fixup(at, "", label)
-        data_fixups.append(fixup)
+        state.data_fixups.append(fixup)
         return
     }
     encoder.load_virtual(register, virtual)
 }
 
 func moves_at_the_tail(to_block: Integer): Boolean {
-    fallback not allocation.moves_at_the_head(to_block)
-    return allocation.moves_on_the_edge(current_block_index, to_block)
+    fallback not state.allocation.moves_at_the_head(to_block)
+    return state.allocation.moves_on_the_edge(state.current_block_index, to_block)
 }
 
 func go_to_block(block: Integer) {
     if moves_at_the_tail(block) {
-        emit_the_moves(current_block_index, block)
+        emit_the_moves(state.current_block_index, block)
     }
     jump_to_block(block)
 }
@@ -824,17 +756,17 @@ func jump_to_block_if_through_moves(condition: Integer, block: Integer) {
         return
     }
     var at = encoder.jump_if(condition)
-    stub_jumps.append(at)
-    stub_froms.append(current_block_index)
-    stub_tos.append(block)
+    state.stub_jumps.append(at)
+    state.stub_froms.append(state.current_block_index)
+    state.stub_tos.append(block)
 }
 
 func emit_the_edge_stubs() {
     var index = 0
-    while index < stub_jumps.count() {
-        var at = stub_jumps[index]
-        var from_block = stub_froms[index]
-        var to_block = stub_tos[index]
+    while index < state.stub_jumps.count() {
+        var at = state.stub_jumps[index]
+        var from_block = state.stub_froms[index]
+        var to_block = state.stub_tos[index]
         crash at
         crash from_block
         crash to_block
@@ -843,21 +775,21 @@ func emit_the_edge_stubs() {
         jump_to_block(to_block)
         index = index + 1
     }
-    stub_jumps.clear()
-    stub_froms.clear()
-    stub_tos.clear()
+    state.stub_jumps.clear()
+    state.stub_froms.clear()
+    state.stub_tos.clear()
 }
 
 func find_the_loop_heads(function: LowIntermediaryRepresentation.LowFunction) {
-    loop_heads = List<Boolean>()
+    state.loop_heads = List<Boolean>()
     var index = 0
     while index < function.blocks.count() {
-        loop_heads.append(false)
+        state.loop_heads.append(false)
         index = index + 1
     }
     var position = 0
-    while position < allocation.layout.count() {
-        var block_index = allocation.layout[position]
+    while position < state.allocation.layout.count() {
+        var block_index = state.allocation.layout[position]
         var block = function.blocks[block_index]
         crash block
         var last = block.instructions.last()
@@ -879,10 +811,10 @@ func note_a_back_edge(last: Instruction, position: Integer) {
 }
 
 func note_a_head(target: Integer, position: Integer) {
-    fallback target >= 0 and target < allocation.layout_positions.count()
-    var target_position = allocation.layout_positions[target]
+    fallback target >= 0 and target < state.allocation.layout_positions.count()
+    var target_position = state.allocation.layout_positions[target]
     if target_position >= 0 and target_position <= position {
-        loop_heads[target] = true
+        state.loop_heads[target] = true
     }
 }
 
@@ -908,16 +840,16 @@ func rooms_of(function: LowIntermediaryRepresentation.LowFunction): Integer {
 
 func save_the_kept_registers() {
     var index = 0
-    while index < allocation.saved.count() {
-        var register = allocation.saved[index]
-        var displacement = encoder.slot_of(frame_slots + index)
+    while index < state.allocation.saved.count() {
+        var register = state.allocation.saved[index]
+        var displacement = encoder.slot_of(state.frame_slots + index)
         encoder.store_slot(displacement, register)
         index = index + 1
     }
     var decimal_index = 0
-    while decimal_index < allocation.saved_decimals.count() {
-        var decimal = allocation.saved_decimals[decimal_index]
-        var decimal_displacement = encoder.slot_of(decimal_save_base + 2 * decimal_index + 1)
+    while decimal_index < state.allocation.saved_decimals.count() {
+        var decimal = state.allocation.saved_decimals[decimal_index]
+        var decimal_displacement = encoder.slot_of(state.decimal_save_base + 2 * decimal_index + 1)
         encoder.save_xmm(decimal_displacement, decimal)
         decimal_index = decimal_index + 1
     }
@@ -925,71 +857,71 @@ func save_the_kept_registers() {
 
 func restore_the_kept_registers() {
     var index = 0
-    while index < allocation.saved.count() {
-        var register = allocation.saved[index]
-        var displacement = encoder.slot_of(frame_slots + index)
+    while index < state.allocation.saved.count() {
+        var register = state.allocation.saved[index]
+        var displacement = encoder.slot_of(state.frame_slots + index)
         encoder.load_slot(register, displacement)
         index = index + 1
     }
     var decimal_index = 0
-    while decimal_index < allocation.saved_decimals.count() {
-        var decimal = allocation.saved_decimals[decimal_index]
-        var decimal_displacement = encoder.slot_of(decimal_save_base + 2 * decimal_index + 1)
+    while decimal_index < state.allocation.saved_decimals.count() {
+        var decimal = state.allocation.saved_decimals[decimal_index]
+        var decimal_displacement = encoder.slot_of(state.decimal_save_base + 2 * decimal_index + 1)
         encoder.load_xmm(decimal, decimal_displacement)
         decimal_index = decimal_index + 1
     }
 }
 
 func read_into(register: Integer, virtual: Integer) {
-    if allocation.constant_of(virtual) {
-        var value = allocation.value_of(virtual)
+    if state.allocation.constant_of(virtual) {
+        var value = state.allocation.value_of(virtual)
         encoder.move_small_immediate(register, value)
         return
     }
-    var decimal = allocation.decimal_home_of(virtual)
+    var decimal = state.allocation.decimal_home_of(virtual)
     if decimal >= 0 {
-        var size = allocation.decimal_size_of(virtual)
+        var size = state.allocation.decimal_size_of(virtual)
         encoder.register_from_xmm(register, decimal, size == 8)
         return
     }
-    var home = allocation.home_of(virtual)
+    var home = state.allocation.home_of(virtual)
     if home >= 0 {
         if home != register {
             encoder.move_register(register, home)
         }
         return
     }
-    if allocation.is_rematerialised(virtual) {
-        var label = allocation.data_label_of_load(virtual)
+    if state.allocation.is_rematerialised(virtual) {
+        var label = state.allocation.data_label_of_load(virtual)
         var at = encoder.load_at_label(register)
         var fixup = Generators.X64.Fixup(at, "", label)
-        data_fixups.append(fixup)
+        state.data_fixups.append(fixup)
         return
     }
     encoder.load_virtual(register, virtual)
 }
 
 func write_from(virtual: Integer, register: Integer) {
-    var decimal = allocation.decimal_home_of(virtual)
+    var decimal = state.allocation.decimal_home_of(virtual)
     if decimal >= 0 {
-        var size = allocation.decimal_size_of(virtual)
+        var size = state.allocation.decimal_size_of(virtual)
         encoder.xmm_from_register(decimal, register, size == 8)
         return
     }
-    var home = allocation.home_of(virtual)
+    var home = state.allocation.home_of(virtual)
     if home >= 0 {
         if home != register {
             encoder.move_register(home, register)
         }
         return
     }
-    fallback not allocation.is_rematerialised(virtual)
+    fallback not state.allocation.is_rematerialised(virtual)
     encoder.store_virtual(virtual, register)
 }
 
 func register_of(virtual: Integer, scratch: Integer): Integer {
-    var home = allocation.home_of(virtual)
-    if home >= 0 and not allocation.constant_of(virtual) {
+    var home = state.allocation.home_of(virtual)
+    if home >= 0 and not state.allocation.constant_of(virtual) {
         return home
     }
     read_into(scratch, virtual)
@@ -997,28 +929,28 @@ func register_of(virtual: Integer, scratch: Integer): Integer {
 }
 
 func small_constant(virtual: Integer): Boolean {
-    fallback allocation.constant_of(virtual)
-    var value = allocation.value_of(virtual)
+    fallback state.allocation.constant_of(virtual)
+    var value = state.allocation.value_of(virtual)
     return encoder.fits_in_32_bits(value)
 }
 
 func falls_into(block: Integer): Boolean {
-    var position = allocation.layout_positions[block]
+    var position = state.allocation.layout_positions[block]
     crash position
-    return position == current_block + 1
+    return position == state.current_block + 1
 }
 
 func jump_to_block(block: Integer) {
     fallback not falls_into(block)
     var at = encoder.jump()
     var fixup = Generators.X64.Fixup(at, "", block)
-    block_fixups.append(fixup)
+    state.block_fixups.append(fixup)
 }
 
 func jump_to_block_if(condition: Integer, block: Integer) {
     var at = encoder.jump_if(condition)
     var fixup = Generators.X64.Fixup(at, "", block)
-    block_fixups.append(fixup)
+    state.block_fixups.append(fixup)
 }
 
 func inverted(condition: Integer): Integer {
@@ -1068,7 +1000,7 @@ func take_the_parameters(function: LowIntermediaryRepresentation.LowFunction) {
             encoder.rax_from_decimal_register(index, decimal_size == 8)
             write_from(index, encoder.rax)
         } else if index < 4 {
-            var register = parameter_registers[index]
+            var register = state.parameter_registers[index]
             crash register
             write_from(index, register)
         } else {
@@ -1091,31 +1023,31 @@ func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index
     var block = function.blocks[block_index]
     crash block
     var here = encoder.position()
-    block_offsets[block_index] = here
+    state.block_offsets[block_index] = here
     var wanted = block.place
     if wanted.is_empty() {
-        wanted = current_place
+        wanted = state.current_place
     }
     note_the_place(here, wanted)
-    current_block_place = wanted
-    flags_register = -1
-    current_block_index = block_index
-    allocation.current_block = block_index
-    if allocation.moves_at_the_head(block_index) {
-        var coming = allocation.predecessors[block_index]
+    state.current_block_place = wanted
+    state.flags_register = -1
+    state.current_block_index = block_index
+    state.allocation.current_block = block_index
+    if state.allocation.moves_at_the_head(block_index) {
+        var coming = state.allocation.predecessors[block_index]
         crash coming
         var only = coming[0]
         crash only
         emit_the_moves(only, block_index)
     }
-    current_instructions = block.instructions
-    instruction_position = 0
-    skips_the_next = false
+    state.current_instructions = block.instructions
+    state.instruction_position = 0
+    state.skips_the_next = false
     block.instructions.each(emit_instruction)
     var last = block.instructions.last()
     var ends = false
     if last {
-        ends = allocation.ends_the_block(last)
+        ends = state.allocation.ends_the_block(last)
     }
     var following = block_index + 1
     if not ends and following < function.blocks.count() {
@@ -1124,24 +1056,24 @@ func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index
 }
 
 func emit_instruction(instruction: Instruction) {
-    var position = instruction_position
-    instruction_position = position + 1
-    if skips_the_next {
-        skips_the_next = false
-        flags_register = -1
+    var position = state.instruction_position
+    state.instruction_position = position + 1
+    if state.skips_the_next {
+        state.skips_the_next = false
+        state.flags_register = -1
         return
     }
     var compares = instruction.class == LowIntermediaryRepresentation.Instructions.Compare
     var keeps_flags = keeps_the_flags(instruction)
     emit_an_instruction(instruction)
     if not compares and not keeps_flags {
-        flags_register = -1
+        state.flags_register = -1
     }
 }
 
 func keeps_the_flags(instruction: Instruction): Boolean {
     if instruction.class == LowIntermediaryRepresentation.Instructions.Copy {
-        return not allocation.constant_of(instruction.source) and instruction.target != flags_register
+        return not state.allocation.constant_of(instruction.source) and instruction.target != state.flags_register
     }
     return false
 }
@@ -1181,7 +1113,7 @@ func emit_an_instruction(instruction: Instruction) {
         LowIntermediaryRepresentation.Instructions.CompareExchange: emit_compare_exchange(instruction)
         LowIntermediaryRepresentation.Instructions.Stop: emit_stop(instruction)
         LowIntermediaryRepresentation.Instructions.Exit: emit_exit(instruction)
-        LowIntermediaryRepresentation.Instructions.VectorLoop: kernels.emit(instruction, allocation)
+        LowIntermediaryRepresentation.Instructions.VectorLoop: state.kernels.emit(instruction, state.allocation)
         LowIntermediaryRepresentation.Instructions.Select: emit_select(instruction)
     }
 }
@@ -1197,14 +1129,14 @@ func emit_select(selecting: LowIntermediaryRepresentation.Instructions.Select) {
 }
 
 func emit_constant(constant: LowIntermediaryRepresentation.Instructions.Constant) {
-    fallback not allocation.constant_of(constant.target)
-    var decimal = allocation.decimal_home_of(constant.target)
+    fallback not state.allocation.constant_of(constant.target)
+    var decimal = state.allocation.decimal_home_of(constant.target)
     if decimal >= 0 {
-        var size = allocation.decimal_size_of(constant.target)
+        var size = state.allocation.decimal_size_of(constant.target)
         load_a_decimal_constant(decimal, constant.number, size == 8)
         return
     }
-    var home = allocation.home_of(constant.target)
+    var home = state.allocation.home_of(constant.target)
     if home >= 0 {
         encoder.move_small_immediate(home, constant.number)
         return
@@ -1219,15 +1151,15 @@ func emit_constant(constant: LowIntermediaryRepresentation.Instructions.Constant
 }
 
 func emit_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
-    var target_decimal = allocation.decimal_home_of(copy.target)
-    var source_decimal = allocation.decimal_home_of(copy.source)
+    var target_decimal = state.allocation.decimal_home_of(copy.target)
+    var source_decimal = state.allocation.decimal_home_of(copy.source)
     if target_decimal >= 0 and source_decimal >= 0 {
         if target_decimal != source_decimal {
             encoder.move_xmm(target_decimal, source_decimal)
         }
         return
     }
-    var home = allocation.home_of(copy.target)
+    var home = state.allocation.home_of(copy.target)
     if home >= 0 {
         read_into(home, copy.source)
         return
@@ -1237,7 +1169,7 @@ func emit_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
 }
 
 func emit_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
-    fallback not allocation.is_elided_target(arithmetic.target)
+    fallback not state.allocation.is_elided_target(arithmetic.target)
     var divides = arithmetic.operator == 'divide' or arithmetic.operator == 'remainder'
     if divides {
         emit_division(arithmetic)
@@ -1275,16 +1207,16 @@ func emitted_narrow(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
     if not immediate {
         source = register_of(arithmetic.right, encoder.rcx)
     }
-    var home = allocation.home_of(arithmetic.target)
+    var home = state.allocation.home_of(arithmetic.target)
     var working = narrow_working_register(arithmetic, home, source, immediate)
     var kind = 0
-    var overwrites_left = allocation.home_of(arithmetic.left) == working
-    if working != encoder.rax and overwrites_left and not allocation.constant_of(arithmetic.left) {
+    var overwrites_left = state.allocation.home_of(arithmetic.left) == working
+    if working != encoder.rax and overwrites_left and not state.allocation.constant_of(arithmetic.left) {
         kind = 3
     }
     read_into(working, arithmetic.left)
     if immediate {
-        var value = allocation.value_of(arithmetic.right)
+        var value = state.allocation.value_of(arithmetic.right)
         emit_narrow_with_an_immediate(arithmetic, working, value)
     } else {
         emit_narrow_registers(arithmetic, working, source)
@@ -1363,7 +1295,7 @@ func undo_narrow_in_place(
     immediate: Boolean,
 ) {
     if immediate {
-        var value = allocation.value_of(arithmetic.right)
+        var value = state.allocation.value_of(arithmetic.right)
         undo_narrow_by(arithmetic, target, value)
     } else if arithmetic.operator == 'add' {
         encoder.register_operation_narrow(41, target, source)
@@ -1385,8 +1317,8 @@ func narrow_working_register(
     if home < 0 or not immediate and source == home {
         return encoder.rax
     }
-    var left_home = allocation.home_of(arithmetic.left)
-    if allocation.constant_of(arithmetic.left) {
+    var left_home = state.allocation.home_of(arithmetic.left)
+    if state.allocation.constant_of(arithmetic.left) {
         left_home = -1
     }
     var invertible = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
@@ -1418,7 +1350,7 @@ func takes_an_immediate(arithmetic: LowIntermediaryRepresentation.Instructions.A
 }
 
 func emit_with_an_immediate(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic, register: Integer) {
-    var value = allocation.value_of(arithmetic.right)
+    var value = state.allocation.value_of(arithmetic.right)
     switch arithmetic.operator {
         'add': encoder.operation_immediate(0, register, value)
         'subtract': encoder.operation_immediate(5, register, value)
@@ -1522,7 +1454,7 @@ func power_of_two(value: Long): Integer {
 }
 
 func emitted_in_place(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    var target = allocation.home_of(arithmetic.target)
+    var target = state.allocation.home_of(arithmetic.target)
     var wide_enough = arithmetic.width == 'bits_64' or keeps_its_width(arithmetic)
     fallback target >= 0 and wide_enough
     var immediate = takes_an_immediate(arithmetic)
@@ -1532,12 +1464,12 @@ func emitted_in_place(arithmetic: LowIntermediaryRepresentation.Instructions.Ari
     var multiplies = arithmetic.operator == 'multiply' and not is_wide_unsigned(arithmetic)
     registered = registered or multiplies
     fallback immediate or registered
-    var left_home = allocation.home_of(arithmetic.left)
-    if allocation.constant_of(arithmetic.left) {
+    var left_home = state.allocation.home_of(arithmetic.left)
+    if state.allocation.constant_of(arithmetic.left) {
         left_home = -1
     }
-    var right_home = allocation.home_of(arithmetic.right)
-    if allocation.constant_of(arithmetic.right) {
+    var right_home = state.allocation.home_of(arithmetic.right)
+    if state.allocation.constant_of(arithmetic.right) {
         right_home = -1
     }
     fallback immediate or right_home != target
@@ -1585,7 +1517,7 @@ func undo_in_place(
     immediate: Boolean,
 ) {
     if immediate {
-        var value = allocation.value_of(arithmetic.right)
+        var value = state.allocation.value_of(arithmetic.right)
         if arithmetic.operator == 'add' {
             encoder.operation_immediate(5, target, value)
         } else {
@@ -1631,27 +1563,27 @@ func defer_a_stop(
     immediate: Boolean,
 ) {
     var at = encoder.jump_if(condition)
-    cold_jumps.append(at)
-    cold_arithmetics.append(arithmetic)
-    cold_kinds.append(kind)
-    cold_targets.append(target)
-    cold_sources.append(source)
-    cold_immediates.append(immediate)
-    cold_blocks.append(current_block_index)
+    state.cold_jumps.append(at)
+    state.cold_arithmetics.append(arithmetic)
+    state.cold_kinds.append(kind)
+    state.cold_targets.append(target)
+    state.cold_sources.append(source)
+    state.cold_immediates.append(immediate)
+    state.cold_blocks.append(state.current_block_index)
 }
 
 func emit_the_cold_stops() {
     var index = 0
-    while index < cold_jumps.count() {
-        var at = cold_jumps[index]
-        var arithmetic = cold_arithmetics[index]
-        var kind = cold_kinds[index]
-        var target = cold_targets[index]
-        var source = cold_sources[index]
-        var immediate = cold_immediates[index] == true
-        var cold_block = cold_blocks[index]
+    while index < state.cold_jumps.count() {
+        var at = state.cold_jumps[index]
+        var arithmetic = state.cold_arithmetics[index]
+        var kind = state.cold_kinds[index]
+        var target = state.cold_targets[index]
+        var source = state.cold_sources[index]
+        var immediate = state.cold_immediates[index] == true
+        var cold_block = state.cold_blocks[index]
         crash cold_block
-        allocation.current_block = cold_block
+        state.allocation.current_block = cold_block
         crash arithmetic
         crash kind
         crash target
@@ -1660,13 +1592,13 @@ func emit_the_cold_stops() {
         emit_a_cold_stop(arithmetic, kind, target, source, immediate)
         index = index + 1
     }
-    cold_jumps.clear()
-    cold_arithmetics.clear()
-    cold_kinds.clear()
-    cold_targets.clear()
-    cold_sources.clear()
-    cold_immediates.clear()
-    cold_blocks.clear()
+    state.cold_jumps.clear()
+    state.cold_arithmetics.clear()
+    state.cold_kinds.clear()
+    state.cold_targets.clear()
+    state.cold_sources.clear()
+    state.cold_immediates.clear()
+    state.cold_blocks.clear()
 }
 
 func emit_a_cold_stop(
@@ -1712,7 +1644,7 @@ func stop_not_fitting(arithmetic: LowIntermediaryRepresentation.Instructions.Ari
 
 func owner_of(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): String {
     if arithmetic.owner.is_empty() {
-        return current_key
+        return state.current_key
     }
     return arithmetic.owner
 }
@@ -1735,16 +1667,16 @@ func symbol_of(operator: LowIntermediaryRepresentation.Instructions.Arithmetic.O
 
 # ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
 func decimal_register_of(virtual: Integer, scratch: Integer, is_double: Boolean): Integer {
-    var home = allocation.decimal_home_of(virtual)
+    var home = state.allocation.decimal_home_of(virtual)
     if home >= 0 {
         return home
     }
-    if allocation.constant_of(virtual) {
-        var value = allocation.value_of(virtual)
+    if state.allocation.constant_of(virtual) {
+        var value = state.allocation.value_of(virtual)
         load_a_decimal_constant(scratch, value, is_double)
         return scratch
     }
-    var general = allocation.home_of(virtual)
+    var general = state.allocation.home_of(virtual)
     if general >= 0 {
         encoder.xmm_from_register(scratch, general, is_double)
         return scratch
@@ -1763,20 +1695,20 @@ func load_a_decimal_constant(xmm: Integer, bits: Long, is_double: Boolean) {
     var label = decimal_label_of(bits)
     var at = encoder.load_decimal_at_label(xmm, is_double)
     var fixup = Generators.X64.Fixup(at, "", label)
-    data_fixups.append(fixup)
+    state.data_fixups.append(fixup)
 }
 
 func decimal_label_of(bits: Long): Integer {
-    var known = decimal_labels[bits]
+    var known = state.decimal_labels[bits]
     if known {
         return known
     }
     var bytes = Buffer(0)
     bytes.append_long_little_endian(bits)
-    program.data.append(bytes)
-    var label = program.data.count() - 1
-    program.constant_labels.append(label)
-    decimal_labels[bits] = label
+    state.program.data.append(bytes)
+    var label = state.program.data.count() - 1
+    state.program.constant_labels.append(label)
+    state.decimal_labels[bits] = label
     return label
 }
 
@@ -1788,14 +1720,14 @@ func decimal_into(xmm: Integer, virtual: Integer, is_double: Boolean) {
 }
 
 func decimal_from(virtual: Integer, xmm: Integer, is_double: Boolean) {
-    var home = allocation.decimal_home_of(virtual)
+    var home = state.allocation.decimal_home_of(virtual)
     if home >= 0 {
         if home != xmm {
             encoder.move_xmm(home, xmm)
         }
         return
     }
-    var general = allocation.home_of(virtual)
+    var general = state.allocation.home_of(virtual)
     if general >= 0 {
         encoder.register_from_xmm(general, xmm, is_double)
         return
@@ -1835,8 +1767,8 @@ func emit_decimal_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructi
         decimal_from(arithmetic.target, 0, is_double)
         return
     }
-    var target = allocation.decimal_home_of(arithmetic.target)
-    var right_home = allocation.decimal_home_of(arithmetic.right)
+    var target = state.allocation.decimal_home_of(arithmetic.target)
+    var right_home = state.allocation.decimal_home_of(arithmetic.right)
     var working = 0
     if target >= 0 and target != right_home {
         working = target
@@ -1850,7 +1782,7 @@ func emit_decimal_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructi
 }
 
 func emit_a_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
-    if allocation.is_fused(compare.target) {
+    if state.allocation.is_fused(compare.target) {
         emit_fused_decimal_compare(compare)
     } else {
         emit_decimal_compare(compare)
@@ -1892,22 +1824,22 @@ func emit_fused_decimal_compare(compare: LowIntermediaryRepresentation.Instructi
         first = right
         second = left
     }
-    flags_have_parity = false
+    state.flags_have_parity = false
     var equal = _set_if_equal_code
     var not_equal = _set_if_not_equal_code
     if compare.comparison == 'equal' {
         setting = equal
-        flags_have_parity = true
-        flags_unordered_is_true = false
+        state.flags_have_parity = true
+        state.flags_unordered_is_true = false
     }
     if compare.comparison == 'not_equal' {
         setting = not_equal
-        flags_have_parity = true
-        flags_unordered_is_true = true
+        state.flags_have_parity = true
+        state.flags_unordered_is_true = true
     }
     encoder.compare_xmm(first, second, is_double)
-    flags_condition = setting
-    flags_register = compare.target
+    state.flags_condition = setting
+    state.flags_register = compare.target
 }
 
 func emit_decimal_test(first: Integer, second: Integer, setting: Integer, is_double: Boolean) {
@@ -1990,8 +1922,8 @@ func wrap_to_the_width(arithmetic: LowIntermediaryRepresentation.Instructions.Ar
 func emit_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
     fallback not emitted_as_a_pair(arithmetic)
     read_into(encoder.rax, arithmetic.left)
-    if allocation.constant_of(arithmetic.right) {
-        var divisor = allocation.value_of(arithmetic.right)
+    if state.allocation.constant_of(arithmetic.right) {
+        var divisor = state.allocation.value_of(arithmetic.right)
         if divisor != 0 and divisor != -1 {
             emit_division_by(arithmetic, divisor)
             write_from(arithmetic.target, encoder.rax)
@@ -2009,8 +1941,8 @@ func emit_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithm
 
 # ../../OPTIMIZATIONS.md#a-division-and-a-remainder-of-the-same-two-numbers-are-one-division
 func emitted_as_a_pair(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    fallback instruction_position < current_instructions.count()
-    var following = current_instructions[instruction_position]
+    fallback state.instruction_position < state.current_instructions.count()
+    var following = state.current_instructions[state.instruction_position]
     if following.class == LowIntermediaryRepresentation.Instructions.Arithmetic {
         return emitted_with(arithmetic, following)
     }
@@ -2048,7 +1980,7 @@ func emitted_with(
     }
     write_from(quotient, encoder.rax)
     write_from(remainder, encoder.rdx)
-    skips_the_next = true
+    state.skips_the_next = true
     return true
 }
 
@@ -2064,8 +1996,8 @@ func pairs_with(
     fallback same_numbers and same_kind
     var keeps_its_operands = arithmetic.target != arithmetic.left and arithmetic.target != arithmetic.right
     fallback keeps_its_operands and arithmetic.target != following.target
-    fallback not allocation.is_elided_target(following.target) and not allocation.constant_of(arithmetic.right)
-    return not allocation.constant_of(arithmetic.left)
+    fallback not state.allocation.is_elided_target(following.target) and not state.allocation.constant_of(arithmetic.right)
+    return not state.allocation.constant_of(arithmetic.left)
 }
 
 func divide_signed_into_both(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
@@ -2414,25 +2346,25 @@ func negate_or_stop(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
 }
 
 func stop_with(text: String, line: Integer) {
-    var message = "spite: {text} in {current_key} at line {line}\n"
+    var message = "spite: {text} in {state.current_key} at line {line}\n"
     var bytes = message.to_buffer()
-    program.data.append(bytes)
-    var label = program.data.count() - 1
-    program.constant_labels.append(label)
+    state.program.data.append(bytes)
+    var label = state.program.data.count() - 1
+    state.program.constant_labels.append(label)
     load_message(label)
 }
 
 func load_message(label: Integer) {
     var at = encoder.load_address_of(encoder.rcx)
     var fixup = Generators.X64.Fixup(at, "", label)
-    data_fixups.append(fixup)
-    var bytes = program.data[label]
+    state.data_fixups.append(fixup)
+    var bytes = state.program.data[label]
     crash bytes
     var length = bytes.count()
     encoder.move_small_immediate(encoder.rdx, length)
     var call_at = encoder.call_relative()
     var stop_fixup = Generators.X64.Fixup(call_at, "", 0)
-    stop_fixups.append(stop_fixup)
+    state.stop_fixups.append(stop_fixup)
 }
 
 func patch_here(at: Integer) {
@@ -2443,17 +2375,17 @@ func patch_here(at: Integer) {
 func emit_compare(compare: LowIntermediaryRepresentation.Instructions.Compare) {
     var left = register_of(compare.left, encoder.rax)
     if small_constant(compare.right) {
-        var value = allocation.value_of(compare.right)
+        var value = state.allocation.value_of(compare.right)
         encoder.compare_with(left, value)
     } else {
         var right = register_of(compare.right, encoder.rcx)
         encoder.compare_registers(left, right)
     }
     var condition = condition_code(compare.comparison, compare.is_signed)
-    flags_condition = condition
-    flags_register = compare.target
-    flags_have_parity = false
-    fallback not allocation.is_fused(compare.target)
+    state.flags_condition = condition
+    state.flags_register = compare.target
+    state.flags_have_parity = false
+    fallback not state.allocation.is_fused(compare.target)
     encoder.al_from_condition(condition)
     encoder.zero_extend_al_into_rax()
     write_from(compare.target, encoder.rax)
@@ -2492,75 +2424,75 @@ func unsigned_code(comparison: LowIntermediaryRepresentation.Instructions.Compar
 }
 
 func prepare_the_address(address: Integer, offset: Integer) {
-    if not allocation.is_folded_address(address) {
-        addressed_base = register_of(address, encoder.rax)
-        addressed_displacement = offset
+    if not state.allocation.is_folded_address(address) {
+        state.addressed_base = register_of(address, encoder.rax)
+        state.addressed_displacement = offset
         return
     }
-    var base = allocation.base_of(address)
-    addressed_base = register_of(base, encoder.rax)
-    addressed_displacement = offset + allocation.displacement_of(address)
-    var index = allocation.index_of(address)
+    var base = state.allocation.base_of(address)
+    state.addressed_base = register_of(base, encoder.rax)
+    state.addressed_displacement = offset + state.allocation.displacement_of(address)
+    var index = state.allocation.index_of(address)
     if index >= 0 {
         var index_register = register_of(index, encoder.r11)
-        var scale = allocation.scale_of(address)
+        var scale = state.allocation.scale_of(address)
         encoder.index_by(index_register, scale)
     }
 }
 
 func emit_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
-    var reloaded = allocation.is_rematerialised(loaded.target)
-    fallback not reloaded or allocation.home_of(loaded.target) >= 0
-    var label = allocation.data_label_of(loaded.address)
+    var reloaded = state.allocation.is_rematerialised(loaded.target)
+    fallback not reloaded or state.allocation.home_of(loaded.target) >= 0
+    var label = state.allocation.data_label_of(loaded.address)
     if label >= 0 {
         emit_a_data_load(loaded, label)
         return
     }
     prepare_the_address(loaded.address, loaded.offset)
     if loaded.is_swapped {
-        encoder.load_from(encoder.rax, addressed_base, addressed_displacement, loaded.width, false)
+        encoder.load_from(encoder.rax, state.addressed_base, state.addressed_displacement, loaded.width, false)
         encoder.stop_indexing()
         encoder.swap_rax(loaded.width, loaded.is_signed)
         write_from(loaded.target, encoder.rax)
         return
     }
-    var decimal = allocation.decimal_home_of(loaded.target)
-    var decimal_size = allocation.decimal_size_of(loaded.target)
+    var decimal = state.allocation.decimal_home_of(loaded.target)
+    var decimal_size = state.allocation.decimal_size_of(loaded.target)
     var whole = loaded.width == 'bits_64' or decimal_size == 4 and loaded.width == 'bits_32'
     if decimal >= 0 and whole {
-        encoder.load_decimal_from(decimal, addressed_base, addressed_displacement, decimal_size == 8)
+        encoder.load_decimal_from(decimal, state.addressed_base, state.addressed_displacement, decimal_size == 8)
         encoder.stop_indexing()
         return
     }
-    var home = allocation.home_of(loaded.target)
+    var home = state.allocation.home_of(loaded.target)
     if home >= 0 {
-        encoder.load_from(home, addressed_base, addressed_displacement, loaded.width, loaded.is_signed)
+        encoder.load_from(home, state.addressed_base, state.addressed_displacement, loaded.width, loaded.is_signed)
         encoder.stop_indexing()
         return
     }
-    encoder.load_from(encoder.rax, addressed_base, addressed_displacement, loaded.width, loaded.is_signed)
+    encoder.load_from(encoder.rax, state.addressed_base, state.addressed_displacement, loaded.width, loaded.is_signed)
     encoder.stop_indexing()
     write_from(loaded.target, encoder.rax)
 }
 
 # ../../OPTIMIZATIONS.md#a-read-of-the-programs-data-is-one-instruction
 func emit_a_data_load(loaded: LowIntermediaryRepresentation.Instructions.Load, label: Integer) {
-    var decimal = allocation.decimal_home_of(loaded.target)
+    var decimal = state.allocation.decimal_home_of(loaded.target)
     if decimal >= 0 {
-        var decimal_size = allocation.decimal_size_of(loaded.target)
+        var decimal_size = state.allocation.decimal_size_of(loaded.target)
         var decimal_at = encoder.load_decimal_at_label(decimal, decimal_size == 8)
         var decimal_fixup = Generators.X64.Fixup(decimal_at, "", label)
-        data_fixups.append(decimal_fixup)
+        state.data_fixups.append(decimal_fixup)
         return
     }
-    var home = allocation.home_of(loaded.target)
+    var home = state.allocation.home_of(loaded.target)
     var register = encoder.rax
     if home >= 0 {
         register = home
     }
     var at = encoder.load_at_label(register)
     var fixup = Generators.X64.Fixup(at, "", label)
-    data_fixups.append(fixup)
+    state.data_fixups.append(fixup)
     if home < 0 {
         write_from(loaded.target, encoder.rax)
     }
@@ -2571,16 +2503,16 @@ func emit_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
     var source = -1
     var immediate = false
     var value: Long = 0
-    if allocation.constant_of(stored.source) and not stored.is_swapped {
-        value = allocation.value_of(stored.source)
+    if state.allocation.constant_of(stored.source) and not stored.is_swapped {
+        value = state.allocation.value_of(stored.source)
         immediate = not wide or encoder.fits_in_32_bits(value)
     }
-    var decimal = allocation.decimal_home_of(stored.source)
-    var decimal_size = allocation.decimal_size_of(stored.source)
+    var decimal = state.allocation.decimal_home_of(stored.source)
+    var decimal_size = state.allocation.decimal_size_of(stored.source)
     var whole = stored.width == 'bits_32' or decimal_size == 8 and stored.width == 'bits_64'
     if not immediate and not stored.is_swapped and decimal >= 0 and whole {
         prepare_the_address(stored.address, stored.offset)
-        encoder.store_decimal_to(addressed_base, addressed_displacement, decimal, stored.width == 'bits_64')
+        encoder.store_decimal_to(state.addressed_base, state.addressed_displacement, decimal, stored.width == 'bits_64')
         encoder.stop_indexing()
         return
     }
@@ -2596,9 +2528,9 @@ func emit_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
     }
     prepare_the_address(stored.address, stored.offset)
     if immediate {
-        encoder.store_immediate_to(addressed_base, addressed_displacement, value, stored.width)
+        encoder.store_immediate_to(state.addressed_base, state.addressed_displacement, value, stored.width)
     } else {
-        encoder.store_to(addressed_base, addressed_displacement, source, stored.width)
+        encoder.store_to(state.addressed_base, state.addressed_displacement, source, stored.width)
     }
     encoder.stop_indexing()
 }
@@ -2614,7 +2546,7 @@ func pass_arguments(arguments: List<Integer>) {
     index = 0
     while index < arguments.count() and index < 4 {
         var argument = arguments[index]
-        var register = parameter_registers[index]
+        var register = state.parameter_registers[index]
         crash register
         read_into(register, argument)
         index = index + 1
@@ -2625,8 +2557,8 @@ func emit_call(call: LowIntermediaryRepresentation.Instructions.Call) {
     pass_arguments(call.arguments)
     var at = encoder.call_relative()
     var fixup = Generators.X64.Fixup(at, call.function, 0)
-    call_fixups.append(fixup)
-    if program.call_table >= 0 {
+    state.call_fixups.append(fixup)
+    if state.program.call_table >= 0 {
         note_a_call_site(call.line, call.frames)
     }
     if call.target >= 0 {
@@ -2642,7 +2574,7 @@ func emit_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
     var index = 0
     while index < call.decimal_sizes.count() and index < 4 {
         var size = call.decimal_sizes[index]
-        var register = parameter_registers[index]
+        var register = state.parameter_registers[index]
         crash register
         if size > 0 {
             encoder.decimal_register_from(index, register, size == 8)
@@ -2651,7 +2583,7 @@ func emit_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
     }
     read_into(encoder.r11, call.address)
     encoder.call_r11()
-    if program.call_table >= 0 {
+    if state.program.call_table >= 0 {
         note_a_call_site(call.line, call.frames)
     }
     if call.answers_32_bits {
@@ -2671,29 +2603,29 @@ func emit_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
 func emit_function_address(address: LowIntermediaryRepresentation.Instructions.FunctionAddress) {
     var at = encoder.load_address_of(encoder.rax)
     var fixup = Generators.X64.Fixup(at, address.function, 0)
-    call_fixups.append(fixup)
+    state.call_fixups.append(fixup)
     write_from(address.target, encoder.rax)
 }
 
 func emit_foreign_address(found: LowIntermediaryRepresentation.Instructions.ForeignAddress) {
-    var slot = foreign_names.count()
-    foreign_names.append(found.name)
+    var slot = state.foreign_names.count()
+    state.foreign_names.append(found.name)
     read_into(encoder.rcx, found.library)
     var owner_loaded = encoder.load_from_address(encoder.rax)
     var owner_fixup = Generators.X64.Fixup(owner_loaded, "owner", slot)
-    slot_fixups.append(owner_fixup)
+    state.slot_fixups.append(owner_fixup)
     encoder.compare_rax_rcx()
     var not_equal = _jump_if_not_equal_code
     var not_zero = _jump_if_not_equal_code
     var looked_up = encoder.jump_if(not_equal)
     var loaded = encoder.load_from_address(encoder.rax)
     var loaded_fixup = Generators.X64.Fixup(loaded, "", slot)
-    slot_fixups.append(loaded_fixup)
+    state.slot_fixups.append(loaded_fixup)
     var known = encoder.jump()
     patch_here(looked_up)
     var name_at = encoder.load_address_of(encoder.rdx)
     var name_fixup = Generators.X64.Fixup(name_at, "name", slot)
-    slot_fixups.append(name_fixup)
+    state.slot_fixups.append(name_fixup)
     call_import("GetProcAddress")
     encoder.test_rax()
     var found_it = encoder.jump_if(not_zero)
@@ -2708,7 +2640,7 @@ func keep_the_first_owner(found: LowIntermediaryRepresentation.Instructions.Fore
     encoder.move_register(encoder.rdx, encoder.rax)
     var claimed_at = encoder.load_address_of(encoder.r11)
     var claimed_fixup = Generators.X64.Fixup(claimed_at, "owner", slot)
-    slot_fixups.append(claimed_fixup)
+    state.slot_fixups.append(claimed_fixup)
     encoder.move_small_immediate(encoder.rax, 0)
     encoder.move_small_immediate(encoder.rcx, -1)
     encoder.locked_compare_exchange(0)
@@ -2716,39 +2648,39 @@ func keep_the_first_owner(found: LowIntermediaryRepresentation.Instructions.Fore
     var taken = encoder.jump_if(not_zero)
     var stored = encoder.store_at_address(encoder.rdx)
     var stored_fixup = Generators.X64.Fixup(stored, "", slot)
-    slot_fixups.append(stored_fixup)
+    state.slot_fixups.append(stored_fixup)
     read_into(encoder.rcx, found.library)
     var owned = encoder.store_at_address(encoder.rcx)
     var owned_fixup = Generators.X64.Fixup(owned, "owner", slot)
-    slot_fixups.append(owned_fixup)
+    state.slot_fixups.append(owned_fixup)
     patch_here(taken)
     encoder.move_register(encoder.rax, encoder.rdx)
 }
 
 func emit_data_address(address: LowIntermediaryRepresentation.Instructions.DataAddress) {
-    fallback not allocation.is_elided_target(address.target)
+    fallback not state.allocation.is_elided_target(address.target)
     var at = encoder.load_address_of(encoder.rax)
     var fixup = Generators.X64.Fixup(at, "", address.label)
-    data_fixups.append(fixup)
+    state.data_fixups.append(fixup)
     write_from(address.target, encoder.rax)
 }
 
 func emit_allocate(allocate: LowIntermediaryRepresentation.Instructions.Allocate) {
     var size: Long = -1
-    if allocation.constant_of(allocate.size) {
-        size = allocation.value_of(allocate.size)
+    if state.allocation.constant_of(allocate.size) {
+        size = state.allocation.value_of(allocate.size)
     }
-    if small_blocks.inlines_size(size) {
-        small_blocks.allocate_inline(size)
+    if state.small_blocks.inlines_size(size) {
+        state.small_blocks.allocate_inline(size)
     } else {
         read_into(encoder.rcx, allocate.size)
-        small_blocks.call_allocate()
+        state.small_blocks.call_allocate()
     }
     check_memory()
-    if program.fills_fresh_memory and (size < 0 or size > allocate.zeroed_bytes) {
-        small_blocks.fill_the_fresh_bytes(allocate.zeroed_bytes)
+    if state.program.fills_fresh_memory and (size < 0 or size > allocate.zeroed_bytes) {
+        state.small_blocks.fill_the_fresh_bytes(allocate.zeroed_bytes)
     }
-    small_blocks.name_the_allocation(allocate.class_id)
+    state.small_blocks.name_the_allocation(allocate.class_id)
     write_from(allocate.target, encoder.rax)
 }
 
@@ -2757,7 +2689,7 @@ func emit_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
     encoder.test_register(object)
     var zero = _jump_if_equal_code
     var skip = encoder.jump_if(zero)
-    if program.uses_threads and retain.is_atomic {
+    if state.program.uses_threads and retain.is_atomic {
         encoder.byte(_lock_prefix)
     }
     encoder.increment_memory(object, 8)
@@ -2766,13 +2698,13 @@ func emit_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
 
 func emit_free(freed: LowIntermediaryRepresentation.Instructions.Free) {
     read_into(encoder.rcx, freed.pointer)
-    small_blocks.free_inline()
+    state.small_blocks.free_inline()
 }
 
 func emit_resize(resize: LowIntermediaryRepresentation.Instructions.Resize) {
     read_into(encoder.rcx, resize.pointer)
     read_into(encoder.rdx, resize.size)
-    small_blocks.call_resize()
+    state.small_blocks.call_resize()
     check_memory()
     write_from(resize.target, encoder.rax)
 }
@@ -2859,9 +2791,9 @@ func stop_naming_the_library(name: Integer) {
     call_import("lstrlenA")
     encoder.move_register(encoder.rdx, encoder.rax)
     read_into(encoder.rcx, name)
-    call_routine(text_writer)
+    call_routine(state.text_writer)
     var after = label_of_text(
-        "' could not be opened, in {current_key}: it is not there, or it is not a library this program can load\n",
+        "' could not be opened, in {state.current_key}: it is not there, or it is not a library this program can load\n",
     )
     write_a_label(after)
     encoder.move_small_immediate(encoder.rcx, 1)
@@ -2878,11 +2810,11 @@ func emit_jump(jump: LowIntermediaryRepresentation.Instructions.Jump) {
 
 # ../../OPTIMIZATIONS.md#a-loop-tests-its-condition-at-the-bottom
 func rotates_into(head: Integer): Boolean {
-    var head_position = allocation.layout_positions[head]
+    var head_position = state.allocation.layout_positions[head]
     crash head_position
-    fallback head_position >= 0 and head_position <= current_block
-    fallback loop_heads[head] == true and not moves_at_the_tail(head) and not allocation.moves_at_the_head(head)
-    var block = allocation.function.blocks[head]
+    fallback head_position >= 0 and head_position <= state.current_block
+    fallback state.loop_heads[head] == true and not moves_at_the_tail(head) and not state.allocation.moves_at_the_head(head)
+    var block = state.allocation.function.blocks[head]
     crash block
     var count = block.instructions.count()
     fallback count >= 1 and count <= 4
@@ -2900,8 +2832,8 @@ func tests_and_leaves(
     block: LowIntermediaryRepresentation.LowBlock,
 ): Boolean {
     fallback branch.when_true != head and branch.when_false != head
-    var true_moves = allocation.moves_on_the_edge(head, branch.when_true)
-    var false_moves = allocation.moves_on_the_edge(head, branch.when_false)
+    var true_moves = state.allocation.moves_on_the_edge(head, branch.when_true)
+    var false_moves = state.allocation.moves_on_the_edge(head, branch.when_false)
     fallback not true_moves and not false_moves
     var index = 0
     while index + 1 < block.instructions.count() {
@@ -2919,9 +2851,9 @@ func follows_a_rotating_head(
     block_index: Integer,
 ): Boolean {
     fallback position >= 1
-    var previous = allocation.layout[position - 1]
+    var previous = state.allocation.layout[position - 1]
     crash previous
-    fallback loop_heads[previous] == true
+    fallback state.loop_heads[previous] == true
     var head = function.blocks[previous]
     crash head
     var count = head.instructions.count()
@@ -2954,27 +2886,27 @@ func repeats_freely(instruction: Instruction): Boolean {
 }
 
 func emit_the_test_of(head: Integer) {
-    var block = allocation.function.blocks[head]
+    var block = state.allocation.function.blocks[head]
     crash block
-    var latch = current_block_index
-    var kept_instructions = current_instructions
-    var kept_position = instruction_position
-    current_block_index = head
-    allocation.current_block = head
-    flags_register = -1
-    current_instructions = block.instructions
-    instruction_position = 0
+    var latch = state.current_block_index
+    var kept_instructions = state.current_instructions
+    var kept_position = state.instruction_position
+    state.current_block_index = head
+    state.allocation.current_block = head
+    state.flags_register = -1
+    state.current_instructions = block.instructions
+    state.instruction_position = 0
     block.instructions.each(emit_instruction)
-    current_instructions = kept_instructions
-    instruction_position = kept_position
-    current_block_index = latch
-    allocation.current_block = latch
-    flags_register = -1
+    state.current_instructions = kept_instructions
+    state.instruction_position = kept_position
+    state.current_block_index = latch
+    state.allocation.current_block = latch
+    state.flags_register = -1
 }
 
 func jump_when_unordered(branch: LowIntermediaryRepresentation.Instructions.Branch) {
     var parity = _jump_if_parity_code
-    if flags_unordered_is_true {
+    if state.flags_unordered_is_true {
         jump_to_block_if_through_moves(parity, branch.when_true)
     } else {
         jump_to_block_if_through_moves(parity, branch.when_false)
@@ -2982,8 +2914,8 @@ func jump_when_unordered(branch: LowIntermediaryRepresentation.Instructions.Bran
 }
 
 func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
-    if allocation.constant_of(branch.condition) {
-        var value = allocation.value_of(branch.condition)
+    if state.allocation.constant_of(branch.condition) {
+        var value = state.allocation.value_of(branch.condition)
         if value != 0 {
             go_to_block(branch.when_true)
         } else {
@@ -2992,9 +2924,9 @@ func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
         return
     }
     var condition = _jump_if_not_equal_code
-    var flagged = branch.condition == flags_register
-    if allocation.is_fused(branch.condition) or flagged {
-        condition = flags_condition - 16
+    var flagged = branch.condition == state.flags_register
+    if state.allocation.is_fused(branch.condition) or flagged {
+        condition = state.flags_condition - 16
     } else {
         var tested = register_of(branch.condition, encoder.rax)
         encoder.test_register(tested)
@@ -3003,8 +2935,8 @@ func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
         go_to_block(branch.when_true)
         return
     }
-    var on_the_flags = allocation.is_fused(branch.condition) or flagged
-    if flags_have_parity and on_the_flags {
+    var on_the_flags = state.allocation.is_fused(branch.condition) or flagged
+    if state.flags_have_parity and on_the_flags {
         jump_when_unordered(branch)
     }
     var true_moves = moves_at_the_tail(branch.when_true)
@@ -3026,8 +2958,8 @@ func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
 }
 
 func emit_return(returned: LowIntermediaryRepresentation.Instructions.Return) {
-    if current_ends_a_thread {
-        small_blocks.call_release()
+    if state.current_ends_a_thread {
+        state.small_blocks.call_release()
     }
     if returned.source >= 0 {
         read_into(encoder.rax, returned.source)
@@ -3035,24 +2967,24 @@ func emit_return(returned: LowIntermediaryRepresentation.Instructions.Return) {
     if returned.presence >= 0 {
         read_into(encoder.rdx, returned.presence)
     }
-    if current_answer_decimal_size > 0 and returned.source >= 0 {
-        encoder.decimal_register_from(0, encoder.rax, current_answer_decimal_size == 8)
+    if state.current_answer_decimal_size > 0 and returned.source >= 0 {
+        encoder.decimal_register_from(0, encoder.rax, state.current_answer_decimal_size == 8)
     }
-    if not current_is_resumable {
+    if not state.current_is_resumable {
         restore_the_kept_registers()
         encoder.epilogue()
         return
     }
     if returned.is_a_suspension {
         encoder.move_small_immediate(encoder.rax, 0)
-        encoder.resumable_epilogue(current_outgoing)
+        encoder.resumable_epilogue(state.current_outgoing)
         return
     }
-    encoder.store_slot(current_header + 16, encoder.rax)
-    encoder.store_slot(current_header + 24, encoder.rdx)
+    encoder.store_slot(state.current_header + 16, encoder.rax)
+    encoder.store_slot(state.current_header + 24, encoder.rdx)
     encoder.move_small_immediate(encoder.rax, 1)
-    encoder.store_slot(current_header + 8, encoder.rax)
-    encoder.resumable_epilogue(current_outgoing)
+    encoder.store_slot(state.current_header + 8, encoder.rax)
+    encoder.resumable_epilogue(state.current_outgoing)
 }
 
 func emit_start_thread(starting: LowIntermediaryRepresentation.Instructions.StartThread) {
@@ -3063,7 +2995,7 @@ func emit_start_thread(starting: LowIntermediaryRepresentation.Instructions.Star
     encoder.move_small_immediate(encoder.rdx, 0)
     var at = encoder.load_address_of(encoder.r8)
     var fixup = Generators.X64.Fixup(at, starting.entry, 0)
-    call_fixups.append(fixup)
+    state.call_fixups.append(fixup)
     read_into(encoder.r9, starting.block)
     call_import("CreateThread")
     write_from(starting.target, encoder.rax)
@@ -3101,7 +3033,7 @@ func emit_import_call(calling: LowIntermediaryRepresentation.Instructions.Import
     var index = 0
     while index < calling.arguments.count() and index < 4 {
         var argument = calling.arguments[index]
-        var register = parameter_registers[index]
+        var register = state.parameter_registers[index]
         crash register
         read_into(register, argument)
         var size = decimal_size_at(calling.decimal_sizes, index)
@@ -3132,12 +3064,12 @@ func decimal_size_at(sizes: List<Integer>, index: Integer): Integer {
 }
 
 func call_library_import(name: String) {
-    if not library_imports.contains(name) {
-        library_imports.append(name)
+    if not state.library_imports.contains(name) {
+        state.library_imports.append(name)
     }
     var at = encoder.call_through_memory()
     var fixup = Generators.X64.Fixup(at, name, 0)
-    library_fixups.append(fixup)
+    state.library_fixups.append(fixup)
 }
 
 func emit_join_thread(joining: LowIntermediaryRepresentation.Instructions.JoinThread) {
@@ -3164,19 +3096,19 @@ func emit_thread_identity(asked: LowIntermediaryRepresentation.Instructions.Thre
 
 func emit_frame_address(found: LowIntermediaryRepresentation.Instructions.FrameAddress) {
     var header = 0
-    if current_is_resumable {
-        header = current_header
+    if state.current_is_resumable {
+        header = state.current_header
     }
     encoder.slot_address(encoder.rax, header)
     write_from(found.target, encoder.rax)
 }
 
 func emit_frame_room(room: LowIntermediaryRepresentation.Instructions.FrameRoom) {
-    crash not current_is_resumable
-    var lowest = frame_slots + allocation.saved.count() + room.slot
+    crash not state.current_is_resumable
+    var lowest = state.frame_slots + state.allocation.saved.count() + room.slot
     var displacement = encoder.slot_of(lowest)
     var zeroed = room.size
-    if program.fills_fresh_memory and room.zeroed_bytes >= 0 {
+    if state.program.fills_fresh_memory and room.zeroed_bytes >= 0 {
         zeroed = room.zeroed_bytes
     }
     var written: Integer = 0
@@ -3188,7 +3120,7 @@ func emit_frame_room(room: LowIntermediaryRepresentation.Instructions.FrameRoom)
         }
         written = written + 8
     }
-    var home = allocation.home_of(room.target)
+    var home = state.allocation.home_of(room.target)
     if home >= 0 {
         encoder.slot_address(home, displacement)
         return
@@ -3236,23 +3168,23 @@ func emit_exit(exit: LowIntermediaryRepresentation.Instructions.Exit) {
 }
 
 func fix_a_block(fixup: Generators.X64.Fixup) {
-    var target = block_offsets[fixup.index]
+    var target = state.block_offsets[fixup.index]
     crash target
     encoder.patch_dword(fixup.at, target - (fixup.at + 4))
 }
 
 func fix_a_call(fixup: Generators.X64.Fixup) {
-    var target = function_offsets[fixup.target]
+    var target = state.function_offsets[fixup.target]
     crash target
     encoder.patch_dword(fixup.at, target - (fixup.at + 4))
 }
 
 func fix_a_stop(fixup: Generators.X64.Fixup) {
-    encoder.patch_dword(fixup.at, stop_routine - (fixup.at + 4))
+    encoder.patch_dword(fixup.at, state.stop_routine - (fixup.at + 4))
 }
 
 func entry_offset(): Integer {
-    var found = function_offsets[program.entry]
+    var found = state.function_offsets[state.program.entry]
     crash found
     return found
 }
@@ -3261,12 +3193,12 @@ func function_map(): String {
     var lines = List<String>()
     lines.append("# spite functions 1")
     var index = 0
-    while index < span_keys.count() {
-        var key = span_keys[index]
-        var start = span_starts[index]
+    while index < state.span_keys.count() {
+        var key = state.span_keys[index]
+        var start = state.span_starts[index]
         crash start
-        var end = code_end
-        var following = span_starts[index + 1]
+        var end = state.code_end
+        var following = state.span_starts[index + 1]
         if following {
             end = following
         }
