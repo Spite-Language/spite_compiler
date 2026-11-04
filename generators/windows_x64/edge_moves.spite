@@ -1,0 +1,142 @@
+var state = EmitterState()
+var encoder = Generators.X64.Encoder()
+var fixups = Fixups(state)
+
+func EdgeMoves(starting_state: EmitterState) {
+    state = starting_state
+    encoder = starting_state.encoder
+    fixups = Fixups(starting_state)
+}
+
+# ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
+func emit_the_moves(from_block: Integer, to_block: Integer) {
+    var entering = state.allocation.entering_registers[to_block]
+    crash entering
+    var index = 0
+    while index < entering.count() {
+        var register = entering[index]
+        crash register
+        if state.allocation.differs_on_the_edge(register, from_block, to_block) {
+            store_on_the_edge(register, from_block)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < entering.count() {
+        var register = entering[index]
+        crash register
+        if state.allocation.differs_on_the_edge(register, from_block, to_block) {
+            load_on_the_edge(register, to_block)
+        }
+        index = index + 1
+    }
+}
+
+func store_on_the_edge(register: Integer, from_block: Integer) {
+    fallback not state.allocation.is_rematerialised(register)
+    var from_home = state.allocation.home_in(register, from_block)
+    if from_home >= 0 {
+        encoder.store_virtual(register, from_home)
+        return
+    }
+    var from_decimal = state.allocation.decimal_home_in(register, from_block)
+    if from_decimal >= 0 {
+        var is_double = state.allocation.decimal_size_of(register) == 8
+        encoder.register_from_xmm(encoder.rax, from_decimal, is_double)
+        encoder.store_virtual(register, encoder.rax)
+    }
+}
+
+func load_on_the_edge(register: Integer, to_block: Integer) {
+    var to_home = state.allocation.home_in(register, to_block)
+    if to_home >= 0 {
+        read_from_the_slot(to_home, register)
+        return
+    }
+    var to_decimal = state.allocation.decimal_home_in(register, to_block)
+    if to_decimal >= 0 {
+        var is_double = state.allocation.decimal_size_of(register) == 8
+        encoder.load_virtual(encoder.rax, register)
+        encoder.xmm_from_register(to_decimal, encoder.rax, is_double)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-value-read-from-a-singleton-that-never-changes-is-read-again-rather-than-spilled
+func read_from_the_slot(register: Integer, virtual: Integer) {
+    if state.allocation.is_rematerialised(virtual) {
+        var label = state.allocation.data_label_of_load(virtual)
+        var at = encoder.load_at_label(register)
+        var fixup = Generators.X64.Fixup(at, "", label)
+        state.data_fixups.append(fixup)
+        return
+    }
+    encoder.load_virtual(register, virtual)
+}
+
+func moves_at_the_tail(to_block: Integer): Boolean {
+    fallback not state.allocation.moves_at_the_head(to_block)
+    return state.allocation.moves_on_the_edge(state.current_block_index, to_block)
+}
+
+func go_to_block(block: Integer) {
+    if moves_at_the_tail(block) {
+        emit_the_moves(state.current_block_index, block)
+    }
+    jump_to_block(block)
+}
+
+func jump_to_block_if_through_moves(condition: Integer, block: Integer) {
+    if not moves_at_the_tail(block) {
+        jump_to_block_if(condition, block)
+        return
+    }
+    var at = encoder.jump_if(condition)
+    state.stub_jumps.append(at)
+    state.stub_froms.append(state.current_block_index)
+    state.stub_tos.append(block)
+}
+
+func emit_the_edge_stubs() {
+    var index = 0
+    while index < state.stub_jumps.count() {
+        var at = state.stub_jumps[index]
+        var from_block = state.stub_froms[index]
+        var to_block = state.stub_tos[index]
+        crash at
+        crash from_block
+        crash to_block
+        fixups.patch_here(at)
+        emit_the_moves(from_block, to_block)
+        jump_to_block(to_block)
+        index = index + 1
+    }
+    state.stub_jumps.clear()
+    state.stub_froms.clear()
+    state.stub_tos.clear()
+}
+
+func falls_into(block: Integer): Boolean {
+    var position = state.allocation.layout_positions[block]
+    crash position
+    return position == state.current_block + 1
+}
+
+func jump_to_block(block: Integer) {
+    fallback not falls_into(block)
+    var at = encoder.jump()
+    var fixup = Generators.X64.Fixup(at, "", block)
+    state.block_fixups.append(fixup)
+}
+
+func jump_to_block_if(condition: Integer, block: Integer) {
+    var at = encoder.jump_if(condition)
+    var fixup = Generators.X64.Fixup(at, "", block)
+    state.block_fixups.append(fixup)
+}
+
+func inverted(condition: Integer): Integer {
+    if condition % 2 == 0 {
+        return condition + 1
+    }
+    return condition - 1
+}

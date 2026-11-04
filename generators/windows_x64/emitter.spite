@@ -106,6 +106,7 @@ var _wait_forever: Long = 4294967295
 var _filled_word_pattern: Long = 2779096485
 var state = EmitterState()
 var encoder = Generators.X64.Encoder()
+var edge_moves = EdgeMoves(state)
 var fixups = Fixups(state)
 var frames = Frames(state)
 var opcodes = Opcodes()
@@ -638,7 +639,7 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     note_the_place(cold, state.current_place)
     state.current_block = state.allocation.layout.count() + 1
     emit_the_cold_stops()
-    emit_the_edge_stubs()
+    edge_moves.emit_the_edge_stubs()
     state.block_fixups.each(fixups.fix_a_block)
     state.function_ends[function.key] = encoder.position()
 }
@@ -662,113 +663,6 @@ func jump_through_the_slot(key: String) {
     var fixup = Generators.X64.Fixup(at, "", label)
     state.data_fixups.append(fixup)
     state.body_offsets[key] = encoder.position()
-}
-
-# ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
-func emit_the_moves(from_block: Integer, to_block: Integer) {
-    var entering = state.allocation.entering_registers[to_block]
-    crash entering
-    var index = 0
-    while index < entering.count() {
-        var register = entering[index]
-        crash register
-        if state.allocation.differs_on_the_edge(register, from_block, to_block) {
-            store_on_the_edge(register, from_block)
-        }
-        index = index + 1
-    }
-    index = 0
-    while index < entering.count() {
-        var register = entering[index]
-        crash register
-        if state.allocation.differs_on_the_edge(register, from_block, to_block) {
-            load_on_the_edge(register, to_block)
-        }
-        index = index + 1
-    }
-}
-
-func store_on_the_edge(register: Integer, from_block: Integer) {
-    fallback not state.allocation.is_rematerialised(register)
-    var from_home = state.allocation.home_in(register, from_block)
-    if from_home >= 0 {
-        encoder.store_virtual(register, from_home)
-        return
-    }
-    var from_decimal = state.allocation.decimal_home_in(register, from_block)
-    if from_decimal >= 0 {
-        var is_double = state.allocation.decimal_size_of(register) == 8
-        encoder.register_from_xmm(encoder.rax, from_decimal, is_double)
-        encoder.store_virtual(register, encoder.rax)
-    }
-}
-
-func load_on_the_edge(register: Integer, to_block: Integer) {
-    var to_home = state.allocation.home_in(register, to_block)
-    if to_home >= 0 {
-        read_from_the_slot(to_home, register)
-        return
-    }
-    var to_decimal = state.allocation.decimal_home_in(register, to_block)
-    if to_decimal >= 0 {
-        var is_double = state.allocation.decimal_size_of(register) == 8
-        encoder.load_virtual(encoder.rax, register)
-        encoder.xmm_from_register(to_decimal, encoder.rax, is_double)
-    }
-}
-
-# ../../OPTIMIZATIONS.md#a-value-read-from-a-singleton-that-never-changes-is-read-again-rather-than-spilled
-func read_from_the_slot(register: Integer, virtual: Integer) {
-    if state.allocation.is_rematerialised(virtual) {
-        var label = state.allocation.data_label_of_load(virtual)
-        var at = encoder.load_at_label(register)
-        var fixup = Generators.X64.Fixup(at, "", label)
-        state.data_fixups.append(fixup)
-        return
-    }
-    encoder.load_virtual(register, virtual)
-}
-
-func moves_at_the_tail(to_block: Integer): Boolean {
-    fallback not state.allocation.moves_at_the_head(to_block)
-    return state.allocation.moves_on_the_edge(state.current_block_index, to_block)
-}
-
-func go_to_block(block: Integer) {
-    if moves_at_the_tail(block) {
-        emit_the_moves(state.current_block_index, block)
-    }
-    jump_to_block(block)
-}
-
-func jump_to_block_if_through_moves(condition: Integer, block: Integer) {
-    if not moves_at_the_tail(block) {
-        jump_to_block_if(condition, block)
-        return
-    }
-    var at = encoder.jump_if(condition)
-    state.stub_jumps.append(at)
-    state.stub_froms.append(state.current_block_index)
-    state.stub_tos.append(block)
-}
-
-func emit_the_edge_stubs() {
-    var index = 0
-    while index < state.stub_jumps.count() {
-        var at = state.stub_jumps[index]
-        var from_block = state.stub_froms[index]
-        var to_block = state.stub_tos[index]
-        crash at
-        crash from_block
-        crash to_block
-        fixups.patch_here(at)
-        emit_the_moves(from_block, to_block)
-        jump_to_block(to_block)
-        index = index + 1
-    }
-    state.stub_jumps.clear()
-    state.stub_froms.clear()
-    state.stub_tos.clear()
 }
 
 func find_the_loop_heads(function: LowIntermediaryRepresentation.LowFunction) {
@@ -807,32 +701,6 @@ func note_a_head(target: Integer, position: Integer) {
     if target_position >= 0 and target_position <= position {
         state.loop_heads[target] = true
     }
-}
-
-func falls_into(block: Integer): Boolean {
-    var position = state.allocation.layout_positions[block]
-    crash position
-    return position == state.current_block + 1
-}
-
-func jump_to_block(block: Integer) {
-    fallback not falls_into(block)
-    var at = encoder.jump()
-    var fixup = Generators.X64.Fixup(at, "", block)
-    state.block_fixups.append(fixup)
-}
-
-func jump_to_block_if(condition: Integer, block: Integer) {
-    var at = encoder.jump_if(condition)
-    var fixup = Generators.X64.Fixup(at, "", block)
-    state.block_fixups.append(fixup)
-}
-
-func inverted(condition: Integer): Integer {
-    if condition % 2 == 0 {
-        return condition + 1
-    }
-    return condition - 1
 }
 
 func most_arguments_of(function: LowIntermediaryRepresentation.LowFunction): Integer {
@@ -886,7 +754,7 @@ func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index
         crash coming
         var only = coming[0]
         crash only
-        emit_the_moves(only, block_index)
+        edge_moves.emit_the_moves(only, block_index)
     }
     state.current_instructions = block.instructions
     state.instruction_position = 0
@@ -899,7 +767,7 @@ func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index
     }
     var following = block_index + 1
     if not ends and following < function.blocks.count() {
-        go_to_block(following)
+        edge_moves.go_to_block(following)
     }
 }
 
@@ -2612,7 +2480,7 @@ func emit_jump(jump: LowIntermediaryRepresentation.Instructions.Jump) {
     if rotates_into(jump.block) {
         emit_the_test_of(jump.block)
     } else {
-        go_to_block(jump.block)
+        edge_moves.go_to_block(jump.block)
     }
 }
 
@@ -2621,7 +2489,7 @@ func rotates_into(head: Integer): Boolean {
     var head_position = state.allocation.layout_positions[head]
     crash head_position
     fallback head_position >= 0 and head_position <= state.current_block
-    fallback state.loop_heads[head] == true and not moves_at_the_tail(head) and not state.allocation.moves_at_the_head(head)
+    fallback state.loop_heads[head] == true and not edge_moves.moves_at_the_tail(head) and not state.allocation.moves_at_the_head(head)
     var block = state.allocation.function.blocks[head]
     crash block
     var count = block.instructions.count()
@@ -2715,9 +2583,9 @@ func emit_the_test_of(head: Integer) {
 func jump_when_unordered(branch: LowIntermediaryRepresentation.Instructions.Branch) {
     var parity = _jump_if_parity_code
     if state.flags_unordered_is_true {
-        jump_to_block_if_through_moves(parity, branch.when_true)
+        edge_moves.jump_to_block_if_through_moves(parity, branch.when_true)
     } else {
-        jump_to_block_if_through_moves(parity, branch.when_false)
+        edge_moves.jump_to_block_if_through_moves(parity, branch.when_false)
     }
 }
 
@@ -2725,9 +2593,9 @@ func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
     if state.allocation.constant_of(branch.condition) {
         var value = state.allocation.value_of(branch.condition)
         if value != 0 {
-            go_to_block(branch.when_true)
+            edge_moves.go_to_block(branch.when_true)
         } else {
-            go_to_block(branch.when_false)
+            edge_moves.go_to_block(branch.when_false)
         }
         return
     }
@@ -2740,29 +2608,29 @@ func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
         encoder.test_register(tested)
     }
     if branch.when_true == branch.when_false {
-        go_to_block(branch.when_true)
+        edge_moves.go_to_block(branch.when_true)
         return
     }
     var on_the_flags = state.allocation.is_fused(branch.condition) or flagged
     if state.flags_have_parity and on_the_flags {
         jump_when_unordered(branch)
     }
-    var true_moves = moves_at_the_tail(branch.when_true)
-    var false_moves = moves_at_the_tail(branch.when_false)
-    var stays_on_true = falls_into(branch.when_true)
+    var true_moves = edge_moves.moves_at_the_tail(branch.when_true)
+    var false_moves = edge_moves.moves_at_the_tail(branch.when_false)
+    var stays_on_true = edge_moves.falls_into(branch.when_true)
     if true_moves and not false_moves {
         stays_on_true = true
     } else if false_moves and not true_moves {
         stays_on_true = false
     }
     if stays_on_true {
-        var opposite = inverted(condition)
-        jump_to_block_if_through_moves(opposite, branch.when_false)
-        go_to_block(branch.when_true)
+        var opposite = edge_moves.inverted(condition)
+        edge_moves.jump_to_block_if_through_moves(opposite, branch.when_false)
+        edge_moves.go_to_block(branch.when_true)
         return
     }
-    jump_to_block_if_through_moves(condition, branch.when_true)
-    go_to_block(branch.when_false)
+    edge_moves.jump_to_block_if_through_moves(condition, branch.when_true)
+    edge_moves.go_to_block(branch.when_false)
 }
 
 func emit_return(returned: LowIntermediaryRepresentation.Instructions.Return) {
