@@ -1,0 +1,207 @@
+var _rbp_at_rcx_displacement_32_operands = 169
+var _gs_segment_prefix = 101
+var state = EmitterState()
+var encoder = Generators.X64.Encoder()
+var opcodes = Opcodes()
+
+func Frames(starting_state: EmitterState) {
+    state = starting_state
+    encoder = starting_state.encoder
+    opcodes = Opcodes()
+}
+
+func rooms_of(function: LowIntermediaryRepresentation.LowFunction): Integer {
+    var slots = 0
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction.class == LowIntermediaryRepresentation.Instructions.FrameRoom {
+                var taken = (instruction.size + 7) / 8
+                instruction.slot = slots + taken - 1
+                slots = slots + taken
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return slots
+}
+
+func save_the_kept_registers() {
+    var index = 0
+    while index < state.allocation.saved.count() {
+        var register = state.allocation.saved[index]
+        var displacement = encoder.slot_of(state.frame_slots + index)
+        encoder.store_slot(displacement, register)
+        index = index + 1
+    }
+    var decimal_index = 0
+    while decimal_index < state.allocation.saved_decimals.count() {
+        var decimal = state.allocation.saved_decimals[decimal_index]
+        var decimal_displacement = encoder.slot_of(state.decimal_save_base + 2 * decimal_index + 1)
+        encoder.save_xmm(decimal_displacement, decimal)
+        decimal_index = decimal_index + 1
+    }
+}
+
+func restore_the_kept_registers() {
+    var index = 0
+    while index < state.allocation.saved.count() {
+        var register = state.allocation.saved[index]
+        var displacement = encoder.slot_of(state.frame_slots + index)
+        encoder.load_slot(register, displacement)
+        index = index + 1
+    }
+    var decimal_index = 0
+    while decimal_index < state.allocation.saved_decimals.count() {
+        var decimal = state.allocation.saved_decimals[decimal_index]
+        var decimal_displacement = encoder.slot_of(state.decimal_save_base + 2 * decimal_index + 1)
+        encoder.load_xmm(decimal, decimal_displacement)
+        decimal_index = decimal_index + 1
+    }
+}
+
+func read_into(register: Integer, virtual: Integer) {
+    if state.allocation.constant_of(virtual) {
+        var value = state.allocation.value_of(virtual)
+        encoder.move_small_immediate(register, value)
+        return
+    }
+    var decimal = state.allocation.decimal_home_of(virtual)
+    if decimal >= 0 {
+        var size = state.allocation.decimal_size_of(virtual)
+        encoder.register_from_xmm(register, decimal, size == 8)
+        return
+    }
+    var home = state.allocation.home_of(virtual)
+    if home >= 0 {
+        if home != register {
+            encoder.move_register(register, home)
+        }
+        return
+    }
+    if state.allocation.is_rematerialised(virtual) {
+        var label = state.allocation.data_label_of_load(virtual)
+        var at = encoder.load_at_label(register)
+        var fixup = Generators.X64.Fixup(at, "", label)
+        state.data_fixups.append(fixup)
+        return
+    }
+    encoder.load_virtual(register, virtual)
+}
+
+func write_from(virtual: Integer, register: Integer) {
+    var decimal = state.allocation.decimal_home_of(virtual)
+    if decimal >= 0 {
+        var size = state.allocation.decimal_size_of(virtual)
+        encoder.xmm_from_register(decimal, register, size == 8)
+        return
+    }
+    var home = state.allocation.home_of(virtual)
+    if home >= 0 {
+        if home != register {
+            encoder.move_register(home, register)
+        }
+        return
+    }
+    fallback not state.allocation.is_rematerialised(virtual)
+    encoder.store_virtual(virtual, register)
+}
+
+func register_of(virtual: Integer, scratch: Integer): Integer {
+    var home = state.allocation.home_of(virtual)
+    if home >= 0 and not state.allocation.constant_of(virtual) {
+        return home
+    }
+    read_into(scratch, virtual)
+    return scratch
+}
+
+func small_constant(virtual: Integer): Boolean {
+    fallback state.allocation.constant_of(virtual)
+    var value = state.allocation.value_of(virtual)
+    return encoder.fits_in_32_bits(value)
+}
+
+func take_the_parameters(function: LowIntermediaryRepresentation.LowFunction) {
+    var index = 0
+    while index < function.parameter_count {
+        var decimal_size = decimal_size_of_parameter(function, index)
+        if index < 4 and decimal_size > 0 {
+            encoder.rax_from_decimal_register(index, decimal_size == 8)
+            write_from(index, encoder.rax)
+        } else if index < 4 {
+            var register = state.parameter_registers[index]
+            crash register
+            write_from(index, register)
+        } else {
+            var stack_offset = 48 + 8 * (index - 4)
+            encoder.load_slot(encoder.rax, stack_offset)
+            write_from(index, encoder.rax)
+        }
+        index = index + 1
+    }
+}
+
+func decimal_size_of_parameter(function: LowIntermediaryRepresentation.LowFunction, index: Integer): Integer {
+    if index < function.parameter_decimal_sizes.count() {
+        return function.parameter_decimal_sizes[index]
+    }
+    return 0
+}
+
+func prepare_the_address(address: Integer, offset: Integer) {
+    if not state.allocation.is_folded_address(address) {
+        state.addressed_base = register_of(address, encoder.rax)
+        state.addressed_displacement = offset
+        return
+    }
+    var base = state.allocation.base_of(address)
+    state.addressed_base = register_of(base, encoder.rax)
+    state.addressed_displacement = offset + state.allocation.displacement_of(address)
+    var index = state.allocation.index_of(address)
+    if index >= 0 {
+        var index_register = register_of(index, encoder.r11)
+        var scale = state.allocation.scale_of(address)
+        encoder.index_by(index_register, scale)
+    }
+}
+
+func pass_arguments(arguments: List<Integer>) {
+    var index = 4
+    while index < arguments.count() {
+        var argument = arguments[index]
+        read_into(encoder.rax, argument)
+        encoder.store_outgoing(index)
+        index = index + 1
+    }
+    index = 0
+    while index < arguments.count() and index < 4 {
+        var argument = arguments[index]
+        var register = state.parameter_registers[index]
+        crash register
+        read_into(register, argument)
+        index = index + 1
+    }
+}
+
+func resumable_prologue(frame_offset: Integer, outgoing: Integer) {
+    encoder.byte(85)
+    encoder.byte(72)
+    encoder.byte(opcodes.load_address_opcode)
+    encoder.byte(_rbp_at_rcx_displacement_32_operands)
+    encoder.dword(frame_offset)
+    encoder.lower_the_stack(outgoing)
+}
+
+func thread_identity_into_rax() {
+    encoder.byte(_gs_segment_prefix)
+    encoder.byte(72)
+    encoder.byte(opcodes.move_into_register_opcode)
+    encoder.byte(4)
+    encoder.byte(37)
+    encoder.dword(72)
+}

@@ -41,9 +41,6 @@ var _subtract_from_rsp_operand = 236
 var _writer_frame_size = 120
 var _move_from_register_opcode = 137
 var _move_rcx_into_rax_operands = 200
-var _load_address_opcode = 141
-var _rbp_at_rcx_displacement_32_operands = 169
-var _gs_segment_prefix = 101
 var _r11_with_r11_operands = 219
 var _test_opcode = 133
 var _rdx_with_rdx_operands = 210
@@ -64,7 +61,6 @@ var _jump_short_if_not_equal_opcode = 117
 var _back_to_the_next_digit_displacement = 237
 var _store_immediate_byte_opcode = 198
 var _subtract_r9_from_r8_operands = 200
-var _move_into_register_opcode = 139
 var _add_to_rsp_operand = 196
 var _return_opcode = 195
 var _jump_if_carry_code = 130
@@ -111,6 +107,8 @@ var _filled_word_pattern: Long = 2779096485
 var state = EmitterState()
 var encoder = Generators.X64.Encoder()
 var fixups = Fixups(state)
+var frames = Frames(state)
+var opcodes = Opcodes()
 
 func Emitter(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
     encoder = state.encoder
@@ -308,7 +306,7 @@ func emit_the_stop_routine() {
         _move_from_register_opcode
         _move_rcx_into_rax_operands
         76
-        _load_address_opcode
+        opcodes.load_address_opcode
         76
         36
         96
@@ -373,7 +371,7 @@ func emit_the_stop_routine() {
         1
         45
         76
-        _load_address_opcode
+        opcodes.load_address_opcode
         68
         36
         96
@@ -427,7 +425,18 @@ func emit_the_gated_stop_start() {
     ]
     keeping.each(fixups.emit_a_byte)
     gate_the_crash()
-    var restoring = [72, _move_into_register_opcode, 76, 36, 32, 72, _move_into_register_opcode, 84, 36, 40]
+    var restoring = [
+        72
+        opcodes.move_into_register_opcode
+        76
+        36
+        32
+        72
+        opcodes.move_into_register_opcode
+        84
+        36
+        40
+    ]
     restoring.each(fixups.emit_a_byte)
 }
 
@@ -445,17 +454,17 @@ func emit_the_writing_tail() {
     encoder.move_register(encoder.rcx, encoder.rax)
     var tail = [
         72
-        _move_into_register_opcode
+        opcodes.move_into_register_opcode
         84
         36
         48
         76
-        _move_into_register_opcode
+        opcodes.move_into_register_opcode
         68
         36
         56
         76
-        _load_address_opcode
+        opcodes.load_address_opcode
         76
         36
         40
@@ -491,7 +500,7 @@ func write_a_number(register: Integer, is_signed: Boolean) {
     if state.allocation.is_a_volatile_home(home) {
         encoder.load_virtual(encoder.rcx, register)
     } else {
-        read_into(encoder.rcx, register)
+        frames.read_into(encoder.rcx, register)
     }
     var signed_flag = 0
     if is_signed {
@@ -587,7 +596,7 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
     if function.is_resumable {
         state.current_outgoing = (outgoing + 15) / 16 * 16
         state.current_header = 0 - 48 - 8 * function.register_count
-        resumable_prologue(0 - state.current_header, state.current_outgoing)
+        frames.resumable_prologue(0 - state.current_header, state.current_outgoing)
     } else {
         state.frame_slots = state.allocation.register_total
         if state.frame_slots < function.register_count {
@@ -595,16 +604,16 @@ func emit_function(function: LowIntermediaryRepresentation.LowFunction) {
         }
         state.decimal_save_base = state.frame_slots
         state.frame_slots = state.frame_slots + 2 * state.allocation.saved_decimals.count()
-        state.room_slots = rooms_of(function)
+        state.room_slots = frames.rooms_of(function)
         var frame = 8 * (state.frame_slots + state.allocation.saved.count() + state.room_slots) + outgoing
         var rounded = (frame + 15) / 16 * 16
         encoder.prologue(rounded)
-        save_the_kept_registers()
+        frames.save_the_kept_registers()
         if function.key == state.program.entry {
             state.kernels.call_the_detection()
         }
         state.allocation.current_block = 0
-        take_the_parameters(function)
+        frames.take_the_parameters(function)
     }
     state.block_offsets = List<Integer>()
     var block_count = 0
@@ -800,122 +809,6 @@ func note_a_head(target: Integer, position: Integer) {
     }
 }
 
-func rooms_of(function: LowIntermediaryRepresentation.LowFunction): Integer {
-    var slots = 0
-    var block_index = 0
-    while block_index < function.blocks.count() {
-        var block = function.blocks[block_index]
-        var index = 0
-        while index < block.instructions.count() {
-            var instruction = block.instructions[index]
-            if instruction.class == LowIntermediaryRepresentation.Instructions.FrameRoom {
-                var taken = (instruction.size + 7) / 8
-                instruction.slot = slots + taken - 1
-                slots = slots + taken
-            }
-            index = index + 1
-        }
-        block_index = block_index + 1
-    }
-    return slots
-}
-
-func save_the_kept_registers() {
-    var index = 0
-    while index < state.allocation.saved.count() {
-        var register = state.allocation.saved[index]
-        var displacement = encoder.slot_of(state.frame_slots + index)
-        encoder.store_slot(displacement, register)
-        index = index + 1
-    }
-    var decimal_index = 0
-    while decimal_index < state.allocation.saved_decimals.count() {
-        var decimal = state.allocation.saved_decimals[decimal_index]
-        var decimal_displacement = encoder.slot_of(state.decimal_save_base + 2 * decimal_index + 1)
-        encoder.save_xmm(decimal_displacement, decimal)
-        decimal_index = decimal_index + 1
-    }
-}
-
-func restore_the_kept_registers() {
-    var index = 0
-    while index < state.allocation.saved.count() {
-        var register = state.allocation.saved[index]
-        var displacement = encoder.slot_of(state.frame_slots + index)
-        encoder.load_slot(register, displacement)
-        index = index + 1
-    }
-    var decimal_index = 0
-    while decimal_index < state.allocation.saved_decimals.count() {
-        var decimal = state.allocation.saved_decimals[decimal_index]
-        var decimal_displacement = encoder.slot_of(state.decimal_save_base + 2 * decimal_index + 1)
-        encoder.load_xmm(decimal, decimal_displacement)
-        decimal_index = decimal_index + 1
-    }
-}
-
-func read_into(register: Integer, virtual: Integer) {
-    if state.allocation.constant_of(virtual) {
-        var value = state.allocation.value_of(virtual)
-        encoder.move_small_immediate(register, value)
-        return
-    }
-    var decimal = state.allocation.decimal_home_of(virtual)
-    if decimal >= 0 {
-        var size = state.allocation.decimal_size_of(virtual)
-        encoder.register_from_xmm(register, decimal, size == 8)
-        return
-    }
-    var home = state.allocation.home_of(virtual)
-    if home >= 0 {
-        if home != register {
-            encoder.move_register(register, home)
-        }
-        return
-    }
-    if state.allocation.is_rematerialised(virtual) {
-        var label = state.allocation.data_label_of_load(virtual)
-        var at = encoder.load_at_label(register)
-        var fixup = Generators.X64.Fixup(at, "", label)
-        state.data_fixups.append(fixup)
-        return
-    }
-    encoder.load_virtual(register, virtual)
-}
-
-func write_from(virtual: Integer, register: Integer) {
-    var decimal = state.allocation.decimal_home_of(virtual)
-    if decimal >= 0 {
-        var size = state.allocation.decimal_size_of(virtual)
-        encoder.xmm_from_register(decimal, register, size == 8)
-        return
-    }
-    var home = state.allocation.home_of(virtual)
-    if home >= 0 {
-        if home != register {
-            encoder.move_register(home, register)
-        }
-        return
-    }
-    fallback not state.allocation.is_rematerialised(virtual)
-    encoder.store_virtual(virtual, register)
-}
-
-func register_of(virtual: Integer, scratch: Integer): Integer {
-    var home = state.allocation.home_of(virtual)
-    if home >= 0 and not state.allocation.constant_of(virtual) {
-        return home
-    }
-    read_into(scratch, virtual)
-    return scratch
-}
-
-func small_constant(virtual: Integer): Boolean {
-    fallback state.allocation.constant_of(virtual)
-    var value = state.allocation.value_of(virtual)
-    return encoder.fits_in_32_bits(value)
-}
-
 func falls_into(block: Integer): Boolean {
     var position = state.allocation.layout_positions[block]
     crash position
@@ -972,33 +865,6 @@ func argument_count_of(instruction: Instruction?): Integer {
         return instruction.arguments.count()
     }
     return 4
-}
-
-func take_the_parameters(function: LowIntermediaryRepresentation.LowFunction) {
-    var index = 0
-    while index < function.parameter_count {
-        var decimal_size = decimal_size_of_parameter(function, index)
-        if index < 4 and decimal_size > 0 {
-            encoder.rax_from_decimal_register(index, decimal_size == 8)
-            write_from(index, encoder.rax)
-        } else if index < 4 {
-            var register = state.parameter_registers[index]
-            crash register
-            write_from(index, register)
-        } else {
-            var stack_offset = 48 + 8 * (index - 4)
-            encoder.load_slot(encoder.rax, stack_offset)
-            write_from(index, encoder.rax)
-        }
-        index = index + 1
-    }
-}
-
-func decimal_size_of_parameter(function: LowIntermediaryRepresentation.LowFunction, index: Integer): Integer {
-    if index < function.parameter_decimal_sizes.count() {
-        return function.parameter_decimal_sizes[index]
-    }
-    return 0
 }
 
 func emit_block(function: LowIntermediaryRepresentation.LowFunction, block_index: Integer) {
@@ -1102,12 +968,12 @@ func emit_an_instruction(instruction: Instruction) {
 
 # ../../OPTIMIZATIONS.md#an-if-that-only-adds-or-picks-a-value-has-no-branch
 func emit_select(selecting: LowIntermediaryRepresentation.Instructions.Select) {
-    var condition = register_of(selecting.condition, encoder.rcx)
-    var chosen = register_of(selecting.when_true, encoder.rdx)
-    read_into(encoder.rax, selecting.when_false)
+    var condition = frames.register_of(selecting.condition, encoder.rcx)
+    var chosen = frames.register_of(selecting.when_true, encoder.rdx)
+    frames.read_into(encoder.rax, selecting.when_false)
     encoder.test_register(condition)
     encoder.move_if_not_zero(encoder.rax, chosen)
-    write_from(selecting.target, encoder.rax)
+    frames.write_from(selecting.target, encoder.rax)
 }
 
 func emit_constant(constant: LowIntermediaryRepresentation.Instructions.Constant) {
@@ -1129,7 +995,7 @@ func emit_constant(constant: LowIntermediaryRepresentation.Instructions.Constant
         return
     }
     encoder.move_small_immediate(encoder.rax, constant.number)
-    write_from(constant.target, encoder.rax)
+    frames.write_from(constant.target, encoder.rax)
 }
 
 func emit_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
@@ -1143,11 +1009,11 @@ func emit_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
     }
     var home = state.allocation.home_of(copy.target)
     if home >= 0 {
-        read_into(home, copy.source)
+        frames.read_into(home, copy.source)
         return
     }
-    var source = register_of(copy.source, encoder.rax)
-    write_from(copy.target, source)
+    var source = frames.register_of(copy.source, encoder.rax)
+    frames.write_from(copy.target, source)
 }
 
 func emit_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
@@ -1164,19 +1030,19 @@ func emit_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arit
     var immediate = takes_an_immediate(arithmetic)
     var source = encoder.rcx
     if not immediate and needs_rcx {
-        read_into(encoder.rcx, arithmetic.right)
+        frames.read_into(encoder.rcx, arithmetic.right)
     }
     if not immediate and not needs_rcx {
-        source = register_of(arithmetic.right, encoder.rcx)
+        source = frames.register_of(arithmetic.right, encoder.rcx)
     }
-    read_into(encoder.rax, arithmetic.left)
+    frames.read_into(encoder.rax, arithmetic.left)
     if immediate {
         emit_with_an_immediate(arithmetic, encoder.rax)
     } else {
         emit_registers(arithmetic, encoder.rax, source)
     }
     emit_checked(arithmetic)
-    write_from(arithmetic.target, encoder.rax)
+    frames.write_from(arithmetic.target, encoder.rax)
 }
 
 func emitted_narrow(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
@@ -1184,10 +1050,10 @@ func emitted_narrow(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
     var adds = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
     var multiplies = arithmetic.operator == 'multiply' and arithmetic.is_signed
     fallback adds or multiplies
-    var immediate = small_constant(arithmetic.right)
+    var immediate = frames.small_constant(arithmetic.right)
     var source = encoder.rcx
     if not immediate {
-        source = register_of(arithmetic.right, encoder.rcx)
+        source = frames.register_of(arithmetic.right, encoder.rcx)
     }
     var home = state.allocation.home_of(arithmetic.target)
     var working = narrow_working_register(arithmetic, home, source, immediate)
@@ -1196,7 +1062,7 @@ func emitted_narrow(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
     if working != encoder.rax and overwrites_left and not state.allocation.constant_of(arithmetic.left) {
         kind = 3
     }
-    read_into(working, arithmetic.left)
+    frames.read_into(working, arithmetic.left)
     if immediate {
         var value = state.allocation.value_of(arithmetic.right)
         emit_narrow_with_an_immediate(arithmetic, working, value)
@@ -1217,7 +1083,7 @@ func emitted_narrow(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
     if home >= 0 {
         encoder.move_register(home, encoder.rax)
     } else {
-        write_from(arithmetic.target, encoder.rax)
+        frames.write_from(arithmetic.target, encoder.rax)
     }
     return true
 }
@@ -1315,7 +1181,7 @@ func is_wide_unsigned(arithmetic: LowIntermediaryRepresentation.Instructions.Ari
 }
 
 func takes_an_immediate(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    fallback small_constant(arithmetic.right)
+    fallback frames.small_constant(arithmetic.right)
     switch arithmetic.operator {
         'add': return true
         'subtract': return true
@@ -1460,9 +1326,9 @@ func emitted_in_place(arithmetic: LowIntermediaryRepresentation.Instructions.Ari
     fallback not arithmetic.is_checked or not overwrites_left or invertible
     var source = encoder.rcx
     if not immediate {
-        source = register_of(arithmetic.right, encoder.rcx)
+        source = frames.register_of(arithmetic.right, encoder.rcx)
     }
-    read_into(target, arithmetic.left)
+    frames.read_into(target, arithmetic.left)
     if immediate {
         emit_with_an_immediate(arithmetic, target)
     } else {
@@ -1720,7 +1586,7 @@ func decimal_from(virtual: Integer, xmm: Integer, is_double: Boolean) {
         return
     }
     encoder.register_from_xmm(encoder.rax, xmm, is_double)
-    write_from(virtual, encoder.rax)
+    frames.write_from(virtual, encoder.rax)
 }
 
 func decimal_code_of(operator: LowIntermediaryRepresentation.Instructions.Arithmetic.Operator): Integer {
@@ -1786,7 +1652,7 @@ func emit_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.De
         'not_equal': emit_decimal_equality(false, left, right, is_double)
     }
     encoder.zero_extend_al_into_rax()
-    write_from(compare.target, encoder.rax)
+    frames.write_from(compare.target, encoder.rax)
 }
 
 func emit_fused_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
@@ -1850,14 +1716,14 @@ func emit_decimal_conversion(conversion: LowIntermediaryRepresentation.Instructi
     var from_double = conversion.from_decimal_size == 8
     var to_double = conversion.to_decimal_size == 8
     if conversion.from_decimal_size == 0 {
-        read_into(encoder.rax, conversion.source)
+        frames.read_into(encoder.rax, conversion.source)
         encoder.whole_into_decimal(to_double)
         decimal_from(conversion.target, 0, to_double)
     } else if conversion.to_decimal_size == 0 {
         decimal_into(0, conversion.source, from_double)
         encoder.decimal_into_whole(from_double)
         cut_to_the_width(conversion)
-        write_from(conversion.target, encoder.rax)
+        frames.write_from(conversion.target, encoder.rax)
     } else {
         decimal_into(0, conversion.source, from_double)
         resize_the_decimal(to_double)
@@ -1903,22 +1769,22 @@ func wrap_to_the_width(arithmetic: LowIntermediaryRepresentation.Instructions.Ar
 
 func emit_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
     fallback not emitted_as_a_pair(arithmetic)
-    read_into(encoder.rax, arithmetic.left)
+    frames.read_into(encoder.rax, arithmetic.left)
     if state.allocation.constant_of(arithmetic.right) {
         var divisor = state.allocation.value_of(arithmetic.right)
         if divisor != 0 and divisor != -1 {
             emit_division_by(arithmetic, divisor)
-            write_from(arithmetic.target, encoder.rax)
+            frames.write_from(arithmetic.target, encoder.rax)
             return
         }
     }
-    read_into(encoder.rcx, arithmetic.right)
+    frames.read_into(encoder.rcx, arithmetic.right)
     if arithmetic.is_checked {
         emit_checked_division(arithmetic)
     } else {
         emit_proven_division(arithmetic)
     }
-    write_from(arithmetic.target, encoder.rax)
+    frames.write_from(arithmetic.target, encoder.rax)
 }
 
 # ../../OPTIMIZATIONS.md#a-division-and-a-remainder-of-the-same-two-numbers-are-one-division
@@ -1936,8 +1802,8 @@ func emitted_with(
     following: LowIntermediaryRepresentation.Instructions.Arithmetic,
 ): Boolean {
     fallback pairs_with(arithmetic, following)
-    read_into(encoder.rax, arithmetic.left)
-    read_into(encoder.rcx, arithmetic.right)
+    frames.read_into(encoder.rax, arithmetic.left)
+    frames.read_into(encoder.rcx, arithmetic.right)
     if arithmetic.is_checked {
         encoder.test_rcx()
         var zero = _jump_if_equal_code
@@ -1960,8 +1826,8 @@ func emitted_with(
         quotient = following.target
         remainder = arithmetic.target
     }
-    write_from(quotient, encoder.rax)
-    write_from(remainder, encoder.rdx)
+    frames.write_from(quotient, encoder.rax)
+    frames.write_from(remainder, encoder.rdx)
     state.skips_the_next = true
     return true
 }
@@ -2350,12 +2216,12 @@ func load_message(label: Integer) {
 }
 
 func emit_compare(compare: LowIntermediaryRepresentation.Instructions.Compare) {
-    var left = register_of(compare.left, encoder.rax)
-    if small_constant(compare.right) {
+    var left = frames.register_of(compare.left, encoder.rax)
+    if frames.small_constant(compare.right) {
         var value = state.allocation.value_of(compare.right)
         encoder.compare_with(left, value)
     } else {
-        var right = register_of(compare.right, encoder.rcx)
+        var right = frames.register_of(compare.right, encoder.rcx)
         encoder.compare_registers(left, right)
     }
     var condition = condition_code(compare.comparison, compare.is_signed)
@@ -2365,7 +2231,7 @@ func emit_compare(compare: LowIntermediaryRepresentation.Instructions.Compare) {
     fallback not state.allocation.is_fused(compare.target)
     encoder.al_from_condition(condition)
     encoder.zero_extend_al_into_rax()
-    write_from(compare.target, encoder.rax)
+    frames.write_from(compare.target, encoder.rax)
 }
 
 func condition_code(
@@ -2400,23 +2266,6 @@ func unsigned_code(comparison: LowIntermediaryRepresentation.Instructions.Compar
     }
 }
 
-func prepare_the_address(address: Integer, offset: Integer) {
-    if not state.allocation.is_folded_address(address) {
-        state.addressed_base = register_of(address, encoder.rax)
-        state.addressed_displacement = offset
-        return
-    }
-    var base = state.allocation.base_of(address)
-    state.addressed_base = register_of(base, encoder.rax)
-    state.addressed_displacement = offset + state.allocation.displacement_of(address)
-    var index = state.allocation.index_of(address)
-    if index >= 0 {
-        var index_register = register_of(index, encoder.r11)
-        var scale = state.allocation.scale_of(address)
-        encoder.index_by(index_register, scale)
-    }
-}
-
 func emit_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
     var reloaded = state.allocation.is_rematerialised(loaded.target)
     fallback not reloaded or state.allocation.home_of(loaded.target) >= 0
@@ -2425,12 +2274,12 @@ func emit_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
         emit_a_data_load(loaded, label)
         return
     }
-    prepare_the_address(loaded.address, loaded.offset)
+    frames.prepare_the_address(loaded.address, loaded.offset)
     if loaded.is_swapped {
         encoder.load_from(encoder.rax, state.addressed_base, state.addressed_displacement, loaded.width, false)
         encoder.stop_indexing()
         encoder.swap_rax(loaded.width, loaded.is_signed)
-        write_from(loaded.target, encoder.rax)
+        frames.write_from(loaded.target, encoder.rax)
         return
     }
     var decimal = state.allocation.decimal_home_of(loaded.target)
@@ -2449,7 +2298,7 @@ func emit_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
     }
     encoder.load_from(encoder.rax, state.addressed_base, state.addressed_displacement, loaded.width, loaded.is_signed)
     encoder.stop_indexing()
-    write_from(loaded.target, encoder.rax)
+    frames.write_from(loaded.target, encoder.rax)
 }
 
 # ../../OPTIMIZATIONS.md#a-read-of-the-programs-data-is-one-instruction
@@ -2471,7 +2320,7 @@ func emit_a_data_load(loaded: LowIntermediaryRepresentation.Instructions.Load, l
     var fixup = Generators.X64.Fixup(at, "", label)
     state.data_fixups.append(fixup)
     if home < 0 {
-        write_from(loaded.target, encoder.rax)
+        frames.write_from(loaded.target, encoder.rax)
     }
 }
 
@@ -2488,13 +2337,13 @@ func emit_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
     var decimal_size = state.allocation.decimal_size_of(stored.source)
     var whole = stored.width == 'bits_32' or decimal_size == 8 and stored.width == 'bits_64'
     if not immediate and not stored.is_swapped and decimal >= 0 and whole {
-        prepare_the_address(stored.address, stored.offset)
+        frames.prepare_the_address(stored.address, stored.offset)
         encoder.store_decimal_to(state.addressed_base, state.addressed_displacement, decimal, stored.width == 'bits_64')
         encoder.stop_indexing()
         return
     }
     if not immediate {
-        source = register_of(stored.source, encoder.rcx)
+        source = frames.register_of(stored.source, encoder.rcx)
     }
     if stored.is_swapped {
         if source != encoder.rcx {
@@ -2503,7 +2352,7 @@ func emit_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
         encoder.swap_rcx(stored.width)
         source = encoder.rcx
     }
-    prepare_the_address(stored.address, stored.offset)
+    frames.prepare_the_address(stored.address, stored.offset)
     if immediate {
         encoder.store_immediate_to(state.addressed_base, state.addressed_displacement, value, stored.width)
     } else {
@@ -2512,26 +2361,8 @@ func emit_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
     encoder.stop_indexing()
 }
 
-func pass_arguments(arguments: List<Integer>) {
-    var index = 4
-    while index < arguments.count() {
-        var argument = arguments[index]
-        read_into(encoder.rax, argument)
-        encoder.store_outgoing(index)
-        index = index + 1
-    }
-    index = 0
-    while index < arguments.count() and index < 4 {
-        var argument = arguments[index]
-        var register = state.parameter_registers[index]
-        crash register
-        read_into(register, argument)
-        index = index + 1
-    }
-}
-
 func emit_call(call: LowIntermediaryRepresentation.Instructions.Call) {
-    pass_arguments(call.arguments)
+    frames.pass_arguments(call.arguments)
     var at = encoder.call_relative()
     var fixup = Generators.X64.Fixup(at, call.function, 0)
     state.call_fixups.append(fixup)
@@ -2539,15 +2370,15 @@ func emit_call(call: LowIntermediaryRepresentation.Instructions.Call) {
         note_a_call_site(call.line, call.frames)
     }
     if call.target >= 0 {
-        write_from(call.target, encoder.rax)
+        frames.write_from(call.target, encoder.rax)
     }
     if call.presence >= 0 {
-        write_from(call.presence, encoder.rdx)
+        frames.write_from(call.presence, encoder.rdx)
     }
 }
 
 func emit_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
-    pass_arguments(call.arguments)
+    frames.pass_arguments(call.arguments)
     var index = 0
     while index < call.decimal_sizes.count() and index < 4 {
         var size = call.decimal_sizes[index]
@@ -2558,7 +2389,7 @@ func emit_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
         }
         index = index + 1
     }
-    read_into(encoder.r11, call.address)
+    frames.read_into(encoder.r11, call.address)
     encoder.call_r11()
     if state.program.call_table >= 0 {
         note_a_call_site(call.line, call.frames)
@@ -2570,10 +2401,10 @@ func emit_call_at(call: LowIntermediaryRepresentation.Instructions.CallAt) {
         encoder.rax_from_the_first_decimal_register(call.answer_decimal_size == 8)
     }
     if call.target >= 0 {
-        write_from(call.target, encoder.rax)
+        frames.write_from(call.target, encoder.rax)
     }
     if call.presence >= 0 {
-        write_from(call.presence, encoder.rdx)
+        frames.write_from(call.presence, encoder.rdx)
     }
 }
 
@@ -2581,13 +2412,13 @@ func emit_function_address(address: LowIntermediaryRepresentation.Instructions.F
     var at = encoder.load_address_of(encoder.rax)
     var fixup = Generators.X64.Fixup(at, address.function, 0)
     state.call_fixups.append(fixup)
-    write_from(address.target, encoder.rax)
+    frames.write_from(address.target, encoder.rax)
 }
 
 func emit_foreign_address(found: LowIntermediaryRepresentation.Instructions.ForeignAddress) {
     var slot = state.foreign_names.count()
     state.foreign_names.append(found.name)
-    read_into(encoder.rcx, found.library)
+    frames.read_into(encoder.rcx, found.library)
     var owner_loaded = encoder.load_from_address(encoder.rax)
     var owner_fixup = Generators.X64.Fixup(owner_loaded, "owner", slot)
     state.slot_fixups.append(owner_fixup)
@@ -2610,7 +2441,7 @@ func emit_foreign_address(found: LowIntermediaryRepresentation.Instructions.Fore
     fixups.patch_here(found_it)
     keep_the_first_owner(found, slot)
     fixups.patch_here(known)
-    write_from(found.target, encoder.rax)
+    frames.write_from(found.target, encoder.rax)
 }
 
 func keep_the_first_owner(found: LowIntermediaryRepresentation.Instructions.ForeignAddress, slot: Integer) {
@@ -2626,7 +2457,7 @@ func keep_the_first_owner(found: LowIntermediaryRepresentation.Instructions.Fore
     var stored = encoder.store_at_address(encoder.rdx)
     var stored_fixup = Generators.X64.Fixup(stored, "", slot)
     state.slot_fixups.append(stored_fixup)
-    read_into(encoder.rcx, found.library)
+    frames.read_into(encoder.rcx, found.library)
     var owned = encoder.store_at_address(encoder.rcx)
     var owned_fixup = Generators.X64.Fixup(owned, "owner", slot)
     state.slot_fixups.append(owned_fixup)
@@ -2639,7 +2470,7 @@ func emit_data_address(address: LowIntermediaryRepresentation.Instructions.DataA
     var at = encoder.load_address_of(encoder.rax)
     var fixup = Generators.X64.Fixup(at, "", address.label)
     state.data_fixups.append(fixup)
-    write_from(address.target, encoder.rax)
+    frames.write_from(address.target, encoder.rax)
 }
 
 func emit_allocate(allocate: LowIntermediaryRepresentation.Instructions.Allocate) {
@@ -2650,7 +2481,7 @@ func emit_allocate(allocate: LowIntermediaryRepresentation.Instructions.Allocate
     if state.small_blocks.inlines_size(size) {
         state.small_blocks.allocate_inline(size)
     } else {
-        read_into(encoder.rcx, allocate.size)
+        frames.read_into(encoder.rcx, allocate.size)
         state.small_blocks.call_allocate()
     }
     check_memory()
@@ -2658,11 +2489,11 @@ func emit_allocate(allocate: LowIntermediaryRepresentation.Instructions.Allocate
         state.small_blocks.fill_the_fresh_bytes(allocate.zeroed_bytes)
     }
     state.small_blocks.name_the_allocation(allocate.class_id)
-    write_from(allocate.target, encoder.rax)
+    frames.write_from(allocate.target, encoder.rax)
 }
 
 func emit_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
-    var object = register_of(retain.object, encoder.rax)
+    var object = frames.register_of(retain.object, encoder.rax)
     encoder.test_register(object)
     var zero = _jump_if_equal_code
     var skip = encoder.jump_if(zero)
@@ -2674,22 +2505,22 @@ func emit_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
 }
 
 func emit_free(freed: LowIntermediaryRepresentation.Instructions.Free) {
-    read_into(encoder.rcx, freed.pointer)
+    frames.read_into(encoder.rcx, freed.pointer)
     state.small_blocks.free_inline()
 }
 
 func emit_resize(resize: LowIntermediaryRepresentation.Instructions.Resize) {
-    read_into(encoder.rcx, resize.pointer)
-    read_into(encoder.rdx, resize.size)
+    frames.read_into(encoder.rcx, resize.pointer)
+    frames.read_into(encoder.rdx, resize.size)
     state.small_blocks.call_resize()
     check_memory()
-    write_from(resize.target, encoder.rax)
+    frames.write_from(resize.target, encoder.rax)
 }
 
 func emit_copy_bytes(copying: LowIntermediaryRepresentation.Instructions.CopyBytes) {
-    read_into(encoder.rax, copying.destination)
-    read_into(encoder.rdx, copying.source)
-    read_into(encoder.rcx, copying.count)
+    frames.read_into(encoder.rax, copying.destination)
+    frames.read_into(encoder.rdx, copying.source)
+    frames.read_into(encoder.rcx, copying.count)
     var source_index = 6
     var destination_index = 7
     encoder.move_register(encoder.r8, source_index)
@@ -2722,12 +2553,12 @@ func emit_copy_bytes(copying: LowIntermediaryRepresentation.Instructions.CopyByt
 
 func copy_backward() {
     encoder.byte(72)
-    encoder.byte(_load_address_opcode)
+    encoder.byte(opcodes.load_address_opcode)
     encoder.byte(_rsi_from_indexed_address_operand)
     encoder.byte(14)
     encoder.byte(_minus_one_byte)
     encoder.byte(72)
-    encoder.byte(_load_address_opcode)
+    encoder.byte(opcodes.load_address_opcode)
     encoder.byte(_rdi_from_indexed_address_operand)
     encoder.byte(15)
     encoder.byte(_minus_one_byte)
@@ -2750,24 +2581,24 @@ func check_memory() {
 }
 
 func emit_open_library(open: LowIntermediaryRepresentation.Instructions.OpenLibrary) {
-    read_into(encoder.rcx, open.name)
+    frames.read_into(encoder.rcx, open.name)
     fixups.call_import("LoadLibraryA")
     encoder.test_rax()
     var not_zero = _jump_if_not_equal_code
     var opened = encoder.jump_if(not_zero)
     stop_naming_the_library(open.name)
     fixups.patch_here(opened)
-    write_from(open.target, encoder.rax)
+    frames.write_from(open.target, encoder.rax)
 }
 
 func stop_naming_the_library(name: Integer) {
     gate_the_crash()
     var before = label_of_text("spite: the library '")
     write_a_label(before)
-    read_into(encoder.rcx, name)
+    frames.read_into(encoder.rcx, name)
     fixups.call_import("lstrlenA")
     encoder.move_register(encoder.rdx, encoder.rax)
-    read_into(encoder.rcx, name)
+    frames.read_into(encoder.rcx, name)
     fixups.call_routine(state.text_writer)
     var after = label_of_text(
         "' could not be opened, in {state.current_key}: it is not there, or it is not a library this program can load\n",
@@ -2905,7 +2736,7 @@ func emit_branch(branch: LowIntermediaryRepresentation.Instructions.Branch) {
     if state.allocation.is_fused(branch.condition) or flagged {
         condition = state.flags_condition - 16
     } else {
-        var tested = register_of(branch.condition, encoder.rax)
+        var tested = frames.register_of(branch.condition, encoder.rax)
         encoder.test_register(tested)
     }
     if branch.when_true == branch.when_false {
@@ -2939,16 +2770,16 @@ func emit_return(returned: LowIntermediaryRepresentation.Instructions.Return) {
         state.small_blocks.call_release()
     }
     if returned.source >= 0 {
-        read_into(encoder.rax, returned.source)
+        frames.read_into(encoder.rax, returned.source)
     }
     if returned.presence >= 0 {
-        read_into(encoder.rdx, returned.presence)
+        frames.read_into(encoder.rdx, returned.presence)
     }
     if state.current_answer_decimal_size > 0 and returned.source >= 0 {
         encoder.decimal_register_from(0, encoder.rax, state.current_answer_decimal_size == 8)
     }
     if not state.current_is_resumable {
-        restore_the_kept_registers()
+        frames.restore_the_kept_registers()
         encoder.epilogue()
         return
     }
@@ -2973,22 +2804,22 @@ func emit_start_thread(starting: LowIntermediaryRepresentation.Instructions.Star
     var at = encoder.load_address_of(encoder.r8)
     var fixup = Generators.X64.Fixup(at, starting.entry, 0)
     state.call_fixups.append(fixup)
-    read_into(encoder.r9, starting.block)
+    frames.read_into(encoder.r9, starting.block)
     fixups.call_import("CreateThread")
-    write_from(starting.target, encoder.rax)
+    frames.write_from(starting.target, encoder.rax)
 }
 
 func emit_compare_exchange(exchanging: LowIntermediaryRepresentation.Instructions.CompareExchange) {
-    read_into(encoder.r11, exchanging.address)
-    read_into(encoder.rax, exchanging.expected)
-    read_into(encoder.rcx, exchanging.desired)
+    frames.read_into(encoder.r11, exchanging.address)
+    frames.read_into(encoder.rax, exchanging.expected)
+    frames.read_into(encoder.rcx, exchanging.desired)
     if exchanging.width == 'bits_32' {
         encoder.locked_compare_exchange_double_word(exchanging.offset)
         widen_the_exchanged(exchanging.is_signed)
     } else {
         encoder.locked_compare_exchange(exchanging.offset)
     }
-    write_from(exchanging.target, encoder.rax)
+    frames.write_from(exchanging.target, encoder.rax)
 }
 
 func widen_the_exchanged(is_signed: Boolean) {
@@ -3003,7 +2834,7 @@ func emit_import_call(calling: LowIntermediaryRepresentation.Instructions.Import
     var stacked = 4
     while stacked < calling.arguments.count() {
         var passed = calling.arguments[stacked]
-        read_into(encoder.rax, passed)
+        frames.read_into(encoder.rax, passed)
         encoder.store_outgoing(stacked)
         stacked = stacked + 1
     }
@@ -3012,7 +2843,7 @@ func emit_import_call(calling: LowIntermediaryRepresentation.Instructions.Import
         var argument = calling.arguments[index]
         var register = state.parameter_registers[index]
         crash register
-        read_into(register, argument)
+        frames.read_into(register, argument)
         var size = decimal_size_at(calling.decimal_sizes, index)
         if size > 0 {
             encoder.decimal_register_from(index, register, size == 8)
@@ -3029,7 +2860,7 @@ func emit_import_call(calling: LowIntermediaryRepresentation.Instructions.Import
         encoder.rax_from_the_first_decimal_register(calling.answer_decimal_size == 8)
     }
     if calling.target >= 0 {
-        write_from(calling.target, encoder.rax)
+        frames.write_from(calling.target, encoder.rax)
     }
 }
 
@@ -3041,25 +2872,25 @@ func decimal_size_at(sizes: List<Integer>, index: Integer): Integer {
 }
 
 func emit_join_thread(joining: LowIntermediaryRepresentation.Instructions.JoinThread) {
-    read_into(encoder.rcx, joining.thread)
+    frames.read_into(encoder.rcx, joining.thread)
     encoder.move_small_immediate(encoder.rdx, _wait_forever)
     fixups.call_import("WaitForSingleObject")
-    read_into(encoder.rcx, joining.thread)
+    frames.read_into(encoder.rcx, joining.thread)
     fixups.call_import("CloseHandle")
 }
 
 func emit_atomic_add(adding: LowIntermediaryRepresentation.Instructions.AtomicAdd) {
-    read_into(encoder.rax, adding.address)
+    frames.read_into(encoder.rax, adding.address)
     encoder.move_small_immediate(encoder.rcx, adding.amount)
     encoder.locked_exchange_add(adding.offset)
     encoder.move_small_immediate(encoder.rax, adding.amount)
     encoder.add_rcx_into_rax()
-    write_from(adding.target, encoder.rax)
+    frames.write_from(adding.target, encoder.rax)
 }
 
 func emit_thread_identity(asked: LowIntermediaryRepresentation.Instructions.ThreadIdentity) {
-    thread_identity_into_rax()
-    write_from(asked.target, encoder.rax)
+    frames.thread_identity_into_rax()
+    frames.write_from(asked.target, encoder.rax)
 }
 
 func emit_frame_address(found: LowIntermediaryRepresentation.Instructions.FrameAddress) {
@@ -3068,7 +2899,7 @@ func emit_frame_address(found: LowIntermediaryRepresentation.Instructions.FrameA
         header = state.current_header
     }
     encoder.slot_address(encoder.rax, header)
-    write_from(found.target, encoder.rax)
+    frames.write_from(found.target, encoder.rax)
 }
 
 func emit_frame_room(room: LowIntermediaryRepresentation.Instructions.FrameRoom) {
@@ -3094,7 +2925,7 @@ func emit_frame_room(room: LowIntermediaryRepresentation.Instructions.FrameRoom)
         return
     }
     encoder.slot_address(encoder.rax, displacement)
-    write_from(room.target, encoder.rax)
+    frames.write_from(room.target, encoder.rax)
 }
 
 # ../../OPTIMIZATIONS.md#small-blocks-come-from-the-compilers-own-free-lists
@@ -3131,7 +2962,7 @@ func emit_stop(stop: LowIntermediaryRepresentation.Instructions.Stop) {
 }
 
 func emit_exit(exit: LowIntermediaryRepresentation.Instructions.Exit) {
-    read_into(encoder.rcx, exit.code)
+    frames.read_into(encoder.rcx, exit.code)
     fixups.call_import("ExitProcess")
 }
 
@@ -3177,22 +3008,4 @@ func hexadecimal_of(value: Integer): String {
         place = place + 1
     }
     return shown
-}
-
-func resumable_prologue(frame_offset: Integer, outgoing: Integer) {
-    encoder.byte(85)
-    encoder.byte(72)
-    encoder.byte(_load_address_opcode)
-    encoder.byte(_rbp_at_rcx_displacement_32_operands)
-    encoder.dword(frame_offset)
-    encoder.lower_the_stack(outgoing)
-}
-
-func thread_identity_into_rax() {
-    encoder.byte(_gs_segment_prefix)
-    encoder.byte(72)
-    encoder.byte(_move_into_register_opcode)
-    encoder.byte(4)
-    encoder.byte(37)
-    encoder.dword(72)
 }
