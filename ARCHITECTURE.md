@@ -285,9 +285,25 @@ needs. The folder is named after the rule, and the validator holds every word of
 - A validator never changes what it is given.
 - Each layer reaches its rules through one entry, `validators/<layer>/every_rule.spite`, called the way a pass is
   (D1750): the syntax tree's `check` per file, name resolution's `check` once the model is resolved, the high
-  representation's `check_an_evaluation` and the like as the builder meets each statement, and the low
-  representation's `check` once it is optimised. A check still written inside a step moves behind its layer's
-  entry (spite_compiler#243).
+  representation's `check_an_evaluation` and the like as the builder meets each statement, the low
+  representation's `check` once it is optimised, the command line's `check` once the program's `Build` settles
+  the settings (`take_the_build`), and the mapping's `check` once every mapped class is read (the end of
+  `Symbols.run`). The high entry also holds `stop`, which judges the sites the
+  proofs have not judged yet before it ends the compile, so the earliest error is the one told. A check still
+  written inside a step moves behind its layer's entry (spite_compiler#243).
+- A rule is a `check` or `check_...` that receives the data it is about (what the resolver found, the built value,
+  the site a proof recorded) and decides: a step never tests the condition and then asks a validator to word it.
+  Name resolution hands its rules a `NameResolution.Place`, which finds the function a message names only when one
+  is told.
+- A proof decides what it proves and hands what breaks it to a validator of its own
+  (`validators/high_intermediary_representation/<rule>`), never to the shared `typing`.
+- A check no program can reach, a fault of the compiler itself, is a `crash` on a condition named for the fault
+  (`expects_its_slots_fresh` in the lowering), not a rule with a message.
+- `diagnostics/failure.spite` (`Diagnostics.Failure`) ends the compile; only a validator or a proof builds one.
+- The test `tests/compiler_rules_are_validators` of spite_spec reads this source: every
+  `validators/**/validator.spite` defines a `check`, and no file outside `validators/` and `proofs/` defines a
+  `refuse...` or builds a `Diagnostics.Failure`. The files still waiting for a rule to move (the parser, the lexer
+  and the `typing` refusals, after spite_compiler#25) are listed there, each with what it waits for.
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
   its line and function, made once. A message quotes code through `printers/spite`.
 - A rule that needs the whole program runs once the program is complete; a rule about one class runs per class,

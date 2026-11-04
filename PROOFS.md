@@ -1389,7 +1389,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   program loads only singleton bindings are checked, counting reads from inside that folder.
 - **Falls back**: an unread attribute is refused (`the attribute 'label' is never read: remove it`).
 - **Lives in**: `validators/abstract_syntax_tree/unused_names`, and the proof `proofs/every_attribute_is_read`
-  for attributes.
+  for attributes, which hands what it found to `validators/high_intermediary_representation/read_attribute`.
 - **Checked by**: conformance/unused_names, written_not_read, unused_attributes, attribute_read_in_another_class,
   loaded_singleton_unread, template_unused_attribute, template_unused_function.
 
@@ -1474,7 +1474,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: the `T` of a JSON or binary writer or reader holds no union, `type` or function value anywhere
   ([json.md](../SpiteLanguage/specs/json.md)).
-- **Lives in**: `constraints.spite` (`check_the_written_form`), `serializable.spite`.
+- **Lives in**: `constraints.spite` (`check_the_written_form`, judged by `validators/high_intermediary_representation/generic_constraint`), `validators/high_intermediary_representation/serializer`.
 - **Checked by**: conformance/json_unwritable, binary_writer_union, binary_object_key.
 
 ### What crosses into C

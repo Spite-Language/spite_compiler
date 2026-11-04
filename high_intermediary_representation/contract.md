@@ -30,6 +30,10 @@ substitution of the instance it belongs to, and the answers the name resolution 
 - every attribute becomes a `HighAttribute`: its name, how many bytes it takes, where it sits in the
   block, and the value it is made with. The class's `block_size` is the size of the block they make;
 - a line it cannot lower stops the run (`validators/high_intermediary_representation/buildable`).
+- every other check it meets is handed to the rule of `validators/high_intermediary_representation` that owns it,
+  with what was built: `folded_crash` (a crash decided false, a false build field), `switch_cover`,
+  `generic_constraint` (a generic's constraints, a dictionary's key, a format's class), `key_maps`, `foreign`,
+  `serializer`, `template_clash`, `present_value`; the rule decides and stops through the layer's entry.
 - a program whose `Program` reads its arguments needs `Spite.Settings.check`, which `_start` calls before the
   entry object is made: given any argument, it makes `Environment()`, so the settings are read and checked before
   the program's own code runs (D1820).

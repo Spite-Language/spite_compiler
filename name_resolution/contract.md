@@ -49,6 +49,14 @@ and `List_of_Integer` in the instance `List_of_Integer`.
 - A class's `enum`, `union` or `type` named plainly outside the class, or through a namespace instead of its
   class: `validators/name_resolution/class_member`. A namespace holds classes and namespaces only, so a plain
   name looks in the class's own declarations and then for a class, never in another class's declarations.
+- A type that names nothing, `Symbol`, a removed form or a value known only at run time:
+  `validators/name_resolution/unknown_type`.
+- An attribute whose type is not written and not read from its value: `validators/name_resolution/attribute_type`.
+- What a template ranges over and which class it walks: `validators/name_resolution/template_range`.
+
+Each rule is handed what the resolver found (the class file, the owners, the member, `null` when nothing was found)
+and decides; the resolver never tests a rule's condition itself. Where a message names the function a line is in,
+the rule takes a `Place` (`place.spite`), which finds that function only when a message is told.
 
 A class name that reaches no file is collected and not reported yet (an issue labelled `architecture`).
 
