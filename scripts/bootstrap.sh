@@ -37,7 +37,12 @@ STONES=(
     "30824b7 e8df532 3259d3b f755736"
     "f9de322 eab10ec b45a2d9 cce8cd9"
     "b62bcad da18edf d4fdad2 cce8cd9"
+    "6af8724 4e2e128 8460259d af912e4"
 )
+
+# The first stone newer than D1775, whose compiler builds the folder it runs in; every stone before it, and the
+# release seed, takes the folder by position.
+FIRST_STONE_BY_NAME=6af8724
 
 bridge_c8e2e45() {
     # the library's names of D1714, which c8e2e45 calls, over the library from before them; and the fault machinery
@@ -169,8 +174,8 @@ if [ ! -f "$seed" ]; then
 fi
 
 stone() {
-    # stone <compiler> <compiler commit> <library commit> <spec commit> <documentation commit>: the compiler builds the
-    # commit, beside the other repositories at theirs, into .spite/bootstrap/stone_<commit>.exe
+    # stone <compiler> <compiler commit> <library commit> <spec commit> <documentation commit> [by_position]: the
+    # compiler builds the commit, beside the other repositories at theirs, into .spite/bootstrap/stone_<commit>.exe
     local sources
     sources="$(mktemp -d)"
     local repositories=(spite_compiler spite_standard_library spite_spec spite_documentation)
@@ -187,9 +192,13 @@ stone() {
         "bridge_$2" "$sources/spite_compiler"
     fi
     rm -f "$work/stone_$2.exe" "$work/stone_$2.functions"
-    # every stone's compiler is older than D1775 and takes the folder it builds by position
-    (cd "$sources" && "$1" spite_compiler --build --executable-path=spite_compiler/.spite/stone.exe) ||
-        fail "$1 could not build the stepping stone $2"
+    if [ "${6:-}" = by_position ]; then
+        (cd "$sources" && "$1" spite_compiler --build --executable-path=spite_compiler/.spite/stone.exe) ||
+            fail "$1 could not build the stepping stone $2"
+    else
+        (cd "$sources/spite_compiler" && "$1" --build --executable-path=.spite/stone.exe) ||
+            fail "$1 could not build the stepping stone $2"
+    fi
     cp "$sources/spite_compiler/.spite/stone.exe" "$work/stone_$2.exe"
     cp "$sources/spite_compiler/.spite/stone.functions" "$work/stone_$2.functions"
     rm -rf "$sources"
@@ -200,11 +209,15 @@ if [ "${walk_the_stones:-}" = yes ]; then
         [ -d "$parent/$repository/.git" ] ||
             fail "the stepping stones need $repository beside this repository: gh repo clone Spite-Language/$repository $parent/$repository"
     done
+    seed_by_position=by_position
     for line in "${STONES[@]}"; do
         read -r compiler_commit library_commit spec_commit documentation_commit <<<"$line"
         echo "bootstrap: $seed builds the stepping stone $compiler_commit"
-        stone "$seed" "$compiler_commit" "$library_commit" "$spec_commit" "$documentation_commit"
+        stone "$seed" "$compiler_commit" "$library_commit" "$spec_commit" "$documentation_commit" $seed_by_position
         seed="$work/stone_$compiler_commit.exe"
+        if [ "$compiler_commit" = "$FIRST_STONE_BY_NAME" ]; then
+            seed_by_position=
+        fi
     done
 fi
 
@@ -221,7 +234,7 @@ build() {
 }
 
 echo "bootstrap: the seed builds the source"
-build "$seed" 1 ${walk_the_stones:+by_position}
+build "$seed" 1 ${walk_the_stones:+$seed_by_position}
 previous="$work/spite_1.exe"
 round=2
 while [ $round -le 4 ]; do
