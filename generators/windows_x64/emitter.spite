@@ -79,6 +79,7 @@ var _filled_word_pattern: Long = 2779096485
 var state = EmitterState()
 var encoder = Generators.X64.Encoder()
 var block_analysis = BlockAnalysis(state)
+var decimals = Decimals(state)
 var edge_moves = EdgeMoves(state)
 var fixups = Fixups(state)
 var frames = Frames(state)
@@ -344,7 +345,7 @@ func emit_constant(constant: LowIntermediaryRepresentation.Instructions.Constant
     var decimal = state.allocation.decimal_home_of(constant.target)
     if decimal >= 0 {
         var size = state.allocation.decimal_size_of(constant.target)
-        load_a_decimal_constant(decimal, constant.number, size == 8)
+        decimals.load_a_decimal_constant(decimal, constant.number, size == 8)
         return
     }
     var home = state.allocation.home_of(constant.target)
@@ -876,106 +877,14 @@ func symbol_of(operator: LowIntermediaryRepresentation.Instructions.Arithmetic.O
     }
 }
 
-# ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
-func decimal_register_of(virtual: Integer, scratch: Integer, is_double: Boolean): Integer {
-    var home = state.allocation.decimal_home_of(virtual)
-    if home >= 0 {
-        return home
-    }
-    if state.allocation.constant_of(virtual) {
-        var value = state.allocation.value_of(virtual)
-        load_a_decimal_constant(scratch, value, is_double)
-        return scratch
-    }
-    var general = state.allocation.home_of(virtual)
-    if general >= 0 {
-        encoder.xmm_from_register(scratch, general, is_double)
-        return scratch
-    }
-    var displacement = encoder.slot_of(virtual)
-    encoder.load_decimal_from(scratch, encoder.rbp, displacement, is_double)
-    return scratch
-}
-
-# ../../OPTIMIZATIONS.md#a-decimal-constant-is-read-from-the-programs-data
-func load_a_decimal_constant(xmm: Integer, bits: Long, is_double: Boolean) {
-    if bits == 0 {
-        encoder.clear_xmm(xmm)
-        return
-    }
-    var label = decimal_label_of(bits)
-    var at = encoder.load_decimal_at_label(xmm, is_double)
-    var fixup = Generators.X64.Fixup(at, "", label)
-    state.data_fixups.append(fixup)
-}
-
-func decimal_label_of(bits: Long): Integer {
-    var known = state.decimal_labels[bits]
-    if known {
-        return known
-    }
-    var bytes = Buffer(0)
-    bytes.append_long_little_endian(bits)
-    state.program.data.append(bytes)
-    var label = state.program.data.count() - 1
-    state.program.constant_labels.append(label)
-    state.decimal_labels[bits] = label
-    return label
-}
-
-func decimal_into(xmm: Integer, virtual: Integer, is_double: Boolean) {
-    var source = decimal_register_of(virtual, xmm, is_double)
-    if source != xmm {
-        encoder.move_xmm(xmm, source)
-    }
-}
-
-func decimal_from(virtual: Integer, xmm: Integer, is_double: Boolean) {
-    var home = state.allocation.decimal_home_of(virtual)
-    if home >= 0 {
-        if home != xmm {
-            encoder.move_xmm(home, xmm)
-        }
-        return
-    }
-    var general = state.allocation.home_of(virtual)
-    if general >= 0 {
-        encoder.register_from_xmm(general, xmm, is_double)
-        return
-    }
-    if is_double {
-        var displacement = encoder.slot_of(virtual)
-        encoder.store_decimal_to(encoder.rbp, displacement, xmm, true)
-        return
-    }
-    encoder.register_from_xmm(encoder.rax, xmm, is_double)
-    frames.write_from(virtual, encoder.rax)
-}
-
-func decimal_code_of(operator: LowIntermediaryRepresentation.Instructions.Arithmetic.Operator): Integer {
-    switch operator {
-        'add': return 88
-        'subtract': return 92
-        'multiply': return 89
-        'divide': return 94
-        'remainder': return 0
-        'bits_and': return 81
-        'bits_or': return 81
-        'bits_xor': return 81
-        'shift_left': return 81
-        'shift_right': return 81
-        'square_root': return 81
-    }
-}
-
 func emit_decimal_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic) {
     var is_double = arithmetic.is_double
-    var code = decimal_code_of(arithmetic.operator)
+    var code = decimals.decimal_code_of(arithmetic.operator)
     if code == 0 {
-        decimal_into(0, arithmetic.left, is_double)
-        decimal_into(1, arithmetic.right, is_double)
+        decimals.decimal_into(0, arithmetic.left, is_double)
+        decimals.decimal_into(1, arithmetic.right, is_double)
         encoder.decimal_remainder(is_double)
-        decimal_from(arithmetic.target, 0, is_double)
+        decimals.decimal_from(arithmetic.target, 0, is_double)
         return
     }
     var target = state.allocation.decimal_home_of(arithmetic.target)
@@ -985,11 +894,11 @@ func emit_decimal_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructi
         working = target
     }
     if code != 81 {
-        decimal_into(working, arithmetic.left, is_double)
+        decimals.decimal_into(working, arithmetic.left, is_double)
     }
-    var source = decimal_register_of(arithmetic.right, 1, is_double)
+    var source = decimals.decimal_register_of(arithmetic.right, 1, is_double)
     encoder.scalar_operation(code, working, source, is_double)
-    decimal_from(arithmetic.target, working, is_double)
+    decimals.decimal_from(arithmetic.target, working, is_double)
 }
 
 func emit_a_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
@@ -1002,8 +911,8 @@ func emit_a_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.
 
 func emit_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
     var is_double = compare.is_double
-    var left = decimal_register_of(compare.left, 0, is_double)
-    var right = decimal_register_of(compare.right, 1, is_double)
+    var left = decimals.decimal_register_of(compare.left, 0, is_double)
+    var right = decimals.decimal_register_of(compare.right, 1, is_double)
     var above = _set_if_above_code
     var above_or_equal = _set_if_above_or_equal_code
     switch compare.comparison {
@@ -1020,8 +929,8 @@ func emit_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.De
 
 func emit_fused_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
     var is_double = compare.is_double
-    var left = decimal_register_of(compare.left, 0, is_double)
-    var right = decimal_register_of(compare.right, 1, is_double)
+    var left = decimals.decimal_register_of(compare.left, 0, is_double)
+    var right = decimals.decimal_register_of(compare.right, 1, is_double)
     var above = _set_if_above_code
     var above_or_equal = _set_if_above_or_equal_code
     var first = left
@@ -1081,16 +990,16 @@ func emit_decimal_conversion(conversion: LowIntermediaryRepresentation.Instructi
     if conversion.from_decimal_size == 0 {
         frames.read_into(encoder.rax, conversion.source)
         encoder.whole_into_decimal(to_double)
-        decimal_from(conversion.target, 0, to_double)
+        decimals.decimal_from(conversion.target, 0, to_double)
     } else if conversion.to_decimal_size == 0 {
-        decimal_into(0, conversion.source, from_double)
+        decimals.decimal_into(0, conversion.source, from_double)
         encoder.decimal_into_whole(from_double)
         cut_to_the_width(conversion)
         frames.write_from(conversion.target, encoder.rax)
     } else {
-        decimal_into(0, conversion.source, from_double)
+        decimals.decimal_into(0, conversion.source, from_double)
         resize_the_decimal(to_double)
-        decimal_from(conversion.target, 0, to_double)
+        decimals.decimal_from(conversion.target, 0, to_double)
     }
 }
 
