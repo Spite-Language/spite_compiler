@@ -1,0 +1,98 @@
+var _set_if_parity_code = 154
+var _set_if_no_parity_code = 155
+var state = Generators.WindowsX64.EmitterState()
+var encoder = Generators.X64.Encoder()
+var decimals = Generators.WindowsX64.Decimals(state)
+var frames = Generators.WindowsX64.Frames(state)
+var opcodes = Generators.WindowsX64.Opcodes()
+
+func Compare(starting_state: Generators.WindowsX64.EmitterState) {
+    state = starting_state
+    encoder = starting_state.encoder
+    decimals = Generators.WindowsX64.Decimals(starting_state)
+    frames = Generators.WindowsX64.Frames(starting_state)
+    opcodes = Generators.WindowsX64.Opcodes()
+}
+
+func emit(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
+    if state.allocation.is_fused(compare.target) {
+        emit_fused_decimal_compare(compare)
+    } else {
+        emit_decimal_compare(compare)
+    }
+}
+
+func emit_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
+    var is_double = compare.is_double
+    var left = decimals.decimal_register_of(compare.left, 0, is_double)
+    var right = decimals.decimal_register_of(compare.right, 1, is_double)
+    var above = opcodes.set_if_above_code
+    var above_or_equal = opcodes.set_if_above_or_equal_code
+    switch compare.comparison {
+        'less': emit_decimal_test(right, left, above, is_double)
+        'less_or_equal': emit_decimal_test(right, left, above_or_equal, is_double)
+        'greater': emit_decimal_test(left, right, above, is_double)
+        'greater_or_equal': emit_decimal_test(left, right, above_or_equal, is_double)
+        'equal': emit_decimal_equality(true, left, right, is_double)
+        'not_equal': emit_decimal_equality(false, left, right, is_double)
+    }
+    encoder.zero_extend_al_into_rax()
+    frames.write_from(compare.target, encoder.rax)
+}
+
+func emit_fused_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
+    var is_double = compare.is_double
+    var left = decimals.decimal_register_of(compare.left, 0, is_double)
+    var right = decimals.decimal_register_of(compare.right, 1, is_double)
+    var above = opcodes.set_if_above_code
+    var above_or_equal = opcodes.set_if_above_or_equal_code
+    var first = left
+    var second = right
+    var setting = above_or_equal
+    if compare.comparison == 'less' or compare.comparison == 'greater' {
+        setting = above
+    }
+    var swapped = compare.comparison == 'less' or compare.comparison == 'less_or_equal'
+    if swapped {
+        first = right
+        second = left
+    }
+    state.flags_have_parity = false
+    var equal = opcodes.set_if_equal_code
+    var not_equal = opcodes.set_if_not_equal_code
+    if compare.comparison == 'equal' {
+        setting = equal
+        state.flags_have_parity = true
+        state.flags_unordered_is_true = false
+    }
+    if compare.comparison == 'not_equal' {
+        setting = not_equal
+        state.flags_have_parity = true
+        state.flags_unordered_is_true = true
+    }
+    encoder.compare_xmm(first, second, is_double)
+    state.flags_condition = setting
+    state.flags_register = compare.target
+}
+
+func emit_decimal_test(first: Integer, second: Integer, setting: Integer, is_double: Boolean) {
+    encoder.compare_xmm(first, second, is_double)
+    encoder.set_low_byte(setting, 0)
+}
+
+func emit_decimal_equality(is_equal: Boolean, left: Integer, right: Integer, is_double: Boolean) {
+    encoder.compare_xmm(left, right, is_double)
+    var equal = opcodes.set_if_equal_code
+    var not_equal = opcodes.set_if_not_equal_code
+    var parity = _set_if_parity_code
+    var no_parity = _set_if_no_parity_code
+    if is_equal {
+        encoder.set_low_byte(equal, 0)
+        encoder.set_low_byte(no_parity, 1)
+        encoder.and_al_cl()
+    } else {
+        encoder.set_low_byte(not_equal, 0)
+        encoder.set_low_byte(parity, 1)
+        encoder.or_al_cl()
+    }
+}
