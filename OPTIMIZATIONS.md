@@ -1908,6 +1908,49 @@ whose `headers.count(is_current)` gets the same treatment, 5.4 ms before, 3.5 ms
 
 What a user can observe: the time, and the copies, named `<function>$known<n>`, in the executable's function map.
 
+## A class is split where a constant attribute decides its branches
+
+A class whose objects keep a value known while compiling in an attribute is compiled once per value its objects
+are made with: each function that tests the attribute gets a copy per value, with the test decided and the other
+branch gone (D1846, building D1845, which replaced `Boolean` codegen values, spite_compiler#309). An attribute qualifies
+when the constructor sets it from a parameter before doing anything else (its first statements only set
+attributes from parameters), nothing else in the program writes it, and it holds a number or a `Boolean`.
+
+1. **Which objects hold which value** (the high pass `split_classes`). A `Meter(true)` holds `is_squared = 1`.
+   The pass follows that through locals, parameters, `this` and answers, over every built function until nothing
+   changes, and marks each call whose receiver or argument holds one value on every path, with the attribute and
+   the value (`Call.known_regions`). An object read from a list, an attribute or a function value, or made from an
+   argument that is not a literal, holds no known value. A parameter is followed only for a function every caller
+   of which the pass sees: not one a function value, a call through a `type` or the compiler's own calls
+   (`drop`, `to_string`, `to_debug`, `deep_copy`) can reach.
+2. **The copy** (`low_optimization_passes/compile_time_evaluation`, before the calls given a known closure). A
+   marked call gets its own copy of the callee in which each read of the attribute through that parameter is the
+   value, and the copy is evaluated like any function: it is kept only when that decided a branch. The lowering
+   carries the marks to the low call; if any function the pass followed a parameter of is reached in a way it did
+   not see (a function address, a call from code the compiler wrote), nothing is split.
+
+```spite
+func measure(values: List<Integer>, plain: Meter, squared: Meter) {
+    var index = 0
+    while index < values.count() {
+        var value = values[index]
+        plain.add(value)
+        squared.add(value)
+        index = index + 1
+    }
+}
+```
+
+With `Meter(false)` and `Meter(true)` made by every caller, `measure`'s call gets a copy that adds without
+testing `is_squared` (once `add` is inlined into it), as `Meter<false>` and `Meter<true>` did. Measured on
+`deciding_conditions_at_compile_time` with the flag as a constructor argument: no slower than the `Boolean` codegen
+value it replaced (spite_compiler#309).
+
+Not yet: the attribute keeps its slot (the layout is decided before the copies are made), and an object kept in a
+list or an attribute is not followed. The proof is [PROOFS.md](PROOFS.md#a-split-class-behaves-as-the-class).
+
+What a user can observe: the time, and the copies, named `<function>$split<n>`, in the executable's function map.
+
 ## A read from a known object cannot fault, and goes when nothing reads it
 
 A read of a word the evaluation proves lies inside a live known object is marked as one that cannot fault, and the

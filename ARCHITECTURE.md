@@ -139,6 +139,8 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    they are read.
 7. `layouts_by_use`: every class's layout (offsets, sizes, packing, the shared blocks of union members, the room of
    a short text), recorded as `HighProgram.layout`.
+   Right after it, `split_classes` marks each call whose receiver or argument holds one known value in an attribute
+   only its constructor sets (`Call.known_regions`), which the specialised calls read to split the class.
 8. `static_singletons`: the singletons that hold nothing and make nothing, each one object in the executable's data
    (`HighProgram.static_singletons`).
 9. `call_assignments`: what each call may assign (`HighProgram.assignments`).

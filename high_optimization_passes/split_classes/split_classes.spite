@@ -1,0 +1,512 @@
+union Statement {
+    HighIntermediaryRepresentation.Statements.Declare
+    HighIntermediaryRepresentation.Statements.Assign.Assign
+    HighIntermediaryRepresentation.Statements.Assign.Attribute
+    HighIntermediaryRepresentation.Statements.Assign.ThroughShape
+    HighIntermediaryRepresentation.Statements.Evaluate
+    HighIntermediaryRepresentation.Statements.If
+    HighIntermediaryRepresentation.Statements.While
+    HighIntermediaryRepresentation.Statements.Return
+    HighIntermediaryRepresentation.Statements.Stop
+    HighIntermediaryRepresentation.Statements.Block
+}
+
+union Value {
+    HighIntermediaryRepresentation.Values.WholeNumber
+    HighIntermediaryRepresentation.Values.DecimalNumber
+    HighIntermediaryRepresentation.Values.TextConstant
+    HighIntermediaryRepresentation.Values.NullConstant
+    HighIntermediaryRepresentation.Values.LocalRead
+    HighIntermediaryRepresentation.Values.ThisRead
+    HighIntermediaryRepresentation.Values.AttributeRead
+    HighIntermediaryRepresentation.Values.Call
+    HighIntermediaryRepresentation.Values.MakeObject
+    HighIntermediaryRepresentation.Values.MachineOperation
+    HighIntermediaryRepresentation.Values.Negation
+    HighIntermediaryRepresentation.Values.ForeignCall
+    HighIntermediaryRepresentation.Values.Class.Membership
+    HighIntermediaryRepresentation.Values.PresenceTest
+    HighIntermediaryRepresentation.Values.Conversion
+    HighIntermediaryRepresentation.Values.Function.Value
+    HighIntermediaryRepresentation.Values.Function.ValueCall
+    HighIntermediaryRepresentation.Values.NumberRoom
+    HighIntermediaryRepresentation.Values.ShapeCall
+    HighIntermediaryRepresentation.Values.EnumText
+    HighIntermediaryRepresentation.Values.EnumFromText
+    HighIntermediaryRepresentation.Values.Class.Object
+    HighIntermediaryRepresentation.Values.Class.OfValue
+    HighIntermediaryRepresentation.Values.Function.Fact
+}
+
+var no_program = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(no_program)
+var unknown = ""
+var bottom = "-"
+var most_rounds = 32
+var built_keys = List<String>()
+var called_keys = List<String>()
+var untrusted_keys = List<String>()
+var shape_members = List<String>()
+var writes = Dictionary<String, Integer>()
+var leading_writes = Dictionary<String, Integer>()
+var steady_names = Dictionary<String, List<String>>()
+var steady_parameters = Dictionary<String, List<Integer>>()
+var facts = Dictionary<String, String>()
+var walked = Model.FunctionModel("", "")
+var walked_is_trusted = false
+var changed = false
+var annotating = false
+
+# ../../OPTIMIZATIONS.md#a-class-is-split-where-a-constant-attribute-decides-its-branches
+func optimized(high_program: HighIntermediaryRepresentation.HighProgram) {
+    high = high_program
+    high.split_parameter_keys = List<String>()
+    high.split_built_keys = List<String>()
+    fallback high.will_be_lowered()
+    crash high.context
+    fallback not is_interactive(high.context.build_flags)
+    high.built_functions.each(note_the_function)
+    high.built_functions.each(note_the_writes_of)
+    var classes = high.model.classes.values()
+    classes.each(note_the_steady_attributes)
+    fallback not steady_names.is_empty()
+    high.built_functions.each(walk_the_function)
+    facts = Dictionary<String, String>()
+    var round = 0
+    changed = true
+    while changed and round < most_rounds {
+        changed = false
+        high.built_functions.each(walk_the_function)
+        round = round + 1
+    }
+    fallback not changed
+    annotating = true
+    high.built_functions.each(walk_the_function)
+    high.split_built_keys = built_keys
+    note_the_trusted_functions()
+}
+
+func is_interactive(flags: Dictionary<String, String>): Boolean {
+    var asked = flags.contains("repl") or flags.contains("repl_port") or flags.contains("development")
+    return asked or flags.contains("hot_reload")
+}
+
+func note_the_function(function: HighIntermediaryRepresentation.HighFunction) {
+    var key = function.function.key()
+    built_keys.append(key)
+}
+
+func note_the_trusted_functions() {
+    var holding = keys_holding_a_known_value()
+    var index = 0
+    while index < called_keys.count() {
+        var key = called_keys[index]
+        if is_trusted(key) and holding.contains(key) {
+            high.split_parameter_keys.append(key)
+        }
+        index = index + 1
+    }
+}
+
+func is_trusted(key: String): Boolean {
+    fallback called_keys.contains(key) and not untrusted_keys.contains(key)
+    var parts = key.split(".")
+    var name = parts.last()
+    crash name
+    var spoken_by_the_compiler = name == "drop" or name == "to_string" or name == "to_debug" or name == "deep_copy"
+    return not spoken_by_the_compiler and not shape_members.contains(name)
+}
+
+func note_the_writes_of(function: HighIntermediaryRepresentation.HighFunction) {
+    walked = function.function
+    fallback walked.name != "_attribute_defaults"
+    var body = function.body
+    note_writes_in_a_block(body)
+    fallback walked.is_constructor
+    var leading = true
+    var index = 0
+    while index < body.statements.count() and leading {
+        var statement = body.statements[index]
+        leading = statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute and note_a_leading_write(statement)
+        index = index + 1
+    }
+}
+
+func note_a_leading_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute): Boolean {
+    var own = written.object.class == HighIntermediaryRepresentation.Values.ThisRead and written.attribute.owner == walked.owner
+    fallback own
+    fallback written.value and written.value.class == HighIntermediaryRepresentation.Values.LocalRead
+    var place = parameter_place(walked, written.value.name)
+    fallback place >= 0
+    leading_writes["{written.attribute.owner}.{written.attribute.name}"] = place
+    return true
+}
+
+func parameter_place(function: Model.FunctionModel, name: String): Integer {
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if parameter.name == name {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func note_writes_in_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(note_writes_in_a_statement)
+}
+
+func note_writes_in_a_statement(statement: Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: note_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: note_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: return
+        HighIntermediaryRepresentation.Statements.Return: return
+        HighIntermediaryRepresentation.Statements.If: note_writes_in_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: note_writes_in_a_block(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: note_writes_in_a_block(statement)
+        HighIntermediaryRepresentation.Statements.Stop: return
+    }
+}
+
+func note_writes_in_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    note_writes_in_a_block(branch.then_branch)
+    note_writes_in_a_block(branch.else_branch)
+}
+
+func note_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    var name = "{written.attribute.owner}.{written.attribute.name}"
+    var count = 1
+    if writes.contains(name) {
+        count = 2
+    }
+    writes[name] = count
+}
+
+func note_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    var fillers = high.model.fillers_of(written.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        writes["{filler.name}.{written.member}"] = 2
+        index = index + 1
+    }
+}
+
+# ../../PROOFS.md#a-split-class-behaves-as-the-class
+func note_the_steady_attributes(model: Model.ClassModel) {
+    fallback not model.is_singleton
+    var names = List<String>()
+    var places = List<Integer>()
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var name = "{model.key}.{attribute.name}"
+        if is_steady(name, attribute) {
+            var place = leading_writes[name]
+            crash place
+            names.append(attribute.name)
+            places.append(place)
+        }
+        index = index + 1
+    }
+    fallback not names.is_empty()
+    steady_names[model.key] = names
+    steady_parameters[model.key] = places
+}
+
+func holds_a_number(attribute: Model.AttributeModel): Boolean {
+    var attribute_type = attribute.attribute_type
+    fallback not attribute_type.is_nullable
+    return attribute_type.kind == 'scalar' and not attribute_type.name.contains("Address")
+}
+
+func walk_the_function(function: HighIntermediaryRepresentation.HighFunction) {
+    walked = function.function
+    var key = walked.key()
+    walked_is_trusted = is_trusted(key)
+    walk_a_block(function.body)
+}
+
+func walk_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(walk_a_statement)
+}
+
+func walk_a_statement(statement: Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: note_a_local(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: note_a_local(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: walk_both(statement.object, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: walk_both(statement.object, statement.value)
+        HighIntermediaryRepresentation.Statements.Evaluate: walk_both(statement.value, statement.waited)
+        HighIntermediaryRepresentation.Statements.Return: note_a_local("return", statement.value)
+        HighIntermediaryRepresentation.Statements.If: walk_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: walk_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Block: walk_a_block(statement)
+        HighIntermediaryRepresentation.Statements.Stop: walk_a_stop(statement)
+    }
+}
+
+func walk_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    walk(branch.condition)
+    walk_a_block(branch.then_branch)
+    walk_a_block(branch.else_branch)
+}
+
+func walk_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    walk(loop.condition)
+    walk_a_block(loop.body)
+}
+
+func walk_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(walk_a_present)
+    walk(stop.then)
+}
+
+func walk_a_present(value: Value) {
+    walk(value)
+}
+
+func walk_both(first: Value?, second: Value?) {
+    walk(first)
+    walk(second)
+}
+
+func note_a_local(name: String, value: Value?) {
+    walk(value)
+    fallback value
+    var known = known_of(value)
+    var key = walked.key()
+    note_a_fact("{key}|{name}", known)
+}
+
+func note_a_fact(name: String, known: String) {
+    fallback known != bottom
+    if not facts.contains(name) {
+        facts[name] = known
+        changed = true
+        return
+    }
+    var held = facts[name]
+    crash held
+    fallback held != known and held != unknown
+    facts[name] = unknown
+    changed = true
+}
+
+func walk(value: Value?) {
+    fallback value
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: walk_a_call(value)
+        HighIntermediaryRepresentation.Values.ShapeCall: walk_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.Function.Value: walk_a_function_value(value)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: walk_a_value_call(value)
+        HighIntermediaryRepresentation.Values.Conversion: walk(value.converted)
+        HighIntermediaryRepresentation.Values.AttributeRead: walk(value.object)
+        HighIntermediaryRepresentation.Values.Class.OfValue: walk(value.described)
+        HighIntermediaryRepresentation.Values.Class.Membership: walk(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: walk(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: walk(value.number)
+        HighIntermediaryRepresentation.Values.ForeignCall: value.arguments.each(walk_a_present)
+        HighIntermediaryRepresentation.Values.MachineOperation: walk_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MakeObject: walk_a_making(value)
+        HighIntermediaryRepresentation.Values.Negation: walk(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: walk_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: walk(value.tested)
+        HighIntermediaryRepresentation.Values.WholeNumber: return
+        HighIntermediaryRepresentation.Values.DecimalNumber: return
+        HighIntermediaryRepresentation.Values.TextConstant: return
+        HighIntermediaryRepresentation.Values.NullConstant: return
+        HighIntermediaryRepresentation.Values.LocalRead: return
+        HighIntermediaryRepresentation.Values.ThisRead: return
+        HighIntermediaryRepresentation.Values.Class.Object: return
+        HighIntermediaryRepresentation.Values.Function.Fact: return
+    }
+}
+
+func walk_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
+    made.arguments.each(walk_a_present)
+    fallback made.constructor
+    var key = made.constructor.key()
+    add_once(untrusted_keys, key)
+}
+
+func walk_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    walk(call.receiver)
+    call.arguments.each(walk_a_present)
+    add_once(shape_members, call.member.name)
+}
+
+func walk_a_function_value(made: HighIntermediaryRepresentation.Values.Function.Value) {
+    var key = made.function.key()
+    add_once(untrusted_keys, key)
+}
+
+func walk_a_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
+    walk(call.called)
+    call.arguments.each(walk_a_present)
+}
+
+func walk_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    walk(call.receiver)
+    call.arguments.each(walk_a_present)
+    var callee = call.function
+    var key = callee.key()
+    add_once(called_keys, key)
+    if call.receiver {
+        var known_receiver = known_of(call.receiver)
+        note_a_fact("{key}|this", known_receiver)
+        if annotating {
+            annotate(call, 0, known_receiver)
+        }
+    }
+    var index = 0
+    while index < call.arguments.count() and index < callee.parameters.count() {
+        var argument = call.arguments[index]
+        var parameter = callee.parameters[index]
+        var known = known_of(argument)
+        note_a_fact("{key}|{parameter.name}", known)
+        if annotating {
+            annotate(call, index + 1, known)
+        }
+        index = index + 1
+    }
+}
+
+func annotate(call: HighIntermediaryRepresentation.Values.Call, position: Integer, known: String) {
+    fallback known != bottom and known != unknown
+    var pairs = known.split(";")
+    var index = 0
+    while index < pairs.count() {
+        var pair = pairs[index]
+        var sides = pair.split("=")
+        var region = sides.first()
+        var written = sides.last()
+        crash region
+        crash written
+        var number: Long? = written
+        crash number
+        call.known_positions.append(position)
+        call.known_regions.append(region)
+        call.known_values.append(number)
+        index = index + 1
+    }
+}
+
+func add_once(names: List<String>, name: String) {
+    if not names.contains(name) {
+        names.append(name)
+    }
+}
+
+func known_of(value: Value): String {
+    switch value {
+        HighIntermediaryRepresentation.Values.MakeObject: return known_of_a_making(value)
+        HighIntermediaryRepresentation.Values.LocalRead: return known_of_a_name(value.name)
+        HighIntermediaryRepresentation.Values.ThisRead: return known_of_a_name("this")
+        HighIntermediaryRepresentation.Values.Call: return known_of_an_answer(value)
+        HighIntermediaryRepresentation.Values.Conversion: return known_through(value)
+        HighIntermediaryRepresentation.Values.ShapeCall: return unknown
+        HighIntermediaryRepresentation.Values.Function.Value: return unknown
+        HighIntermediaryRepresentation.Values.Function.ValueCall: return unknown
+        HighIntermediaryRepresentation.Values.AttributeRead: return unknown
+        HighIntermediaryRepresentation.Values.Class.OfValue: return unknown
+        HighIntermediaryRepresentation.Values.Class.Membership: return unknown
+        HighIntermediaryRepresentation.Values.EnumFromText: return unknown
+        HighIntermediaryRepresentation.Values.EnumText: return unknown
+        HighIntermediaryRepresentation.Values.ForeignCall: return unknown
+        HighIntermediaryRepresentation.Values.MachineOperation: return unknown
+        HighIntermediaryRepresentation.Values.Negation: return unknown
+        HighIntermediaryRepresentation.Values.NumberRoom: return unknown
+        HighIntermediaryRepresentation.Values.PresenceTest: return unknown
+        HighIntermediaryRepresentation.Values.WholeNumber: return unknown
+        HighIntermediaryRepresentation.Values.DecimalNumber: return unknown
+        HighIntermediaryRepresentation.Values.TextConstant: return unknown
+        HighIntermediaryRepresentation.Values.NullConstant: return unknown
+        HighIntermediaryRepresentation.Values.Class.Object: return unknown
+        HighIntermediaryRepresentation.Values.Function.Fact: return unknown
+    }
+}
+
+func known_through(converted: HighIntermediaryRepresentation.Values.Conversion): String {
+    fallback converted.converted
+    fallback converted.converted.value_type.name == converted.value_type.name
+    return known_of(converted.converted)
+}
+
+func known_of_a_name(name: String): String {
+    var place = parameter_place(walked, name)
+    var is_given = place >= 0 or name == "this"
+    fallback not is_given or walked_is_trusted
+    var key = walked.key()
+    return fact_of("{key}|{name}")
+}
+
+func known_of_an_answer(call: HighIntermediaryRepresentation.Values.Call): String {
+    var key = call.function.key()
+    fallback built_keys.contains(key)
+    return fact_of("{key}|return")
+}
+
+func known_of_a_making(made: HighIntermediaryRepresentation.Values.MakeObject): String {
+    var class_key = made.value_type.name
+    var names = steady_names[class_key]
+    var places = steady_parameters[class_key]
+    fallback names
+    fallback places
+    var pairs = List<String>()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var place = places[index]
+        crash place
+        var argument = made.arguments[place]
+        if argument and argument.class == HighIntermediaryRepresentation.Values.WholeNumber {
+            pairs.append("{class_key}.{name}={argument.number}")
+        }
+        index = index + 1
+    }
+    fallback not pairs.is_empty()
+    return pairs.join(";")
+}
+
+func is_steady(name: String, attribute: Model.AttributeModel): Boolean {
+    fallback leading_writes.contains(name) and writes.contains(name)
+    var count = writes[name]
+    crash count
+    return count == 1 and holds_a_number(attribute)
+}
+
+func fact_of(name: String): String {
+    if facts.contains(name) {
+        var held = facts[name]
+        crash held
+        return held
+    }
+    return bottom
+}
+
+func keys_holding_a_known_value(): List<String> {
+    var holding = List<String>()
+    var names = facts.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var known = facts[name]
+        crash known
+        if known != unknown and known != bottom {
+            var parts = name.split("|")
+            var key = parts.first()
+            crash key
+            add_once(holding, key)
+        }
+        index = index + 1
+    }
+    return holding
+}

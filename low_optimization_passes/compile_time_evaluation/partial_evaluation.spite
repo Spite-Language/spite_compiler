@@ -49,6 +49,8 @@ var most_instructions = 20000
 var most_cells = 600000
 var most_clones = 64
 var most_clone_size = 4000
+var most_splits = 64
+var split_keys = List<String>()
 var clone_keys = List<String>()
 var clones = List<LowIntermediaryRepresentation.LowFunction>()
 var clone_states = List<LowOptimizationPasses.CompileTimeEvaluation.Known.State>()
@@ -66,6 +68,7 @@ func transformed() {
     find_the_impure()
     flow = LowOptimizationPasses.CompileTimeEvaluation.Known.Flow(machine, never_pure, failed_calls)
     program.lowered_functions.each(evaluate_the_function)
+    split_by_known_attributes()
     specialize_the_calls()
 }
 
@@ -409,4 +412,161 @@ func counted_trips(unrolling: Unrolling, loop: Integer): Integer {
         return -1
     }
     return found
+}
+
+# ../../OPTIMIZATIONS.md#a-class-is-split-where-a-constant-attribute-decides-its-branches
+func split_by_known_attributes() {
+    fallback trusts_the_split()
+    var count = program.lowered_functions.count()
+    var index = 0
+    while index < count and split_keys.count() < most_splits {
+        var caller = program.lowered_functions[index]
+        split_the_calls_of(caller)
+        index = index + 1
+    }
+}
+
+# ../../PROOFS.md#a-split-class-behaves-as-the-class
+func trusts_the_split(): Boolean {
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var lowered = program.lowered_functions[index]
+        fallback not reaches_a_trusted_function_unseen(lowered)
+        index = index + 1
+    }
+    return true
+}
+
+func reaches_a_trusted_function_unseen(lowered: LowIntermediaryRepresentation.LowFunction): Boolean {
+    var seen = program.split_built_keys.contains(lowered.key)
+    var block_index = 0
+    while block_index < lowered.blocks.count() {
+        var block = lowered.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction.class == LowIntermediaryRepresentation.Instructions.FunctionAddress and program.split_parameter_keys.contains(instruction.function) {
+                return true
+            }
+            if instruction.class == LowIntermediaryRepresentation.Instructions.Call and not seen and program.split_parameter_keys.contains(instruction.function) {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func split_the_calls_of(caller: LowIntermediaryRepresentation.LowFunction) {
+    var block_index = 0
+    while block_index < caller.blocks.count() {
+        var block = caller.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() and split_keys.count() < most_splits {
+            var instruction = block.instructions[place]
+            if instruction.class == LowIntermediaryRepresentation.Instructions.Call and not instruction.known_regions.is_empty() {
+                split_a_call(caller, block_index, place, instruction)
+            }
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func split_a_call(
+    caller: LowIntermediaryRepresentation.LowFunction,
+    block_index: Integer,
+    place: Integer,
+    called: LowIntermediaryRepresentation.Instructions.Call,
+) {
+    var callee = machine.known_functions[called.function]
+    fallback callee
+    var plain = not callee.is_resumable and callee.key != caller.key and not callee.key.contains("$cold")
+    var fitting = callee.parameter_count == called.arguments.count() and instruction_count(callee) <= most_clone_size
+    fallback plain and fitting and fits(callee)
+    var key = "{callee.key}$split{split_keys.count()}"
+    var clone = cloned_function(callee, key)
+    var replaced = known_loads_replaced(clone, called)
+    fallback replaced > 0
+    flow.has_start = false
+    flow.decided_tests = 0
+    var candidates_before = flow.candidate_calls.count()
+    var evaluated = evaluate(clone)
+    var gained = evaluated and flow.decided_tests > 0
+    if not gained {
+        forget_candidates_from(candidates_before)
+    }
+    fallback gained
+    program.lowered_functions.append(clone)
+    var clone_total = operands.most_register_of(clone)
+    machine.add_function(clone, clone_total)
+    if never_pure[callee.key] == true {
+        never_pure[key] = true
+    }
+    split_keys.append(key)
+    redirect(caller, block_index, place, called, key)
+}
+
+func known_loads_replaced(
+    clone: LowIntermediaryRepresentation.LowFunction,
+    called: LowIntermediaryRepresentation.Instructions.Call,
+): Integer {
+    var replaced = 0
+    var known = 0
+    while known < called.known_regions.count() {
+        var position = called.known_positions[known]
+        var region = called.known_regions[known]
+        var value = called.known_values[known]
+        crash position
+        crash value
+        if not is_written(clone, position) {
+            replaced = replaced + loads_replaced(clone, position, region, value)
+        }
+        known = known + 1
+    }
+    return replaced
+}
+
+func is_written(clone: LowIntermediaryRepresentation.LowFunction, register: Integer): Boolean {
+    var block_index = 0
+    while block_index < clone.blocks.count() {
+        var block = clone.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            operands.read(instruction)
+            if operands.defines.contains(register) {
+                return true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return false
+}
+
+func loads_replaced(
+    clone: LowIntermediaryRepresentation.LowFunction,
+    register: Integer,
+    region: String,
+    value: Long,
+): Integer {
+    var replaced = 0
+    var block_index = 0
+    while block_index < clone.blocks.count() {
+        var block = clone.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction.class == LowIntermediaryRepresentation.Instructions.Load and instruction.address == register and instruction.region == region {
+                var constant = LowIntermediaryRepresentation.Instructions.Constant(instruction.target, value)
+                block.instructions[index] = constant
+                replaced = replaced + 1
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return replaced
 }

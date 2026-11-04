@@ -636,6 +636,27 @@ as when each was refused while building.
   tests/codegen_kind_tests, tests/codegen_class_test, tests/build_settings, tests/folded_helpers,
   tests/folded_functions, tests/folded_argument_count, tests/decided_and_false, tests/decided_and_false_after_a_call.
 
+### A split class behaves as the class
+
+- **Status**: partly built (D1846, spite_compiler#309).
+- **Rule**: an attribute its constructor sets from a parameter before anything else, and that nothing else
+  writes, holds for the whole life of an object the value the constructor was given, so every object made with a
+  literal there holds that literal. A call whose receiver or argument can only be such objects, on every path the
+  high pass `split_classes` follows (locals, parameters of functions whose every caller it sees, `this`, answers),
+  may run a copy of the callee in which each read of the attribute through that parameter is the literal. A
+  parameter written in the callee, or a function reached where the pass did not look (a function address, a call
+  from code the compiler wrote), keeps the call as it is.
+- **Buys**: a test of an attribute every object reaching a call holds at the same value, given to the
+  constructor, costs nothing in the copy, which is what a `Boolean` codegen value bought.
+- **Missing**: an object read back from a list, an attribute or a function value is not known, so its calls keep
+  the test; the attribute keeps its slot.
+- **Falls back**: the run-time test, the same answer.
+- **Lives in**: the high pass `high_optimization_passes/split_classes` (which values reach which calls) and
+  `low_optimization_passes/compile_time_evaluation/partial_evaluation.spite` (`trusts_the_split`, the copies),
+  embedded in an optimisation, since the facts are only worth proving for the copies it makes.
+- **Checked by**: tests/decided_and_false, tests/decided_and_false_after_a_call, tests/split_by_a_constant
+  (output only).
+
 ### Whether a function waits
 
 - **Status**: built (D1134, D1253).
