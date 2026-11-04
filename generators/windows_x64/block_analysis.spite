@@ -1,0 +1,192 @@
+union Instruction {
+    LowIntermediaryRepresentation.Instructions.Constant
+    LowIntermediaryRepresentation.Instructions.Copy
+    LowIntermediaryRepresentation.Instructions.Arithmetic
+    LowIntermediaryRepresentation.Instructions.Compare
+    LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic
+    LowIntermediaryRepresentation.Instructions.Decimal.Compare
+    LowIntermediaryRepresentation.Instructions.Decimal.Conversion
+    LowIntermediaryRepresentation.Instructions.Load
+    LowIntermediaryRepresentation.Instructions.Store
+    LowIntermediaryRepresentation.Instructions.Call
+    LowIntermediaryRepresentation.Instructions.CallAt
+    LowIntermediaryRepresentation.Instructions.ForeignAddress
+    LowIntermediaryRepresentation.Instructions.DataAddress
+    LowIntermediaryRepresentation.Instructions.FunctionAddress
+    LowIntermediaryRepresentation.Instructions.Allocate
+    LowIntermediaryRepresentation.Instructions.Retain
+    LowIntermediaryRepresentation.Instructions.Free
+    LowIntermediaryRepresentation.Instructions.Resize
+    LowIntermediaryRepresentation.Instructions.CopyBytes
+    LowIntermediaryRepresentation.Instructions.OpenLibrary
+    LowIntermediaryRepresentation.Instructions.Jump
+    LowIntermediaryRepresentation.Instructions.Branch
+    LowIntermediaryRepresentation.Instructions.Return
+    LowIntermediaryRepresentation.Instructions.FrameAddress
+    LowIntermediaryRepresentation.Instructions.ThreadIdentity
+    LowIntermediaryRepresentation.Instructions.FrameRoom
+    LowIntermediaryRepresentation.Instructions.StartThread
+    LowIntermediaryRepresentation.Instructions.JoinThread
+    LowIntermediaryRepresentation.Instructions.AtomicAdd
+    LowIntermediaryRepresentation.Instructions.ImportCall
+    LowIntermediaryRepresentation.Instructions.CompareExchange
+    LowIntermediaryRepresentation.Instructions.Stop
+    LowIntermediaryRepresentation.Instructions.Exit
+    LowIntermediaryRepresentation.Instructions.VectorLoop
+    LowIntermediaryRepresentation.Instructions.Select
+}
+
+var state = EmitterState()
+var edge_moves = EdgeMoves(state)
+
+func BlockAnalysis(starting_state: EmitterState) {
+    state = starting_state
+    edge_moves = EdgeMoves(starting_state)
+}
+
+func find_the_loop_heads(function: LowIntermediaryRepresentation.LowFunction) {
+    state.loop_heads = List<Boolean>()
+    var index = 0
+    while index < function.blocks.count() {
+        state.loop_heads.append(false)
+        index = index + 1
+    }
+    var position = 0
+    while position < state.allocation.layout.count() {
+        var block_index = state.allocation.layout[position]
+        var block = function.blocks[block_index]
+        crash block
+        var last = block.instructions.last()
+        if last {
+            note_a_back_edge(last, position)
+        }
+        position = position + 1
+    }
+}
+
+func note_a_back_edge(last: Instruction, position: Integer) {
+    if last.class == LowIntermediaryRepresentation.Instructions.Jump {
+        note_a_head(last.block, position)
+    }
+    if last.class == LowIntermediaryRepresentation.Instructions.Branch {
+        note_a_head(last.when_true, position)
+        note_a_head(last.when_false, position)
+    }
+}
+
+func note_a_head(target: Integer, position: Integer) {
+    fallback target >= 0 and target < state.allocation.layout_positions.count()
+    var target_position = state.allocation.layout_positions[target]
+    if target_position >= 0 and target_position <= position {
+        state.loop_heads[target] = true
+    }
+}
+
+func most_arguments_of(function: LowIntermediaryRepresentation.LowFunction): Integer {
+    var most = 0
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            var count = argument_count_of(instruction)
+            if count > most {
+                most = count
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return most
+}
+
+func argument_count_of(instruction: Instruction?): Integer {
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Call {
+        return instruction.arguments.count()
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.CallAt {
+        return instruction.arguments.count()
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.ImportCall {
+        return instruction.arguments.count()
+    }
+    return 4
+}
+
+# ../../OPTIMIZATIONS.md#a-loop-tests-its-condition-at-the-bottom
+func rotates_into(head: Integer): Boolean {
+    var head_position = state.allocation.layout_positions[head]
+    crash head_position
+    fallback head_position >= 0 and head_position <= state.current_block
+    fallback state.loop_heads[head] == true and not edge_moves.moves_at_the_tail(head) and not state.allocation.moves_at_the_head(head)
+    var block = state.allocation.function.blocks[head]
+    crash block
+    var count = block.instructions.count()
+    fallback count >= 1 and count <= 4
+    var last = block.instructions.last()
+    crash last
+    if last.class == LowIntermediaryRepresentation.Instructions.Branch {
+        return tests_and_leaves(head, last, block)
+    }
+    return false
+}
+
+func tests_and_leaves(
+    head: Integer,
+    branch: LowIntermediaryRepresentation.Instructions.Branch,
+    block: LowIntermediaryRepresentation.LowBlock,
+): Boolean {
+    fallback branch.when_true != head and branch.when_false != head
+    var true_moves = state.allocation.moves_on_the_edge(head, branch.when_true)
+    var false_moves = state.allocation.moves_on_the_edge(head, branch.when_false)
+    fallback not true_moves and not false_moves
+    var index = 0
+    while index + 1 < block.instructions.count() {
+        var instruction = block.instructions[index]
+        fallback repeats_freely(instruction)
+        index = index + 1
+    }
+    return true
+}
+
+# ../../OPTIMIZATIONS.md#a-loop-tests-its-condition-at-the-bottom
+func follows_a_rotating_head(
+    function: LowIntermediaryRepresentation.LowFunction,
+    position: Integer,
+    block_index: Integer,
+): Boolean {
+    fallback position >= 1
+    var previous = state.allocation.layout[position - 1]
+    crash previous
+    fallback state.loop_heads[previous] == true
+    var head = function.blocks[previous]
+    crash head
+    var count = head.instructions.count()
+    fallback count >= 1 and count <= 4
+    var last = head.instructions.last()
+    crash last
+    if last.class == LowIntermediaryRepresentation.Instructions.Branch {
+        var enters = last.when_true == block_index or last.when_false == block_index
+        return enters and tests_freely(head)
+    }
+    return false
+}
+
+func tests_freely(head: LowIntermediaryRepresentation.LowBlock): Boolean {
+    var index = 0
+    while index + 1 < head.instructions.count() {
+        var instruction = head.instructions[index]
+        fallback repeats_freely(instruction)
+        index = index + 1
+    }
+    return true
+}
+
+func repeats_freely(instruction: Instruction): Boolean {
+    var compares = instruction.class == LowIntermediaryRepresentation.Instructions.Compare
+    var decimal_compares = instruction.class == LowIntermediaryRepresentation.Instructions.Decimal.Compare
+    var loads = instruction.class == LowIntermediaryRepresentation.Instructions.Load
+    var copies = instruction.class == LowIntermediaryRepresentation.Instructions.Copy
+    return compares or decimal_compares or loads or copies
+}
