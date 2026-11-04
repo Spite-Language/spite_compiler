@@ -270,7 +270,7 @@ both forms, and that change publishes a new seed: its fixed point as a new `seed
 
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
 file), it hands it to the validator of that rule at once. The validator lets it pass, or reports the problem
-and ends the compile through `Validators.Failure`. Nothing runs after the first error. A mistake with one fix
+and ends the compile through `Diagnostics.Failure`. Nothing runs after the first error. A mistake with one fix
 found while or after the program is built (a dead check, an unread local) is handed to `Formatting.Fixer`
 instead, which writes the file and its `fixed:` line, then ends the compile by running it again on the fixed
 files (`command_line/restart.spite`, D1833).
