@@ -228,6 +228,14 @@ call keeps (in the order values take them), the scratch registers a value may ho
 calls, the first decimal register a call keeps (16 when none is kept), and the room a caller leaves above its
 arguments (the shadow space).
 
+`x64/allocation.spite` is one class whose functions are grouped by phase, and `allocate` calls the phases by name: `lay_out_the_blocks` (block
+layout), `read_the_operands` (counts, constants, decimals), `fold_the_addresses` (fused compares, folded addresses,
+rematerialised loads), `find_the_flow` (positions, edges, reachability, loop depths), `find_the_lives` (liveness), `build_the_intervals`
+(segments and joined copies) and `place_the_values` (placement, which splits and spills through the same lists). Each phase
+reads what the ones before it filled, in the lists `allocation.spite` begins with, and the file keeps each phase's functions together in that order, with the
+answers the emitter asks last. The layout runs first because the emitter reads it for a function the rest skips, and liveness runs after the
+flow because it walks the blocks in layout order.
+
 ## What the compiler writes itself
 
 `Concurrent`, `Parallel` and their scheduler are not Spite classes: the lowering writes them as low functions
