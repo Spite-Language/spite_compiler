@@ -1,0 +1,406 @@
+union Declaration {
+    AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration
+}
+
+union Type {
+    AbstractSyntaxTree.Shapes.Types.NamedType
+}
+
+var empty_map = Mapping.FolderMap()
+var table = SymbolTable(empty_map)
+var names = Mapping.Names()
+var found = Dictionary<String, RepeatedDeclaration>()
+var reading_tree = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var read_names = List<String>()
+var being_read = ""
+
+func RepeatedDeclarations(starting_table: SymbolTable) {
+    table = starting_table
+}
+
+# ../../spite_spec/specs/classes_and_files.md#a-repeated-union-or-type-moves-to-the-entry-class
+func run(): List<RepeatedDeclaration> {
+    var paths = table.paths_read.copy()
+    paths.each(note_the_file)
+    var every = found.values()
+    var repeats = every.filter(is_repeated)
+    repeats.each(decide_where_it_lands)
+    var index = 0
+    while index < repeats.count() {
+        var repeat = repeats[index]
+        note_a_second_content(repeat, repeats)
+        index = index + 1
+    }
+    return repeats
+}
+
+func is_repeated(repeat: RepeatedDeclaration): Boolean {
+    return repeat.trees.count() > 1
+}
+
+func note_the_file(path: String) {
+    fallback not table.generated_texts.contains(path)
+    var tree = table.files[path]
+    fallback tree
+    fallback table.map.root_holding(path)
+    reading_tree = tree
+    tree.declarations.each(note_a_declaration)
+}
+
+func is_generic(tree: AbstractSyntaxTree.Shapes.SourceFile): Boolean {
+    var index = 0
+    while index < tree.declarations.count() {
+        var declaration = tree.declarations[index]
+        if declaration.class == AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func note_a_declaration(declaration: Declaration) {
+    if declaration.class == AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration {
+        being_read = declaration.name
+        read_names = List<String>()
+        var union_content = content_of_a_union(declaration)
+        note_a_copy("union", declaration.name, union_content, declaration)
+    }
+    if declaration.class == AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration {
+        being_read = declaration.name
+        read_names = List<String>()
+        var type_content = content_of_a_type(declaration)
+        note_a_copy("type", declaration.name, type_content, declaration)
+    }
+}
+
+func note_a_copy(kind: String, name: String, content: String, declaration: Declaration) {
+    fallback not content.contains("$")
+    var root = table.map.root_holding(reading_tree.path)
+    crash root
+    var key = "{root.path}|{kind}|{name}|{content}"
+    var known = found[key]
+    if known {
+        known.trees.append(reading_tree)
+        known.declarations.append(declaration)
+        return
+    }
+    var repeat = RepeatedDeclaration(kind, name, content, root.path)
+    repeat.trees.append(reading_tree)
+    repeat.declarations.append(declaration)
+    found[key] = repeat
+}
+
+func content_of_a_union(declaration: AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration): String {
+    var members = List<String>()
+    var index = 0
+    while index < declaration.member_names.count() {
+        var member = declaration.member_names[index]
+        var read = read_name(member)
+        members.append(read)
+        index = index + 1
+    }
+    return in_order(members)
+}
+
+func content_of_a_type(declaration: AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration): String {
+    var members = List<String>()
+    var index = 0
+    while index < declaration.members.count() {
+        var member = declaration.members[index]
+        var read = content_of_a_member(member)
+        members.append(read)
+        index = index + 1
+    }
+    return in_order(members)
+}
+
+func content_of_a_member(member: AbstractSyntaxTree.Shapes.Types.TypeMember): String {
+    var answer = content_of(member.result)
+    if member.is_an_attribute {
+        return "{member.name}:{answer}"
+    }
+    var parameters = List<String>()
+    var index = 0
+    while index < member.parameters.count() {
+        var parameter = member.parameters[index]
+        var read = content_of(parameter.declared_type)
+        parameters.append(read)
+        index = index + 1
+    }
+    var listed = parameters.join(",")
+    return "{member.name}({listed}):{answer}"
+}
+
+func content_of(written: Type?): String {
+    fallback written
+    switch written {
+        AbstractSyntaxTree.Shapes.Types.NamedType: return content_of_a_named(written)
+    }
+}
+
+func content_of_a_named(named: AbstractSyntaxTree.Shapes.Types.NamedType): String {
+    var dotted = named.path.join(".")
+    var read = read_name(dotted)
+    var arguments = List<String>()
+    var index = 0
+    while index < named.arguments.count() {
+        var argument = named.arguments[index]
+        var read_argument = content_of_an_argument(argument)
+        arguments.append(read_argument)
+        index = index + 1
+    }
+    var listed = arguments.join(",")
+    if named.is_nullable {
+        return "{read}<{listed}>?"
+    }
+    return "{read}<{listed}>"
+}
+
+func content_of_an_argument(argument: AbstractSyntaxTree.Shapes.Types.GenericArgument): String {
+    if argument.is_type {
+        return content_of(argument.type_reference)
+    }
+    return argument.text
+}
+
+# ../../spite_spec/specs/classes_and_files.md#a-repeated-union-or-type-moves-to-the-entry-class
+func read_name(written: String): String {
+    if written == being_read {
+        return "itself"
+    }
+    var own = declared_here(written)
+    if own {
+        return content_of_its_own(written, own)
+    }
+    var reached = table.find(written, reading_tree.namespace)
+    if reached {
+        return reached.namespace
+    }
+    return written
+}
+
+func declared_here(written: String): Declaration? {
+    var index = 0
+    while index < reading_tree.declarations.count() {
+        var declaration = reading_tree.declarations[index]
+        if declares_a_type_named(declaration, written) {
+            return declaration
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func declares_a_type_named(declaration: Declaration, written: String): Boolean {
+    switch declaration {
+        AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration: return false
+        AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration: return false
+        AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration: return declaration.name == written
+        AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration: return declaration.name == written
+        AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration: return declaration.name == written
+        AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration: return false
+        AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration: return false
+    }
+}
+
+func content_of_its_own(written: String, own: Declaration): String {
+    if read_names.contains(written) {
+        return "{written} again"
+    }
+    read_names.append(written)
+    if own.class == AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration {
+        var members = content_of_a_union(own)
+        return "{written}=({members})"
+    }
+    if own.class == AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration {
+        var fields = content_of_a_type(own)
+        return "{written}=({fields})"
+    }
+    return "{reading_tree.namespace}.{written}"
+}
+
+func in_order(unordered: List<String>): String {
+    var ordered = List<String>()
+    var index = 0
+    while index < unordered.count() {
+        var text = unordered[index]
+        var place = 0
+        while place < ordered.count() and ordered[place] < text {
+            place = place + 1
+        }
+        ordered.insert(place, text)
+        index = index + 1
+    }
+    return ordered.join(",")
+}
+
+# ../../spite_spec/specs/classes_and_files.md#a-repeated-union-or-type-moves-to-the-entry-class
+func decide_where_it_lands(repeat: RepeatedDeclaration) {
+    place_the_entry(repeat)
+    if every_file_is_written(repeat) {
+        decide_if_it_fits(repeat)
+    } else {
+        repeat.stays = 'not_written'
+    }
+}
+
+func place_the_entry(repeat: RepeatedDeclaration) {
+    var shared = shared_folders(repeat)
+    var folder = repeat.root_path
+    if not shared.is_empty() {
+        var below = shared.join("/")
+        folder = "{repeat.root_path}/{below}"
+    }
+    var directory = Directory(folder)
+    var folder_name = directory.folder_name
+    repeat.entry_name = names.class_name_of(folder_name)
+    repeat.entry_path = "{folder}/{folder_name}.spite"
+    var depth = shared.count()
+    repeat.folder_namespace = namespace_of(repeat, depth)
+    repeat.entry_namespace = names.joined(repeat.folder_namespace, repeat.entry_name)
+}
+
+func shared_folders(repeat: RepeatedDeclaration): List<String> {
+    var first = repeat.trees[0]
+    crash first
+    var shared = folders_below_the_root(first.path, repeat.root_path)
+    var index = 1
+    while index < repeat.trees.count() {
+        var tree = repeat.trees[index]
+        var folders = folders_below_the_root(tree.path, repeat.root_path)
+        keep_what_both_hold(shared, folders)
+        index = index + 1
+    }
+    return shared
+}
+
+func folders_below_the_root(path: String, root_path: String): List<String> {
+    var forward = path.replace("\\", "/")
+    var root_forward = root_path.replace("\\", "/")
+    var start = root_forward.length() + 1
+    var length = forward.length()
+    var rest = forward.slice(start, length)
+    crash rest
+    var segments = rest.split("/")
+    crash segments.remove_last()
+    return segments
+}
+
+func keep_what_both_hold(shared: List<String>, folders: List<String>) {
+    var count = 0
+    var keep_going = true
+    while keep_going and count < shared.count() and count < folders.count() {
+        keep_going = shared[count] == folders[count]
+        if keep_going {
+            count = count + 1
+        }
+    }
+    shared.truncate(count)
+}
+
+func namespace_of(repeat: RepeatedDeclaration, depth: Integer): String {
+    fallback depth > 0
+    var first = repeat.trees[0]
+    crash first
+    var segments = first.namespace.split(".")
+    segments.truncate(depth)
+    return segments.join(".")
+}
+
+func every_file_is_written(repeat: RepeatedDeclaration): Boolean {
+    var index = 0
+    while index < repeat.trees.count() {
+        var tree = repeat.trees[index]
+        fallback table.may_fix_later(tree.path)
+        index = index + 1
+    }
+    return table.may_fix_later(repeat.entry_path)
+}
+
+func decide_if_it_fits(repeat: RepeatedDeclaration) {
+    var entry = read_entry(repeat)
+    if entry {
+        decide_with_the_entry(repeat, entry)
+    } else {
+        decide_without_an_entry(repeat)
+    }
+    fallback repeat.stays == 'moves'
+    var whole = names.joined(repeat.folder_namespace, repeat.name)
+    var names_a_class = not repeat.folder_namespace.is_empty() and table.map.has(whole)
+    if names_a_class or repeat.name == repeat.entry_name {
+        repeat.stays = 'taken_name'
+    }
+}
+
+func read_entry(repeat: RepeatedDeclaration): AbstractSyntaxTree.Shapes.SourceFile? {
+    var class_files = table.map.class_files_of(repeat.entry_namespace)
+    var index = 0
+    while index < class_files.count() {
+        var class_file = class_files[index]
+        if class_file.path == repeat.entry_path {
+            table.read_a_class(class_file)
+            return table.files[repeat.entry_path]
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func decide_with_the_entry(repeat: RepeatedDeclaration, entry: AbstractSyntaxTree.Shapes.SourceFile) {
+    if is_generic(entry) {
+        repeat.stays = 'generic_entry'
+        return
+    }
+    fallback not repeat.entry_holds_a_copy()
+    reading_tree = entry
+    if declared_here(repeat.name) {
+        repeat.stays = 'two_contents'
+        return
+    }
+    decide_the_plain_name(repeat)
+}
+
+func decide_the_plain_name(repeat: RepeatedDeclaration) {
+    if table.find(repeat.name, repeat.entry_namespace) {
+        repeat.stays = 'taken_name'
+    }
+}
+
+func decide_without_an_entry(repeat: RepeatedDeclaration) {
+    decide_the_plain_name(repeat)
+    var map = table.map
+    var inner = names.joined(repeat.folder_namespace, repeat.entry_name)
+    if not repeat.folder_namespace.is_empty() and map.folder_named(inner) {
+        repeat.stays = 'captured_name'
+    }
+    var searched = repeat.folder_namespace
+    var keep_going = not searched.is_empty()
+    while keep_going {
+        searched = table.enclosing(searched)
+        var outer = names.joined(searched, repeat.entry_name)
+        var is_another = outer != repeat.folder_namespace
+        if is_another and (map.has(outer) or map.folder_named(outer)) {
+            repeat.stays = 'captured_name'
+        }
+        keep_going = not searched.is_empty()
+    }
+}
+
+func note_a_second_content(repeat: RepeatedDeclaration, repeats: List<RepeatedDeclaration>) {
+    var index = 0
+    while index < repeats.count() {
+        var other = repeats[index]
+        var same_landing = other.name == repeat.name and other.entry_path == repeat.entry_path
+        if same_landing and other.content != repeat.content {
+            repeat.stays = 'two_contents'
+        }
+        index = index + 1
+    }
+}

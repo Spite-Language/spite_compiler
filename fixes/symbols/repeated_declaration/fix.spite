@@ -1,0 +1,241 @@
+union Declaration {
+    AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration
+    AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration
+}
+
+var empty_map = Mapping.FolderMap()
+var table = Symbols.SymbolTable(empty_map)
+var moved_names = Dictionary<String, Dictionary<String, String>>()
+var found_problems = List<Diagnostics.Problem>()
+var changed_trees = List<AbstractSyntaxTree.Shapes.SourceFile>()
+
+func Fix(starting_table: Symbols.SymbolTable) {
+    table = starting_table
+}
+
+# ../../../../spite_spec/specs/classes_and_files.md#a-repeated-union-or-type-moves-to-the-entry-class
+func fixed(repeats: List<Symbols.RepeatedDeclaration>): List<Diagnostics.Problem> {
+    var moving = repeats.filter(moves)
+    moving.each(open_the_entry)
+    moving.each(note_the_names)
+    moving.each(move)
+    rewrite_the_names()
+    return found_problems
+}
+
+func moves(repeat: Symbols.RepeatedDeclaration): Boolean {
+    return repeat.stays == 'moves'
+}
+
+func open_the_entry(repeat: Symbols.RepeatedDeclaration) {
+    fallback not table.files[repeat.entry_path]
+    var tree = AbstractSyntaxTree.Shapes.SourceFile(repeat.entry_path, repeat.entry_namespace)
+    table.files[repeat.entry_path] = tree
+    var class_file = Mapping.ClassFile(repeat.entry_namespace, repeat.entry_name, repeat.entry_path)
+    table.map.add_to_the_class(repeat.entry_namespace, class_file)
+}
+
+func note_the_names(repeat: Symbols.RepeatedDeclaration) {
+    var index = 0
+    while index < repeat.trees.count() {
+        var tree = repeat.trees[index]
+        if tree.path != repeat.entry_path {
+            var known = names_moved_from(tree.path)
+            known[repeat.name] = repeat.entry_namespace
+        }
+        index = index + 1
+    }
+}
+
+func names_moved_from(path: String): Dictionary<String, String> {
+    var known = moved_names[path]
+    if known {
+        return known
+    }
+    var first = Dictionary<String, String>()
+    moved_names[path] = first
+    return first
+}
+
+func move(repeat: Symbols.RepeatedDeclaration) {
+    if not repeat.entry_holds_a_copy() {
+        land(repeat)
+    }
+    var index = 0
+    while index < repeat.trees.count() {
+        var tree = repeat.trees[index]
+        if tree.path != repeat.entry_path {
+            remove_the_copy(tree, repeat)
+        }
+        index = index + 1
+    }
+}
+
+func land(repeat: Symbols.RepeatedDeclaration) {
+    var entry = table.files[repeat.entry_path]
+    crash entry
+    var holder = repeat.trees[0]
+    var landing = repeat.declarations[0]
+    crash holder and landing
+    var rewriter = Fixes.Symbols.RepeatedDeclaration.Rewriter()
+    var written = name_for_the_entry(repeat, holder, entry)
+    rewriter.rewrite_for_the_entry(landing, written)
+    entry.declarations.append(landing)
+    var copies = repeat.trees.count()
+    var text = "the {repeat.kind} '{repeat.name}' repeats in {copies} classes of this namespace, so it lives here, in its entry class"
+    answer(entry, 1, text)
+}
+
+func name_for_the_entry(
+    repeat: Symbols.RepeatedDeclaration,
+    holder: AbstractSyntaxTree.Shapes.SourceFile,
+    entry: AbstractSyntaxTree.Shapes.SourceFile,
+): Dictionary<String, String> {
+    var written = Dictionary<String, String>()
+    var landing = repeat.declarations[0]
+    crash landing
+    var members = members_of(landing)
+    var index = 0
+    while index < members.count() {
+        var member = members[index]
+        if member != repeat.name {
+            written[member] = member_for_the_entry(member, holder, entry)
+        }
+        index = index + 1
+    }
+    return written
+}
+
+func members_of(declaration: Declaration): List<String> {
+    var rewriter = Fixes.Symbols.RepeatedDeclaration.Rewriter()
+    return rewriter.names_written_in(declaration)
+}
+
+func member_for_the_entry(
+    member: String,
+    holder: AbstractSyntaxTree.Shapes.SourceFile,
+    entry: AbstractSyntaxTree.Shapes.SourceFile,
+): String {
+    var moved = moved_names[holder.path]
+    if moved and moved[member] {
+        var moved_to = moved[member]
+        if moved_to == entry.namespace {
+            return member
+        }
+        return written_from(entry.namespace, moved_to, member)
+    }
+    var reached = table.find(member, holder.namespace)
+    if not reached {
+        return member
+    }
+    var from_the_entry = table.find(member, entry.namespace)
+    if from_the_entry and from_the_entry.namespace == reached.namespace {
+        return member
+    }
+    return reached.namespace
+}
+
+func remove_the_copy(tree: AbstractSyntaxTree.Shapes.SourceFile, repeat: Symbols.RepeatedDeclaration) {
+    var index = 0
+    while index < tree.declarations.count() {
+        var declaration = tree.declarations[index]
+        if is_the_copy(declaration, repeat) {
+            var line = line_of(declaration)
+            tree.remove_declaration_at(index)
+            var written = written_from(tree.namespace, repeat.entry_namespace, repeat.name)
+            var copies = repeat.trees.count()
+            var text = "the {repeat.kind} '{repeat.name}' repeats in {copies} classes of this namespace; moved it to its entry class '{repeat.entry_namespace}', and this class names it '{written}'"
+            answer(tree, line, text)
+            return
+        }
+        index = index + 1
+    }
+}
+
+func is_the_copy(declaration: Declaration, repeat: Symbols.RepeatedDeclaration): Boolean {
+    switch declaration {
+        AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration: return false
+        AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration: return false
+        AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration: return false
+        AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration: return repeat.kind == "union" and declaration.name == repeat.name
+        AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration: return repeat.kind == "type" and declaration.name == repeat.name
+        AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration: return false
+        AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration: return false
+    }
+}
+
+func line_of(declaration: Declaration): Integer {
+    return table.line_of(declaration)
+}
+
+func answer(tree: AbstractSyntaxTree.Shapes.SourceFile, line: Integer, text: String) {
+    var problem = Diagnostics.Problem(tree.path, line, text)
+    problem.class_name = tree.namespace
+    problem.is_fix = true
+    found_problems.append(problem)
+    changed_trees.append(tree)
+}
+
+func rewrite_the_names() {
+    var paths = moved_names.keys()
+    var index = 0
+    while index < paths.count() {
+        var path = paths[index]
+        var tree = table.files[path]
+        var moved = moved_names[path]
+        crash tree and moved
+        var written = names_written_by(tree, moved)
+        var rewriter = Fixes.Symbols.RepeatedDeclaration.Rewriter()
+        rewriter.rewrite(tree, written)
+        index = index + 1
+    }
+}
+
+func names_written_by(
+    tree: AbstractSyntaxTree.Shapes.SourceFile,
+    moved: Dictionary<String, String>,
+): Dictionary<String, String> {
+    var written = Dictionary<String, String>()
+    var moved_keys = moved.keys()
+    var index = 0
+    while index < moved_keys.count() {
+        var name = moved_keys[index]
+        var entry_namespace = moved[name]
+        crash name and entry_namespace
+        written[name] = written_from(tree.namespace, entry_namespace, name)
+        index = index + 1
+    }
+    return written
+}
+
+# ../../../../spite_spec/specs/packages.md#packages-namespaces-and-loading
+func written_from(from_namespace: String, entry_namespace: String, name: String): String {
+    var segments = entry_namespace.split(".")
+    var start = segments.count() - 1
+    while start >= 0 {
+        var shorter = segments.copy()
+        var dropped = 0
+        while dropped < start {
+            shorter.remove_at(0)
+            dropped = dropped + 1
+        }
+        var candidate = shorter.join(".")
+        if reaches(candidate, from_namespace, entry_namespace, name) {
+            return "{candidate}.{name}"
+        }
+        start = start - 1
+    }
+    return "{entry_namespace}.{name}"
+}
+
+func reaches(candidate: String, from_namespace: String, entry_namespace: String, name: String): Boolean {
+    var class_file = table.find(candidate, from_namespace)
+    fallback class_file
+    fallback class_file.namespace == entry_namespace
+    return not table.find("{candidate}.{name}", from_namespace)
+}

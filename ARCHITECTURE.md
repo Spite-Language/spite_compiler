@@ -23,7 +23,8 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
                                            for it, each read through abstract_syntax_tree's `run` (lexed, parsed,
                                            fixed by fixes/abstract_syntax_tree, written by `Fixes.Fixes` through
                                            printers/spite's FilePrinter and read again); then
-                                           validators/abstract_syntax_tree
+                                           validators/abstract_syntax_tree; once every class is read, fixes/symbols,
+                                           then validators/mapping
     name_resolution                        the model; then validators/name_resolution
     high_intermediary_representation       every reached function built (building only builds)
     proofs                                 the proofs, in their order (below), the rules of
@@ -44,8 +45,8 @@ only what the high representation gives. No stage reaches back into an earlier o
 
 ## A stage's passes
 
-A stage with passes (proofs, high_optimization_passes, low_optimization_passes) declares a `type` for them in its
-entry class, with the one function every pass has, so a class that does not fit is a compile error where it is
+A stage with passes (proofs, high_optimization_passes, low_optimization_passes) has a `type` for them, with the one
+function every pass has, in its entry class or, where other stages take it too, in the entry class holding them all, so a class that does not fit is a compile error where it is
 registered:
 
 | Stage | Type | The function |
@@ -304,10 +305,11 @@ validator only ever sees what stays an error:
 | Layer | Entry, called from | Rules |
 |---|---|---|
 | syntax tree | `fixes/abstract_syntax_tree/every_fix.spite`'s `fixed`, per file as it is read (`SymbolTable.read_class`) | `misplaced_comment`, `declaration_order` (the printer prints declarations in the enforced order), `default_guard` |
+| symbols | `fixes/symbols/every_fix.spite`'s `fixed`, once, when every class is read (`Symbols.run`), and it writes and restarts right there | `repeated_declaration` (a `union` or `type` two classes of a root declare with one name and content moves to the entry class of the lowest namespace holding every copy) |
 | after building | `fixes/after_building/every_fix.spite`: `fixed_a_check` from the proof `proven_checks` before each refusal, `fixed_a_walk` before the rules after building | `proven_check` (a `crash` or `fallback` line that proves nothing), `unread_plain_local` |
 
-A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it) and
-answers a `Diagnostics.Problem` with `is_fix` for each change. It never writes. A library file, a pinned
+A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it, a
+declaration moved between files) and answers a `Diagnostics.Problem` with `is_fix` for each change. It never writes. A library file, a pinned
 package's file, a generated class, a generic class, a walk and a file holding breakpoints are never fixed: their
 mistakes stay errors.
 
@@ -318,13 +320,21 @@ restarts.
   checks that it reads back to the same text with every comment (`validators/abstract_syntax_tree/formatting`),
   writes it, and prints the `fixed:` lines, or `formatted <path>` when no rule changed it; the symbol table then
   reads the written text again.
-- `found_later` keeps a tree a fix after building changed. `run`, called once the proofs end and by
-  `Diagnostics.Failure` before it tells an error, prints and writes every such tree, prints the `fixed:` lines and
+- `found_later` keeps a tree a fix changed, a file not yet on disk included. `run`, called once the proofs end, by
+  the symbols layer and by
+  `Diagnostics.Failure` before it tells an error, prints every such tree and reads each back, writes them only when
+  all of them read back, prints the `fixed:` lines and
   runs the compiler again with the same flags, folder and environment, answering what that run answers (D1833).
   The number of restarts so far travels in `SPITE_FIX_RESTARTS`; past 8, the compiler names the fix that keeps
   coming back and crashes.
 
 A `fixed:` line names the line the mistake was on in the file that run read.
+
+`symbols/repeated_declarations.spite` (`Symbols.RepeatedDeclarations`) finds what repeats and decides where each lands
+and whether it can: it needs every file of a root, so the fix runs after `read_the_program`, the first moment every class
+the compile will use is read, and before name resolution, which would otherwise read each class's copy. The syntax-tree
+layer sees one file at a time, and the after-building layer comes after name resolution has already minted a type for
+every copy. What cannot move stays in `SymbolTable.repeated_declarations` for `validators/mapping/repeated_declaration`.
 
 ## Validators
 
