@@ -22,7 +22,7 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
     symbols                                the entry class and every class it names, a class at a time as names ask
                                            for it, each read through abstract_syntax_tree's `run` (lexed, parsed,
                                            fixed by fixes/abstract_syntax_tree, written by `Fixes.Fixes` through
-                                           printers/spite's FilePrinter and read again); then
+                                           printers/spite's Printer and read again); then
                                            validators/abstract_syntax_tree; once every class is read, fixes/symbols,
                                            then validators/mapping
     name_resolution                        the model; then validators/name_resolution
@@ -316,7 +316,7 @@ mistakes stay errors.
 One owner writes, `fixes/fixes.spite` (`Fixes.Fixes`, a singleton): no step, validator or proof writes a file or
 restarts.
 
-- `rewritten` prints a file read with `printers/spite`'s `FilePrinter`, and when the text differs from the file
+- `rewritten` prints a file read with `printers/spite`'s `Printer`, and when the text differs from the file
   checks that it reads back to the same text with every comment and every text's value (`validators/abstract_syntax_tree/formatting`),
   writes it, and prints the `fixed:` lines, or `formatted <path>` when no rule changed it; the symbol table then
   reads the written text again.
@@ -383,7 +383,7 @@ needs. The folder is named after the rule, and the validator holds every word of
 a file and never changes its input.
 
 - `printers/spite` prints a tree as Spite: a statement or an expression to quote code in a message, and a whole
-  file (`FilePrinter`, with `LineBreaking` for lines over 120 columns) as the one way a file is printed: the
+  file (`Printer`, with `LineBreaking` for lines over 120 columns) as the one way a file is printed: the
   same tree always prints the same text, with the comments the tree holds (a function's, the class's heading).
   `Fixes.Fixes` writes what it prints ([Fixes](#fixes)); `--final-classes` writes its merged classes as
   `printers/final_class` prints them.

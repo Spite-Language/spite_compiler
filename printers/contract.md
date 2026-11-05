@@ -23,7 +23,7 @@ owns it, not to a printer.
 | Folder | It takes | It writes |
 |---|---|---|
 | `diagnostics` | a `Diagnostics.Report` | each problem as `file:line: error: text (in Class.function)`, each fix as `file:line: fixed: text (in Class.function)`, and each note as `note: text` |
-| `spite` | a statement, an expression, a declaration, or a whole `SourceFile` (`FilePrinter`) | the code as Spite; a file in the one layout, declarations in the enforced order, lines over 120 columns broken, with its heading and its functions' comments |
+| `spite` | a statement, an expression, a declaration, or a whole `SourceFile` (`Printer`) | the code as Spite; a file in the one layout, declarations in the enforced order, lines over 120 columns broken, with its heading and its functions' comments |
 | `high_intermediary_representation` | one `HighClass` | the class, its attributes and its functions, one statement a line (`--high-ir`, into `.spite/build/<name>.high_ir.txt`) |
 | `low_intermediary_representation` | the name of a class and its `LowFunction`s | each function and its instructions, one a line (`--low-ir`, into `.spite/build/<name>.low_ir.txt`) |
 
