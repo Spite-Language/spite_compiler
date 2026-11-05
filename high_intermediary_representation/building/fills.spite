@@ -1,0 +1,504 @@
+var state = ReflectionState()
+var described_names = DescribedNames()
+var feature_flags = Features(state)
+var writing = Writing(state)
+var class_objects = ClassObjects(state)
+var declarations = Declarations(state)
+var member_lists = MemberLists(state)
+var scalars = Model.Scalars()
+
+func Fills(starting_state: ReflectionState) {
+    state = starting_state
+    described_names = DescribedNames()
+    feature_flags = Features(starting_state)
+    writing = Writing(starting_state)
+    class_objects = ClassObjects(starting_state)
+    declarations = Declarations(starting_state)
+    member_lists = MemberLists(starting_state)
+}
+
+func fill(known: String): HighIntermediaryRepresentation.HighFunction {
+    var class_prefix = "Spite.Class:"
+    var namespace_prefix = "Spite.Namespace:"
+    var enum_prefix = "Spite.Enum:"
+    var union_prefix = "Spite.Union:"
+    var type_prefix = "Spite.Type:"
+    var known_length = known.length()
+    if known.starts_with(enum_prefix) {
+        var enum_length = enum_prefix.length()
+        var described_enum = known.slice(enum_length, known_length)
+        crash described_enum
+        return fill_of_an_enum(described_enum)
+    }
+    if known.starts_with(union_prefix) {
+        var union_length = union_prefix.length()
+        var described_union = known.slice(union_length, known_length)
+        crash described_union
+        return fill_of_a_union(described_union)
+    }
+    if known.starts_with(type_prefix) {
+        var type_length = type_prefix.length()
+        var described_shape = known.slice(type_length, known_length)
+        crash described_shape
+        return fill_of_a_type(described_shape)
+    }
+    if known.starts_with(class_prefix) {
+        var class_length = class_prefix.length()
+        var described_class = known.slice(class_length, known_length)
+        crash described_class
+        return fill_of_a_class(described_class)
+    }
+    if known.starts_with(namespace_prefix) {
+        var namespace_length = namespace_prefix.length()
+        var described_namespace = known.slice(namespace_length, known_length)
+        crash described_namespace
+        return fill_of_a_namespace(described_namespace)
+    }
+    var functions_prefix = "Functions:"
+    crash known.starts_with(functions_prefix)
+    var functions_length = functions_prefix.length()
+    var described = known.slice(functions_length, known_length)
+    crash described
+    return fill_of_a_function_list(described)
+}
+
+func fill_of_a_class(described: String): HighIntermediaryRepresentation.HighFunction {
+    var outer = state.statements
+    var outer_given = state.given
+    state.statements = List<SpiteCompiler.Statement>()
+    state.given = Dictionary<String, SpiteCompiler.Value>()
+    var class_type = writing.reflection_type("Spite.Class")
+    var class_model = state.context.class_of(class_type)
+    var own = HighIntermediaryRepresentation.Values.ThisRead(class_type)
+    var is_optional = described.ends_with("?")
+    var base = described
+    if is_optional {
+        var described_length = described.length()
+        var sliced_base = described.slice(0, described_length - 1)
+        crash sliced_base
+        base = sliced_base
+        writing.give_flag("is_optional", true)
+    }
+    var model = state.context.program.class_named(base)
+    var shown = base
+    if model {
+        shown = model.shown
+    }
+    if is_optional {
+        shown = "{shown}?"
+    }
+    writing.give_text("name_with_namespaces", shown)
+    var simple = described_names.without_namespaces(shown)
+    var keeps_arguments = simple.starts_with("List<") or simple.starts_with("Dictionary<") or simple.starts_with("Vector<") or simple.starts_with("Items<")
+    var opening = simple.index_of("<")
+    if not keeps_arguments and opening and opening > 0 {
+        var sliced_simple = simple.slice(0, opening)
+        crash sliced_simple
+        simple = sliced_simple
+    }
+    writing.give_text("name", simple)
+    var namespace_name = described_names.namespace_of(described)
+    var namespace = class_objects.namespace_object(namespace_name)
+    state.given["namespace"] = namespace
+    if model {
+        var source_folder = described_names.folder_of(model.file.path)
+        writing.give_text("source_folder", source_folder)
+        fill_from_the_model(own, class_model, model)
+        add_the_source_files(own, class_model, base)
+    } else {
+        fill_an_enum(base)
+    }
+    return filled_function(own, class_model, described, outer, outer_given)
+}
+
+# ../../../spite_spec/specs/reflection.md#reflection-objects
+func filled_function(
+    own: SpiteCompiler.Value,
+    model: Model.ClassModel,
+    described: String,
+    outer: List<SpiteCompiler.Statement>,
+    outer_given: Dictionary<String, SpiteCompiler.Value>,
+): HighIntermediaryRepresentation.HighFunction {
+    var constructor = state.values.constructor_of(model)
+    crash constructor
+    var arguments = writing.constructor_arguments(constructor)
+    var constructing = HighIntermediaryRepresentation.Values.Call(constructor, own, arguments)
+    var constructed = HighIntermediaryRepresentation.Statements.Evaluate(constructing)
+    state.statements.insert(0, constructed)
+    var function = Model.FunctionModel("_fill_{described}", model.key)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements = state.statements
+    state.statements = outer
+    state.given = outer_given
+    return HighIntermediaryRepresentation.HighFunction(function, body)
+}
+
+func fill_from_the_model(own: SpiteCompiler.Value, class_model: Model.ClassModel, model: Model.ClassModel) {
+    writing.give_flag("is_singleton", model.is_singleton)
+    fill_the_state(model)
+    var fixed_size = is_fixed_size(model)
+    writing.give_flag("is_fixed_size", fixed_size)
+    var element = model.bound_types["$element_type"]
+    var is_a_list = model.function_named("_read_value")
+    if element and is_a_list {
+        writing.give_flag("is_list", true)
+    }
+    var dictionary_value = model.bound_types["$value_type"]
+    if dictionary_value {
+        writing.give_flag("is_dictionary", true)
+    }
+    add_the_generics(own, class_model, model)
+    var is_the_entry = model.key == state.context.program.entry
+    writing.give_flag("has_no_stand_in", is_the_entry)
+    var is_stored_by_the_compiler = model.key == "String"
+    if scalars.of(model.key) {
+        is_stored_by_the_compiler = true
+    }
+    if not is_stored_by_the_compiler and not element {
+        member_lists.add_the_attributes(own, class_model, model)
+    }
+    if feature_flags.has_feature("e") {
+        add_the_declarations(own, class_model, model)
+    }
+    fallback feature_flags.has_feature("f")
+    if not is_the_entry {
+        var listed = writing.read_attribute(own, class_model, "_functions")
+        var makes_a_stand_in = declarations.belongs_to_the_program(model) and not model.is_singleton and not is_stored_by_the_compiler
+        member_lists.add_the_functions(listed, model, null, makes_a_stand_in, true)
+    }
+}
+
+# ../../../spite_spec/specs/reflection.md#reflection-objects
+func add_the_generics(own: SpiteCompiler.Value, class_model: Model.ClassModel, model: Model.ClassModel) {
+    var listed = writing.read_attribute(own, class_model, "_generics")
+    var names = model.bound_types.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var bound = model.bound_types[name]
+        crash bound
+        var name_length = name.length()
+        var key_name = name.slice(1, name_length)
+        crash key_name
+        var key = writing.text(key_name)
+        var described = class_objects.described_class_of(bound)
+        writing.placed(listed, key, described)
+        index = index + 1
+    }
+}
+
+func fill_an_enum(described: String) {
+    var parts = described.split(".")
+    var last = parts.count() - 1
+    var simple = parts[last]
+    crash simple
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = state.context.program.class_named(owner_key)
+    fallback owner
+    var enumeration = owner.enum_named(simple)
+    fallback enumeration
+    writing.give_flag("is_enum", true)
+}
+
+# ../../../spite_documentation/reflection.md#what-a-class-declares
+func add_the_declarations(own: SpiteCompiler.Value, class_model: Model.ClassModel, model: Model.ClassModel) {
+    var enums = writing.read_attribute(own, class_model, "_enums")
+    var enum_index = 0
+    while enum_index < model.enums.count() {
+        var enumeration = model.enums[enum_index]
+        var described_enum = class_objects.enum_object("{model.key}.{enumeration.name}")
+        var enum_key = writing.text(enumeration.name)
+        writing.placed(enums, enum_key, described_enum)
+        enum_index = enum_index + 1
+    }
+    var unions = writing.read_attribute(own, class_model, "_unions")
+    var union_index = 0
+    while union_index < model.unions.count() {
+        var united = model.unions[union_index]
+        var described_union = class_objects.declared_object("Spite.Union", "{model.key}.{united.name}")
+        var union_key = writing.text(united.name)
+        writing.placed(unions, union_key, described_union)
+        union_index = union_index + 1
+    }
+    var types = writing.read_attribute(own, class_model, "_types")
+    var type_index = 0
+    while type_index < model.shapes.count() {
+        var shape = model.shapes[type_index]
+        var described_shape = class_objects.declared_object("Spite.Type", "{model.key}.{shape.name}")
+        var type_key = writing.text(shape.name)
+        writing.placed(types, type_key, described_shape)
+        type_index = type_index + 1
+    }
+}
+
+func fill_of_a_union(described: String): HighIntermediaryRepresentation.HighFunction {
+    var outer = state.statements
+    var outer_given = state.given
+    state.statements = List<SpiteCompiler.Statement>()
+    state.given = Dictionary<String, SpiteCompiler.Value>()
+    var union_type = writing.reflection_type("Spite.Union")
+    var union_model = state.context.class_of(union_type)
+    var own = HighIntermediaryRepresentation.Values.ThisRead(union_type)
+    var owner_key = described_names.namespace_of(described)
+    var owner = state.context.program.class_named(owner_key)
+    crash owner
+    var simple = described_names.last_name_of(described)
+    var united = owner.union_named(simple)
+    crash united
+    give_owned(owner, simple)
+    var listed = writing.read_attribute(own, union_model, "_members")
+    var index = 0
+    while index < united.members.count() {
+        var member = united.members[index]
+        var described_member = class_objects.class_object_of_type(member)
+        if described_member {
+            var shown = state.context.shown(member)
+            var key = writing.text(shown)
+            writing.placed(listed, key, described_member)
+        }
+        index = index + 1
+    }
+    return filled_function(own, union_model, described, outer, outer_given)
+}
+
+func give_owned(owner: Model.ClassModel, simple: String) {
+    writing.give_text("name", simple)
+    writing.give_text("name_with_namespaces", "{owner.shown}.{simple}")
+    var owner_object = class_objects.class_object(owner.key)
+    state.given["owner"] = owner_object
+}
+
+func fill_of_a_type(described: String): HighIntermediaryRepresentation.HighFunction {
+    var outer = state.statements
+    var outer_given = state.given
+    state.statements = List<SpiteCompiler.Statement>()
+    state.given = Dictionary<String, SpiteCompiler.Value>()
+    var shape_type = writing.reflection_type("Spite.Type")
+    var shape_model = state.context.class_of(shape_type)
+    var own = HighIntermediaryRepresentation.Values.ThisRead(shape_type)
+    var owner_key = described_names.namespace_of(described)
+    var owner = state.context.program.class_named(owner_key)
+    crash owner
+    var simple = described_names.last_name_of(described)
+    give_owned(owner, simple)
+    return filled_function(own, shape_model, described, outer, outer_given)
+}
+
+func fill_of_an_enum(described: String): HighIntermediaryRepresentation.HighFunction {
+    var outer = state.statements
+    var outer_given = state.given
+    state.statements = List<SpiteCompiler.Statement>()
+    state.given = Dictionary<String, SpiteCompiler.Value>()
+    var enum_type = writing.reflection_type("Spite.Enum")
+    var enum_model = state.context.class_of(enum_type)
+    var own = HighIntermediaryRepresentation.Values.ThisRead(enum_type)
+    var owner_key = described_names.namespace_of(described)
+    var owner = state.context.program.class_named(owner_key)
+    crash owner
+    var simple = described_names.last_name_of(described)
+    var enumeration = owner.enum_named(simple)
+    crash enumeration
+    give_owned(owner, simple)
+    var value_type = writing.reflection_type("Spite.EnumValue")
+    writing.need_the_making(value_type)
+    var listed = writing.read_attribute(own, enum_model, "_values")
+    var integer = state.context.scalar_type("Integer")
+    var index = 0
+    while index < enumeration.values.count() {
+        var value = enumeration.values[index]
+        var number = enumeration.numbers[index]
+        crash number
+        var named = writing.text(value)
+        var numbered = HighIntermediaryRepresentation.Values.WholeNumber(integer, number)
+        var placed_at = writing.whole(index)
+        var more = List<SpiteCompiler.Value>()
+        more.append(numbered)
+        more.append(placed_at)
+        var made = writing.made_from(value_type, named, more)
+        var local = writing.kept(made, value_type)
+        var key = writing.text(value)
+        writing.placed(listed, key, local)
+        index = index + 1
+    }
+    return filled_function(own, enum_model, described, outer, outer_given)
+}
+
+func add_the_source_files(own: SpiteCompiler.Value, class_model: Model.ClassModel, described: String) {
+    fallback class_model.attribute_named("_source_files")
+    var listed = writing.read_attribute(own, class_model, "_source_files")
+    var file_type = Model.Type('object', "File")
+    writing.need_the_making(file_type)
+    var known = state.context.resolver.state.symbols.map.classes_by_namespace[described]
+    fallback known
+    var index = 0
+    while index < known.count() {
+        var class_file = known[index]
+        var relative = described_names.written_path_of(class_file.path)
+        var named = writing.text(relative)
+        var no_more = List<SpiteCompiler.Value>()
+        var made = writing.made_from(file_type, named, no_more)
+        writing.appended(listed, made)
+        index = index + 1
+    }
+}
+
+func add_the_source_directories(
+    own: SpiteCompiler.Value,
+    namespace_model: Model.ClassModel,
+    folder: Mapping.MappedFolder,
+) {
+    fallback namespace_model.attribute_named("_source_directories")
+    var listed = writing.read_attribute(own, namespace_model, "_source_directories")
+    var directory_type = Model.Type('object', "Directory")
+    writing.need_the_making(directory_type)
+    var index = 0
+    while index < folder.paths.count() {
+        var folder_path = folder.paths[index]
+        var relative = described_names.written_path_of(folder_path)
+        var named = writing.text(relative)
+        var no_more = List<SpiteCompiler.Value>()
+        var made = writing.made_from(directory_type, named, no_more)
+        writing.appended(listed, made)
+        index = index + 1
+    }
+}
+
+func is_stateful(model: Model.ClassModel): Boolean {
+    return not model.declared_attributes.is_empty()
+}
+
+# ../../PROOFS.md#whether-a-class-keeps-state
+func fill_the_state(model: Model.ClassModel) {
+    var binds_state = binds_a_singleton_with_state(model)
+    var asked_of_the_program = not binds_state and feature_flags.has_feature("s") and declarations.belongs_to_the_program(model)
+    if asked_of_the_program and every_writer_can_be_built(model) {
+        var asked_fact = writes_its_object(model)
+        state.given["is_stateful"] = asked_fact
+        return
+    }
+    var stateful = binds_state or asked_of_the_program or is_stateful(model)
+    writing.give_flag("is_stateful", stateful)
+}
+
+func binds_a_singleton_with_state(model: Model.ClassModel): Boolean {
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var held = attribute.attribute_type
+        if held.kind == 'object' and state.context.has_a_class(held) {
+            var bound = state.context.class_of(held)
+            if bound.is_singleton and not bound.declared_attributes.is_empty() {
+                return true
+            }
+        }
+        index = index + 1
+    }
+    return false
+}
+
+# ../../PROOFS.md#whether-a-class-keeps-state
+func every_writer_can_be_built(model: Model.ClassModel): Boolean {
+    var index = 0
+    while index < model.declared_functions.count() {
+        var declared = model.declared_functions[index]
+        var is_written = not declared.is_constructor and declared.name != "drop" and not declared.is_synthetic
+        fallback not is_written or declarations.can_be_built(declared)
+        index = index + 1
+    }
+    return true
+}
+
+func writes_its_object(model: Model.ClassModel): HighIntermediaryRepresentation.Values.Function.Fact {
+    var functions = List<Model.FunctionModel>()
+    var index = 0
+    while index < model.declared_functions.count() {
+        var declared = model.declared_functions[index]
+        var is_written = not declared.is_constructor and declared.name != "drop" and not declared.is_synthetic
+        var is_asked = is_written and declarations.can_be_built(declared)
+        if is_asked {
+            functions.append(declared)
+            state.context.need(declared)
+        }
+        index = index + 1
+    }
+    var boolean = state.context.boolean()
+    var made = HighIntermediaryRepresentation.Values.Function.Fact(boolean, "keeps_state", functions)
+    made.slot = "this"
+    state.context.facts_asked.append(made)
+    return made
+}
+
+func is_fixed_size(model: Model.ClassModel): Boolean {
+    if scalars.of(model.key) or model.key == "String" {
+        return true
+    }
+    var described = Model.Type('object', model.key)
+    return state.values.fits_a_vector(described)
+}
+
+func fill_of_a_function_list(described: String): HighIntermediaryRepresentation.HighFunction {
+    var outer = state.statements
+    state.statements = List<SpiteCompiler.Statement>()
+    var model = state.context.program.class_named(described)
+    crash model
+    var made = model.function_named("_function_list")
+    crash made
+    var function_type = writing.reflection_type("Spite.Function")
+    var list_type = state.context.resolver.monomorphiser.text_dictionary_type_of(function_type)
+    var made_list = state.values.made_list(list_type)
+    var listed = writing.kept(made_list, list_type)
+    var instance_type = model.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(instance_type)
+    member_lists.add_the_functions(listed, model, own, false, false)
+    var answered = HighIntermediaryRepresentation.Statements.Return(listed)
+    state.statements.append(answered)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements = state.statements
+    state.statements = outer
+    return HighIntermediaryRepresentation.HighFunction(made, body)
+}
+
+func fill_of_a_namespace(described: String): HighIntermediaryRepresentation.HighFunction {
+    var outer = state.statements
+    var outer_given = state.given
+    state.statements = List<SpiteCompiler.Statement>()
+    state.given = Dictionary<String, SpiteCompiler.Value>()
+    var namespace_type = writing.reflection_type("Spite.Namespace")
+    var namespace_model = state.context.class_of(namespace_type)
+    var own = HighIntermediaryRepresentation.Values.ThisRead(namespace_type)
+    var simple = described_names.last_name_of(described)
+    writing.give_text("name", simple)
+    writing.give_text("name_with_namespaces", described)
+    var parent_name = described_names.namespace_of(described)
+    var parent = class_objects.namespace_object(parent_name)
+    state.given["parent"] = parent
+    var folder = state.context.resolver.state.symbols.namespace_folder(described)
+    if folder {
+        add_the_contents(own, namespace_model, folder)
+        add_the_source_directories(own, namespace_model, folder)
+    }
+    return filled_function(own, namespace_model, described, outer, outer_given)
+}
+
+func add_the_contents(own: SpiteCompiler.Value, namespace_model: Model.ClassModel, folder: Mapping.MappedFolder) {
+    var classes = writing.read_attribute(own, namespace_model, "_classes")
+    var index = 0
+    while index < folder.files.count() {
+        var file = folder.files[index]
+        var model = state.context.program.class_named(file.namespace)
+        if model {
+            var described = class_objects.class_object(model.key)
+            writing.appended(classes, described)
+        }
+        index = index + 1
+    }
+    var namespaces = writing.read_attribute(own, namespace_model, "_namespaces")
+    var folder_index = 0
+    while folder_index < folder.folders.count() {
+        var inner = folder.folders[folder_index]
+        var inner_object = class_objects.namespace_object(inner.namespace)
+        writing.appended(namespaces, inner_object)
+        folder_index = folder_index + 1
+    }
+}
