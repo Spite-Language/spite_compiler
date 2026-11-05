@@ -32,7 +32,7 @@ is decided; [the specification](https://github.com/Spite-Language/spite_spec/blo
   or library names that compiler cannot read, adds a stepping stone to that list in the same push: the commit that
   teaches the compiler the new form before the source uses it, with the commits of the library, spec and docs
   beside it, so a fresh clone still builds from the release seed (#267). The list goes with the first stable release (D1764).
-- Build once per batch of changes (about two minutes), then run [spite_spec](https://github.com/Spite-Language/spite_spec) (see `README.md`).
+- Build once per batch of changes (about twelve minutes, on one core), then run [spite_spec](https://github.com/Spite-Language/spite_spec) (see `README.md`).
 - A change here or in [spite_standard_library](https://github.com/Spite-Language/spite_standard_library) that changes
   what a program writes, what it answers or an error's words updates, in the same push, the specification page that
   states it (`spite_spec/specs/`) and the docs page that teaches it ([spite_documentation](https://github.com/Spite-Language/spite_documentation),
