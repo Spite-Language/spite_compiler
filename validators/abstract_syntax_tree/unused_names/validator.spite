@@ -21,13 +21,8 @@ var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
 var class_name = ""
 var function_name = ""
 var function_line = 0
-var reads = List<String>()
-var read_lines = List<Integer>()
-var farthest_line = 2147483647
-var declared = List<AbstractSyntaxTree.Shapes.Statements.VariableStatement>()
-var assigned = List<String>()
 var attribute_names = List<String>()
-var may_fix = false
+var reading = Validators.AbstractSyntaxTree.UnusedNames.Reads()
 var operator_names = [
     "sum"
     "subtract"
@@ -56,96 +51,15 @@ func check_function(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDec
     fallback function.body
     function_name = function.declared_key()
     function_line = function.line
-    reads = List<String>()
-    read_lines = List<Integer>()
-    declared = List<AbstractSyntaxTree.Shapes.Statements.VariableStatement>()
-    assigned = List<String>()
-    walk.expressions.each(read_expression)
-    walk.statements.each(read_statement)
-    declared.each(check_local)
+    reading = Validators.AbstractSyntaxTree.UnusedNames.Reads()
+    reading.read_the_function(walk, function_name)
+    reading.declared.each(check_local)
     fallback not is_dictated(function)
     function.parameters.each(check_parameter)
 }
 
-func read_expression(found: AbstractSyntaxTree.Walk.Found.Expression) {
-    fallback found.function_name == function_name
-    var expression = found.expression
-    if expression.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        reads.append(expression.name)
-        read_lines.append(found.line)
-    }
-}
-
-func read_statement(found: AbstractSyntaxTree.Walk.Found.Statement) {
-    fallback found.function_name == function_name
-    var statement = found.statement
-    if statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
-        declared.append(statement)
-    }
-    if statement.class == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
-        forget_a_written_name(statement)
-    }
-}
-
-func forget_a_written_name(assignment: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
-    var target = assignment.target
-    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        assigned.append(target.name)
-        forget_one_read(target.name, assignment.line)
-    }
-}
-
-func forget_one_read(name: String, line: Integer) {
-    var index = 0
-    while index < reads.count() {
-        var read = reads[index]
-        var read_line = read_lines[index]
-        crash read_line
-        if read == name and read_line == line {
-            reads.remove_at(index)
-            read_lines.remove_at(index)
-            return
-        }
-        index = index + 1
-    }
-    var place = reads.index_of(name)
-    fallback place
-    reads.remove_at(place)
-    read_lines.remove_at(place)
-}
-
-func is_read_while_declared(local: AbstractSyntaxTree.Shapes.Statements.VariableStatement): Boolean {
-    var until = next_declaration_line(local)
-    var index = 0
-    while index < reads.count() {
-        var read = reads[index]
-        var read_line = read_lines[index]
-        crash read_line
-        var is_in_reach = read_line > local.line and read_line <= until
-        if read == local.name and is_in_reach {
-            return true
-        }
-        index = index + 1
-    }
-    return false
-}
-
-func next_declaration_line(local: AbstractSyntaxTree.Shapes.Statements.VariableStatement): Integer {
-    var nearest = farthest_line
-    var index = 0
-    while index < declared.count() {
-        var other = declared[index]
-        var is_later = other.name == local.name and other.line > local.line
-        if is_later and other.line < nearest {
-            nearest = other.line
-        }
-        index = index + 1
-    }
-    return nearest
-}
-
 func check_local(local: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
-    var is_read = is_read_while_declared(local)
+    var is_read = reading.is_read_while_declared(local)
     if local.name.starts_with("_") and is_read {
         refuse(
             local.line,
@@ -153,51 +67,7 @@ func check_local(local: AbstractSyntaxTree.Shapes.Statements.VariableStatement) 
         )
     }
     fallback not is_read
-    remove_the_local(local)
     refuse(local.line, "'{local.name}' is never read: remove it")
-}
-
-# ../../../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
-func remove_the_local(local: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
-    fallback may_fix and not assigned.contains(local.name) and does_nothing(local.value)
-    var printer = Printers.Spite.StatementPrinter(local)
-    var written = printer.text()
-    var statements = List<String>()
-    statements.append(written)
-    var problem = Diagnostics.Problem(
-        walk.file.path,
-        local.line,
-        "'{local.name}' was never read, and making it does nothing; removed it",
-    )
-    problem.class_name = class_name
-    problem.function_name = function_name
-    problem.is_fix = true
-    var fixer = Formatting.Fixer()
-    fixer.remove_the_line(walk.file.path, statements, problem)
-}
-
-func does_nothing(value: Expression?): Boolean {
-    fallback value
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
-        return true
-    }
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        return true
-    }
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
-        return holds_no_hole(value)
-    }
-    return false
-}
-
-func holds_no_hole(text: AbstractSyntaxTree.Shapes.Expressions.TextLiteral): Boolean {
-    var index = 0
-    while index < text.pieces.count() {
-        var piece = text.pieces[index]
-        fallback not piece.hole
-        index = index + 1
-    }
-    return true
 }
 
 func is_dictated(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): Boolean {
@@ -241,7 +111,7 @@ func describes_a_declaration(written: Type?): Boolean {
 }
 
 func check_parameter(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
-    var is_read = reads.contains(parameter.name)
+    var is_read = reading.reads.contains(parameter.name)
     var is_ignored = parameter.name.starts_with("_")
     if is_ignored and is_read {
         refuse(

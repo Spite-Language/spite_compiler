@@ -1,0 +1,125 @@
+union Expression {
+    AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    AbstractSyntaxTree.Shapes.Expressions.LiteralExpression
+    AbstractSyntaxTree.Shapes.Expressions.TextLiteral
+    AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    AbstractSyntaxTree.Shapes.Expressions.IndexExpression
+    AbstractSyntaxTree.Shapes.Expressions.BinaryExpression
+    AbstractSyntaxTree.Shapes.Expressions.UnaryExpression
+    AbstractSyntaxTree.Shapes.Expressions.ListLiteral
+    AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral
+    AbstractSyntaxTree.Shapes.Expressions.EntryLiteral
+}
+
+var empty_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+var class_name = ""
+var found_problems = List<Diagnostics.Problem>()
+var else_if_lines = List<Integer>()
+var defaults = Validators.AbstractSyntaxTree.DefaultGuard.Defaults()
+
+# ../../../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
+func fixed(starting_walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String): List<Diagnostics.Problem> {
+    walk = starting_walk
+    class_name = starting_class_name
+    found_problems = List<Diagnostics.Problem>()
+    else_if_lines = List<Integer>()
+    walk.statements.each(note_an_else_if)
+    walk.statements.each(fix_found)
+    return found_problems
+}
+
+func note_an_else_if(found: AbstractSyntaxTree.Walk.Found.Statement) {
+    var statement = found.statement
+    fallback statement.class == AbstractSyntaxTree.Shapes.Statements.IfStatement
+    fallback statement.else_branch
+    fallback statement.else_branch.is_an_else_if and statement.else_branch.statements.count() == 1
+    var inner = statement.else_branch.statements[0]
+    else_if_lines.append(inner.line)
+}
+
+func fix_found(found: AbstractSyntaxTree.Walk.Found.Statement) {
+    var statement = found.statement
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.IfStatement {
+        fix_if(found, statement)
+    }
+}
+
+func fix_if(found: AbstractSyntaxTree.Walk.Found.Statement, guard: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    fallback not guard.else_branch
+    crash guard.then_branch
+    fallback guard.then_branch.statements.count() == 1
+    fallback not defaults.asks_an_unwritten_question(guard.condition)
+    fallback not else_if_lines.contains(guard.line)
+    fallback not holds_a_comment(guard.line, guard.then_branch.end_line)
+    var only = guard.then_branch.statements[0]
+    if only.class == AbstractSyntaxTree.Shapes.Statements.ReturnStatement {
+        fix_return(found, guard, only)
+    }
+}
+
+func fix_return(
+    found: AbstractSyntaxTree.Walk.Found.Statement,
+    guard: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+    returned: AbstractSyntaxTree.Shapes.Statements.ReturnStatement,
+) {
+    var function = walk.function_named(found.function_name)
+    crash function
+    crash guard.condition
+    fallback not function.is_a_constructor_of(class_name)
+    var opposite = Validators.AbstractSyntaxTree.DefaultGuard.Opposite()
+    var turned = opposite.of(guard.condition)
+    var printer = Printers.Spite.ExpressionPrinter(turned)
+    var asserted = printer.text()
+    if returned.value {
+        fallback defaults.is_the_default(function, returned.value)
+        var value_printer = Printers.Spite.ExpressionPrinter(returned.value)
+        var written = value_printer.text()
+        replace(
+            found,
+            guard,
+            turned,
+            "this 'if' only returned '{written}', which is what 'fallback' returns when its condition fails; wrote 'fallback {asserted}' in its place",
+        )
+        return
+    }
+    fallback not function.result
+    replace(found, guard, turned, "this 'if' only returned; wrote 'fallback {asserted}' in its place")
+}
+
+func replace(
+    found: AbstractSyntaxTree.Walk.Found.Statement,
+    guard: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+    turned: Expression,
+    text: String,
+) {
+    crash found.holder
+    var replacement = AbstractSyntaxTree.Shapes.Statements.FallbackStatement(turned)
+    replacement.line = guard.line
+    var index = 0
+    while index < found.holder.statements.count() {
+        var statement = found.holder.statements[index]
+        if statement.line == guard.line {
+            found.holder.statements[index] = replacement
+        }
+        index = index + 1
+    }
+    var problem = Diagnostics.Problem(walk.file.path, guard.line, text)
+    problem.class_name = class_name
+    problem.function_name = found.function_name
+    problem.is_fix = true
+    found_problems.append(problem)
+}
+
+func holds_a_comment(first_line: Integer, last_line: Integer): Boolean {
+    var index = 0
+    while index < walk.file.comments.count() {
+        var comment = walk.file.comments[index]
+        if comment.line >= first_line and comment.line <= last_line {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}

@@ -15,23 +15,8 @@ union Expression {
 var empty_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
 var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
 var class_name = ""
-var may_fix = false
-var fixes = List<Diagnostics.Fix>()
+var defaults = Validators.AbstractSyntaxTree.DefaultGuard.Defaults()
 var else_if_lines = List<Integer>()
-var collection_names = ["List", "Dictionary", "Vector", "Items"]
-var number_names = [
-    "Tiny"
-    "Byte"
-    "Short"
-    "UnsignedShort"
-    "Integer"
-    "UnsignedInteger"
-    "Long"
-    "UnsignedLong"
-    "Float"
-    "Double"
-]
-var question_names = ["has_function", "argument_count", "function_waits", "function_writes_parameter"]
 
 func check(starting_walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String) {
     walk = starting_walk
@@ -76,37 +61,11 @@ func check_if(found: AbstractSyntaxTree.Walk.Found.Statement, guard: AbstractSyn
     fallback not guard.else_branch
     crash guard.then_branch
     fallback guard.then_branch.statements.count() == 1
-    fallback not asks_an_unwritten_question(guard.condition)
+    fallback not defaults.asks_an_unwritten_question(guard.condition)
     var only = guard.then_branch.statements[0]
     if only.class == AbstractSyntaxTree.Shapes.Statements.ReturnStatement {
         check_return(found, guard, only)
     }
-}
-
-func asks_an_unwritten_question(expression: Expression?): Boolean {
-    if expression.class == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression {
-        return asks_an_unwritten_question(expression.operand)
-    }
-    if expression.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
-        var on_the_left = asks_an_unwritten_question(expression.left)
-        var on_the_right = asks_an_unwritten_question(expression.right)
-        return on_the_left or on_the_right
-    }
-    if expression.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
-        return is_an_unwritten_question(expression)
-    }
-    return false
-}
-
-func is_an_unwritten_question(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Boolean {
-    var callee = call.callee
-    var asked = ""
-    if callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
-        asked = callee.name
-    }
-    var named = call.arguments[0]
-    var is_written = named.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral
-    return question_names.contains(asked) and not is_written
 }
 
 func check_return(
@@ -133,9 +92,8 @@ func check_return(
             "this 'if' only leaves the constructor, and a constructor is setup, not logic: take already resolved values, or write 'crash {asserted}' when this is a bug",
         )
     }
-    var fixed = "this 'if' only returned; wrote 'fallback {asserted}' in its place"
     var refused = "this 'if' only returns: write 'fallback {asserted}' and let the rest run unindented"
-    fix_or_refuse(found, guard, asserted, fixed, refused)
+    refuse(found, guard.line, refused)
 }
 
 func check_default(
@@ -146,133 +104,12 @@ func check_default(
     asserted: String,
 ) {
     fallback function.name != class_name
-    var is_a_default = is_the_default(function, value)
+    var is_a_default = defaults.is_the_default(function, value)
     fallback is_a_default
     var printer = Printers.Spite.ExpressionPrinter(value)
     var written = printer.text()
-    var fixed = "this 'if' only returned '{written}', which is what 'fallback' returns when its condition fails; wrote 'fallback {asserted}' in its place"
     var refused = "this 'if' only returns '{written}', which is what 'fallback' returns when its condition fails: write 'fallback {asserted}' and let the rest run unindented"
-    fix_or_refuse(found, guard, asserted, fixed, refused)
-}
-
-# ../../../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
-func fix_or_refuse(
-    found: AbstractSyntaxTree.Walk.Found.Statement,
-    guard: AbstractSyntaxTree.Shapes.Statements.IfStatement,
-    asserted: String,
-    fixed: String,
-    refused: String,
-) {
-    crash guard.then_branch
-    var last_line = guard.then_branch.end_line
-    var is_an_else_if = else_if_lines.contains(guard.line)
-    if not may_fix or is_an_else_if or holds_a_comment(guard.line, last_line) {
-        refuse(found, guard.line, refused)
-    }
-    var problem = Diagnostics.Problem(walk.file.path, guard.line, fixed)
-    problem.class_name = class_name
-    problem.function_name = found.function_name
-    problem.is_fix = true
-    var fix = Diagnostics.Fix(problem, guard.line, last_line, "fallback {asserted}")
-    fixes.append(fix)
-}
-
-func holds_a_comment(first_line: Integer, last_line: Integer): Boolean {
-    var index = 0
-    while index < walk.file.comments.count() {
-        var comment = walk.file.comments[index]
-        if comment.line >= first_line and comment.line <= last_line {
-            return true
-        }
-        index = index + 1
-    }
-    return false
-}
-
-func is_the_default(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration, value: Expression): Boolean {
-    crash function.result
-    if function.result.is_nullable {
-        return is_null(value)
-    }
-    var first = function.result.path[0]
-    crash first
-    if collection_names.contains(first) {
-        return is_an_empty_collection(value)
-    }
-    var last = function.result.path.last()
-    crash last
-    if number_names.contains(last) {
-        return is_a_zero(value)
-    }
-    if last == "Boolean" {
-        return is_false(value)
-    }
-    if last == "String" {
-        return is_empty_text(value)
-    }
-    return is_built_bare(value, last)
-}
-
-func is_a_zero(value: Expression): Boolean {
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
-        return value.text == "0" or value.text == "0.0"
-    }
-    return false
-}
-
-func is_false(value: Expression): Boolean {
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
-        return value.kind == 'keyword_false'
-    }
-    return false
-}
-
-func is_empty_text(value: Expression): Boolean {
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
-        return value.pieces.is_empty() or is_one_empty_piece(value.pieces)
-    }
-    return false
-}
-
-func is_one_empty_piece(pieces: List<AbstractSyntaxTree.Shapes.Expressions.TextPiece>): Boolean {
-    fallback pieces.count() == 1
-    var only = pieces[0]
-    return only.text.is_empty() and not only.hole
-}
-
-func is_built_bare(value: Expression, answer_name: String): Boolean {
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
-        var callee = value.callee
-        if callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-            return value.arguments.is_empty() and callee.name == answer_name
-        }
-    }
-    return false
-}
-
-func is_null(value: Expression): Boolean {
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
-        return value.kind == 'keyword_null'
-    }
-    return false
-}
-
-func is_an_empty_collection(value: Expression): Boolean {
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.ListLiteral {
-        return value.entries.is_empty()
-    }
-    if value.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
-        return is_an_empty_constructor(value)
-    }
-    return false
-}
-
-func is_an_empty_constructor(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Boolean {
-    var callee = call.callee
-    if callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        return call.arguments.is_empty() and collection_names.contains(callee.name)
-    }
-    return false
+    refuse(found, guard.line, refused)
 }
 
 func refuse(found: AbstractSyntaxTree.Walk.Found.Statement, line: Integer, text: String) {

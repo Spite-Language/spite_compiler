@@ -10,6 +10,7 @@ union Declaration {
 
 var map = Mapping.FolderMap()
 var scalars = Model.Scalars()
+var fixes = Fixes.Fixes()
 var files = Dictionary<String, AbstractSyntaxTree.Shapes.SourceFile>()
 var merged_files = Dictionary<String, AbstractSyntaxTree.Shapes.SourceFile>()
 var merged_declarations = List<Declaration>()
@@ -67,36 +68,21 @@ func read_class(class_file: Mapping.ClassFile) {
     var parsing = AbstractSyntaxTree.AbstractSyntaxTree(class_file.path, class_file.namespace, text)
     var tree = parsing.run()
     var tokens = parsing.tokens
-    var formatted = formatted_text(class_file, text, tree, is_generated)
-    if formatted != text {
-        var reparsing = AbstractSyntaxTree.AbstractSyntaxTree(class_file.path, class_file.namespace, formatted)
+    var fixed = fixed_text(class_file, text, tree, is_generated)
+    if fixed != text {
+        text = fixed
+        var reparsing = AbstractSyntaxTree.AbstractSyntaxTree(class_file.path, class_file.namespace, text)
         tree = reparsing.run()
         tokens = reparsing.tokens
-    }
-    var ordered = ordered_text(class_file, formatted, tree, is_generated)
-    if ordered != formatted {
-        formatted = ordered
-        var reordering = AbstractSyntaxTree.AbstractSyntaxTree(class_file.path, class_file.namespace, formatted)
-        tree = reordering.run()
-        tokens = reordering.tokens
     }
     read_the_loads(class_file, tree)
     if not is_generated {
         var rules = Validators.AbstractSyntaxTree.EveryRule()
-        rules.may_fix = may_rewrite(class_file.path, is_generated)
         var walk = rules.check(tree, class_file.simple_name, this)
-        if not rules.fixes.is_empty() {
-            formatted = fixed_text(class_file.path, formatted, rules.fixes)
-            var fixing = AbstractSyntaxTree.AbstractSyntaxTree(class_file.path, class_file.namespace, formatted)
-            tree = fixing.run()
-            tokens = fixing.tokens
-            var checking = Validators.AbstractSyntaxTree.EveryRule()
-            walk = checking.check(tree, class_file.simple_name, this)
-        }
         walks.append(walk)
         walked_classes.append(class_file.simple_name)
         note_the_asserts(class_file.path, tokens)
-        tree = stopped_tree(class_file, formatted, tree)
+        tree = stopped_tree(class_file, text, tree)
     }
     files[class_file.path] = tree
     paths_read.append(class_file.path)
@@ -224,7 +210,8 @@ func check_the_breakpoints() {
     }
 }
 
-func formatted_text(
+# ../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
+func fixed_text(
     class_file: Mapping.ClassFile,
     text: String,
     tree: AbstractSyntaxTree.Shapes.SourceFile,
@@ -233,46 +220,21 @@ func formatted_text(
     if not may_rewrite(class_file.path, is_generated) {
         return text
     }
-    var formatter = Formatting.Formatter()
-    return formatter.formatted(class_file.path, class_file.simple_name, text, tree)
+    var fixing = Fixes.AbstractSyntaxTree.EveryFix()
+    var problems = fixing.fixed(tree, class_file.simple_name)
+    return fixes.rewritten(class_file.path, text, tree, problems)
+}
+
+func may_fix_later(path: String): Boolean {
+    var is_generated = generated_texts.contains(path)
+    var forward = path.replace("\\", "/")
+    return may_rewrite(path, is_generated) and not breakpoint_sites.contains(forward)
 }
 
 func may_rewrite(path: String, is_generated: Boolean): Boolean {
     var library = Mapping.LibraryFile()
     var is_a_pinned_copy = path.contains(".spite/git/")
     return not is_generated and not is_library_path(path) and not library.holds(path) and not is_a_pinned_copy
-}
-
-# ../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
-func fixed_text(path: String, text: String, fixes: List<Diagnostics.Fix>): String {
-    var printer = Printers.FixedSource.Printer(text, fixes)
-    var fixed = printer.text()
-    var problems = fixes.map_problems()
-    var fixer = Formatting.Fixer()
-    return fixer.fixed(path, fixed, problems)
-}
-
-# ../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
-func ordered_text(
-    class_file: Mapping.ClassFile,
-    text: String,
-    tree: AbstractSyntaxTree.Shapes.SourceFile,
-    is_generated: Boolean,
-): String {
-    if not may_rewrite(class_file.path, is_generated) {
-        return text
-    }
-    var ordering = Validators.AbstractSyntaxTree.DeclarationOrder.Validator()
-    var misplaced = ordering.misplaced(tree, class_file.simple_name)
-    if misplaced.is_empty() {
-        return text
-    }
-    var starts = ordering.starts(tree)
-    var ranks = ordering.ranks(tree, class_file.simple_name)
-    var printer = Printers.ReorderedSource.Printer(text, starts, ranks)
-    var ordered = printer.text()
-    var fixer = Formatting.Fixer()
-    return fixer.fixed(class_file.path, ordered, misplaced)
 }
 
 func text_of_the_class(path: String): String {
@@ -323,10 +285,15 @@ func check_after_building(text_holes: List<String>, other_holes: List<String>) {
         var walk = walks[index]
         var class_name = walked_classes[index]
         crash class_name
+        var checked = walk
+        if may_fix_later(walk.file.path) {
+            var fixing = Fixes.AfterBuilding.EveryFix()
+            if fixing.fixed_a_walk(walk, class_name) {
+                checked = AbstractSyntaxTree.Walk.Walk(walk.file)
+            }
+        }
         var rules = Validators.AbstractSyntaxTree.EveryRule()
-        var is_generated = generated_texts.contains(walk.file.path)
-        rules.may_fix = may_rewrite(walk.file.path, is_generated)
-        rules.check_after_building(walk, class_name)
+        rules.check_after_building(checked, class_name)
         index = index + 1
     }
 }

@@ -8,6 +8,7 @@
 | pass | a representation | the same kind, transformed | no | no |
 | validator | one representation | the problems in it | only it | no |
 | printer | one representation | text | no | only it |
+| fix | one representation | the same representation, changed, and a `fixed:` problem for each change | no | no |
 
 A representation is data only: no function on it writes text or decides an error.
 
@@ -20,12 +21,15 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
     mapping                                the program's folders; then validators/mapping
     symbols                                the entry class and every class it names, a class at a time as names ask
                                            for it, each read through abstract_syntax_tree's `run` (lexed, parsed,
-                                           formatted by printers/spite's FilePrinter and read again); then
+                                           fixed by fixes/abstract_syntax_tree, written by `Fixes.Fixes` through
+                                           printers/spite's FilePrinter and read again); then
                                            validators/abstract_syntax_tree
     name_resolution                        the model; then validators/name_resolution
     high_intermediary_representation       every reached function built (building only builds)
     proofs                                 the proofs, in their order (below), the rules of
                                            validators/abstract_syntax_tree that need the built program among them
+    fixes                                  the fixes found while or after building written, and the compile
+                                           restarted on the fixed files (`Fixes.Fixes`'s `run`, below)
     high_optimization_passes               the high passes, in their order (below)
     low_intermediary_representation        the lowering; then validators/low_intermediary_representation
     low_optimization_passes                the low passes, in their order (below); then
@@ -273,9 +277,39 @@ both forms, and that change publishes a new seed: its fixed point as a new `seed
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
 file), it hands it to the validator of that rule at once. The validator lets it pass, or reports the problem
 and ends the compile through `Diagnostics.Failure`. Nothing runs after the first error. A mistake with one fix
-found while or after the program is built (a dead check, an unread local) is handed to `Formatting.Fixer`
-instead, which writes the file and its `fixed:` line, then ends the compile by running it again on the fixed
-files (`command_line/restart.spite`, D1833).
+never reaches its validator: the layer's fix rule changes the tree first (below).
+
+## Fixes
+
+What has exactly one fix is fixed in a program's own file instead of refused (D800, D1767). `fixes/<layer>/` holds
+one rule per folder (`fixes/<layer>/<rule>/fix.spite`, a class `Fix()`), and each layer reaches its rules through
+one entry, `Fixes.<Layer>.EveryFix`, called the way a pass is, just before that layer's validators, so a
+validator only ever sees what stays an error:
+
+| Layer | Entry, called from | Rules |
+|---|---|---|
+| syntax tree | `fixes/abstract_syntax_tree/every_fix.spite`'s `fixed`, per file as it is read (`SymbolTable.read_class`) | `misplaced_comment`, `declaration_order` (the printer prints declarations in the enforced order), `default_guard` |
+| after building | `fixes/after_building/every_fix.spite`: `fixed_a_check` from the proof `proven_checks` before each refusal, `fixed_a_walk` before the rules after building | `proven_check` (a `crash` or `fallback` line that proves nothing), `unread_plain_local` |
+
+A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it) and
+answers a `Diagnostics.Problem` with `is_fix` for each change. It never writes. A library file, a pinned
+package's file, a generated class, a generic class, a walk and a file holding breakpoints are never fixed: their
+mistakes stay errors.
+
+One owner writes, `fixes/fixes.spite` (`Fixes.Fixes`, a singleton): no step, validator or proof writes a file or
+restarts.
+
+- `rewritten` prints a file read with `printers/spite`'s `FilePrinter`, and when the text differs from the file
+  checks that it reads back to the same text with every comment (`validators/abstract_syntax_tree/formatting`),
+  writes it, and prints the `fixed:` lines, or `formatted <path>` when no rule changed it; the symbol table then
+  reads the written text again.
+- `found_later` keeps a tree a fix after building changed. `run`, called once the proofs end and by
+  `Diagnostics.Failure` before it tells an error, prints and writes every such tree, prints the `fixed:` lines and
+  runs the compiler again with the same flags, folder and environment, answering what that run answers (D1833).
+  The number of restarts so far travels in `SPITE_FIX_RESTARTS`; past 8, the compiler names the fix that keeps
+  coming back and crashes.
+
+A `fixed:` line names the line the mistake was on in the file that run read.
 
 ## Validators
 
@@ -321,9 +355,8 @@ a file and never changes its input.
 - `printers/spite` prints a tree as Spite: a statement or an expression to quote code in a message, and a whole
   file (`FilePrinter`, with `LineBreaking` for lines over 120 columns) as the one way a file is printed: the
   same tree always prints the same text, with the comments the tree holds (a function's, the class's heading).
-  `formatting/formatter.spite` prints each of the program's files, checks that the text reads back to the same
-  text with every comment (`validators/abstract_syntax_tree/formatting`), writes it and prints
-  `formatted <path>`; `--final-classes` writes its merged classes as `printers/final_class` prints them.
+  `Fixes.Fixes` writes what it prints ([Fixes](#fixes)); `--final-classes` writes its merged classes as
+  `printers/final_class` prints them.
 - `printers/diagnostics`, `printers/high_intermediary_representation`, `printers/low_intermediary_representation`,
   `printers/optimization_report`, `printers/machine_code`. `--high-ir` and `--low-ir` write the two
   representations next to the executable, as `<program>.high_ir.txt` and `<program>.low_ir.txt`.
