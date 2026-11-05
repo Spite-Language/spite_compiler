@@ -1,0 +1,1141 @@
+var state = LoweringState()
+var _largest_long: Long = 9223372036854775807
+var _largest_float_as_double_bits: Long = 5183643170566569984
+var _infinity_as_double_bits: Long = 9218868437227405312
+var _double_exponent_bias: Integer = 1023
+
+func Conversions(starting_state: LoweringState) {
+    state = starting_state
+}
+
+func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): Lowered {
+    var lowering = FunctionLowering(state)
+    if conversion.kind == 'into_handle' {
+        var starting = Working(lowering)
+        return starting.started(conversion)
+    }
+    if conversion.kind == 'join' {
+        var joining = Working(lowering)
+        return joining.joined(conversion)
+    }
+    if conversion.kind == 'proven' {
+        var reads = ListReads(lowering)
+        var read = reads.read(conversion)
+        if read {
+            return read
+        }
+    }
+    var converted = lowering.lower_value(conversion.converted)
+    if conversion.kind == 'nullable' {
+        return made_nullable(converted, conversion.value_type)
+    }
+    if conversion.kind == 'into_shape' {
+        crash conversion.converted
+        var boxed = conversion.converted.value_type
+        if conversion.value_type.is_nullable and boxed.is_nullable {
+            return boxed_into_a_maybe(converted, boxed)
+        }
+        return boxed_into_a_shape(converted, boxed)
+    }
+    crash conversion.converted
+    var from_type = conversion.converted.value_type
+    if conversion.kind == 'widen' and lowering.is_a_decimal(from_type) {
+        return decimal_converted(converted.value, from_type, conversion.value_type)
+    }
+    if conversion.kind == 'narrow_decimal' {
+        check_the_float_range(converted.value, from_type)
+        return decimal_converted(converted.value, from_type, conversion.value_type)
+    }
+    if conversion.kind == 'to_decimal' {
+        return decimal_converted(converted.value, from_type, conversion.value_type)
+    }
+    if conversion.kind == 'to_whole' {
+        check_the_decimal_range(converted.value, from_type, conversion.value_type)
+        return decimal_converted(converted.value, from_type, conversion.value_type)
+    }
+    if conversion.kind == 'address' {
+        return lowering.single(converted.value)
+    }
+    if conversion.kind == 'unbox' {
+        var unboxed = lowering.new_register()
+        var loaded_box = LowIntermediaryRepresentation.Instructions.Load(unboxed, converted.value, 16, 'bits_64')
+        lowering.emit(loaded_box)
+        return lowering.single(unboxed)
+    }
+    if conversion.kind == 'proven' {
+        if from_type.is_nullable or converted.presence >= 0 {
+            stop_if_missing(converted, conversion.shown)
+        }
+        return carried(converted)
+    }
+    if conversion.kind == 'narrow' {
+        check_the_range(converted.value, from_type, conversion.value_type)
+    }
+    if conversion.kind == 'present' {
+        stop_if_a_back_reference_is_gone(conversion.converted, converted)
+    }
+    return carried(converted)
+}
+
+# ../../PROOFS.md#a-back-reference-read-holds-its-object
+func stop_if_a_back_reference_is_gone(value: SpiteCompiler.Value?, read: Lowered) {
+    fallback value.class == HighIntermediaryRepresentation.Values.AttributeRead
+    fallback state.layout.is_back(value.attribute)
+    stop_if_gone(read, "{value.attribute.owner}.{value.attribute.name}")
+}
+
+func stop_if_gone(read: Lowered, shown: String) {
+    var lowering = FunctionLowering(state)
+    var zero = lowering.constant(0)
+    var present = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(present, 'not_equal', read.value, zero)
+    lowering.emit(compared)
+    var stopping = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(present, after, stopping)
+    lowering.emit(test)
+    lowering.switch_to(stopping)
+    var label = lowering.text_label(
+        "spite: '{shown}' was proven present, but its object was freed since, and a back reference holds no count: prove it again after the call that lets it go, at {state.path}:{state.line} in {state.function.key}\n",
+    )
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    lowering.switch_to(after)
+}
+
+func carried(converted: Lowered): Lowered {
+    var made = Lowered(converted.value, -1)
+    made.owned = converted.owned
+    return made
+}
+
+func stop_if_missing(converted: Lowered, shown: String) {
+    var lowering = FunctionLowering(state)
+    var presence = converted.presence
+    if presence < 0 {
+        var zero = lowering.constant(0)
+        presence = lowering.new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(presence, 'not_equal', converted.value, zero)
+        lowering.emit(compared)
+    }
+    var stopping = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(presence, after, stopping)
+    lowering.emit(test)
+    lowering.switch_to(stopping)
+    var label = lowering.text_label(
+        "spite: '{shown}' is outside its list: a bound proves only the top of an index, and this one is below 0 or the list changed, at {state.path}:{state.line} in {state.function.key}\n",
+    )
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    lowering.switch_to(after)
+}
+
+func lower_symbol_from_text(read: HighIntermediaryRepresentation.Values.EnumFromText): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var values = Values(state)
+    var text = lowering.lower_value(read.text)
+    var target = lowering.new_register()
+    var zero = lowering.constant(0)
+    var cleared = LowIntermediaryRepresentation.Instructions.Copy(target, zero)
+    lowering.emit(cleared)
+    var after = lowering.new_block()
+    var index = 0
+    while index < read.enumeration.values.count() {
+        var name = read.enumeration.values[index]
+        var named = HighIntermediaryRepresentation.Values.TextConstant(name)
+        var lowered_name = values.lower_text(named)
+        var arguments = List<Integer>()
+        arguments.append(text.value)
+        arguments.append(lowered_name.value)
+        var matches = lowering.new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Call(matches, "String.equals", arguments)
+        lowering.emit(compared)
+        var answering = lowering.new_block()
+        var next = lowering.new_block()
+        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, answering, next)
+        lowering.emit(test)
+        lowering.switch_to(answering)
+        var copied = LowIntermediaryRepresentation.Instructions.Copy(target, lowered_name.value)
+        lowering.emit(copied)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        counting.release(lowered_name.value)
+        index = index + 1
+    }
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    crash read.text
+    counting.discard(text, read.text.value_type)
+    return counting.owned(target)
+}
+
+func lower_enum_from_text(read: HighIntermediaryRepresentation.Values.EnumFromText): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var values = Values(state)
+    if read.value_type.is_a_walked_name {
+        return lower_symbol_from_text(read)
+    }
+    var text = lowering.lower_value(read.text)
+    var target = lowering.new_register()
+    var presence = lowering.new_register()
+    var zero = lowering.constant(0)
+    var absent = LowIntermediaryRepresentation.Instructions.Copy(presence, zero)
+    lowering.emit(absent)
+    var cleared = LowIntermediaryRepresentation.Instructions.Copy(target, zero)
+    lowering.emit(cleared)
+    var after = lowering.new_block()
+    var index = 0
+    while index < read.enumeration.values.count() {
+        var name = read.enumeration.values[index]
+        var number = read.enumeration.numbers[index]
+        crash number
+        var named = HighIntermediaryRepresentation.Values.TextConstant(name)
+        var lowered_name = values.lower_text(named)
+        var arguments = List<Integer>()
+        arguments.append(text.value)
+        arguments.append(lowered_name.value)
+        var matches = lowering.new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Call(matches, "String.equals", arguments)
+        lowering.emit(compared)
+        counting.release(lowered_name.value)
+        var answering = lowering.new_block()
+        var next = lowering.new_block()
+        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, answering, next)
+        lowering.emit(test)
+        lowering.switch_to(answering)
+        var value = lowering.constant(number)
+        var copied = LowIntermediaryRepresentation.Instructions.Copy(target, value)
+        lowering.emit(copied)
+        var one = lowering.constant(1)
+        var present = LowIntermediaryRepresentation.Instructions.Copy(presence, one)
+        lowering.emit(present)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        index = index + 1
+    }
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    crash read.text
+    counting.discard(text, read.text.value_type)
+    return Lowered(target, presence)
+}
+
+func lower_enum_text(text: HighIntermediaryRepresentation.Values.EnumText): Lowered {
+    var lowering = FunctionLowering(state)
+    var number = lowering.lower_value(text.number)
+    return enum_text_of(number.value, text.enumeration, text.value_type)
+}
+
+func enum_text_of(number: Integer, enumeration: Model.EnumModel, string_type: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var values = Values(state)
+    var target = lowering.new_register()
+    var after = lowering.new_block()
+    var index = 0
+    while index < enumeration.values.count() {
+        var name = enumeration.values[index]
+        var value = enumeration.numbers[index]
+        crash value
+        var wanted = lowering.constant(value)
+        var matches = lowering.new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', number, wanted)
+        lowering.emit(compared)
+        var naming = lowering.new_block()
+        var next = lowering.new_block()
+        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, naming, next)
+        lowering.emit(test)
+        lowering.switch_to(naming)
+        var constant_text = HighIntermediaryRepresentation.Values.TextConstant(name)
+        constant_text.value_type = string_type
+        var made = values.lower_text(constant_text)
+        var copied = LowIntermediaryRepresentation.Instructions.Copy(target, made.value)
+        lowering.emit(copied)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        index = index + 1
+    }
+    var label = lowering.text_label(
+        "spite: a value outside its enum '{enumeration.name}', at {state.path}:{state.line}\n",
+    )
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    lowering.switch_to(after)
+    return counting.owned(target)
+}
+
+func boxed_into_a_shape(converted: Lowered, boxed: Model.Type): Lowered {
+    if boxed.kind == 'shape' {
+        return carried(converted)
+    }
+    if boxed.is_nullable {
+        return maybe_boxed(converted, boxed)
+    }
+    return present_boxed(converted, boxed)
+}
+
+func boxed_into_a_maybe(converted: Lowered, boxed: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    if boxed.is_a_walked_name {
+        return symbol_into_a_maybe(converted, boxed)
+    }
+    if lowering.is_a_pointer(boxed) {
+        return carried(converted)
+    }
+    var presence = converted.presence
+    crash presence >= 0
+    var target = lowering.new_register()
+    var boxing = lowering.new_block()
+    var missing = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(presence, boxing, missing)
+    lowering.emit(test)
+    lowering.switch_to(boxing)
+    var present_type = boxed.present()
+    var present = Lowered(converted.value, -1)
+    var made = present_boxed(present, present_type)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, made.value)
+    lowering.emit(copied)
+    lowering.jump_to(after)
+    lowering.switch_to(missing)
+    var nothing = lowering.constant(0)
+    var copied_nothing = LowIntermediaryRepresentation.Instructions.Copy(target, nothing)
+    lowering.emit(copied_nothing)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    return counting.owned(target)
+}
+
+func symbol_into_a_maybe(converted: Lowered, boxed: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var zero = lowering.constant(0)
+    var missing = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', converted.value, zero)
+    lowering.emit(compared)
+    var target = lowering.new_register()
+    var boxing = lowering.new_block()
+    var nothing_held = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, nothing_held, boxing)
+    lowering.emit(test)
+    lowering.switch_to(boxing)
+    var present_type = boxed.present()
+    var present = Lowered(converted.value, -1)
+    present.owned = converted.owned
+    var made = present_boxed(present, present_type)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, made.value)
+    lowering.emit(copied)
+    lowering.jump_to(after)
+    lowering.switch_to(nothing_held)
+    var copied_nothing = LowIntermediaryRepresentation.Instructions.Copy(target, zero)
+    lowering.emit(copied_nothing)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    return counting.owned(target)
+}
+
+func maybe_boxed(converted: Lowered, boxed: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var presence = converted.presence
+    if presence < 0 {
+        var zero = lowering.constant(0)
+        presence = lowering.new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(presence, 'not_equal', converted.value, zero)
+        lowering.emit(compared)
+    }
+    var target = lowering.new_register()
+    var boxing = lowering.new_block()
+    var naming = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(presence, boxing, naming)
+    lowering.emit(test)
+    lowering.switch_to(boxing)
+    var present_type = boxed.present()
+    var present = Lowered(converted.value, -1)
+    present.owned = converted.owned
+    var made = present_boxed(present, present_type)
+    if not made.owned {
+        counting.retain(made.value)
+    }
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, made.value)
+    lowering.emit(copied)
+    lowering.jump_to(after)
+    lowering.switch_to(naming)
+    var absent_size = state.layout.size_of("Spite.Absent")
+    var absent = small_object("Spite.Absent", absent_size)
+    var copied_absent = LowIntermediaryRepresentation.Instructions.Copy(target, absent)
+    lowering.emit(copied_absent)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    return counting.owned(target)
+}
+
+func present_boxed(converted: Lowered, boxed: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    if boxed.is_a_walked_name {
+        counting.kept(converted, boxed)
+        var symbol_box = small_object("Spite.SymbolBox", 24)
+        var stored_symbol = LowIntermediaryRepresentation.Instructions.Store(symbol_box, 16, converted.value, 'bits_64')
+        lowering.emit(stored_symbol)
+        return counting.owned(symbol_box)
+    }
+    if boxed.kind == 'enumeration' {
+        var enum_box = small_object(boxed.name, 24)
+        var stored_enum = LowIntermediaryRepresentation.Instructions.Store(enum_box, 16, converted.value, 'bits_64')
+        lowering.emit(stored_enum)
+        return counting.owned(enum_box)
+    }
+    if boxed.kind != 'scalar' {
+        return converted
+    }
+    var box = small_object(boxed.name, 24)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(box, 16, converted.value, 'bits_64')
+    lowering.emit(stored)
+    return counting.owned(box)
+}
+
+func small_object(class_key: String, size: Integer): Integer {
+    var lowering = FunctionLowering(state)
+    var size_register = lowering.constant(size)
+    var object = lowering.new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(object, size_register)
+    var class_id = state.layout.class_id_of(class_key)
+    allocated.class_id = class_id
+    allocated.zeroed_bytes = size
+    lowering.emit(allocated)
+    var id_register = lowering.constant(class_id)
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(object, 0, id_register, 'bits_64')
+    lowering.emit(stored_id)
+    var one = lowering.constant(1)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(object, 8, one, 'bits_64')
+    lowering.emit(stored_count)
+    return object
+}
+
+func filled_members(call: HighIntermediaryRepresentation.Values.ShapeCall): List<String> {
+    var filled = List<String>()
+    var fillers = state.layout.program.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        filled.append("{filler.name}.{call.member.name}")
+        filled.append("{filler.name}.get_{call.member.name}")
+        index = index + 1
+    }
+    return filled
+}
+
+func lower_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var calls = Calls(state)
+    var outer = state.pending_releases
+    state.pending_releases = List<Integer>()
+    var filled = filled_members(call)
+    var receiver = lowering.lower_value(call.receiver)
+    crash call.receiver
+    calls.passed_on(receiver, call.receiver, filled)
+    var arguments = List<Integer>()
+    calls.add_arguments(arguments, call.arguments, filled)
+    var target = -1
+    var presence = -1
+    if not call.value_type.is_nothing() {
+        target = lowering.new_register()
+    }
+    if lowering.is_a_nullable_scalar(call.value_type) {
+        presence = lowering.new_register()
+    }
+    var shared = shared_reading_filler(call)
+    if shared {
+        read_a_filling_attribute(call, shared, receiver.value, target, presence)
+    } else {
+        call_the_fillers(call, receiver.value, arguments, target, presence)
+    }
+    counting.release_the_pending()
+    state.pending_releases = outer
+    var answer = Lowered(target, presence)
+    answer.owned = lowering.counts_an_answer(call.value_type)
+    return answer
+}
+
+func call_the_fillers(
+    call: HighIntermediaryRepresentation.Values.ShapeCall,
+    receiver: Integer,
+    arguments: List<Integer>,
+    target: Integer,
+    presence: Integer,
+) {
+    var lowering = FunctionLowering(state)
+    var class_id = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, receiver, 0, 'bits_64')
+    lowering.emit(loaded)
+    var after = lowering.new_block()
+    var fillers = state.layout.program.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        call_a_filler(call, filler, receiver, class_id, arguments, target, presence, after)
+        index = index + 1
+    }
+    var label = lowering.text_label("spite: no class fills '{call.shape.name}' here, at {state.path}:{state.line}\n")
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    lowering.switch_to(after)
+}
+
+# ../../../spite_spec/specs/memory.md#the-memory-model
+func is_a_shared_copy(call: HighIntermediaryRepresentation.Values.ShapeCall, filler: Model.Type): Boolean {
+    var name = call.member.name
+    fallback name == "copy" or name == "deep_copy" or name == "_deep_copy_in"
+    if filler.kind == 'scalar' or filler.kind == 'enumeration' or filler.is_a_walked_name {
+        return true
+    }
+    fallback filler.kind == 'object'
+    if filler.name == "String" {
+        return true
+    }
+    var filling_class = state.layout.program.class_named(filler.name)
+    fallback filling_class
+    return filling_class.is_singleton
+}
+
+func shared_reading_filler(call: HighIntermediaryRepresentation.Values.ShapeCall): Model.Type? {
+    fallback call.arguments.is_empty()
+    return shared_filler(call.shape.key, call.member.name)
+}
+
+func shared_filler(shape_key: String, member: String): Model.Type? {
+    var shared = state.layout.shared_offset_of(shape_key, member)
+    fallback shared >= 0
+    var fillers = state.layout.program.fillers_of(shape_key)
+    return fillers.first()
+}
+
+func call_a_filler(
+    call: HighIntermediaryRepresentation.Values.ShapeCall,
+    filler: Model.Type,
+    receiver: Integer,
+    class_id: Integer,
+    arguments: List<Integer>,
+    target: Integer,
+    presence: Integer,
+    after: Integer,
+) {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var filler_key = state.layout.box_key_of(filler)
+    var wanted = state.layout.class_id_of(filler_key)
+    var wanted_register = lowering.constant(wanted)
+    var matches = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', class_id, wanted_register)
+    lowering.emit(compared)
+    var calling = lowering.new_block()
+    var next = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(matches, calling, next)
+    lowering.emit(test)
+    lowering.switch_to(calling)
+    if is_a_shared_copy(call, filler) {
+        counting.retain_counted(receiver, call.value_type)
+        var shared = LowIntermediaryRepresentation.Instructions.Copy(target, receiver)
+        lowering.emit(shared)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        return
+    }
+    var own = receiver
+    var is_boxed = filler.kind == 'scalar' or filler.kind == 'enumeration' or filler.is_a_walked_name
+    if is_boxed {
+        own = lowering.new_register()
+        var unboxed = LowIntermediaryRepresentation.Instructions.Load(own, receiver, 16, 'bits_64')
+        lowering.emit(unboxed)
+    }
+    var is_named = filler.kind == 'enumeration' or filler.is_a_walked_name
+    var lists_no_attributes = is_named and call.member.name == "_attribute_list"
+    if lists_no_attributes {
+        var nothing_held = lowering.constant(0)
+        var none_given = List<Integer>()
+        none_given.append(nothing_held)
+        var listed = LowIntermediaryRepresentation.Instructions.Call(
+            target,
+            "Spite.Attribute._no_attributes",
+            none_given,
+        )
+        lowering.emit(listed)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        return
+    }
+    if filler.is_a_walked_name {
+        counting.retain(own)
+        var symbol_name = Lowered(own, -1)
+        symbol_name.owned = true
+        if call.member.name == "to_debug" {
+            symbol_name = quoted_enum_text(symbol_name)
+        }
+        var copied_symbol = LowIntermediaryRepresentation.Instructions.Copy(target, symbol_name.value)
+        lowering.emit(copied_symbol)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        return
+    }
+    if filler.kind == 'enumeration' {
+        var enumeration = enum_model_of(filler.name)
+        var string_type = call.value_type
+        var named = enum_text_of(own, enumeration, string_type)
+        if call.member.name == "to_debug" {
+            named = quoted_enum_text(named)
+        }
+        var copied_name = LowIntermediaryRepresentation.Instructions.Copy(target, named.value)
+        lowering.emit(copied_name)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        return
+    }
+    if fills_with_an_attribute(call, filler) {
+        read_a_filling_attribute(call, filler, own, target, presence)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        return
+    }
+    check_own_class_arguments(call, filler, arguments)
+    var passed = List<Integer>()
+    passed.append(own)
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        passed.append(argument)
+        index = index + 1
+    }
+    var member_name = call.member.name
+    var filling_class = state.layout.program.class_named(filler.name)
+    if filling_class and member_name == "to_string" and not filling_class.function_named("to_string") {
+        member_name = "to_debug"
+    }
+    if filling_class and call.member.is_an_attribute {
+        member_name = "get_{member_name}"
+    }
+    var key = "{filler.name}.{member_name}"
+    if state.resumable_mode and lowering.is_resumable(key) {
+        var working = Working(lowering)
+        working.waited_into(key, passed, target, presence)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        return
+    }
+    var called = LowIntermediaryRepresentation.Instructions.Call(target, key, passed)
+    called.presence = presence
+    lowering.emit(called)
+    lowering.jump_to(after)
+    lowering.switch_to(next)
+}
+
+func enum_model_of(enum_key: String): Model.EnumModel {
+    var parts = enum_key.split(".")
+    var last = parts.count() - 1
+    var simple = parts[last]
+    crash simple
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = state.layout.program.class_named(owner_key)
+    crash owner
+    var made = owner.enum_named(simple)
+    crash made
+    return made
+}
+
+func check_own_class_arguments(
+    call: HighIntermediaryRepresentation.Values.ShapeCall,
+    filler: Model.Type,
+    arguments: List<Integer>,
+) {
+    var model = state.layout.program.class_named(filler.name)
+    fallback model
+    var filling = model.function_named(call.member.name)
+    fallback filling
+    var index = 0
+    while index < filling.parameters.count() and index < arguments.count() {
+        var parameter = filling.parameters[index]
+        var wanted = call.member.parameters[index]
+        var argument = arguments[index]
+        var takes_its_own = parameter.parameter_type.name == filler.name and parameter.parameter_type.kind == 'object'
+        if wanted and takes_its_own and wanted.parameter_type.kind == 'shape' {
+            check_an_own_class(call, model, argument)
+        }
+        index = index + 1
+    }
+}
+
+func check_an_own_class(
+    call: HighIntermediaryRepresentation.Values.ShapeCall,
+    model: Model.ClassModel,
+    argument: Integer,
+) {
+    var lowering = FunctionLowering(state)
+    var argument_class = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(argument_class, argument, 0, 'bits_64')
+    lowering.emit(loaded)
+    var fillers = state.layout.program.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var other = fillers[index]
+        if other.name != model.key {
+            stop_on_another_class(call, model, other, argument_class)
+        }
+        index = index + 1
+    }
+}
+
+func stop_on_another_class(
+    call: HighIntermediaryRepresentation.Values.ShapeCall,
+    model: Model.ClassModel,
+    other: Model.Type,
+    argument_class: Integer,
+) {
+    var lowering = FunctionLowering(state)
+    var other_key = state.layout.box_key_of(other)
+    var other_id = state.layout.class_id_of(other_key)
+    var other_register = lowering.constant(other_id)
+    var same = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(same, 'equal', argument_class, other_register)
+    lowering.emit(compared)
+    var stopping = lowering.new_block()
+    var next = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(same, stopping, next)
+    lowering.emit(test)
+    lowering.switch_to(stopping)
+    var other_shown = other.name
+    var other_model = state.layout.program.class_named(other.name)
+    if other_model {
+        other_shown = other_model.shown
+    }
+    var own_article = article_of(model.shown)
+    var other_article = article_of(other_shown)
+    var written = call.shown
+    if written.is_empty() {
+        written = "{call.shape.name}.{call.member.name}"
+    }
+    var label = lowering.text_label(
+        "spite: '{written}' works in {own_article} {model.shown}, the class of its left side, and its right side is {other_article} {other_shown}, which is not one, at {state.path}:{state.line} in {state.function.key}\n",
+    )
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    lowering.switch_to(next)
+}
+
+func fills_with_an_attribute(call: HighIntermediaryRepresentation.Values.ShapeCall, filler: Model.Type): Boolean {
+    var model = state.layout.program.class_named(filler.name)
+    if not model {
+        return call.member.is_an_attribute
+    }
+    if model.attribute_named(call.member.name) {
+        return call.member.is_an_attribute or call.arguments.is_empty()
+    }
+    return false
+}
+
+func read_a_filling_attribute(
+    call: HighIntermediaryRepresentation.Values.ShapeCall,
+    filler: Model.Type,
+    object: Integer,
+    target: Integer,
+    presence: Integer,
+) {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var values = Values(state)
+    var model = state.layout.program.class_named(filler.name)
+    crash model
+    var attribute = model.attribute_named(call.member.name)
+    crash attribute
+    var loaded = values.load_attribute(object, attribute)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, loaded.value)
+    lowering.emit(copied)
+    if lowering.is_a_pointer(call.value_type) and not loaded.owned {
+        counting.retain(target)
+    }
+    if presence >= 0 {
+        var copied_presence = LowIntermediaryRepresentation.Instructions.Copy(presence, loaded.presence)
+        lowering.emit(copied_presence)
+    }
+}
+
+func quoted_enum_text(named: Lowered): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var values = Values(state)
+    var quote = HighIntermediaryRepresentation.Values.TextConstant("'")
+    var opening = values.lower_text(quote)
+    var arguments = List<Integer>()
+    arguments.append(opening.value)
+    arguments.append(named.value)
+    var joined = lowering.new_register()
+    var summed = LowIntermediaryRepresentation.Instructions.Call(joined, "String.sum", arguments)
+    lowering.emit(summed)
+    counting.release(opening.value)
+    counting.release(named.value)
+    var closing_quote = HighIntermediaryRepresentation.Values.TextConstant("'")
+    var closing = values.lower_text(closing_quote)
+    var closing_arguments = List<Integer>()
+    closing_arguments.append(joined)
+    closing_arguments.append(closing.value)
+    var finished = lowering.new_register()
+    var closed = LowIntermediaryRepresentation.Instructions.Call(finished, "String.sum", closing_arguments)
+    lowering.emit(closed)
+    counting.release(joined)
+    counting.release(closing.value)
+    return counting.owned(finished)
+}
+
+func decimal_converted(source: Integer, from_type: Model.Type, to_type: Model.Type): Lowered {
+    if from_type.name == "UnsignedLong" {
+        return unsigned_long_into_decimal(source, to_type)
+    }
+    if to_type.name == "UnsignedLong" {
+        return decimal_into_unsigned_long(source, from_type)
+    }
+    return plain_decimal_conversion(source, from_type, to_type)
+}
+
+func unsigned_long_into_decimal(source: Integer, to_type: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    var long_type = Model.Type('scalar', "Long")
+    var target = lowering.new_register()
+    var zero = lowering.constant(0)
+    var is_small = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_small, 'greater_or_equal', source, zero)
+    compared.is_signed = true
+    lowering.emit(compared)
+    var small = lowering.new_block()
+    var large = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_small, small, large)
+    lowering.emit(test)
+    lowering.switch_to(small)
+    var direct = plain_decimal_conversion(source, long_type, to_type)
+    var copied_direct = LowIntermediaryRepresentation.Instructions.Copy(target, direct.value)
+    lowering.emit(copied_direct)
+    lowering.jump_to(after)
+    lowering.switch_to(large)
+    var one = lowering.constant(1)
+    var half = unchecked_bits(source, 'shift_right', one, false)
+    var lowest = unchecked_bits(source, 'bits_and', one, false)
+    var sticky = unchecked_bits(half, 'bits_or', lowest, false)
+    var halved = plain_decimal_conversion(sticky, long_type, to_type)
+    var doubled = lowering.new_register()
+    var adding = LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic(
+        doubled,
+        'add',
+        halved.value,
+        halved.value,
+    )
+    adding.is_double = to_type.name == "Double"
+    lowering.emit(adding)
+    var copied_doubled = LowIntermediaryRepresentation.Instructions.Copy(target, doubled)
+    lowering.emit(copied_doubled)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    return lowering.single(target)
+}
+
+func decimal_into_unsigned_long(source: Integer, from_type: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    var long_type = Model.Type('scalar', "Long")
+    var double_type = Model.Type('scalar', "Double")
+    var wide = source
+    if from_type.name == "Float" {
+        var widened = plain_decimal_conversion(source, from_type, double_type)
+        wide = widened.value
+    }
+    var target = lowering.new_register()
+    var top_bits = double_bits_of_power(63)
+    var top = lowering.constant(top_bits)
+    var is_small = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Decimal.Compare(is_small, 'less', wide, top)
+    lowering.emit(compared)
+    var small = lowering.new_block()
+    var large = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_small, small, large)
+    lowering.emit(test)
+    lowering.switch_to(small)
+    var direct = plain_decimal_conversion(wide, double_type, long_type)
+    var copied_direct = LowIntermediaryRepresentation.Instructions.Copy(target, direct.value)
+    lowering.emit(copied_direct)
+    lowering.jump_to(after)
+    lowering.switch_to(large)
+    var taken_off = lowering.new_register()
+    var taking = LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic(taken_off, 'subtract', wide, top)
+    lowering.emit(taking)
+    var converted = plain_decimal_conversion(taken_off, double_type, long_type)
+    var top_bit: Long = -_largest_long - 1
+    var bit = lowering.constant(top_bit)
+    var restored = unchecked_bits(converted.value, 'bits_xor', bit, false)
+    var copied_restored = LowIntermediaryRepresentation.Instructions.Copy(target, restored)
+    lowering.emit(copied_restored)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    return lowering.single(target)
+}
+
+func unchecked_bits(
+    left: Integer,
+    operator: LowIntermediaryRepresentation.Instructions.Arithmetic.Operator,
+    right: Integer,
+    compares_signed: Boolean,
+): Integer {
+    var lowering = FunctionLowering(state)
+    var target = lowering.new_register()
+    var computed = LowIntermediaryRepresentation.Instructions.Arithmetic(target, operator, left, right)
+    computed.width = 'bits_64'
+    computed.is_signed = compares_signed
+    computed.is_checked = false
+    lowering.emit(computed)
+    return target
+}
+
+func check_the_float_range(value: Integer, from_type: Model.Type) {
+    fallback from_type.name == "Double"
+    var largest_float: Long = _largest_float_as_double_bits
+    var infinity: Long = _infinity_as_double_bits
+    var negative_largest: Long = largest_float - _largest_long - 1
+    var negative_infinity: Long = infinity - _largest_long - 1
+    var message = "spite: a Double beyond 3.4028235e+38, the largest Float, does not fit in a Float, at {state.path}:{state.line} in {state.function.key}\n"
+    float_stop_between(value, 'greater', largest_float, 'less', infinity, message)
+    float_stop_between(value, 'less', negative_largest, 'greater', negative_infinity, message)
+}
+
+func float_stop_between(
+    value: Integer,
+    past: LowIntermediaryRepresentation.Instructions.Compare.Comparison,
+    limit_bits: Long,
+    within: LowIntermediaryRepresentation.Instructions.Compare.Comparison,
+    end_bits: Long,
+    message: String,
+) {
+    var lowering = FunctionLowering(state)
+    var limit = lowering.constant(limit_bits)
+    var is_past = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Decimal.Compare(is_past, past, value, limit)
+    lowering.emit(compared)
+    var testing_the_end = lowering.new_block()
+    var stopping = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_past, testing_the_end, after)
+    lowering.emit(test)
+    lowering.switch_to(testing_the_end)
+    var end = lowering.constant(end_bits)
+    var is_finite = lowering.new_register()
+    var compared_end = LowIntermediaryRepresentation.Instructions.Decimal.Compare(is_finite, within, value, end)
+    lowering.emit(compared_end)
+    var end_test = LowIntermediaryRepresentation.Instructions.Branch(is_finite, stopping, after)
+    lowering.emit(end_test)
+    lowering.switch_to(stopping)
+    var label = lowering.text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    lowering.switch_to(after)
+}
+
+func plain_decimal_conversion(source: Integer, from_type: Model.Type, to_type: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    var target = lowering.new_register()
+    var converting = LowIntermediaryRepresentation.Instructions.Decimal.Conversion(target, source)
+    var from_scalar = state.scalars.of(from_type.name)
+    var to_scalar = state.scalars.of(to_type.name)
+    crash from_scalar
+    crash to_scalar
+    if from_scalar.is_decimal {
+        converting.from_decimal_size = from_scalar.size
+    } else {
+        converting.whole_is_signed = from_scalar.is_signed
+        converting.whole_width = lowering.width_of(from_type)
+    }
+    if to_scalar.is_decimal {
+        converting.to_decimal_size = to_scalar.size
+    } else {
+        converting.whole_is_signed = to_scalar.is_signed
+        converting.whole_width = lowering.width_of(to_type)
+    }
+    lowering.emit(converting)
+    return lowering.single(target)
+}
+
+func check_the_decimal_range(value: Integer, from_type: Model.Type, to_type: Model.Type) {
+    var to_scalar = state.scalars.of(to_type.name)
+    crash to_scalar
+    var wide = value
+    if from_type.name == "Float" {
+        var double_type = Model.Type('scalar', "Double")
+        var widened = decimal_converted(value, from_type, double_type)
+        wide = widened.value
+    }
+    var lowest_bits = decimal_bits_of(to_scalar.smallest)
+    crash not to_scalar.largest.starts_with("-")
+    var above = state.scalars.increased(to_scalar.largest)
+    var above_bits = decimal_bits_of(above)
+    var article = article_of(to_type.name)
+    var from_article = article_of(from_type.name)
+    var message = ", {from_article} {from_type.name}, does not fit in {article} {to_type.name}, at {state.path}:{state.line} in {state.function.key}\n"
+    decimal_stop_unless(wide, 'greater_or_equal', lowest_bits, message)
+    decimal_stop_unless(wide, 'less', above_bits, message)
+}
+
+func decimal_bits_of(bound: String): Long {
+    var read: Double? = bound
+    crash read
+    return read.bits()
+}
+
+func double_bits_of_power(bits: Integer): Long {
+    var exponent: Long = _double_exponent_bias + bits
+    return exponent.shifted_left(52)
+}
+
+func decimal_stop_unless(
+    value: Integer,
+    comparison: LowIntermediaryRepresentation.Instructions.Compare.Comparison,
+    limit_bits: Long,
+    message: String,
+) {
+    var lowering = FunctionLowering(state)
+    var bound = lowering.constant(limit_bits)
+    var fits = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Decimal.Compare(fits, comparison, value, bound)
+    lowering.emit(compared)
+    var stopping = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(fits, after, stopping)
+    lowering.emit(test)
+    lowering.switch_to(stopping)
+    var long_bits = double_bits_of_power(63)
+    var lowest_long: Long = long_bits - _largest_long - 1
+    var numbered = lowering.new_block()
+    var unnumbered = lowering.new_block()
+    var past_the_low = lowering.new_block()
+    var above_the_low = lowering.new_register()
+    var low_bound = lowering.constant(lowest_long)
+    var compared_low = LowIntermediaryRepresentation.Instructions.Decimal.Compare(
+        above_the_low,
+        'greater_or_equal',
+        value,
+        low_bound,
+    )
+    lowering.emit(compared_low)
+    var low_test = LowIntermediaryRepresentation.Instructions.Branch(above_the_low, past_the_low, unnumbered)
+    lowering.emit(low_test)
+    lowering.switch_to(past_the_low)
+    var below_the_high = lowering.new_register()
+    var high_bound = lowering.constant(long_bits)
+    var compared_high = LowIntermediaryRepresentation.Instructions.Decimal.Compare(
+        below_the_high,
+        'less',
+        value,
+        high_bound,
+    )
+    lowering.emit(compared_high)
+    var high_test = LowIntermediaryRepresentation.Instructions.Branch(below_the_high, numbered, unnumbered)
+    lowering.emit(high_test)
+    lowering.switch_to(numbered)
+    var double_type = Model.Type('scalar', "Double")
+    var long_type = Model.Type('scalar', "Long")
+    var whole = decimal_converted(value, double_type, long_type)
+    var opening = lowering.text_label("spite: ")
+    var closing = lowering.text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(opening)
+    stopped.labels.append(opening)
+    stopped.labels.append(closing)
+    stopped.numbers.append(whole.value)
+    stopped.signed_numbers.append(1)
+    lowering.emit(stopped)
+    lowering.switch_to(unnumbered)
+    var unnumbered_label = lowering.text_label(
+        "spite: a value that is not a number, or outside every whole number{message}",
+    )
+    var stopped_unnumbered = LowIntermediaryRepresentation.Instructions.Stop(unnumbered_label)
+    lowering.emit(stopped_unnumbered)
+    lowering.switch_to(after)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#casting
+func check_the_range(value: Integer, given: Model.Type, wanted: Model.Type) {
+    var given_scalar = state.scalars.of(given.name)
+    var wanted_scalar = state.scalars.of(wanted.name)
+    crash given_scalar
+    crash wanted_scalar
+    var given_article = article_of(given.name)
+    var wanted_article = article_of(wanted.name)
+    var message = ", {given_article} {given.name}, does not fit in {wanted_article} {wanted.name}, at {state.path}:{state.line} in {state.function.key}\n"
+    if state.scalars.is_below(given_scalar.smallest, wanted_scalar.smallest) {
+        var lowest = whole_bound_of(wanted_scalar.smallest)
+        stop_unless(value, 'greater_or_equal', lowest, given_scalar.is_signed, message, given_scalar.is_signed)
+    }
+    if state.scalars.is_below(wanted_scalar.largest, given_scalar.largest) {
+        var highest = whole_bound_of(wanted_scalar.largest)
+        stop_unless(value, 'less_or_equal', highest, given_scalar.is_signed, message, given_scalar.is_signed)
+    }
+}
+
+func whole_bound_of(bound: String): Long {
+    var read: Long? = bound
+    crash read
+    return read
+}
+
+func stop_unless(
+    value: Integer,
+    comparison: LowIntermediaryRepresentation.Instructions.Compare.Comparison,
+    limit: Long,
+    compares_signed: Boolean,
+    message: String,
+    value_is_signed: Boolean,
+) {
+    var lowering = FunctionLowering(state)
+    var bound = lowering.constant(limit)
+    var fits = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(fits, comparison, value, bound)
+    compared.is_signed = compares_signed
+    lowering.emit(compared)
+    var stopping = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(fits, after, stopping)
+    lowering.emit(test)
+    lowering.switch_to(stopping)
+    var opening = lowering.text_label("spite: ")
+    var closing = lowering.text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(opening)
+    stopped.labels.append(opening)
+    stopped.labels.append(closing)
+    stopped.numbers.append(value)
+    var sign = 0
+    if value_is_signed {
+        sign = 1
+    }
+    stopped.signed_numbers.append(sign)
+    lowering.emit(stopped)
+    lowering.switch_to(after)
+}
+
+func article_of(name: String): String {
+    var first = name.byte_at(0)
+    var is_a_vowel = first == 65 or first == 69 or first == 73 or first == 79 or first == 85
+    if is_a_vowel {
+        return "an"
+    }
+    return "a"
+}
+
+func made_nullable(converted: Lowered, nullable_type: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    if not lowering.is_a_nullable_scalar(nullable_type) {
+        return carried(converted)
+    }
+    var present = lowering.constant(1)
+    return Lowered(converted.value, present)
+}
