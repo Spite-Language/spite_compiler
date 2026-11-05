@@ -3568,7 +3568,7 @@ A `while` whose body is only a call that [runs in bands](#a-loop-whose-passes-wr
 and the step of its counter (an `Integer` counted by one up to a literal) starts the bands once: each band runs all
 ten passes of its own elements, one element after another, and the counter ends at the bound, as the loop would
 leave it. It is built as an `if tick < 10` that runs the passes `10 - tick` times and then sets `tick = 10`
-(`high_optimization_passes/banded_loops/banded_loops.spite`, which passes `10 - tick` as the driver's `times`).
+(`high_optimization_passes/banded_loops/pass.spite`, which passes `10 - tick` as the driver's `times`).
 Each pass writes only its own element and reads nothing another pass writes, so an element's ten passes in a row
 leave every element as ten rounds over the list would. Below the count at which bands pay, or when an element is
 held elsewhere too, the rounds run over the whole list one after another, as written.
