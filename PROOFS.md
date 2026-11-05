@@ -177,8 +177,8 @@ as when each was refused while building.
 - **Buys**: no address outlives its object.
 - **Falls back**: nothing to fall back to: the library has no `Memory.Address`, and every object is let go at the
   end of its block or statement, never earlier. The rule comes back with addresses or with a release at last use.
-- **Lives in**: `low_intermediary_representation/lowering/function_lowering.spite` (`lower_block`,
-  `release_the_pending`, `is_the_last_use`).
+- **Lives in**: `low_intermediary_representation/lowering/statements.spite` (`lower_block`) and `counting.spite`
+  (`release_the_pending`, `is_the_last_use`).
 - **Checked by**: none.
 
 ### Proving what is proven is an error
@@ -522,7 +522,7 @@ as when each was refused while building.
   every build: a range is about a function's own locals, which nothing typed at the REPL and no reload writes. The constant overflow error is made for `Integer` arithmetic only, as the old compiler made it: other
   widths are folded in their own type and checked where they are narrowed.
 - **Falls back**: the check stays, "spite: '...' does not fit in an Integer (...), at ...".
-- **Lives in**: the lowering (`function_lowering.spite`: `is_checked`, `check_the_range`), the generator
+- **Lives in**: the lowering (`conversions.spite`: `check_the_range`), the generator
   (`emit_a_cold_stop`), and the counter proof in `ranges.spite`.
 - **Checked by**: tests/counter_room, tests/integer_overflow, tests/unsigned_overflow, tests/narrowing_overflow,
   tests/negate_overflow, tests/smallest_divided, tests/smallest_absolute; conformance/constant_overflow,
@@ -915,7 +915,7 @@ as when each was refused while building.
   was proven present; a program with no back reference
   carries nothing.
 - **Lives in**: `low_intermediary_representation/lowering/freeing.spite` (`lower_the_back_counted`),
-  `function_lowering.spite` (`held_back`).
+  `values.spite` (`held_back`).
 - **Checked by**: tests/back_reference_calls, tests/back_reference_gone, tests/parent_back_reference.
 
 ### A back reference is picked from how the program links its objects
@@ -1005,7 +1005,7 @@ refuses nothing (D1781).
 - **Rule**: a caller holds what it passes for the whole call, so an argument read from a place the call cannot
   assign is not counted.
 - **Falls back**: an argument read from a place the call may assign is counted before the call and let go after.
-- **Lives in**: the lowering, `function_lowering.spite` (`note_the_borrowed_parameters`, `is_steady`).
+- **Lives in**: the lowering, `function_lowering.spite` (`note_the_borrowed_parameters`), `calls.spite` (`is_steady`).
 - **Checked by**: tests/held_arguments, tests/held_value_functions.
 
 ### An attribute a call cannot assign is passed uncounted
@@ -1014,7 +1014,7 @@ refuses nothing (D1781).
 - **Rule**: an attribute path from `this` or a held name whose callee may assign none of its attributes is passed
   uncounted; see `OPTIMIZATIONS.md`.
 - **Falls back**: counted before the call and let go after.
-- **Lives in**: the lowering, `function_lowering.spite` (`is_a_steady_attribute`), `high_intermediary_representation/assignments.spite`
+- **Lives in**: the lowering, `calls.spite` (`is_a_steady_attribute`), `high_intermediary_representation/assignments.spite`
   (`may_assign`).
 - **Checked by**: tests/held_paths.
 
@@ -1041,7 +1041,7 @@ refuses nothing (D1781).
 - **Rule**: in a template's pass, an element is read uncounted when the rest of the pass cannot let go of an object
   or write a list of the element's class.
 - **Falls back**: a counted read.
-- **Lives in**: the lowering, `function_lowering.spite` (`is_a_borrowed_local`, `gather_the_sources`).
+- **Lives in**: the lowering, `statements.spite` (`is_a_borrowed_local`, `gather_the_sources`).
 - **Checked by**: tests/template_lend_drop, tests/fused_chain_allocations, tests/fused_chains, tests/kept_templates,
   tests/member_templates.
 
@@ -1054,7 +1054,7 @@ refuses nothing (D1781).
   the rest of the block and nothing else there can change the name, the path or the list.
 - **Missing**: lists other than a library `List` of numbers or objects.
 - **Falls back**: a counted read and the write-back written.
-- **Lives in**: the lowering, `function_lowering.spite` (`write_back_of`, `is_a_write_back`,
+- **Lives in**: the lowering, `statements.spite` (`write_back_of`, `is_a_write_back`,
   `leaves_alone_but_a_nested_write_back`).
 - **Checked by**: tests/slot_write_backs, tests/nested_write_backs.
 
@@ -1072,7 +1072,7 @@ refuses nothing (D1781).
   holds no count.
 - **Falls back**: a counted read; a name kept across a call that may write any list of the item's class keeps its
   count.
-- **Lives in**: the lowering, `function_lowering.spite` (`is_a_borrowed_item`), `list_reads.spite` (`held_item`).
+- **Lives in**: the lowering, `statements.spite` (`is_a_borrowed_item`), `list_reads.spite` (`held_item`).
 - **Checked by**: tests/held_items, tests/slot_write_backs.
 
 ### A list item read only to test it is not counted
@@ -1081,7 +1081,7 @@ refuses nothing (D1781).
 - **Rule**: a presence test of `list[index]` tests the slot in place.
 - **Missing**: lists of nullable items, and a test of a path through the item.
 - **Falls back**: a counted read and its release.
-- **Lives in**: the lowering, `function_lowering.spite` (`lower_presence_test`), `list_reads.spite`.
+- **Lives in**: the lowering, `values.spite` (`lower_presence_test`), `list_reads.spite`.
 - **Checked by**: tests/tested_items, tests/items_presence.
 
 ### An item used at once is not counted
@@ -1092,7 +1092,7 @@ refuses nothing (D1781).
 - **Missing**: indices and arguments that are not plain reads (or such item reads), and a call through a function
   value.
 - **Falls back**: a counted read.
-- **Lives in**: the lowering, `function_lowering.spite` (`is_a_held_receiver`, `is_a_held_item`,
+- **Lives in**: the lowering, `calls.spite` (`is_a_held_receiver`, `is_a_held_item`,
   `is_a_held_argument`).
 - **Checked by**: tests/items_at_once, tests/held_item_arguments.
 
@@ -1278,7 +1278,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Lives in**: `high_intermediary_representation/singleton_forms.spite` and `waits.spite`, recorded by the high pass
   `singleton_locks`; the attributes atomic on their own by the proof `proofs/lone_atomic_attributes`, registered among
   the high passes right after `singleton_locks` (`HighProgram.lone_atomic_attributes`), read by the lowering
-  (`function_lowering.spite`, `reads_under_the_lock`). Not in the inspectable builds.
+  (`singletons.spite`, `reads_under_the_lock`). Not in the inspectable builds.
 - **Checked by**: tests/singleton_forms, tests/singleton_lock_calls, tests/lone_atomic_counter,
   tests/steady_singleton_reads (output only).
 
@@ -1294,7 +1294,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   attributes a function names, so a function naming an attribute nothing changes is
   refused there as before.
 - **Lives in**: `high_intermediary_representation/waits.spite` (`touch_what_reads_a_changing_attribute`),
-  `function_lowering.spite`.
+  `function_lowering.spite` (`is_locked_here`), `calls.spite` (`lower_call`).
 - **Checked by**: tests/singleton_stateless_calls, tests/singleton_function_values, tests/steady_singleton_reads
   (output only).
 
@@ -1330,7 +1330,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   the program. A counted attribute (an object, a list, a text) read this way is counted before the lock is let go,
   so a write on another thread cannot let it go between the load and the count (D1254).
 - **Missing**: the old compiler's plain attributes under the lock and atomic attributes are not built.
-- **Lives in**: `low_intermediary_representation/lowering/function_lowering.spite` (`locks_from_outside`), reading
+- **Lives in**: `low_intermediary_representation/lowering/singletons.spite` (`locks_from_outside`), reading
   `waits.spite` (`is_a_locked_class`).
 - **Checked by**: tests/singleton_outside_writes.
 

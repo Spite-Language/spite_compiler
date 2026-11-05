@@ -230,6 +230,23 @@ folders and flags that exist. The size of every file is held by `validators/abst
 The passes and proofs are registered in the constructor of their stage's entry class, in order; there is no
 `every_pass.spite` or `every_proof.spite` yet, since `proofs/setup_lists` reads that constructor.
 
+## The lowering of a function
+
+`low_intermediary_representation/lowering/function_lowering.spite` is the entry of the lowering of one function. It holds
+the exhaustive `switch`es over the values and statements (`lower_value`, `lower_a_statement`), the block and register
+primitives (`emit`, `new_register`, `new_block`, `switch_to`), the small questions every concern asks (`is_a_pointer`,
+`width_of`) and the setup of a function (`lowered`). Its fields live in one object, `LoweringState`, which every concern
+takes (never the `FunctionLowering`, which would be a reference cycle). The concerns call each other both ways, since a
+statement lowers a value and a value lowers a call, so none holds another as an attribute: a function that needs the
+primitives, a switch or another concern makes one over the same state as a local (`var lowering = FunctionLowering(state)`).
+
+`frame_lists` lays out the lists a frame holds and the appends of a slot, `counting` owns, retains and releases a value,
+`statements` lowers a block and each statement, `values` the plain values, the operations and the objects made,
+`calls` the calls, their arguments, function values and foreign calls, `singletons` the making, locking and sharing of
+a singleton, and `conversions` the conversions, boxing, shape calls and the checks of decimals and ranges. The
+collaborators that write one kind of function (`working`, `settling`, `callbacks`, `list_reads` and the rest) take the
+`FunctionLowering` they write into and reach its fields through `lowering.state`.
+
 ## The targets
 
 A target is a folder of `generators/` (`windows_x64`), chosen once by which one `spite_compiler.spite` makes; no
