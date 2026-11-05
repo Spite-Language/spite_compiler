@@ -1,0 +1,10 @@
+# fixes
+
+What the compiler changes in a program's own files instead of refusing them, and the restart that follows.
+
+- `fixes.spite`: the writer, `Fixes.Fixes`; its `run` writes each file a fix changed through `printers/spite` and restarts
+  the compile on the fixed files.
+- `abstract_syntax_tree`, `symbols`, `after_building`: the layers, by when their facts exist.
+
+A layer holds one folder per rule, `<rule>/fix.spite` with the class `Fix`, and reaches them through its entry: `abstract_syntax_tree/every_fix.spite`, `symbols/every_fix.spite` or `after_building/every_fix.spite`.
+A fix changes the representation it is given and answers a `fixed:` problem for each change; it writes no file.

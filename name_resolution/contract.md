@@ -8,10 +8,10 @@ needs to know what is reachable, and reachability is only knowable once a name i
 
 ## What it takes and answers
 
-It takes the `SourceFile` of every class the `symbols` step read, and answers:
+It takes the `SourceFile` of every class the `symbols` step read, and answers the `Model.ProgramModel` of `model/`:
 
-- a `ResolvedType` for every type written anywhere in the program,
-- a `Monomorphised` instance for every generic class the program writes with type arguments,
+- a `Model.Type` for every type written anywhere in the program,
+- a `Model.ClassModel` for every class, and an instance of each generic class the program writes with type arguments,
 - the class every function of every class answers, so a receiver that is a call of another class's
   function names its class,
 - the class every generic call of every class names, so the builder lowers the call to the instance.
@@ -92,29 +92,10 @@ gives the type argument at run time, so `$value_type.key_type` is the key type o
 is, and the compiler cannot know it while it reads. Such a member is a note, not an error, and the
 member is answered when the class is compiled.
 
-## What is not built yet
-
-- The resolver answers a *type*, not a *value*. A name that is a function, an attribute or a local is
-  still not resolved, so a program cannot yet say which of its classes are reachable.
-- A template that nothing instantiates is never checked. That is deliberate: the same rule as everywhere
-  else in this compiler, that what is not used is not read. It does mean a broken generic class is only
-  found when something writes it.
-
 ## The files
 
-- `resolved_type.spite`: a type that has been resolved: a path, its arguments, whether it is nullable,
-  and whether it is a class, a type parameter, a dependent member or a codegen value.
-- `types.spite`: the builder for the above. A class cannot be called in Spite, so the ways of making
-  one live here.
-- `substitution.spite`: what a type parameter is bound to, and the applying of it to a type.
-- `instance.spite`: a monomorphised class: where it came from, its name, the parameters it binds, the
-  arguments it was given, and its substitution.
-- `mangle.spite`: the name of an instance: `List_of_Integer`.
-- `type_use.spite`: a type as it is written in a file, before it is resolved.
-- `finder.spite`: the walk over a file that finds every type written in it, in declarations, in
-  statements and in the type arguments of a call.
-- `resolver.spite`: the work: find the types, resolve them, mint the instances, and mint the instances
-  the instances need.
-- `class_name.spite`: the class a type names: the class of a named type, of a type parameter, and of a
-  type that is dependent on another.
-- `answers.spite`: the class every function of every class answers.
+- `name_resolution.spite`: the entry, `NameResolution(symbols, folder, flags, written_flags, bare_flags)`; its `run` finds the
+  types, mints the instances, resolves the signatures and answers the `Model.ProgramModel`, then hands what it found to the rules.
+- `resolver.spite`: the work: find the types, resolve them, mint the instances, and mint the instances the instances need.
+- `inference.spite`: the type of an expression written in a default or a constructor call, read without building it.
+- `place.spite`: where a message names a function, found only when a message is told.
