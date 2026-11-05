@@ -38,6 +38,7 @@ STONES=(
     "f9de322 eab10ec b45a2d9 cce8cd9"
     "b62bcad da18edf d4fdad2 cce8cd9"
     "6af8724 4e2e128 8460259d af912e4"
+    "9b63a55 cc9022c 93b7e5f7 c22f4b5"
 )
 
 # The first stone newer than D1775, whose compiler builds the folder it runs in; every stone before it, and the
