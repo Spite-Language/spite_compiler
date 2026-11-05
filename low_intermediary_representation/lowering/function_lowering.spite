@@ -12,6 +12,7 @@ func lowered(
     high: HighIntermediaryRepresentation.HighFunction,
     starting_path: String,
 ): LowIntermediaryRepresentation.LowFunction {
+    var frame_lists = FrameLists(state)
     state.path = starting_path
     var key = high.function.key()
     if state.resumable_mode {
@@ -28,7 +29,7 @@ func lowered(
     }
     start(key)
     state.function.is_resumable = state.resumable_mode
-    note_the_frame_lists()
+    frame_lists.note_the_frame_lists()
     state.column_items = Dictionary<String, String>()
     state.column_storages = Dictionary<String, Integer>()
     state.column_capacities = Dictionary<String, Integer>()
@@ -36,7 +37,7 @@ func lowered(
     state.column_addresses = Dictionary<String, Integer>()
     state.column_regions = Dictionary<String, String>()
     state.column_parts = List<String>()
-    note_the_slot_appends(high)
+    frame_lists.note_the_slot_appends(high)
     if high.function.declaration {
         note_the_place(high.function, high.function.declaration.line)
     } else if high.function.placed_at_line > 0 {
@@ -82,283 +83,6 @@ func lowered(
         dispatch_the_resumes(dispatch, body)
     }
     return state.function
-}
-
-# ../../OPTIMIZATIONS.md#a-local-list-of-known-size-lives-in-the-frame
-func note_the_frame_lists() {
-    state.frame_list_counts = Dictionary<String, Integer>()
-    state.frame_list_filled = Dictionary<String, Integer>()
-}
-
-func lower_a_frame_list(declare: HighIntermediaryRepresentation.Statements.Declare, count: Integer) {
-    state.line = declare.line
-    var source = declare.value
-    if source.class == HighIntermediaryRepresentation.Values.LocalRead {
-        var room = state.locals[source.name]
-        crash room
-        state.locals[declare.name] = room
-        return
-    }
-    var size = frame_item_size(declare.declared_type)
-    var made = new_register()
-    var taken = LowIntermediaryRepresentation.Instructions.FrameRoom(made, count * size)
-    emit(taken)
-    state.locals[declare.name] = made
-    state.frame_list_filled[declare.name] = 0
-}
-
-func frame_item_size(list_type: Model.Type): Integer {
-    var element = frame_element_of(list_type)
-    var scalar = state.scalars.of(element.name)
-    crash scalar
-    return scalar.size
-}
-
-func frame_element_of(list_type: Model.Type): Model.Type {
-    var owner = state.layout.program.class_named(list_type.name)
-    crash owner
-    var element = owner.bound_types["$element_type"]
-    crash element
-    return element
-}
-
-func fills_a_frame_list(value: SpiteCompiler.Value?): Boolean {
-    if value.class == HighIntermediaryRepresentation.Values.Call {
-        var receiver = value.receiver
-        if receiver.class == HighIntermediaryRepresentation.Values.LocalRead and value.function.name == "append" {
-            return fill_a_frame_list(value, receiver)
-        }
-    }
-    return false
-}
-
-func fill_a_frame_list(
-    call: HighIntermediaryRepresentation.Values.Call,
-    receiver: HighIntermediaryRepresentation.Values.LocalRead,
-): Boolean {
-    fallback state.frame_list_filled.contains(receiver.name)
-    var filled = state.frame_list_filled[receiver.name]
-    crash filled
-    var room = state.locals[receiver.name]
-    crash room
-    var item = call.arguments[0]
-    crash item
-    var stored_value = lower_value(item)
-    var size = frame_item_size(receiver.value_type)
-    var element = frame_element_of(receiver.value_type)
-    var width = width_of(element)
-    var stored = LowIntermediaryRepresentation.Instructions.Store(room, filled * size, stored_value.value, width)
-    stored.region = items_region_of(receiver.value_type.name, element)
-    emit(stored)
-    state.frame_list_filled[receiver.name] = filled + 1
-    return true
-}
-
-func frame_list_count_of(value: SpiteCompiler.Value?): Integer {
-    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
-        var count = state.frame_list_counts[value.name]
-        if count {
-            return count
-        }
-    }
-    return 0
-}
-
-# ../../OPTIMIZATIONS.md#a-lists-objects-sit-inside-its-storage
-func note_the_slot_appends(high: HighIntermediaryRepresentation.HighFunction) {
-    state.slot_appends = List<String>()
-    state.slot_lists = Dictionary<String, SpiteCompiler.Value>()
-    fallback not state.resumable_mode and state.assignments
-    find_slot_appends_in(high.body)
-}
-
-func find_slot_appends_in(block: HighIntermediaryRepresentation.Statements.Block?) {
-    fallback block
-    var index = 0
-    while index < block.statements.count() {
-        var statement = block.statements[index]
-        find_slot_appends_inside(statement)
-        var next = block.statements[index + 1]
-        if next {
-            note_a_slot_append(statement, next)
-        }
-        index = index + 1
-    }
-}
-
-func find_slot_appends_inside(statement: SpiteCompiler.Statement) {
-    switch statement {
-        HighIntermediaryRepresentation.Statements.If: find_slot_appends_in_an_if(statement)
-        HighIntermediaryRepresentation.Statements.While: find_slot_appends_in(statement.body)
-        HighIntermediaryRepresentation.Statements.Block: find_slot_appends_in(statement)
-        HighIntermediaryRepresentation.Statements.Declare: return
-        HighIntermediaryRepresentation.Statements.Assign.Assign: return
-        HighIntermediaryRepresentation.Statements.Assign.Attribute: return
-        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: return
-        HighIntermediaryRepresentation.Statements.Evaluate: return
-        HighIntermediaryRepresentation.Statements.Return: return
-        HighIntermediaryRepresentation.Statements.Stop: return
-    }
-}
-
-func find_slot_appends_in_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
-    find_slot_appends_in(branch.then_branch)
-    find_slot_appends_in(branch.else_branch)
-}
-
-func note_a_slot_append(statement: SpiteCompiler.Statement, next: SpiteCompiler.Statement) {
-    fallback statement.class == HighIntermediaryRepresentation.Statements.Declare and statement.hides == ""
-    fallback not state.reassigned_names.contains(statement.name)
-    var made = statement.value
-    fallback made.class == HighIntermediaryRepresentation.Values.MakeObject and made.constructor
-    fallback next.class == HighIntermediaryRepresentation.Statements.Evaluate
-    var appended = next.value
-    fallback appended.class == HighIntermediaryRepresentation.Values.Call and appended.function.name == "append"
-    fallback appended.receiver
-    var list_key = appended.receiver.value_type.name
-    fallback state.layout.inline_stride_of(list_key) > 0 and appended.function.owner == list_key
-    fallback not state.layout.columnar.contains(list_key)
-    var given = appended.arguments[0]
-    fallback given.class == HighIntermediaryRepresentation.Values.LocalRead and given.name == statement.name
-    var making = List<String>()
-    var constructor_key = made.constructor.key()
-    making.append(constructor_key)
-    making.append("{made.value_type.name}._attribute_defaults")
-    crash state.assignments
-    fallback not state.assignments.may_write_items(making, list_key)
-    fallback is_a_steady_list(appended.receiver, making)
-    state.slot_appends.append(statement.name)
-    state.slot_lists[statement.name] = appended.receiver
-}
-
-func is_a_steady_list(receiver: SpiteCompiler.Value, making: List<String>): Boolean {
-    crash state.assignments
-    if receiver.class == HighIntermediaryRepresentation.Values.LocalRead {
-        return not state.reassigned_names.contains(receiver.name)
-    }
-    if receiver.class == HighIntermediaryRepresentation.Values.AttributeRead {
-        var on_this = receiver.object.class == HighIntermediaryRepresentation.Values.ThisRead
-        return on_this and not state.assignments.may_assign(making, receiver.attribute)
-    }
-    return false
-}
-
-func make_in_the_slot(declare: HighIntermediaryRepresentation.Statements.Declare) {
-    state.line = declare.line
-    var receiver = state.slot_lists[declare.name]
-    crash receiver
-    var list = lower_value(receiver)
-    var owner = state.layout.program.class_named(receiver.value_type.name)
-    crash owner
-    var length = load_a_list_attribute(owner, list.value, "_length", 'bits_32')
-    var one = constant(1)
-    var wanted = new_register()
-    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(wanted, 'add', length, one)
-    added.is_checked = false
-    emit(added)
-    var room_arguments = List<Integer>()
-    room_arguments.append(list.value)
-    room_arguments.append(wanted)
-    var room = LowIntermediaryRepresentation.Instructions.Call(-1, "{owner.key}._reserve", room_arguments)
-    emit(room)
-    var buffer = load_a_list_attribute(owner, list.value, "_buffer", 'bits_64')
-    var storage = storage_of(buffer)
-    var stride = state.layout.inline_stride_of(owner.key)
-    var stride_register = constant(stride)
-    var scaled = new_register()
-    var multiplied = LowIntermediaryRepresentation.Instructions.Arithmetic(scaled, 'multiply', length, stride_register)
-    multiplied.is_checked = false
-    emit(multiplied)
-    var slot = address_plus(storage, scaled)
-    fill_if_made(slot, declare.value)
-    discard(list, receiver.value_type)
-    var register = new_register()
-    state.locals[declare.name] = register
-    var copied = LowIntermediaryRepresentation.Instructions.Copy(register, slot)
-    emit(copied)
-}
-
-func load_a_list_attribute(
-    owner: Model.ClassModel,
-    list: Integer,
-    name: String,
-    width: LowIntermediaryRepresentation.Instructions.Load.Width,
-): Integer {
-    var attribute = owner.attribute_named(name)
-    crash attribute
-    var offset = state.layout.offset_of(attribute)
-    var loaded_value = new_register()
-    var loaded = LowIntermediaryRepresentation.Instructions.Load(loaded_value, list, offset, width)
-    loaded.region = "{owner.key}.{name}"
-    emit(loaded)
-    return loaded_value
-}
-
-func fill_if_made(slot: Integer, made: SpiteCompiler.Value?) {
-    if made.class == HighIntermediaryRepresentation.Values.MakeObject {
-        fill_the_slot(slot, made)
-    }
-}
-
-func fill_the_slot(slot: Integer, made: HighIntermediaryRepresentation.Values.MakeObject) {
-    var class_key = made.value_type.name
-    var class_id = state.layout.class_id_of(class_key)
-    var id_register = constant(class_id)
-    var stored_id = LowIntermediaryRepresentation.Instructions.Store(slot, 0, id_register, 'bits_64')
-    emit(stored_id)
-    var count = constant(state.layout.immortal_count)
-    var stored_count = LowIntermediaryRepresentation.Instructions.Store(slot, 8, count, 'bits_64')
-    emit(stored_count)
-    var defaults_key = "{class_key}._attribute_defaults"
-    if made.constructor {
-        var constructor_key = made.constructor.key()
-        if state.trimmed_keys.contains(constructor_key) {
-            defaults_key = "{constructor_key}$defaults"
-        } else {
-            expect_slots_with_defaults(constructor_key)
-        }
-    }
-    var arguments = List<Integer>()
-    arguments.append(slot)
-    var defaults = LowIntermediaryRepresentation.Instructions.Call(-1, defaults_key, arguments)
-    emit(defaults)
-    call_the_constructor(slot, made)
-}
-
-func ends_a_slot_append(value: SpiteCompiler.Value?): Boolean {
-    if value.class == HighIntermediaryRepresentation.Values.Call and value.function.name == "append" {
-        return counts_a_slot(value)
-    }
-    return false
-}
-
-func counts_a_slot(call: HighIntermediaryRepresentation.Values.Call): Boolean {
-    var given = call.arguments[0]
-    if given.class == HighIntermediaryRepresentation.Values.LocalRead and state.slot_appends.contains(given.name) {
-        count_the_slot_in(call)
-        return true
-    }
-    return false
-}
-
-func count_the_slot_in(call: HighIntermediaryRepresentation.Values.Call) {
-    crash call.receiver
-    var list = lower_value(call.receiver)
-    var owner = state.layout.program.class_named(call.receiver.value_type.name)
-    crash owner
-    var length = load_a_list_attribute(owner, list.value, "_length", 'bits_32')
-    var one = constant(1)
-    var grown = new_register()
-    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(grown, 'add', length, one)
-    added.is_checked = false
-    emit(added)
-    var attribute = owner.attribute_named("_length")
-    crash attribute
-    var offset = state.layout.offset_of(attribute)
-    var stored = LowIntermediaryRepresentation.Instructions.Store(list.value, offset, grown, 'bits_32')
-    stored.region = "{owner.key}._length"
-    emit(stored)
-    discard(list, call.receiver.value_type)
 }
 
 func note_the_borrowed_parameters(high: HighIntermediaryRepresentation.HighFunction) {
@@ -1002,16 +726,17 @@ func lower_a_statement(statement: SpiteCompiler.Statement) {
 }
 
 func lower_declare(declare: HighIntermediaryRepresentation.Statements.Declare) {
+    var frame_lists = FrameLists(state)
     state.line = declare.line
     var columns = ColumnLists(this)
     fallback not columns.declares_an_item(declare)
     if state.slot_appends.contains(declare.name) {
-        make_in_the_slot(declare)
+        frame_lists.make_in_the_slot(declare)
         return
     }
     if declare.frame_items > 0 and not state.resumable_mode {
         state.frame_list_counts[declare.name] = declare.frame_items
-        lower_a_frame_list(declare, declare.frame_items)
+        frame_lists.lower_a_frame_list(declare, declare.frame_items)
         return
     }
     state.line = declare.line
@@ -1714,14 +1439,15 @@ func store_in_place(object: Integer, attribute: Model.AttributeModel, value: Low
 }
 
 func lower_evaluate(evaluate: HighIntermediaryRepresentation.Statements.Evaluate) {
+    var frame_lists = FrameLists(state)
     state.line = evaluate.line
     if state.resumable_mode and evaluate.waited {
         var in_place = lower_value(evaluate.waited)
         discard(in_place, evaluate.waited.value_type)
         return
     }
-    fallback not fills_a_frame_list(evaluate.value)
-    fallback not ends_a_slot_append(evaluate.value)
+    fallback not frame_lists.fills_a_frame_list(evaluate.value)
+    fallback not frame_lists.ends_a_slot_append(evaluate.value)
     var written_back = WrittenBackCalls(this)
     fallback not written_back.is_a_needless_write_back(evaluate.value)
     var value = lower_value(evaluate.value)
