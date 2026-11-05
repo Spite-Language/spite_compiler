@@ -27,6 +27,19 @@ this run with that run's exit code: a fix found after building restarts the comp
 `Build.program` is the full path of the folder built. The program it runs is given no flags: its settings come from
 the environment.
 
+## The flags
+
+`environment.spite` declares every flag once, a line each, `var verbose = false`. Nothing else lists them: `Settings()`
+walks `Environment.attributes` and reads each by its type, and `Environment` answers by name what the rest asks
+(`flag_names()`, `is_build_option`, `is_output`, `is_the_compilers_own`, `is_read_without_a_library`,
+`is_left_out_of_a_reload`, `is_connection`). A flag that no group names is a plain flag of the compiler: read, checked as
+its type, and never asked of the program's `Build`. The groups are the private lists of the file, each entry a name
+the compiler checks (`Environment.attributes["check"].name` is a compile error for a flag that does not exist), so a
+removed or misspelled flag stops the build instead of being ignored. A flag joins a group only to say more about it:
+`_outputs` change nothing the program does, `_program_options` are the ones a program reads as `Build.x`,
+`_other_build_reads` the two more `Build` reads, `_without_a_library` the two a program with no `Build` takes, and
+`_connection` the flags of `--connect`. `scripts/flag_is_one_line.sh` builds a copy of the compiler with one more flag and checks it is read, checked and refused.
+
 ## What it does not do yet
 
 The original's options (`--check`, `--build`, `--executable-path`, the program's own `Build` and `Environment`
