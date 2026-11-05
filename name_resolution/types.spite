@@ -1,0 +1,808 @@
+var state = ResolutionState()
+var monomorphiser = Instances(state)
+var same_members = SameMembers(state)
+var scalars = Model.Scalars()
+
+func Types(starting_state: ResolutionState) {
+    state = starting_state
+    monomorphiser = Instances(starting_state)
+    same_members = SameMembers(starting_state)
+}
+
+func type_in(written: SpiteCompiler.Type, model: Model.ClassModel, at_line: Integer): Model.Type {
+    var outer = state.context
+    state.context = model
+    state.line = at_line
+    state.typing_function_name = state.building_function_name
+    var found = type_of(written)
+    state.typing_function_name = ""
+    state.context = outer
+    monomorphiser.fill_the_waiting()
+    return found
+}
+
+func class_type_in(
+    path: List<String>,
+    arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>,
+    model: Model.ClassModel,
+    at_line: Integer,
+): Model.Type {
+    var outer = state.context
+    state.context = model
+    state.line = at_line
+    state.typing_function_name = state.building_function_name
+    var found = type_of_a_path(path, arguments)
+    state.typing_function_name = ""
+    state.context = outer
+    monomorphiser.fill_the_waiting()
+    return found
+}
+
+# ../../spite_spec/specs/values_and_types.md#named-numbers
+func names_a_preset(written: SpiteCompiler.Type): Boolean {
+    fallback written.class == AbstractSyntaxTree.Shapes.Types.NamedType
+    fallback written.path.count() >= 2 and written.arguments.is_empty() and written.asked.is_empty()
+    var whole = written.path.join(".")
+    fallback not whole.starts_with("$")
+    fallback not declared_type_of(written.path)
+    fallback not state.symbols.find(whole, state.context.file.namespace)
+    var owner = owner_path_of(written.path)
+    var owner_name = owner.join(".")
+    if declared_type_of(owner) {
+        return true
+    }
+    if state.symbols.find(owner_name, state.context.file.namespace) {
+        return true
+    }
+    if scalars.of(owner_name) {
+        return true
+    }
+    return false
+}
+
+func type_of_a_preset(written: SpiteCompiler.Type): Model.Type {
+    switch written {
+        AbstractSyntaxTree.Shapes.Types.NamedType: return type_of_a_preset_owner(written)
+    }
+}
+
+func type_of_a_preset_owner(written: AbstractSyntaxTree.Shapes.Types.NamedType): Model.Type {
+    var owner = owner_path_of(written.path)
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    return type_of_a_path(owner, no_arguments)
+}
+
+func owner_path_of(path: List<String>): List<String> {
+    var owner = List<String>()
+    var index = 0
+    while index < path.count() - 1 {
+        var segment = path[index]
+        owner.append(segment)
+        index = index + 1
+    }
+    return owner
+}
+
+func is_a_declaration_type(written: SpiteCompiler.Type?): Boolean {
+    var path = range_of(written)
+    var ranges = ["Spite.AttributeDeclaration", "Spite.FunctionDeclaration", "Spite.Argument"]
+    return ranges.contains(path)
+}
+
+func range_of(written: SpiteCompiler.Type?): String {
+    if written.class == AbstractSyntaxTree.Shapes.Types.NamedType and written.arguments.is_empty() {
+        return written.path.join(".")
+    }
+    return ""
+}
+
+func shown_type(of_type: Model.Type): String {
+    var model = state.program.class_named(of_type.name)
+    if model {
+        return model.shown
+    }
+    return of_type.name
+}
+
+func type_of(written: SpiteCompiler.Type): Model.Type {
+    switch written {
+        AbstractSyntaxTree.Shapes.Types.NamedType: return type_of_a_named(written)
+    }
+}
+
+func type_of_a_named(written: AbstractSyntaxTree.Shapes.Types.NamedType): Model.Type {
+    if not written.asked.is_empty() {
+        return asked_type_of(written)
+    }
+    var found = type_of_a_path(written.path, written.arguments)
+    if written.is_nullable {
+        return found.nullable()
+    }
+    return found
+}
+
+func type_of_a_name(name: String): Model.Type {
+    var path = List<String>()
+    path.append(name)
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    return type_of_a_path(path, no_arguments)
+}
+
+func type_of_a_path(path: List<String>, arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>): Model.Type {
+    var first = path[0]
+    crash first
+    if first.starts_with("$") {
+        return bound_type_of(path)
+    }
+    var written = path.join(".")
+    if state.bound_member_type and state.bound_member_is_a_class and written == state.bound_member_name {
+        return state.bound_member_type
+    }
+    if state.bound_member_type and written == "{state.bound_member_name}.class" {
+        return state.bound_member_type
+    }
+    var generics_prefix = "{state.bound_member_name}.class.generics[\""
+    if state.bound_member_type and written.starts_with(generics_prefix) {
+        return generic_of(state.bound_member_type, written, generics_prefix)
+    }
+    if written == "Spite.Function" and not arguments.is_empty() {
+        return function_type_of(arguments)
+    }
+    var unknown = Validators.NameResolution.UnknownType.Validator()
+    var here = current_place()
+    unknown.check_a_symbol(written, here)
+    if written == "Nothing" and arguments.is_empty() {
+        return Model.Type('nothing', "")
+    }
+    var is_open = written == "Anything"
+    if is_open and arguments.is_empty() {
+        return open_shape(written)
+    }
+    unknown.check_a_removed_form(written, state.symbols, state.context.file.namespace, here)
+    var bound = state.context.bound_types.keys()
+    var own_name = monomorphiser.simple_name_of(state.context.file)
+    var names_itself = written == own_name and arguments.is_empty() and not bound.is_empty()
+    if names_itself {
+        return Model.Type('object', state.context.key)
+    }
+    var declared = declared_type_of(path)
+    if declared {
+        return declared
+    }
+    var found = state.symbols.find(written, state.context.file.namespace)
+    if not found and scalars.of(written) {
+        return Model.Type('scalar', written)
+    }
+    var names_a_run_time_value = not found and names_a_run_time_class(path)
+    unknown.check_a_class_known_while_compiling(written, names_a_run_time_value, here)
+    if not found {
+        check_a_class_member(path)
+    }
+    var suggestion = suggested_type(path, found)
+    unknown.check(written, found, suggestion, here)
+    crash found
+    if not state.symbols.file_for(found.path) {
+        monomorphiser.read_later_class(found)
+    }
+    return class_type_of(found, arguments)
+}
+
+func names_a_run_time_class(path: List<String>): Boolean {
+    var named = path[0]
+    fallback named and path.count() == 1
+    if names_a_value_of_the_function(named) {
+        return true
+    }
+    var attribute = state.context.attribute_named(named)
+    fallback attribute
+    var attribute_type = attribute.attribute_type
+    return attribute_type.kind == 'object' and attribute_type.name == "Spite.Class"
+}
+
+func current_place(): NameResolution.Place {
+    return NameResolution.Place(
+        state.context.file.path,
+        state.line,
+        state.context.shown,
+        state.typing_function_name,
+        state.symbols.walks,
+    )
+}
+
+func names_a_value_of_the_function(named: String): Boolean {
+    fallback not state.typing_function_name.is_empty()
+    var index = 0
+    while index < state.symbols.walks.count() {
+        var walk = state.symbols.walks[index]
+        if walk.file.path == state.context.file.path and walk_names_a_value(walk, named) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func walk_names_a_value(walk: AbstractSyntaxTree.Walk.Walk, named: String): Boolean {
+    var index = 0
+    while index < walk.function_declarations.count() {
+        var declaration = walk.function_declarations[index]
+        var is_the_function = declaration.name == state.typing_function_name
+        if is_the_function and declaration.parameters.find_by_name(named) {
+            return true
+        }
+        index = index + 1
+    }
+    var statement_index = 0
+    while statement_index < walk.statements.count() {
+        var found = walk.statements[statement_index]
+        var statement = found.statement
+        var is_in_the_function = found.function_name == state.typing_function_name
+        if is_in_the_function and statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement and statement.name == named {
+            return true
+        }
+        statement_index = statement_index + 1
+    }
+    return false
+}
+
+func suggested_type(path: List<String>, found: Mapping.ClassFile?): String {
+    fallback not found
+    var start = 1
+    while start < path.count() {
+        var shorter = List<String>()
+        var index = start
+        while index < path.count() {
+            var segment = path[index]
+            shorter.append(segment)
+            index = index + 1
+        }
+        var written = shorter.join(".")
+        var found = state.symbols.find(written, state.context.file.namespace)
+        if found {
+            return found.namespace
+        }
+        start = start + 1
+    }
+    fallback path.count() == 1
+    var wanted = path[0]
+    var named = List<String>()
+    var every = state.symbols.map.every_class()
+    var class_index = 0
+    while class_index < every.count() {
+        var class_file = every[class_index]
+        if class_file.simple_name == wanted and not named.contains(class_file.namespace) {
+            named.append(class_file.namespace)
+        }
+        class_index = class_index + 1
+    }
+    fallback named.count() == 1
+    return named[0]
+}
+
+func open_shape(written: String): Model.Type {
+    if not state.program.shape_keyed(written) {
+        var made = Model.ShapeModel(written, written)
+        var text = Model.Type('object', "String")
+        var shown = Model.FunctionModel("to_string", written)
+        shown.answer = text
+        made.members.append(shown)
+        var debugged = Model.FunctionModel("to_debug", written)
+        debugged.answer = text
+        made.members.append(debugged)
+        state.program.shapes[written] = made
+    }
+    return Model.Type('shape', written)
+}
+
+func walked_name_type(): Model.Type {
+    var path = List<String>()
+    path.append("String")
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var text = type_of_a_path(path, no_arguments)
+    var made = Model.Type(text.kind, text.name)
+    made.is_a_walked_name = true
+    return made
+}
+
+func bound_type_of(path: List<String>): Model.Type {
+    var first = path[0]
+    crash first
+    var bound = state.context.bound_types[first]
+    var codegen_line = Validators.NameResolution.CodegenLine.Validator()
+    codegen_line.check(state.context.file.path, state.line, state.context.shown, first, bound)
+    crash bound
+    if path.count() == 1 {
+        return bound
+    }
+    var member = path[1]
+    crash member
+    if member == "value_type" and bound.is_nullable {
+        return bound.present()
+    }
+    var bound_model = state.program.class_named(bound.name)
+    crash bound_model
+    if member == "element_type" or member == "value_type" or member == "key_type" {
+        var inner_bound = bound_model.bound_types["${member}"]
+        if inner_bound {
+            return inner_bound
+        }
+    }
+    if member == "converted_type" {
+        var conversion = bound_model.read_conversion()
+        if conversion {
+            var source = conversion.parameters[0]
+            crash source
+            return source.parameter_type
+        }
+    }
+    var inner = bound_model.bound_types["${member}"]
+    var member_rule = Validators.NameResolution.TypeMember.Validator()
+    var shown_bound = shown_type(bound)
+    member_rule.check(
+        inner,
+        state.context.file.path,
+        state.line,
+        state.context.shown,
+        state.building_function_name,
+        shown_bound,
+        member,
+    )
+    crash inner
+    return inner
+}
+
+func asked_type_of(written: AbstractSyntaxTree.Shapes.Types.NamedType): Model.Type {
+    var question = written.path.last()
+    var bound_path = written.path.copy()
+    crash bound_path.remove_last()
+    var bound = bound_type_of(bound_path)
+    var shown = written.path.join(".")
+    var rule = Validators.NameResolution.TypeMember.Validator()
+    rule.check_a_question(question, written.asked, state.context.file.path, state.line, shown)
+    var function_text = written.asked[0]
+    var place_text = written.asked[1]
+    crash function_text
+    crash place_text
+    var function_name = function_text.replace("\"", "")
+    var place: Integer? = place_text
+    var outer_context = state.context
+    var outer_line = state.line
+    var outer_parameters = state.read_parameters
+    monomorphiser.fill_the_waiting()
+    state.context = outer_context
+    state.line = outer_line
+    state.read_parameters = outer_parameters
+    var model = state.program.class_named(bound.name)
+    crash model
+    var function = model.function_named(function_name)
+    rule.check_a_function(
+        function,
+        state.context.file.path,
+        state.line,
+        state.context.shown,
+        model.shown,
+        function_name,
+        place_text,
+    )
+    crash function
+    crash place
+    var parameter = function.parameters[place]
+    var count = function.parameters.count()
+    rule.check_a_parameter(
+        parameter,
+        state.context.file.path,
+        state.line,
+        state.context.shown,
+        model.shown,
+        function_name,
+        place,
+        count,
+    )
+    crash parameter
+    return parameter.parameter_type
+}
+
+# ../../spite_spec/specs/reflection.md#reflection-objects
+func generic_of(described: Model.Type, written: String, prefix: String): Model.Type {
+    var model = state.program.class_named(described.name)
+    crash model
+    var prefix_length = prefix.length()
+    var written_length = written.length()
+    var name = written.slice(prefix_length, written_length - 2)
+    crash name
+    var bound = model.bound_types["${name}"]
+    var member_rule = Validators.NameResolution.TypeMember.Validator()
+    var shown_described = shown_type(described)
+    member_rule.check_a_generic(
+        bound,
+        state.context.file.path,
+        state.line,
+        state.context.shown,
+        state.building_function_name,
+        written,
+        shown_described,
+        name,
+    )
+    crash bound
+    return bound
+}
+
+func function_type_of(arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>): Model.Type {
+    var made = Model.Type('function', "Spite.Function")
+    var written_types = types_of_arguments(arguments)
+    var written_answer = written_types.remove_last()
+    crash written_answer
+    if written_answer.kind != 'nothing' {
+        made.answer = same_members.same_member_type(written_answer)
+    }
+    var index = 0
+    while index < written_types.count() {
+        var written = written_types[index]
+        var parameter = same_members.same_member_type(written)
+        made.parameters.append(parameter)
+        index = index + 1
+    }
+    return made
+}
+
+func declared_type_of(path: List<String>): Model.Type? {
+    var owner = state.context
+    var name = path[0]
+    crash name
+    if path.count() >= 2 {
+        var whole = declared_as_a_file(path)
+        if whole {
+            return whole
+        }
+        var owner_path = path.copy()
+        var last_name = owner_path.remove_last()
+        crash last_name
+        var owner_name = owner_path.join(".")
+        var owner_file = state.symbols.find(owner_name, state.context.file.namespace)
+        fallback owner_file
+        if not state.symbols.file_for(owner_file.path) {
+            monomorphiser.read_later_class(owner_file)
+        }
+        var outer_context = state.context
+        var outer_line = state.line
+        var outer_parameters = state.read_parameters
+        monomorphiser.fill_the_waiting()
+        state.context = outer_context
+        state.line = outer_line
+        state.read_parameters = outer_parameters
+        var owner_model = state.program.class_named(owner_file.namespace)
+        if not owner_model and owner_file.path == state.context.file.path {
+            owner_model = state.context
+        }
+        fallback owner_model
+        owner = owner_model
+        name = last_name
+        check_a_copy_named_outside(owner, name, path)
+    }
+    var made_enum = owner.enum_named(name)
+    if made_enum {
+        return Model.Type('enumeration', made_enum.key)
+    }
+    var made_union = owner.union_named(name)
+    if made_union {
+        var union_type = Model.Type('union', made_union.key)
+        return same_members.same_member_type(union_type)
+    }
+    var made_shape = owner.shape_named(name)
+    if made_shape {
+        var shape_type = Model.Type('shape', made_shape.key)
+        return same_members.same_member_type(shape_type)
+    }
+    fallback path.count() == 1
+    var named_class = state.symbols.find(name, state.context.file.namespace)
+    if named_class {
+        return declared_by_its_file(named_class, name)
+    }
+    return null
+}
+
+func declared_as_a_file(path: List<String>): Model.Type? {
+    var dotted = path.join(".")
+    var found = state.symbols.find(dotted, state.context.file.namespace)
+    fallback found
+    var last_name = path.last()
+    crash last_name
+    return declared_by_its_file(found, last_name)
+}
+
+func declared_by_its_file(found: Mapping.ClassFile, name: String): Model.Type? {
+    if not state.symbols.file_for(found.path) {
+        monomorphiser.read_later_class(found)
+    }
+    var file = state.symbols.file_for(found.path)
+    crash file
+    fallback file.declarations.count() == 1
+    var only = file.declarations[0]
+    var declared_name = state.symbols.name_of(only)
+    fallback declared_name == name
+    var key = "{found.namespace}.{name}"
+    if only.class == AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration {
+        return Model.Type('enumeration', key)
+    }
+    if only.class == AbstractSyntaxTree.Shapes.Declarations.UnionDeclaration {
+        return Model.Type('union', key)
+    }
+    if only.class == AbstractSyntaxTree.Shapes.Declarations.TypeDeclaration {
+        return Model.Type('shape', key)
+    }
+    return null
+}
+
+func declared_in(model: Model.ClassModel, name: String): Model.Type? {
+    var made_enum = model.enum_named(name)
+    if made_enum {
+        return Model.Type('enumeration', made_enum.key)
+    }
+    var made_union = model.union_named(name)
+    if made_union {
+        var union_type = Model.Type('union', made_union.key)
+        return same_members.same_member_type(union_type)
+    }
+    var made_shape = model.shape_named(name)
+    if made_shape {
+        var shape_type = Model.Type('shape', made_shape.key)
+        return same_members.same_member_type(shape_type)
+    }
+    return null
+}
+
+func declared_type_in(path: List<String>, model: Model.ClassModel): Model.Type? {
+    var outer = state.context
+    state.context = model
+    var found = declared_type_of(path)
+    state.context = outer
+    return found
+}
+
+# ../../spite_spec/specs/packages.md#packages-namespaces-and-loading
+func check_a_class_member(path: List<String>) {
+    var last_name = path.last()
+    crash last_name
+    var owners = List<String>()
+    var namespace_name = ""
+    if path.count() == 1 {
+        owners = classes_declaring(last_name)
+    } else {
+        var owner_path = path.copy()
+        var dropped = owner_path.remove_last()
+        crash dropped
+        var written_owner = owner_path.join(".")
+        var folder = namespace_folder_named(written_owner)
+        fallback folder
+        namespace_name = folder.namespace
+        owners = classes_of_the_folder_declaring(folder, last_name)
+    }
+    check_a_copy_named_by_its_owner(owners, path)
+    var namings = List<String>()
+    var index = 0
+    while index < owners.count() {
+        var owner = owners[index]
+        var shortest = shortest_name_of(owner)
+        namings.append("{shortest}.{last_name}")
+        index = index + 1
+    }
+    var written = path.join(".")
+    var rule = Validators.NameResolution.ClassMember.Validator()
+    var here = current_place()
+    rule.check(written, owners, namings, namespace_name, here)
+}
+
+# ../../spite_spec/specs/classes_and_files.md#files-are-classes
+func check_a_copy_named_outside(owner: Model.ClassModel, name: String, path: List<String>) {
+    var kind = copied_kind_in(owner, name)
+    var owners = [owner.key]
+    var written = path.join(".")
+    var is_named_by_its_owner = owner.key == state.context.key or is_the_entry_class_here(owner)
+    var is_generated = state.symbols.generated_texts.contains(state.context.file.path)
+    var rule = Validators.NameResolution.ClassMember.Validator()
+    var here = current_place()
+    rule.check_a_copy(written, kind, owners, is_named_by_its_owner, is_generated, here)
+}
+
+func is_the_entry_class_here(owner: Model.ClassModel): Boolean {
+    fallback owner.key == owner.file.namespace
+    return state.symbols.is_the_entry_class_over(
+        owner.key,
+        owner.file.path,
+        state.context.file.namespace,
+        state.context.file.path,
+    )
+}
+
+# ../../spite_spec/specs/classes_and_files.md#a-repeated-union-or-type-moves-to-the-entry-class
+func check_a_plain_name_of_the_entry_class(owners: List<String>, path: List<String>) {
+    fallback path.count() == 1
+    var last_name = path.last()
+    crash last_name
+    var index = 0
+    while index < owners.count() {
+        var owner_key = owners[index]
+        var owner = state.program.class_named(owner_key)
+        if owner and is_the_entry_class_here(owner) {
+            var kind = copied_kind_in(owner, last_name)
+            var through = shortest_name_of(owner.key)
+            var rule = Validators.NameResolution.ClassMember.Validator()
+            var here = current_place()
+            rule.check_a_plain_name(last_name, kind, owner.key, through, here)
+        }
+        index = index + 1
+    }
+}
+
+func check_a_copy_named_by_its_owner(owners: List<String>, path: List<String>) {
+    check_a_plain_name_of_the_entry_class(owners, path)
+    var first_owner = owners.first()
+    fallback first_owner
+    var owner = state.program.class_named(first_owner)
+    fallback owner
+    var last_name = path.last()
+    crash last_name
+    var kind = copied_kind_in(owner, last_name)
+    var written = path.join(".")
+    var is_generated = state.symbols.generated_texts.contains(state.context.file.path)
+    var rule = Validators.NameResolution.ClassMember.Validator()
+    var here = current_place()
+    rule.check_a_copy(written, kind, owners, false, is_generated, here)
+}
+
+func copied_kind_in(owner: Model.ClassModel, name: String): String {
+    if owner.union_named(name) {
+        return "union"
+    }
+    if owner.shape_named(name) {
+        return "type"
+    }
+    return ""
+}
+
+func classes_declaring(name: String): List<String> {
+    var outer_context = state.context
+    var outer_line = state.line
+    var outer_parameters = state.read_parameters
+    monomorphiser.fill_the_waiting()
+    state.context = outer_context
+    state.line = outer_line
+    state.read_parameters = outer_parameters
+    var owners = List<String>()
+    var index = 0
+    while index < state.program.order.count() {
+        var model = state.program.order[index]
+        var owner = model.file.namespace
+        if declares_a_type(model, name) and not owners.contains(owner) {
+            owners.append(owner)
+        }
+        index = index + 1
+    }
+    return owners
+}
+
+func namespace_folder_named(written: String): Mapping.MappedFolder? {
+    var names = Mapping.Names()
+    var searched = state.context.file.namespace
+    var keep_going = true
+    while keep_going {
+        var candidate = names.joined(searched, written)
+        var folder = state.symbols.map.folder_named(candidate)
+        if folder {
+            return folder
+        }
+        keep_going = not searched.is_empty()
+        searched = state.symbols.enclosing(searched)
+    }
+    return null
+}
+
+func classes_of_the_folder_declaring(folder: Mapping.MappedFolder, name: String): List<String> {
+    var owners = List<String>()
+    var index = 0
+    while index < folder.files.count() {
+        var class_file = folder.files[index]
+        if not state.symbols.file_for(class_file.path) {
+            monomorphiser.read_later_class(class_file)
+        }
+        index = index + 1
+    }
+    var outer_context = state.context
+    var outer_line = state.line
+    var outer_parameters = state.read_parameters
+    monomorphiser.fill_the_waiting()
+    state.context = outer_context
+    state.line = outer_line
+    state.read_parameters = outer_parameters
+    var file_index = 0
+    while file_index < folder.files.count() {
+        var class_file = folder.files[file_index]
+        var model = state.program.class_named(class_file.namespace)
+        var declares = false
+        if model {
+            declares = declares_a_type(model, name)
+        }
+        if declares and not owners.contains(class_file.namespace) {
+            owners.append(class_file.namespace)
+        }
+        file_index = file_index + 1
+    }
+    return owners
+}
+
+func shortest_name_of(owner: String): String {
+    var segments = owner.split(".")
+    var start = segments.count() - 1
+    while start > 0 {
+        var shorter = List<String>()
+        var index = start
+        while index < segments.count() {
+            var segment = segments[index]
+            shorter.append(segment)
+            index = index + 1
+        }
+        var written = shorter.join(".")
+        var found = state.symbols.find(written, state.context.file.namespace)
+        if found and found.namespace == owner {
+            return written
+        }
+        start = start - 1
+    }
+    return owner
+}
+
+func declares_a_type(model: Model.ClassModel, name: String): Boolean {
+    if model.enum_named(name) or model.union_named(name) {
+        return true
+    }
+    if model.shape_named(name) {
+        return true
+    }
+    return false
+}
+
+func class_type_of(
+    found: Mapping.ClassFile,
+    arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>,
+): Model.Type {
+    var file = state.symbols.file_for(found.path)
+    crash file
+    var names = monomorphiser.generic_names_of(file)
+    var parameter_count = names.count()
+    var argument_count = arguments.count()
+    var generic_arguments = Validators.NameResolution.GenericArguments.Validator()
+    generic_arguments.check(state.context.file.path, state.line, found.namespace, names, argument_count)
+    if parameter_count == 0 {
+        return plain_type_of(found.namespace)
+    }
+    var given = types_of_arguments(arguments)
+    var key = monomorphiser.instance_key(found.namespace, given)
+    if not state.program.has(key) {
+        monomorphiser.mint(key, found, file, names, given)
+    }
+    return Model.Type('object', key)
+}
+
+func plain_type_of(key: String): Model.Type {
+    if scalars.is_a_scalar(key) {
+        return Model.Type('scalar', key)
+    }
+    return Model.Type('object', key)
+}
+
+func types_of_arguments(arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>): List<Model.Type> {
+    var outer = state.resolved_arguments
+    state.resolved_arguments = List<Model.Type>()
+    arguments.each(resolve_an_argument)
+    var resolved = state.resolved_arguments
+    state.resolved_arguments = outer
+    return resolved
+}
+
+func resolve_an_argument(argument: AbstractSyntaxTree.Shapes.Types.GenericArgument) {
+    var literal = Validators.NameResolution.CodegenLiteral.Validator()
+    literal.check(state.context.file.path, state.line, argument)
+    crash argument.type_reference
+    var resolved = type_of(argument.type_reference)
+    state.resolved_arguments.append(resolved)
+}
