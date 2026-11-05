@@ -1,8 +1,5 @@
-var no_program = Model.ProgramModel()
-var no_layout = HighIntermediaryRepresentation.Layout(no_program)
-var no_low_program = LowIntermediaryRepresentation.LoweredProgram()
-var no_slots = Dictionary<String, Integer>()
-var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
+var no_state = LoweringState()
+var lowering = FunctionLowering(no_state)
 var slots = List<Integer>()
 var old_values = List<Integer>()
 var _thread_storage_out_of_indexes: Long = 4294967295
@@ -19,8 +16,8 @@ func handed_for_the_call(argument: SpiteCompiler.Value): Integer {
     var room = zeroed(8)
     var label = lowering.data_label(room)
     var name = passed_name(argument)
-    var source = lowering.path
-    var line = lowering.line
+    var source = lowering.state.path
+    var line = lowering.state.line
     var message = "spite: C called '{name}' ({source}:{line}) after the foreign call that handed it over had returned, or on another thread: a function C keeps, or calls from a thread of its own, is handed over as a ForeignCallback the program keeps for as long as C may call it\n"
     var key = call_trampoline(argument.value_type, label, message)
     var index = thread_slot_of(label)
@@ -149,7 +146,9 @@ func zeroed(size: Integer): Buffer {
 
 func call_trampoline(function_type: Model.Type, label: Integer, message: String): String {
     var key = trampoline_key()
-    var making = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    var making_state = LoweringState()
+    making_state.start_from(lowering.state.layout, lowering.state.program, lowering.state.singleton_slots)
+    var making = FunctionLowering(making_state)
     making.start(key)
     var parameters = take_the_c_parameters(making, function_type.parameters, -1)
     var room = making.new_register()
@@ -177,12 +176,12 @@ func call_trampoline(function_type: Model.Type, label: Integer, message: String)
     stop_in(making, stopping, message)
     making.switch_to(calling)
     call_through(making, value, parameters, function_type)
-    lowering.program.lowered_functions.append(making.function)
+    lowering.state.program.lowered_functions.append(making.state.function)
     return key
 }
 
 func trampoline_key(): String {
-    var number = lowering.program.lowered_functions.count()
+    var number = lowering.state.program.lowered_functions.count()
     return "_called_from_c_{number}"
 }
 
@@ -202,7 +201,7 @@ func take_the_c_parameters(
         registers.append(register)
         index = index + 1
     }
-    making.function.parameter_count = count
+    making.state.function.parameter_count = count
     var converted = List<Integer>()
     var written_index = 0
     var parameter_index = 0
@@ -210,12 +209,12 @@ func take_the_c_parameters(
         var register = registers[written_index]
         crash register
         if written_index == context_at {
-            making.function.parameter_decimal_sizes.append(0)
+            making.state.function.parameter_decimal_sizes.append(0)
         } else {
             var parameter_type = parameter_types[parameter_index]
             crash parameter_type
             var decimal_size = making.decimal_size_of(parameter_type)
-            making.function.parameter_decimal_sizes.append(decimal_size)
+            making.state.function.parameter_decimal_sizes.append(decimal_size)
             var taken = taken_from_c(making, register, parameter_type)
             converted.append(taken)
             parameter_index = parameter_index + 1
@@ -234,7 +233,7 @@ func taken_from_c(making: FunctionLowering, register: Integer, parameter_type: M
         making.emit(compared)
         return truth
     }
-    var scalar = making.scalars.of(parameter_type.name)
+    var scalar = making.state.scalars.of(parameter_type.name)
     crash scalar
     if scalar.size >= 8 {
         return register
@@ -304,7 +303,7 @@ func call_through(making: FunctionLowering, value: Integer, parameters: List<Int
     var target = -1
     if function_type.answer {
         target = making.new_register()
-        making.function.answer_decimal_size = making.decimal_size_of(function_type.answer)
+        making.state.function.answer_decimal_size = making.decimal_size_of(function_type.answer)
     }
     var called = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments)
     making.emit(called)
@@ -323,20 +322,20 @@ func handed_over(object: Integer, made: HighIntermediaryRepresentation.Values.Ma
 }
 
 func hand_over(object: Integer, passed: HighIntermediaryRepresentation.Values.Function.Value, place: String) {
-    lowering.program.uses_threads = true
-    var model = lowering.layout.program.class_named("ForeignCallback")
+    lowering.state.program.uses_threads = true
+    var model = lowering.state.layout.program.class_named("ForeignCallback")
     crash model
     var value = lowering.new_register()
     var function_offset = offset_in(model, "_function")
     var loaded = LowIntermediaryRepresentation.Instructions.Load(value, object, function_offset, 'bits_64')
     lowering.emit(loaded)
-    var owner = lowering.layout.program.class_named(passed.function.owner)
+    var owner = lowering.state.layout.program.class_named(passed.function.owner)
     crash owner
     var shown = owner.shown
     var function_name = passed.function.name
     var named = "{shown}.{function_name}"
-    var source = lowering.path
-    var line = lowering.line
+    var source = lowering.state.path
+    var line = lowering.state.line
     var dropped = "spite: C called '{named}' ({source}:{line}) after its ForeignCallback was dropped: keep the ForeignCallback for as long as C may call it\n"
     var key = ""
     if place == "no_context" {
@@ -355,7 +354,7 @@ func hand_over(object: Integer, passed: HighIntermediaryRepresentation.Values.Fu
 func offset_in(model: Model.ClassModel, name: String): Integer {
     var attribute = model.attribute_named(name)
     crash attribute
-    return lowering.layout.offset_of(attribute)
+    return lowering.state.layout.offset_of(attribute)
 }
 
 func kept_without_a_context(
@@ -377,8 +376,8 @@ func kept_without_a_context(
     var taking = lowering.new_block()
     var stopping = lowering.new_block()
     stop_when_taken(held, stopping, taking)
-    var source = lowering.path
-    var line = lowering.line
+    var source = lowering.state.path
+    var line = lowering.state.line
     var second = "spite: '{named}' ({source}:{line}) was handed to C by a second ForeignCallback while the first is alive: C calls it with no context, so a function has one at a time; keep the first and hand C its address\n"
     stop_in(lowering, stopping, second)
     lowering.switch_to(taking)
@@ -388,7 +387,9 @@ func kept_without_a_context(
     var kept = LowIntermediaryRepresentation.Instructions.Store(object, cell_offset, slot, 'bits_64')
     lowering.emit(kept)
     var key = trampoline_key()
-    var making = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    var making_state = LoweringState()
+    making_state.start_from(lowering.state.layout, lowering.state.program, lowering.state.singleton_slots)
+    var making = FunctionLowering(making_state)
     making.start(key)
     var parameters = take_the_c_parameters(making, passed.value_type.parameters, -1)
     var trampoline_slot = making.new_register()
@@ -403,7 +404,7 @@ func kept_without_a_context(
     stop_in(making, trampoline_stopping, dropped)
     making.switch_to(calling)
     call_through(making, called, parameters, passed.value_type)
-    lowering.program.lowered_functions.append(making.function)
+    lowering.state.program.lowered_functions.append(making.state.function)
     return key
 }
 
@@ -439,7 +440,9 @@ func kept_with_a_context(
     var stored_cell = LowIntermediaryRepresentation.Instructions.Store(object, cell_offset, cell, 'bits_64')
     lowering.emit(stored_cell)
     var key = trampoline_key()
-    var making = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    var making_state = LoweringState()
+    making_state.start_from(lowering.state.layout, lowering.state.program, lowering.state.singleton_slots)
+    var making = FunctionLowering(making_state)
     making.start(key)
     var parameter_types = passed.value_type.parameters
     var context_at = parameter_types.count()
@@ -449,7 +452,7 @@ func kept_with_a_context(
     var parameters = take_the_c_parameters(making, parameter_types, context_at)
     var called = value_of_the_ticket(making, context_at, dropped)
     call_through(making, called, parameters, passed.value_type)
-    lowering.program.lowered_functions.append(making.function)
+    lowering.state.program.lowered_functions.append(making.state.function)
     return key
 }
 
@@ -511,12 +514,14 @@ func value_of_the_ticket(making: FunctionLowering, ticket: Integer, dropped: Str
 }
 
 func write_the_place_taker() {
-    fallback not lowering.program.takes_callback_places
-    lowering.program.takes_callback_places = true
-    var making = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    fallback not lowering.state.program.takes_callback_places
+    lowering.state.program.takes_callback_places = true
+    var making_state = LoweringState()
+    making_state.start_from(lowering.state.layout, lowering.state.program, lowering.state.singleton_slots)
+    var making = FunctionLowering(making_state)
     making.start("_take_a_callback_place")
     var value = making.new_register()
-    making.function.parameter_count = 1
+    making.state.function.parameter_count = 1
     var label = making.record_label_of("_callback_table")
     var record = making.new_register()
     var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(record, label)
@@ -559,8 +564,8 @@ func write_the_place_taker() {
     making.jump_to(directory_ready)
     making.switch_to(directory_ready)
     look_for_a_place(making, record, directory, value)
-    making.function.parameter_count = 1
-    lowering.program.lowered_functions.append(making.function)
+    making.state.function.parameter_count = 1
+    lowering.state.program.lowered_functions.append(making.state.function)
 }
 
 func look_for_a_place(making: FunctionLowering, record: Integer, directory: Integer, value: Integer) {

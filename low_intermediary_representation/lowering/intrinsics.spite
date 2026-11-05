@@ -1,8 +1,5 @@
-var no_program = Model.ProgramModel()
-var no_layout = HighIntermediaryRepresentation.Layout(no_program)
-var no_low_program = LowIntermediaryRepresentation.LoweredProgram()
-var no_slots = Dictionary<String, Integer>()
-var lowering = FunctionLowering(no_layout, no_low_program, no_slots)
+var no_state = LoweringState()
+var lowering = FunctionLowering(no_state)
 var _all_processor_groups: Long = 65535
 var _low_32_bits_mask: Long = 4294967295
 
@@ -108,14 +105,14 @@ func foreign_site_text(call: HighIntermediaryRepresentation.Values.Call): Lowere
 
 func place_table(): Lowered {
     var address = lowering.new_register()
-    var found = LowIntermediaryRepresentation.Instructions.DataAddress(address, lowering.program.place_table)
+    var found = LowIntermediaryRepresentation.Instructions.DataAddress(address, lowering.state.program.place_table)
     lowering.emit(found)
     return lowering.single(address)
 }
 
 func call_table(): Lowered {
     var address = lowering.new_register()
-    var found = LowIntermediaryRepresentation.Instructions.DataAddress(address, lowering.program.call_table)
+    var found = LowIntermediaryRepresentation.Instructions.DataAddress(address, lowering.state.program.call_table)
     lowering.emit(found)
     return lowering.single(address)
 }
@@ -181,8 +178,8 @@ func item_held_once(call: HighIntermediaryRepresentation.Values.Call): Lowered {
 
 # ../../../spite_spec/specs/repl.md#command-language
 func live_allocations(): Lowered {
-    var made = counted_at(lowering.program.allocation_count_label)
-    var freed = counted_at(lowering.program.free_count_label)
+    var made = counted_at(lowering.state.program.allocation_count_label)
+    var freed = counted_at(lowering.state.program.free_count_label)
     var live = lowering.new_register()
     var subtracted = LowIntermediaryRepresentation.Instructions.Arithmetic(live, 'subtract', made.value, freed.value)
     subtracted.is_checked = false
@@ -220,7 +217,7 @@ func processor_count(): Lowered {
 
 # ../../OPTIMIZATIONS.md#the-first-crash-stops-every-thread
 func crash_gate(): Lowered {
-    if lowering.makes_work {
+    if lowering.state.makes_work {
         var no_arguments = List<Integer>()
         var gated = LowIntermediaryRepresentation.Instructions.Call(-1, "_crash_gate", no_arguments)
         lowering.emit(gated)
@@ -365,7 +362,7 @@ func typed_access(call: HighIntermediaryRepresentation.Values.Call, key: String)
     } else if call.function.name == "_live_allocations" {
         return live_allocations()
     } else if call.function.name == "_live_bytes" {
-        return counted_at(lowering.program.live_bytes_label)
+        return counted_at(lowering.state.program.live_bytes_label)
     } else if call.function.name == "_let_go" {
         return let_go(call)
     } else if call.function.name == "_crash_gate" {
@@ -489,7 +486,7 @@ func resize_room(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var one = lowering.constant(1)
     var zero = lowering.constant(0)
     var with_an_end = lowering.address_plus(size, one)
-    var offset = lowering.layout.inline_offset()
+    var offset = lowering.state.layout.inline_offset()
     var inline_offset = lowering.constant(offset)
     var inside = lowering.address_plus(buffer, inline_offset)
     var staying = lowering.new_block()
@@ -506,7 +503,7 @@ func resize_room(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var missing_test = LowIntermediaryRepresentation.Instructions.Branch(is_missing, placing, moving)
     lowering.emit(missing_test)
     lowering.switch_to(placing)
-    var room = lowering.constant(lowering.layout.inline_room)
+    var room = lowering.constant(lowering.state.layout.inline_room)
     var fits = compared_registers('less_or_equal', with_an_end, room)
     var fit_test = LowIntermediaryRepresentation.Instructions.Branch(fits, place, moving)
     lowering.emit(fit_test)
@@ -530,7 +527,7 @@ func move_out_of_the_buffer(buffer: Integer, size: Integer, with_an_end: Integer
     var capacity = lowering.new_register()
     var loaded = LowIntermediaryRepresentation.Instructions.Load(capacity, buffer, capacity_offset, 'bits_32')
     lowering.emit(loaded)
-    var room = lowering.constant(lowering.layout.inline_room)
+    var room = lowering.constant(lowering.state.layout.inline_room)
     var fits_the_room = compared_registers('less_or_equal', with_an_end, room)
     var checking = lowering.new_block()
     var leaving = lowering.new_block()
@@ -565,17 +562,17 @@ func compared_registers(
 }
 
 func store_the_storage(buffer: Integer, storage: Integer) {
-    var offset = lowering.layout.storage_offset
+    var offset = lowering.state.layout.storage_offset
     var stored = LowIntermediaryRepresentation.Instructions.Store(buffer, offset, storage, 'bits_64')
     lowering.emit(stored)
 }
 
 func buffer_attribute_offset(name: String): Integer {
-    var owner = lowering.layout.program.class_named("Buffer")
+    var owner = lowering.state.layout.program.class_named("Buffer")
     crash owner
     var attribute = owner.attribute_named(name)
     crash attribute
-    return lowering.layout.offset_of(attribute)
+    return lowering.state.layout.offset_of(attribute)
 }
 
 func open_library(call: HighIntermediaryRepresentation.Values.Call): Lowered {
@@ -723,7 +720,7 @@ func unchecked(
 }
 
 func element_type_of(call: HighIntermediaryRepresentation.Values.Call): Model.Type {
-    var owner = lowering.layout.program.class_named(call.function.owner)
+    var owner = lowering.state.layout.program.class_named(call.function.owner)
     crash owner
     var element = owner.bound_types["$element_type"]
     crash element
@@ -731,7 +728,7 @@ func element_type_of(call: HighIntermediaryRepresentation.Values.Call): Model.Ty
 }
 
 func slot_size_of(list_key: String, element: Model.Type): Integer {
-    var stride = lowering.layout.inline_stride_of(list_key)
+    var stride = lowering.state.layout.inline_stride_of(list_key)
     if stride > 0 {
         return stride
     }
@@ -745,7 +742,7 @@ func item_size_of(element: Model.Type): Integer {
     if element.kind != 'scalar' {
         return 8
     }
-    var scalar = lowering.scalars.of(element.name)
+    var scalar = lowering.state.scalars.of(element.name)
     crash scalar
     if element.is_nullable {
         return scalar.size + 1
@@ -763,11 +760,11 @@ func item_size(call: HighIntermediaryRepresentation.Values.Call): Lowered {
 func item_address(call: HighIntermediaryRepresentation.Values.Call, element: Model.Type): Integer {
     var list = lowering.lower_value(call.receiver)
     var at = argument(call, 0)
-    var owner = lowering.layout.program.class_named(call.function.owner)
+    var owner = lowering.state.layout.program.class_named(call.function.owner)
     crash owner
     var buffer_attribute = owner.attribute_named("_buffer")
     crash buffer_attribute
-    var offset = lowering.layout.offset_of(buffer_attribute)
+    var offset = lowering.state.layout.offset_of(buffer_attribute)
     var buffer = lowering.new_register()
     var loaded = LowIntermediaryRepresentation.Instructions.Load(buffer, list.value, offset, 'bits_64')
     loaded.region = "{owner.key}._buffer"
@@ -796,7 +793,7 @@ func write_into_columns(call: HighIntermediaryRepresentation.Values.Call): Lower
 
 func handed_out_of_columns(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var label = lowering.text_label(
-        "spite: an item of a '{call.function.owner}' is held in one array per attribute and cannot be handed out whole, in {lowering.function.key}\n",
+        "spite: an item of a '{call.function.owner}' is held in one array per attribute and cannot be handed out whole, in {lowering.state.function.key}\n",
     )
     var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
     lowering.emit(stopped)
@@ -813,7 +810,7 @@ func read_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
         return handed_out_of_columns(call)
     }
     var address = item_address(call, element)
-    var stride = lowering.layout.inline_stride_of(call.function.owner)
+    var stride = lowering.state.layout.inline_stride_of(call.function.owner)
     if stride > 0 {
         return lowering.single(address)
     }
@@ -845,7 +842,7 @@ func write_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var value = lowering.lower_a_kept_value(written)
     var address = item_address(call, element)
     var width = lowering.width_of(element)
-    var stride = lowering.layout.inline_stride_of(call.function.owner)
+    var stride = lowering.state.layout.inline_stride_of(call.function.owner)
     if stride > 0 {
         write_in_place(address, value, stride)
         return lowering.single(-1)
@@ -880,7 +877,7 @@ func write_in_place(address: Integer, value: Lowered, stride: Integer) {
     var size = lowering.constant(stride)
     var copied = LowIntermediaryRepresentation.Instructions.CopyBytes(address, value.value, size)
     lowering.emit(copied)
-    var count = lowering.constant(lowering.layout.immortal_count)
+    var count = lowering.constant(lowering.state.layout.immortal_count)
     var stored = LowIntermediaryRepresentation.Instructions.Store(address, 8, count, 'bits_64')
     lowering.emit(stored)
     if value.owned {
@@ -938,7 +935,7 @@ func write_a_pointer(address: Integer, value: Lowered) {
 
 func forget_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var element = element_type_of(call)
-    var stride = lowering.layout.inline_stride_of(call.function.owner)
+    var stride = lowering.state.layout.inline_stride_of(call.function.owner)
     if stride > 0 or not lowering.is_a_pointer(element) {
         return lowering.single(-1)
     }
@@ -961,6 +958,11 @@ func argument(call: HighIntermediaryRepresentation.Values.Call, index: Integer):
 
 func unknown(key: String): Lowered {
     var known_intrinsic = Validators.HighIntermediaryRepresentation.KnownIntrinsic.Validator()
-    known_intrinsic.check_an_unwritten_function(lowering.path, lowering.line, lowering.function.key, key)
+    known_intrinsic.check_an_unwritten_function(
+        lowering.state.path,
+        lowering.state.line,
+        lowering.state.function.key,
+        key,
+    )
     return lowering.single(-1)
 }

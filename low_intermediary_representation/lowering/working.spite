@@ -1,8 +1,5 @@
-var no_program = Model.ProgramModel()
-var no_layout = HighIntermediaryRepresentation.Layout(no_program)
-var no_low = LowIntermediaryRepresentation.LoweredProgram()
-var no_slots = Dictionary<String, Integer>()
-var lowering = FunctionLowering(no_layout, no_low, no_slots)
+var no_state = LoweringState()
+var lowering = FunctionLowering(no_state)
 
 func Working(starting_lowering: FunctionLowering) {
     lowering = starting_lowering
@@ -46,7 +43,7 @@ func handle_of(carrier: String, running: Integer): Integer {
     var size = lowering.constant(40)
     var made = lowering.new_register()
     var allocated = LowIntermediaryRepresentation.Instructions.Allocate(made, size)
-    var class_id = lowering.layout.class_id_of(carrier)
+    var class_id = lowering.state.layout.class_id_of(carrier)
     allocated.class_id = class_id
     lowering.emit(allocated)
     var id_register = lowering.constant(class_id)
@@ -74,7 +71,7 @@ func call_with(key: String, first_register: Integer) {
 
 func helped(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var block = block_on_a_thread(call)
-    if lowering.resumable_mode {
+    if lowering.state.resumable_mode {
         var point = lowering.resume_point()
         var done = lowering.new_register()
         var loaded = LowIntermediaryRepresentation.Instructions.Load(done, block, 8, 'bits_64')
@@ -117,8 +114,8 @@ func helped(call: HighIntermediaryRepresentation.Values.Call): Lowered {
 }
 
 func block_on_a_thread(work: HighIntermediaryRepresentation.Values.Call): Integer {
-    var outer = lowering.pending_releases
-    lowering.pending_releases = List<Integer>()
+    var outer = lowering.state.pending_releases
+    lowering.state.pending_releases = List<Integer>()
     var registers = List<Integer>()
     var pointers = List<Boolean>()
     var receiver = lowering.lower_value(work.receiver)
@@ -159,7 +156,7 @@ func block_on_a_thread(work: HighIntermediaryRepresentation.Values.Call): Intege
         stored_index = stored_index + 1
     }
     lowering.release_the_pending()
-    lowering.pending_releases = outer
+    lowering.state.pending_releases = outer
     var counts_tasks = counts_the_tasks()
     var entry = thread_entry(work, pointers, counts_tasks)
     if counts_tasks {
@@ -170,15 +167,15 @@ func block_on_a_thread(work: HighIntermediaryRepresentation.Values.Call): Intege
     lowering.emit(found)
     var kept_entry = LowIntermediaryRepresentation.Instructions.Store(block, 0, address, 'bits_64')
     lowering.emit(kept_entry)
-    lowering.program.uses_threads = true
-    lowering.program.uses_the_pool = true
+    lowering.state.program.uses_threads = true
+    lowering.state.program.uses_the_pool = true
     call_with("_pool_submit", block)
     return block
 }
 
 func counts_the_tasks(): Boolean {
-    fallback lowering.waits
-    return lowering.waits.locks_any() and lowering.waits.skips_locks_while_idle()
+    fallback lowering.state.waits
+    return lowering.state.waits.locks_any() and lowering.state.waits.skips_locks_while_idle()
 }
 
 func thread_entry(
@@ -186,12 +183,14 @@ func thread_entry(
     pointers: List<Boolean>,
     counts_tasks: Boolean,
 ): String {
-    var number = lowering.program.lowered_functions.count()
+    var number = lowering.state.program.lowered_functions.count()
     var key = "_parallel_{number}"
-    var entering = FunctionLowering(lowering.layout, lowering.program, lowering.singleton_slots)
+    var entering_state = LoweringState()
+    entering_state.start_from(lowering.state.layout, lowering.state.program, lowering.state.singleton_slots)
+    var entering = FunctionLowering(entering_state)
     entering.start(key)
     var block = entering.new_register()
-    entering.function.parameter_count = 1
+    entering.state.function.parameter_count = 1
     var arguments = List<Integer>()
     var index = 0
     while index < pointers.count() {
@@ -241,13 +240,13 @@ func thread_entry(
     var zero = entering.constant(0)
     var returned = LowIntermediaryRepresentation.Instructions.Return(zero)
     entering.emit(returned)
-    lowering.program.lowered_functions.append(entering.function)
+    lowering.state.program.lowered_functions.append(entering.state.function)
     return key
 }
 
 func note_where_it_started(called: LowIntermediaryRepresentation.Instructions.Call) {
     var call_frames = LowIntermediaryRepresentation.CallFrames()
-    var call_site = call_frames.frame_line(lowering.function.place, lowering.line)
+    var call_site = call_frames.frame_line(lowering.state.function.place, lowering.state.line)
     fallback not call_site.is_empty()
     called.frames.append("{call_site}\tstarted")
 }
@@ -264,8 +263,8 @@ func started_from(work: SpiteCompiler.Value?, carrier: String): Lowered {
 }
 
 func started_through_a_shape(work: HighIntermediaryRepresentation.Values.ShapeCall, carrier: String): Lowered {
-    var outer = lowering.pending_releases
-    lowering.pending_releases = List<Integer>()
+    var outer = lowering.state.pending_releases
+    lowering.state.pending_releases = List<Integer>()
     var receiver = lowering.lower_value(work.receiver)
     crash work.receiver
     lowering.release_later(receiver, work.receiver.value_type)
@@ -274,12 +273,12 @@ func started_through_a_shape(work: HighIntermediaryRepresentation.Values.ShapeCa
     lowering.emit(loaded)
     var made = lowering.new_register()
     var after = lowering.new_block()
-    var fillers = lowering.layout.program.fillers_of(work.shape.key)
+    var fillers = lowering.state.layout.program.fillers_of(work.shape.key)
     var index = 0
     while index < fillers.count() {
         var filler = fillers[index]
         var key = "{filler.name}.{work.member.name}"
-        var wanted = lowering.layout.class_id_of(filler.name)
+        var wanted = lowering.state.layout.class_id_of(filler.name)
         var wanted_register = lowering.constant(wanted)
         var matches = lowering.new_register()
         var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', class_id, wanted_register)
@@ -296,13 +295,13 @@ func started_through_a_shape(work: HighIntermediaryRepresentation.Values.ShapeCa
         lowering.switch_to(next)
         index = index + 1
     }
-    var stop_text = "spite: no class fills '{work.shape.name}' here, at {lowering.path}:{lowering.line}\n"
+    var stop_text = "spite: no class fills '{work.shape.name}' here, at {lowering.state.path}:{lowering.state.line}\n"
     var label = lowering.text_label(stop_text)
     var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
     lowering.emit(stopped)
     lowering.switch_to(after)
     lowering.release_the_pending()
-    lowering.pending_releases = outer
+    lowering.state.pending_releases = outer
     return lowering.owned(made)
 }
 
@@ -337,15 +336,15 @@ func started_call(work: HighIntermediaryRepresentation.Values.Call, carrier: Str
 }
 
 func started_in_a_frame(work: HighIntermediaryRepresentation.Values.Call, carrier: String): Lowered {
-    var outer = lowering.pending_releases
-    lowering.pending_releases = List<Integer>()
+    var outer = lowering.state.pending_releases
+    lowering.state.pending_releases = List<Integer>()
     var arguments = lowering.lowered_call_arguments(work)
     var frame = lowering.new_register()
     var work_key = work.function.key()
     var made_frame = LowIntermediaryRepresentation.Instructions.Call(frame, "{work_key}$frame", arguments)
     lowering.emit(made_frame)
     lowering.release_the_pending()
-    lowering.pending_releases = outer
+    lowering.state.pending_releases = outer
     var made = handed_frame(frame, carrier)
     return lowering.owned(made)
 }
@@ -374,12 +373,12 @@ func joined(conversion: HighIntermediaryRepresentation.Values.Conversion): Lower
     crash conversion.converted
     var handle = lowering.lower_value(conversion.converted)
     var carrier = conversion.converted.value_type.carrier
-    if lowering.resumable_mode {
+    if lowering.state.resumable_mode {
         wait_until_finished(handle.value, carrier)
     }
     var arguments = List<Integer>()
     arguments.append(handle.value)
-    var model = lowering.layout.program.class_named(carrier)
+    var model = lowering.state.layout.program.class_named(carrier)
     crash model
     var settled = model.function_named("_settled")
     crash settled
@@ -416,8 +415,8 @@ func wait_until_finished(handle: Integer, carrier: String) {
 }
 
 func waiting_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
-    var outer = lowering.pending_releases
-    lowering.pending_releases = List<Integer>()
+    var outer = lowering.state.pending_releases
+    lowering.state.pending_releases = List<Integer>()
     var arguments = lowering.lowered_call_arguments(call)
     var answer = -1
     var presence = -1
@@ -430,7 +429,7 @@ func waiting_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var call_key = call.function.key()
     waited_into(call_key, arguments, answer, presence)
     lowering.release_the_pending()
-    lowering.pending_releases = outer
+    lowering.state.pending_releases = outer
     var made = Lowered(answer, presence)
     made.owned = lowering.counts_an_answer(call.value_type)
     return made
@@ -534,7 +533,7 @@ func frame_function(
     lowering.start("{key}$frame")
     var count = step.parameter_count
     lowering.reserve_registers(count)
-    lowering.function.parameter_count = count
+    lowering.state.function.parameter_count = count
     var header = 48
     var slots = 8 * step.register_count
     var size = lowering.constant(header + slots)
@@ -556,5 +555,5 @@ func frame_function(
     lowering.emit(kept)
     var returned = LowIntermediaryRepresentation.Instructions.Return(frame)
     lowering.emit(returned)
-    return lowering.function
+    return lowering.state.function
 }
