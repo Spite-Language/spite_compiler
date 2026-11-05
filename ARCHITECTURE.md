@@ -306,10 +306,10 @@ validator only ever sees what stays an error:
 |---|---|---|
 | syntax tree | `fixes/abstract_syntax_tree/every_fix.spite`'s `fixed`, per file as it is read (`SymbolTable.read_class`) | `misplaced_comment`, `declaration_order` (the printer prints declarations in the enforced order), `default_guard` |
 | symbols | `fixes/symbols/every_fix.spite`'s `fixed`, once, when every class is read (`Symbols.run`), and it writes and restarts right there | `repeated_declaration` (a `union` or `type` two classes of a root declare with one name and content moves to the entry class of the lowest namespace holding every copy) |
-| after building | `fixes/after_building/every_fix.spite`: `fixed_a_check` from the proof `proven_checks` before each refusal, `fixed_a_walk` before the rules after building | `proven_check` (a `crash` or `fallback` line that proves nothing), `unread_plain_local` |
+| after building | `fixes/after_building/every_fix.spite`: `fixed_a_check` from the proof `proven_checks` before each refusal, `fixed_a_walk` before the rules after building | `proven_check` (a `crash` or `fallback` line that proves nothing), `decided_condition` (an `if` or a `while` decided while compiling), `unread_plain_local` |
 
 A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it, a
-declaration moved between files) and answers a `Diagnostics.Problem` with `is_fix` for each change. It never writes. A library file, a pinned
+declaration moved between files) and answers a `Diagnostics.Problem` with `is_fix` for each change. It never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`), which makes it right before writing. A library file, a pinned
 package's file, a generated class, a generic class, a walk and a file holding breakpoints are never fixed: their
 mistakes stay errors.
 
