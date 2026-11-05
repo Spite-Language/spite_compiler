@@ -451,5 +451,7 @@ of `and` and `or` is reached only when the left does not decide, so its work can
 condition: that would run a call the program skips (`shown and maybe_true()` asks `maybe_true` when `shown` is
 false) and read a temporary on a path where it was never set. When the right side needs work, the builder holds
 the answer in a `Boolean` local set to the left side and writes the right side's work, then the assignment of its
-answer, in an `if` that runs only when the left side did not decide. A `while` condition's work is done again at
-the end of each pass, that `if` with it.
+answer, in an `if` that runs only when the left side did not decide. A `while` whose condition has work holds its
+answer the same way: a `Boolean` local starts true, and each round of the loop does the work, sets the local to the
+condition and runs the body in an `if` on it. The work is written once, so its temporaries live and die within a round
+and a fact a proof records on a value holds for every round that value is reached by.
