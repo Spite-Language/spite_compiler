@@ -1,0 +1,215 @@
+var state = LoweringState()
+
+func Counting(starting_state: LoweringState) {
+    state = starting_state
+}
+
+func owned(register: Integer): Lowered {
+    var made = Lowered(register, -1)
+    made.owned = true
+    return made
+}
+
+func retain(register: Integer) {
+    var lowering = FunctionLowering(state)
+    var retained = LowIntermediaryRepresentation.Instructions.Retain(register)
+    lowering.emit(retained)
+}
+
+# ../../OPTIMIZATIONS.md#plain-counts-where-no-other-thread-counts-a-class
+func retain_counted(register: Integer, of_type: Model.Type) {
+    var lowering = FunctionLowering(state)
+    var retained = LowIntermediaryRepresentation.Instructions.Retain(register)
+    retained.is_atomic = not counts_plainly(of_type)
+    lowering.emit(retained)
+}
+
+func release_counted(register: Integer, of_type: Model.Type) {
+    var lowering = FunctionLowering(state)
+    var arguments = List<Integer>()
+    arguments.append(register)
+    var released = LowIntermediaryRepresentation.Instructions.Call(-1, "_release", arguments)
+    released.counts_plainly = counts_plainly(of_type)
+    lowering.emit(released)
+}
+
+func note_the_count(register: Integer, of_type: Model.Type) {
+    if counts_plainly(of_type) {
+        state.plain_registers.append(register)
+    } else {
+        state.atomic_registers.append(register)
+    }
+}
+
+func counts_plainly(of_type: Model.Type): Boolean {
+    var counted = of_type.kind == 'object' and not of_type.is_a_walked_name
+    counted = counted and not state.program.counts_every_class_atomically
+    counted = counted and state.layout.class_ids.contains(of_type.name)
+    return counted and not state.program.thread_counted_classes.contains(of_type.name)
+}
+
+func release_held(register: Integer) {
+    var held_type = state.held_types[register]
+    if held_type {
+        settle_before_letting_go(register, held_type)
+    }
+    release(register)
+}
+
+func settle_before_letting_go(register: Integer, of_type: Model.Type) {
+    var lowering = FunctionLowering(state)
+    fallback state.resumable_mode
+    var settling = Settling(lowering)
+    fallback settling.may_hold_work(of_type)
+    settling.wait_until_settled(register, of_type)
+}
+
+func settle_before_clearing(call: HighIntermediaryRepresentation.Values.Call, receiver: Integer) {
+    fallback state.resumable_mode and call.function.name == "clear"
+    crash call.receiver
+    settle_before_letting_go(receiver, call.receiver.value_type)
+}
+
+func release(register: Integer) {
+    var lowering = FunctionLowering(state)
+    var arguments = List<Integer>()
+    arguments.append(register)
+    var released = LowIntermediaryRepresentation.Instructions.Call(-1, "_release", arguments)
+    released.counts_plainly = state.plain_registers.contains(register) and not state.atomic_registers.contains(register)
+    lowering.emit(released)
+}
+
+func kept(value: Lowered, of_type: Model.Type) {
+    var lowering = FunctionLowering(state)
+    if lowering.is_a_pointer(of_type) and not value.owned {
+        retain_counted(value.value, of_type)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#an-object-handed-to-the-place-that-keeps-it-is-not-counted
+func lower_a_kept_value(value: SpiteCompiler.Value?): Lowered {
+    var lowering = FunctionLowering(state)
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        var moved = moved_register(value)
+        if moved >= 0 {
+            return owned(moved)
+        }
+    }
+    return lowering.lower_value(value)
+}
+
+func moved_register(read: HighIntermediaryRepresentation.Values.LocalRead): Integer {
+    if state.resumable_mode or not state.taken or not state.locals.contains(read.name) {
+        return -1
+    }
+    var of_type = read.value_type
+    if of_type.kind != 'object' or of_type.is_nullable or state.layout.is_back_held(of_type.name) {
+        return -1
+    }
+    if not state.taken.frees_quietly(of_type.name) or not is_the_last_use(read.name) {
+        return -1
+    }
+    var register = state.locals[read.name]
+    crash register
+    var holding = holding_scope(register)
+    if holding < 0 or is_a_borrowed_source(read.name) {
+        return -1
+    }
+    var scope = state.scopes[holding]
+    crash scope
+    var at = scope.index_of(register)
+    crash at
+    scope.remove_at(at)
+    return register
+}
+
+func holding_scope(register: Integer): Integer {
+    var innermost = state.scopes.count() - 1
+    var scope = state.scopes[innermost]
+    crash scope
+    if scope.contains(register) {
+        return innermost
+    }
+    if innermost != 1 {
+        return -1
+    }
+    var outermost = state.scopes[0]
+    crash outermost
+    fallback not outermost.contains(register)
+    return -1
+}
+
+func is_the_last_use(name: String): Boolean {
+    var statement = state.block_statements[state.statement_index]
+    fallback statement and evaluates_once(statement)
+    fallback state.uses.in_statement(statement, name) == 1
+    var after = state.statement_index + 1
+    return state.uses.in_statements_from(state.block_statements, after, name) == 0
+}
+
+func evaluates_once(statement: SpiteCompiler.Statement): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return true
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return true
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return true
+        HighIntermediaryRepresentation.Statements.Evaluate: return not statement.waited
+        HighIntermediaryRepresentation.Statements.Return: return true
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: return false
+        HighIntermediaryRepresentation.Statements.If: return false
+        HighIntermediaryRepresentation.Statements.While: return false
+        HighIntermediaryRepresentation.Statements.Stop: return false
+        HighIntermediaryRepresentation.Statements.Block: return false
+    }
+}
+
+func is_a_borrowed_source(name: String): Boolean {
+    var index = 0
+    while index < state.borrowed_sources.count() {
+        var source = state.borrowed_sources[index]
+        if state.uses.in_value(source, name) > 0 {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func release_later(value: Lowered, of_type: Model.Type) {
+    var lowering = FunctionLowering(state)
+    if lowering.is_a_pointer(of_type) and value.owned {
+        note_the_count(value.value, of_type)
+        state.pending_releases.append(value.value)
+    }
+}
+
+func release_the_pending() {
+    state.pending_releases.each(release)
+    state.pending_releases = List<Integer>()
+}
+
+func discard(value: Lowered, of_type: Model.Type) {
+    var lowering = FunctionLowering(state)
+    if lowering.is_a_pointer(of_type) and value.owned {
+        release_counted(value.value, of_type)
+    }
+}
+
+func hold(register: Integer) {
+    var innermost = state.scopes.last()
+    crash innermost
+    innermost.append(register)
+}
+
+func release_every_scope() {
+    var lowering = FunctionLowering(state)
+    var index = state.scopes.count() - 1
+    while index >= 0 {
+        var scope = state.scopes[index]
+        crash scope
+        scope.each(release_held)
+        index = index - 1
+    }
+    if state.locks_its_singleton {
+        lowering.unlock_the_singleton()
+    }
+}
