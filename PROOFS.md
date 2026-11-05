@@ -719,7 +719,7 @@ as when each was refused while building.
   `Vector` the builder recorded making (`context.vector_sites`); the test itself, `constraints.spite`
   (`fits_a_vector`, with `uses_this_as_a_value`, and `is_kept_inline` for each attribute, which the proof asks
   too, so its refusal and the answer an `Items<T>` folds never disagree), is still asked while building by `values.spite`
-  and `reflection.spite`, which choose the form of what they build from it.
+  and `fills.spite` (`is_fixed_size`), which choose the form of what they build from it.
 - **Checked by**: tests/items_columns, tests/folded_checks, tests/folded_lends, tests/lent_list_elements,
   tests/reflection_objects; conformance/folded_crash.
 
@@ -751,7 +751,7 @@ as when each was refused while building.
 - **Missing**: it is a filled reflection value, not a folded constant, so an `if` on it builds both branches.
 - **Falls back**: true when a bound singleton has attributes, when a function of a program class cannot be built,
   and for a library class with attributes.
-- **Lives in**: the proof `proofs/compile_time_facts` answers the fact; `reflection.spite` (`fill_the_state`,
+- **Lives in**: the proof `proofs/compile_time_facts` answers the fact; `fills.spite` (`fill_the_state`,
   `every_writer_can_be_built`, `writes_its_object`) asks it.
 - **Checked by**: tests/class_walk, tests/run_time_kinds, tests/reflection_objects, tests/stateful_singleton_writes.
 
