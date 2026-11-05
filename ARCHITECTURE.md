@@ -59,9 +59,9 @@ registered:
 The entry class registers its passes in its own setup, in order, with `register(pass)`, each made there and never
 changed; `run` runs them in that order. Since the setup only makes passes and registers them, `proofs/setup_lists`
 knows the list and `high_optimization_passes/setup_list_calls` writes `run` as one direct call per pass, so a stage
-costs nothing over a hand-written sequence. `register` crashes once `run` has started. Each pass folder's entry class is
-named for the folder and is what the stage registers; a low pass whose work is per function keeps that work in its
-`Pass(function)` and its entry class runs it over every selected function (`LoweredProgram.is_selected`: every
+costs nothing over a hand-written sequence. `register` crashes once `run` has started. A high pass's entry is its folder's `pass.spite`
+(class `Pass`), which the stage registers; a low pass's entry class is named for the folder and is what the stage registers,
+and a low pass whose work is per function keeps that work in its `pass.spite` (`Pass(function)`), its entry class running it over every selected function (`LoweredProgram.is_selected`: every
 function, except between the late inlining and `EveryFunction`, where only the functions the late inlining changed).
 A pass that needs more than the representation reads it from the representation: the high passes and proofs read
 the builder's context through `HighProgram.context` (the model, the symbol table, the flags, the facts asked).
@@ -206,6 +206,29 @@ passes from settling the singletons to the last live values, the registers writt
 one per write and joined again once copies are read through); then direct calls and the late inlining, the placement
 and the cleaning again on the functions it changed; then, on every function again, releasing in place, vector loops,
 and the last shaping of blocks, live values and copy coalescing.
+
+## The folders
+
+One layout for each kind of folder, so opening one says where its entry is. This is what each kind holds today
+(#299 is open): no check enforces it yet (it waits for #320, the compile-time fold the reflection walk needs), and
+`spite_spec`'s `compiler_contracts_are_true` holds that every stage has its entry and a `contract.md` naming only files,
+folders and flags that exist. The size of every file is held by `validators/abstract_syntax_tree/file_content_budget`.
+
+| Folder kind | What it holds today |
+|---|---|
+| stage (`name_resolution/`, `outputs/`, ...) | `<stage>.spite` (the entry class `Stage.Stage`) and `contract.md` |
+| high pass | `high_optimization_passes/<pass>/pass.spite` (class `Pass`) and its helpers |
+| low pass | `low_optimization_passes/<pass>/pass.spite` (class `Pass`, the per-function work) and the entry `<pass>.spite` the stage registers; some folders hold several entries |
+| proof | `proofs/<proof>/proof.spite` (class `Proof`) and its helpers |
+| validator rule | `validators/<layer>/<rule>/validator.spite` (class `Validator` with a `check*`), and `every_rule.spite` in the layer |
+| fix rule | `fixes/<layer>/<rule>/fix.spite` (class `Fix`), and `every_fix.spite` in the layer; `fixes/fixes.spite` writes |
+| printer | `printers/<printer>/printer.spite` (class `Printer`) |
+| emitter | `generators/<target>/instructions/<instruction>.spite` per instruction kind |
+| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet |
+| helper | next to what uses it; a helper several passes read lives in the stage folder (`high_optimization_passes/references.spite`), though a few low passes still read each other's `Pass` and `compile_time_evaluation`'s `Frame` and `Machine` |
+
+The passes and proofs are registered in the constructor of their stage's entry class, in order; there is no
+`every_pass.spite` or `every_proof.spite` yet, since `proofs/setup_lists` reads that constructor.
 
 ## The targets
 
@@ -395,7 +418,7 @@ A text that is an identity (a type's key, an instance's name) is not printing: i
 
 ## Passes
 
-`<stage>/<name>/<name>.spite` holds the pass's entry class, which fits the stage's type. What several low passes
+`<stage>/<name>/pass.spite` is the pass of the folder (a proof's is `proof.spite`); a high pass's and every proof's fits the stage's type, and a low pass's entry class is `<name>.spite`. What several low passes
 and low proofs read the same way is a reader at the top of `low_optimization_passes/` (`Operands`, `Flow`,
 `BlockEdges`, `Dominance`, `RegisterLives`, `SingletonTests`), not part of any one pass. A unit pass reads one
 function or class at a time; a program pass needs the whole program (tree shaking, inlining across classes,
@@ -404,7 +427,7 @@ D1087), and nothing that builds a representation also optimises it.
 
 ## Proofs
 
-`proofs/<what_it_proves>/<what_it_proves>.spite` proves one fact over the whole built high representation and hands
+`proofs/<what_it_proves>/proof.spite` proves one fact over the whole built high representation and hands
 what breaks it to its validator (D1072). A proof that decides whether code is accepted runs here, after every
 function is built and before any optimisation, so what a program may say never depends on how well it is optimised;
 a proof that only makes code cheaper records its facts for the passes after it, where those facts exist: on the
