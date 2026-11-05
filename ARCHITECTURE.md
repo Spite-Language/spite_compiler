@@ -317,7 +317,7 @@ One owner writes, `fixes/fixes.spite` (`Fixes.Fixes`, a singleton): no step, val
 restarts.
 
 - `rewritten` prints a file read with `printers/spite`'s `FilePrinter`, and when the text differs from the file
-  checks that it reads back to the same text with every comment (`validators/abstract_syntax_tree/formatting`),
+  checks that it reads back to the same text with every comment and every text's value (`validators/abstract_syntax_tree/formatting`),
   writes it, and prints the `fixed:` lines, or `formatted <path>` when no rule changed it; the symbol table then
   reads the written text again.
 - `found_later` keeps a tree a fix changed, a file not yet on disk included. `run`, called once the proofs end, by
