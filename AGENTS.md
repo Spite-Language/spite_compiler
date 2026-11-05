@@ -16,6 +16,7 @@ is decided; [the specification](https://github.com/Spite-Language/spite_spec/blo
 - Anything that can go wrong silently is a bug: a crash that names its cause or a compile error, never a guess.
 - No C, and no standard library code here. A new class in [spite_standard_library](https://github.com/Spite-Language/spite_standard_library) needs Mortaro's yes first.
 - Keep markdown short. One fact in one place. What is left is a GitHub issue, never a file: a pull request that finishes one says `Closes #n`, one that finishes part of it comments what is left, and a fault you find and do not fix now is a new issue (label `urgency: silent` when it fails silently, D244).
+- Before declaring a `union` or a `type`, check that no other one in the program already holds the same members under another name. If it means the same thing, use that name; two with the same members stay apart only when they mean different things (`Directory.Entry` and `Target`). The compiler only catches a repeat by name and content (#310), so this one is on you and on review.
 - An issue being worked on has Mortaro as its assignee and a comment naming the worktree and branch it is worked in (`work/<batch>`, branch `<batch>`), so the assigned issues are what is in progress. Assign him when the work starts, comment the worktree then, and unassign him when it lands or stops.
 
 ## Work
