@@ -1,0 +1,597 @@
+var state = LoweringState()
+
+func Singletons(starting_state: LoweringState) {
+    state = starting_state
+}
+
+# ../../PROOFS.md#no-attribute-is-read-past-the-lock
+func count_inside_the_lock(loaded: Lowered, attribute: Model.AttributeModel) {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var attribute_type = attribute.attribute_type
+    fallback lowering.is_a_pointer(attribute_type) and not loaded.owned
+    counting.retain_counted(loaded.value, attribute_type)
+    loaded.owned = true
+}
+
+func reads_a_changing_attribute(attribute: Model.AttributeModel): Boolean {
+    crash state.waits
+    return state.waits.is_assigned_after_making(attribute)
+}
+
+# ../../PROOFS.md#read-only-and-atomic-singletons
+func reads_under_the_lock(attribute: Model.AttributeModel): Boolean {
+    fallback not state.program.lone_atomic_attributes.contains("{attribute.owner}.{attribute.name}")
+    return reads_a_changing_attribute(attribute)
+}
+
+func locks_from_outside(owner_key: String): Boolean {
+    fallback state.waits and owner_key != state.lowering_owner
+    return state.waits.is_a_locked_class(owner_key)
+}
+
+func is_a_singleton_class(class_key: String): Boolean {
+    var made_model = state.layout.program.class_named(class_key)
+    crash made_model
+    return made_model.is_singleton
+}
+
+func singleton_of(class_key: String, made: HighIntermediaryRepresentation.Values.MakeObject): Integer {
+    var lowering = FunctionLowering(state)
+    var slot_key = singleton_slot_key(class_key, made)
+    var label = slot_label_of(slot_key)
+    var slot = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    lowering.emit(addressed)
+    var object = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(object, slot, 0, 'bits_64')
+    lowering.emit(loaded)
+    var zero = lowering.constant(0)
+    var missing = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(missing, 'equal', object, zero)
+    lowering.emit(compared)
+    var making = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(missing, making, after)
+    lowering.emit(test)
+    lowering.switch_to(making)
+    var maker_key = maker_of(class_key, made, label)
+    var no_arguments = List<Integer>()
+    var called = LowIntermediaryRepresentation.Instructions.Call(object, maker_key, no_arguments)
+    lowering.emit(called)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    return object
+}
+
+func maker_of(class_key: String, made: HighIntermediaryRepresentation.Values.MakeObject, label: Integer): String {
+    var key = "_make_{class_key}${label}"
+    if state.program.hot_reload {
+        var slot_key = singleton_slot_key(class_key, made)
+        key = "_make_{slot_key}"
+    }
+    if state.program.singleton_makers.contains(key) {
+        return key
+    }
+    state.program.singleton_makers.append(key)
+    var maker_state = LoweringState()
+    maker_state.start_from(state.layout, state.program, state.singleton_slots)
+    var maker = FunctionLowering(maker_state)
+    var maker_singletons = Singletons(maker_state)
+    maker.state.waits = state.waits
+    maker.state.assignments = state.assignments
+    maker.state.trimmed_keys = state.trimmed_keys
+    maker.state.makes_work = state.makes_work
+    maker.state.path = state.path
+    maker.state.line = state.line
+    maker_singletons.write_the_maker(key, class_key, made, label, state.function.place)
+    state.program.lowered_functions.append(maker.state.function)
+    return key
+}
+
+func write_the_maker(
+    key: String,
+    class_key: String,
+    made: HighIntermediaryRepresentation.Values.MakeObject,
+    label: Integer,
+    place: String,
+) {
+    var lowering = FunctionLowering(state)
+    var values = Values(state)
+    lowering.start(key)
+    state.function.place = place
+    var slot = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    lowering.emit(addressed)
+    var object = lowering.new_register()
+    var after = lowering.new_block()
+    halt_on_state(
+        slot,
+        3,
+        "spite: a drop() at exit used the singleton {class_key} after it was destroyed: singletons are destroyed in reverse order of when they were made, so keep {class_key} in an attribute of the singleton whose drop() uses it\n",
+    )
+    var thread = lowering.new_register()
+    var no_arguments = List<Integer>()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
+    lowering.emit(asked)
+    var never_made = lowering.constant(0)
+    var being_made = lowering.constant(1)
+    var before = lowering.new_register()
+    var claimed = LowIntermediaryRepresentation.Instructions.CompareExchange(before, slot, 16, never_made, being_made)
+    lowering.emit(claimed)
+    var won = lowering.new_register()
+    var compared_claim = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, never_made)
+    lowering.emit(compared_claim)
+    var building = lowering.new_block()
+    var someone_else = lowering.new_block()
+    var claim_test = LowIntermediaryRepresentation.Instructions.Branch(won, building, someone_else)
+    lowering.emit(claim_test)
+    lowering.switch_to(someone_else)
+    wait_for_the_maker(slot, thread, class_key, object, after)
+    lowering.switch_to(building)
+    var kept_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 32, thread, 'bits_64')
+    lowering.emit(kept_thread)
+    var fresh = values.make_object(class_key)
+    values.call_the_constructor(fresh, made)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 0, fresh, 'bits_64')
+    lowering.emit(stored)
+    var finished = lowering.constant(2)
+    var marked_made = LowIntermediaryRepresentation.Instructions.Store(slot, 16, finished, 'bits_64')
+    lowering.emit(marked_made)
+    record_the_making(slot, class_key)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(object, fresh)
+    lowering.emit(copied)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    var answered = LowIntermediaryRepresentation.Instructions.Return(object)
+    lowering.emit(answered)
+}
+
+func singleton_slot_key(class_key: String, made: HighIntermediaryRepresentation.Values.MakeObject): String {
+    if made.arguments.is_empty() {
+        return class_key
+    }
+    var written = List<String>()
+    var index = 0
+    while index < made.arguments.count() {
+        var argument = made.arguments[index]
+        var shown = literal_key_of(argument)
+        written.append(shown)
+        index = index + 1
+    }
+    var joined = written.join(", ")
+    return "{class_key}({joined})"
+}
+
+func literal_key_of(value: SpiteCompiler.Value): String {
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value.number.to_string()
+    }
+    if value.class == HighIntermediaryRepresentation.Values.DecimalNumber {
+        return value.written
+    }
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        return value.text.to_debug()
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        crash value.converted
+        return literal_key_of(value.converted)
+    }
+    crash
+}
+
+func lock_the_singleton() {
+    lock_a_singleton(state.locked_class)
+}
+
+func lock_a_singleton(class_key: String) {
+    var lowering = FunctionLowering(state)
+    var label = slot_label_of(class_key)
+    var slot = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    lowering.emit(addressed)
+    var thread = lowering.new_register()
+    var asked = LowIntermediaryRepresentation.Instructions.ThreadIdentity(thread)
+    lowering.emit(asked)
+    var trying = lowering.new_block()
+    var again = lowering.new_block()
+    var taken = lowering.new_block()
+    var unowned = lowering.new_block()
+    var owner = lowering.new_register()
+    var loaded_owner = LowIntermediaryRepresentation.Instructions.Load(owner, slot, 40, 'bits_64')
+    lowering.emit(loaded_owner)
+    var mine = lowering.new_register()
+    var compared_owner = LowIntermediaryRepresentation.Instructions.Compare(mine, 'equal', owner, thread)
+    lowering.emit(compared_owner)
+    var owner_test = LowIntermediaryRepresentation.Instructions.Branch(mine, taken, unowned)
+    lowering.emit(owner_test)
+    lowering.switch_to(unowned)
+    if state.waits and state.waits.skips_locks_while_idle() {
+        claim_while_idle(slot, thread, trying, taken)
+    } else {
+        lowering.jump_to(trying)
+    }
+    lowering.switch_to(trying)
+    var free = lowering.constant(0)
+    var before = lowering.new_register()
+    var claimed = LowIntermediaryRepresentation.Instructions.CompareExchange(before, slot, 40, free, thread)
+    lowering.emit(claimed)
+    var won = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, free)
+    lowering.emit(compared)
+    var won_test = LowIntermediaryRepresentation.Instructions.Branch(won, taken, again)
+    lowering.emit(won_test)
+    lowering.switch_to(again)
+    var no_wait = lowering.constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    lowering.emit(paused)
+    lowering.jump_to(trying)
+    lowering.switch_to(taken)
+    if state.waits and state.waits.shares_the_lock(class_key) {
+        wait_for_the_readers(slot)
+    }
+    var depth = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(depth, slot, 48, 'bits_64')
+    lowering.emit(loaded)
+    var one = lowering.constant(1)
+    var deeper = lowering.new_register()
+    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(deeper, 'add', depth, one)
+    added.is_checked = false
+    lowering.emit(added)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 48, deeper, 'bits_64')
+    lowering.emit(stored)
+}
+
+func claim_while_idle(slot: Integer, thread: Integer, trying: Integer, taken: Integer) {
+    var lowering = FunctionLowering(state)
+    var tasks_label = record_label_of("$tasks")
+    var tasks = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(tasks, tasks_label)
+    lowering.emit(addressed)
+    var running = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(running, tasks, 0, 'bits_64')
+    lowering.emit(loaded)
+    var none_running = lowering.constant(0)
+    var idle = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(idle, 'equal', running, none_running)
+    lowering.emit(compared)
+    var claiming = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(idle, claiming, trying)
+    lowering.emit(test)
+    lowering.switch_to(claiming)
+    var claimed = LowIntermediaryRepresentation.Instructions.Store(slot, 40, thread, 'bits_64')
+    lowering.emit(claimed)
+    lowering.jump_to(taken)
+}
+
+func count_a_task(amount: Long) {
+    var lowering = FunctionLowering(state)
+    var tasks_label = record_label_of("$tasks")
+    var tasks = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(tasks, tasks_label)
+    lowering.emit(addressed)
+    var left = lowering.new_register()
+    var counted = LowIntermediaryRepresentation.Instructions.AtomicAdd(left, tasks, 0, amount)
+    lowering.emit(counted)
+}
+
+func unlock_the_singleton() {
+    unlock_a_singleton(state.locked_class)
+}
+
+func unlock_a_singleton(class_key: String) {
+    var lowering = FunctionLowering(state)
+    var label = slot_label_of(class_key)
+    var slot = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    lowering.emit(addressed)
+    var depth = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(depth, slot, 48, 'bits_64')
+    lowering.emit(loaded)
+    var one = lowering.constant(1)
+    var shallower = lowering.new_register()
+    var subtracted = LowIntermediaryRepresentation.Instructions.Arithmetic(shallower, 'subtract', depth, one)
+    subtracted.is_checked = false
+    lowering.emit(subtracted)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 48, shallower, 'bits_64')
+    lowering.emit(stored)
+    var zero = lowering.constant(0)
+    var released = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(released, 'equal', shallower, zero)
+    lowering.emit(compared)
+    var freeing = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(released, freeing, after)
+    lowering.emit(test)
+    lowering.switch_to(freeing)
+    var opened = LowIntermediaryRepresentation.Instructions.Store(slot, 40, zero, 'bits_64')
+    lowering.emit(opened)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+}
+
+func wait_for_the_filling(slot: Integer, thread: Integer, made: Integer, after: Integer) {
+    var lowering = FunctionLowering(state)
+    var maker = lowering.new_register()
+    var loaded_maker = LowIntermediaryRepresentation.Instructions.Load(maker, slot, 32, 'bits_64')
+    lowering.emit(loaded_maker)
+    var is_this_thread = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_this_thread, 'equal', maker, thread)
+    lowering.emit(compared)
+    var taking = lowering.new_block()
+    var waiting = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_this_thread, taking, waiting)
+    lowering.emit(test)
+    lowering.switch_to(waiting)
+    var slot_state = lowering.new_register()
+    var loaded_state = LowIntermediaryRepresentation.Instructions.Load(slot_state, slot, 16, 'bits_64')
+    lowering.emit(loaded_state)
+    var filled = lowering.constant(2)
+    var is_filled = lowering.new_register()
+    var compared_state = LowIntermediaryRepresentation.Instructions.Compare(is_filled, 'equal', slot_state, filled)
+    lowering.emit(compared_state)
+    var pausing = lowering.new_block()
+    var filled_test = LowIntermediaryRepresentation.Instructions.Branch(is_filled, taking, pausing)
+    lowering.emit(filled_test)
+    lowering.switch_to(pausing)
+    var no_wait = lowering.constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    lowering.emit(paused)
+    lowering.jump_to(waiting)
+    lowering.switch_to(taking)
+    var taken = LowIntermediaryRepresentation.Instructions.Load(made, slot, 0, 'bits_64')
+    lowering.emit(taken)
+    lowering.jump_to(after)
+}
+
+func wait_for_the_maker(slot: Integer, thread: Integer, class_key: String, object: Integer, after: Integer) {
+    var lowering = FunctionLowering(state)
+    var maker = lowering.new_register()
+    var loaded_maker = LowIntermediaryRepresentation.Instructions.Load(maker, slot, 32, 'bits_64')
+    lowering.emit(loaded_maker)
+    var is_this_thread = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_this_thread, 'equal', maker, thread)
+    lowering.emit(compared)
+    var circling = lowering.new_block()
+    var waiting = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_this_thread, circling, waiting)
+    lowering.emit(test)
+    lowering.switch_to(circling)
+    var circle = ""
+    if state.waits {
+        circle = state.waits.circle_of(class_key)
+    }
+    var message = "spite: singleton '{class_key}' is asked for while it is being made: a singleton cannot reach itself as it initialises\n"
+    if not circle.is_empty() {
+        message = "spite: singleton {circle}: singletons initialise each other in a circle\n"
+    }
+    var label = lowering.text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    lowering.switch_to(waiting)
+    var slot_state = lowering.new_register()
+    var loaded_state = LowIntermediaryRepresentation.Instructions.Load(slot_state, slot, 16, 'bits_64')
+    lowering.emit(loaded_state)
+    var made_state = lowering.constant(2)
+    var is_made = lowering.new_register()
+    var compared_state = LowIntermediaryRepresentation.Instructions.Compare(is_made, 'equal', slot_state, made_state)
+    lowering.emit(compared_state)
+    var pausing = lowering.new_block()
+    var taking = lowering.new_block()
+    var made_test = LowIntermediaryRepresentation.Instructions.Branch(is_made, taking, pausing)
+    lowering.emit(made_test)
+    lowering.switch_to(pausing)
+    var no_wait = lowering.constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    lowering.emit(paused)
+    lowering.jump_to(waiting)
+    lowering.switch_to(taking)
+    var taken = LowIntermediaryRepresentation.Instructions.Load(object, slot, 0, 'bits_64')
+    lowering.emit(taken)
+    lowering.jump_to(after)
+}
+
+func halt_on_state(slot: Integer, slot_state: Integer, message: String) {
+    var lowering = FunctionLowering(state)
+    var current = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(current, slot, 16, 'bits_64')
+    lowering.emit(loaded)
+    var wanted = lowering.constant(slot_state)
+    var matches = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', current, wanted)
+    lowering.emit(compared)
+    var halting = lowering.new_block()
+    var going_on = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(matches, halting, going_on)
+    lowering.emit(test)
+    lowering.switch_to(halting)
+    var label = lowering.text_label(message)
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    lowering.switch_to(going_on)
+}
+
+func record_the_making(slot: Integer, class_key: String) {
+    record_with(slot, "_destroy_{class_key}")
+}
+
+# ../../ARCHITECTURE.md#the-list-let-go-at-exit
+func record_with(slot: Integer, destroy_name: String) {
+    var lowering = FunctionLowering(state)
+    var head_label = made_singletons_label()
+    var head = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(head, head_label)
+    lowering.emit(addressed)
+    var destroy = lowering.new_register()
+    var found = LowIntermediaryRepresentation.Instructions.FunctionAddress(destroy, destroy_name)
+    lowering.emit(found)
+    var kept_destroy = LowIntermediaryRepresentation.Instructions.Store(slot, 24, destroy, 'bits_64')
+    lowering.emit(kept_destroy)
+    var pushing = lowering.new_block()
+    var recorded = lowering.new_block()
+    lowering.jump_to(pushing)
+    lowering.switch_to(pushing)
+    var newest = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(newest, head, 0, 'bits_64')
+    lowering.emit(loaded)
+    var linked = LowIntermediaryRepresentation.Instructions.Store(slot, 8, newest, 'bits_64')
+    lowering.emit(linked)
+    var before = lowering.new_register()
+    var pushed = LowIntermediaryRepresentation.Instructions.CompareExchange(before, head, 0, newest, slot)
+    lowering.emit(pushed)
+    var unchanged = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(unchanged, 'equal', before, newest)
+    lowering.emit(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(unchanged, recorded, pushing)
+    lowering.emit(test)
+    lowering.switch_to(recorded)
+}
+
+func made_singletons_label(): Integer {
+    return record_label_of("")
+}
+
+func slot_label_of(class_key: String): Integer {
+    return record_label_of(class_key)
+}
+
+func record_label_of(class_key: String): Integer {
+    var lowering = FunctionLowering(state)
+    var known = state.singleton_slots[class_key]
+    if known {
+        return known
+    }
+    var empty = Buffer(0)
+    var index = 0
+    while index < 64 {
+        empty.append(0)
+        index = index + 1
+    }
+    var label = lowering.data_label(empty)
+    state.singleton_slots[class_key] = label
+    state.program.name_state(label, "singleton.{class_key}")
+    return label
+}
+
+# ../../OPTIMIZATIONS.md#a-counted-loop-of-reads-shares-its-singletons-lock
+func share_a_singleton(class_key: String): Integer {
+    var lowering = FunctionLowering(state)
+    var label = slot_label_of(class_key)
+    var slot = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    lowering.emit(addressed)
+    var thread = lowering.new_register()
+    var asked = LowIntermediaryRepresentation.Instructions.ThreadIdentity(thread)
+    lowering.emit(asked)
+    var exclusive = lowering.new_register()
+    var owner = lowering.new_register()
+    var loaded_owner = LowIntermediaryRepresentation.Instructions.Load(owner, slot, 40, 'bits_64')
+    lowering.emit(loaded_owner)
+    var mine = lowering.new_register()
+    var compared_owner = LowIntermediaryRepresentation.Instructions.Compare(mine, 'equal', owner, thread)
+    lowering.emit(compared_owner)
+    var deeper = lowering.new_block()
+    var trying = lowering.new_block()
+    var backing = lowering.new_block()
+    var shared = lowering.new_block()
+    var after = lowering.new_block()
+    var owner_test = LowIntermediaryRepresentation.Instructions.Branch(mine, deeper, trying)
+    lowering.emit(owner_test)
+    lowering.switch_to(deeper)
+    var depth = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(depth, slot, 48, 'bits_64')
+    lowering.emit(loaded)
+    var one = lowering.constant(1)
+    var added_depth = lowering.new_register()
+    var added = LowIntermediaryRepresentation.Instructions.Arithmetic(added_depth, 'add', depth, one)
+    added.is_checked = false
+    lowering.emit(added)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 48, added_depth, 'bits_64')
+    lowering.emit(stored)
+    var held_alone = LowIntermediaryRepresentation.Instructions.Constant(exclusive, 1)
+    lowering.emit(held_alone)
+    lowering.jump_to(after)
+    lowering.switch_to(trying)
+    var readers = lowering.new_register()
+    var entered = LowIntermediaryRepresentation.Instructions.AtomicAdd(readers, slot, 56, 1)
+    lowering.emit(entered)
+    var writer = lowering.new_register()
+    var loaded_writer = LowIntermediaryRepresentation.Instructions.Load(writer, slot, 40, 'bits_64')
+    lowering.emit(loaded_writer)
+    var nobody = lowering.constant(0)
+    var free = lowering.new_register()
+    var compared_writer = LowIntermediaryRepresentation.Instructions.Compare(free, 'equal', writer, nobody)
+    lowering.emit(compared_writer)
+    var free_test = LowIntermediaryRepresentation.Instructions.Branch(free, shared, backing)
+    lowering.emit(free_test)
+    lowering.switch_to(backing)
+    var left = lowering.new_register()
+    var backed = LowIntermediaryRepresentation.Instructions.AtomicAdd(left, slot, 56, -1)
+    lowering.emit(backed)
+    var no_wait = lowering.constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    lowering.emit(paused)
+    lowering.jump_to(trying)
+    lowering.switch_to(shared)
+    var held_shared = LowIntermediaryRepresentation.Instructions.Constant(exclusive, 0)
+    lowering.emit(held_shared)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    return exclusive
+}
+
+func unshare_a_singleton(class_key: String, exclusive: Integer) {
+    var lowering = FunctionLowering(state)
+    var alone = lowering.new_block()
+    var shared = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(exclusive, alone, shared)
+    lowering.emit(test)
+    lowering.switch_to(alone)
+    unlock_a_singleton(class_key)
+    lowering.jump_to(after)
+    lowering.switch_to(shared)
+    var label = slot_label_of(class_key)
+    var slot = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    lowering.emit(addressed)
+    var left = lowering.new_register()
+    var leaving = LowIntermediaryRepresentation.Instructions.AtomicAdd(left, slot, 56, -1)
+    lowering.emit(leaving)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+}
+
+func wait_for_the_readers(slot: Integer) {
+    var lowering = FunctionLowering(state)
+    var waiting = lowering.new_block()
+    var pausing = lowering.new_block()
+    var after = lowering.new_block()
+    lowering.jump_to(waiting)
+    lowering.switch_to(waiting)
+    var readers = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(readers, slot, 56, 'bits_64')
+    lowering.emit(loaded)
+    var nobody = lowering.constant(0)
+    var none_left = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(none_left, 'equal', readers, nobody)
+    lowering.emit(compared)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(none_left, after, pausing)
+    lowering.emit(test)
+    lowering.switch_to(pausing)
+    var no_wait = lowering.constant(0)
+    var pause_arguments = List<Integer>()
+    pause_arguments.append(no_wait)
+    var paused = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "Sleep", pause_arguments)
+    lowering.emit(paused)
+    lowering.jump_to(waiting)
+    lowering.switch_to(after)
+}
