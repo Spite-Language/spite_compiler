@@ -1,0 +1,803 @@
+var state = LoweringState()
+
+func Values(starting_state: LoweringState) {
+    state = starting_state
+}
+
+func lower_function_fact(fact: HighIntermediaryRepresentation.Values.Function.Fact): Lowered {
+    var lowering = FunctionLowering(state)
+    crash fact.is_answered
+    var number = 0
+    if fact.answer {
+        number = 1
+    }
+    var register = lowering.constant(number)
+    return lowering.single(register)
+}
+
+func lower_whole_number(number: HighIntermediaryRepresentation.Values.WholeNumber): Lowered {
+    var lowering = FunctionLowering(state)
+    var register = lowering.constant(number.number)
+    return lowering.single(register)
+}
+
+func lower_decimal_number(number: HighIntermediaryRepresentation.Values.DecimalNumber): Lowered {
+    var lowering = FunctionLowering(state)
+    var bits: Long = 0
+    if number.value_type.name == "Float" {
+        var parsed_float: Float? = number.written
+        crash parsed_float
+        bits = parsed_float.bits()
+    } else {
+        var parsed: Double? = number.written
+        crash parsed
+        bits = parsed.bits()
+    }
+    var register = lowering.constant(bits)
+    return lowering.single(register)
+}
+
+func lower_null(null_type: Model.Type): Lowered {
+    var lowering = FunctionLowering(state)
+    var zero = lowering.constant(0)
+    if not lowering.is_a_nullable_scalar(null_type) {
+        return lowering.single(zero)
+    }
+    var absent = lowering.constant(0)
+    return Lowered(zero, absent)
+}
+
+func lower_this(): Lowered {
+    var lowering = FunctionLowering(state)
+    var this_register = state.locals["this"]
+    crash this_register
+    return lowering.single(this_register)
+}
+
+func lower_local(read: HighIntermediaryRepresentation.Values.LocalRead): Lowered {
+    var lowering = FunctionLowering(state)
+    var held_in_columns = state.column_parts.contains(read.name) or state.column_items.contains(read.name)
+    if held_in_columns and not state.locals.contains(read.name) {
+        var columns = ColumnLists(lowering)
+        return columns.handed_out_whole(read.value_type.name)
+    }
+    var register = state.locals[read.name]
+    crash register
+    var presence = state.local_presences[read.name]
+    if presence and read.value_type.is_nullable {
+        return Lowered(register, presence)
+    }
+    return lowering.single(register)
+}
+
+func lower_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var columns = ColumnLists(lowering)
+    var from_columns = columns.read_of(read)
+    if from_columns {
+        return from_columns
+    }
+    var standing = state.layout.standing_in_for(read)
+    if standing {
+        return lowering.lower_value(standing)
+    }
+    var object = lowering.lower_value(read.object)
+    crash read.object
+    var region = region_of(read.object.value_type, read.attribute)
+    var owner_key = read.attribute.owner
+    var takes_the_lock = lowering.locks_from_outside(owner_key) and lowering.reads_under_the_lock(read.attribute)
+    if takes_the_lock {
+        lowering.lock_a_singleton(owner_key)
+    }
+    var loaded = load_attribute_in(object.value, read.attribute, region)
+    if takes_the_lock {
+        lowering.count_inside_the_lock(loaded, read.attribute)
+        lowering.unlock_a_singleton(owner_key)
+    }
+    if state.layout.is_back(read.attribute) and not read.value_type.is_nullable {
+        lowering.stop_if_gone(loaded, "{read.attribute.owner}.{read.attribute.name}")
+    }
+    var is_a_temporary = lowering.is_a_pointer(read.object.value_type) and object.owned
+    if state.gathers_for_the_statement and is_a_temporary {
+        state.statement_releases.append(object.value)
+    } else {
+        counting.release_later(object, read.object.value_type)
+    }
+    return loaded
+}
+
+func region_of(object_type: Model.Type, attribute: Model.AttributeModel): String {
+    fallback object_type.kind == 'object' and object_type.name == attribute.owner
+    return "{attribute.owner}.{attribute.name}"
+}
+
+func load_attribute(object_register: Integer, attribute: Model.AttributeModel): Lowered {
+    return load_attribute_in(object_register, attribute, "")
+}
+
+func load_attribute_in(object_register: Integer, attribute: Model.AttributeModel, region: String): Lowered {
+    var lowering = FunctionLowering(state)
+    var rebuilder = state.layout.rebuilder_of(attribute)
+    if rebuilder {
+        return rebuilt_in_place(object_register, rebuilder)
+    }
+    var object = lowering.single(object_register)
+    var offset = state.layout.offset_of(attribute)
+    if state.layout.is_embedded(attribute) {
+        return the_part_inside(object_register, offset)
+    }
+    var attribute_type = attribute.attribute_type
+    var target = lowering.new_register()
+    var width = lowering.width_of(attribute_type)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(target, object.value, offset, width)
+    loaded.is_signed = lowering.is_signed(attribute_type)
+    loaded.region = region
+    lowering.emit(loaded)
+    if state.layout.is_back(attribute) {
+        return held_back(target)
+    }
+    if not lowering.is_a_nullable_scalar(attribute_type) {
+        return lowering.single(target)
+    }
+    var presence = lowering.new_register()
+    var presence_offset = state.layout.presence_offset_of(attribute)
+    var presence_width = lowering.width_of_a_presence()
+    var loaded_presence = LowIntermediaryRepresentation.Instructions.Load(
+        presence,
+        object.value,
+        presence_offset,
+        presence_width,
+    )
+    loaded_presence.is_signed = false
+    if not region.is_empty() {
+        loaded_presence.region = "{region}?"
+    }
+    lowering.emit(loaded_presence)
+    return Lowered(target, presence)
+}
+
+# ../../OPTIMIZATIONS.md#an-object-only-its-holder-holds-lives-inside-it
+func the_part_inside(object: Integer, offset: Integer): Lowered {
+    var lowering = FunctionLowering(state)
+    var room = lowering.constant(offset)
+    var part = lowering.new_register()
+    var found = LowIntermediaryRepresentation.Instructions.Arithmetic(part, 'add', object, room)
+    found.is_checked = false
+    lowering.emit(found)
+    return lowering.single(part)
+}
+
+func store_the_part_inside(object: Integer, attribute: Model.AttributeModel, value: Lowered) {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var embedded_parts = Validators.HighIntermediaryRepresentation.EmbeddedParts.Validator()
+    embedded_parts.check(value.owned, state.path, state.line, state.function.key, "{attribute.owner}.{attribute.name}")
+    var offset = state.layout.offset_of(attribute)
+    var part = the_part_inside(object, offset)
+    var held = attribute.attribute_type.name
+    var model = state.layout.program.class_named(held)
+    crash model
+    var id_number = state.layout.class_id_of(held)
+    var class_id = lowering.constant(id_number)
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(part.value, 0, class_id, 'bits_64')
+    lowering.emit(stored_id)
+    var count = lowering.constant(state.layout.immortal_count)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(part.value, 8, count, 'bits_64')
+    lowering.emit(stored_count)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var copied = model.declared_attributes[index]
+        copy_a_number(value.value, part.value, copied)
+        index = index + 1
+    }
+    counting.release(value.value)
+}
+
+func copy_a_number(from: Integer, into: Integer, copied: Model.AttributeModel) {
+    var lowering = FunctionLowering(state)
+    fallback state.layout.has_a_slot(copied)
+    var offset = state.layout.offset_of(copied)
+    var width = lowering.width_of(copied.attribute_type)
+    var region = "{copied.owner}.{copied.name}"
+    var number = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(number, from, offset, width)
+    loaded.is_signed = lowering.is_signed(copied.attribute_type)
+    loaded.region = region
+    lowering.emit(loaded)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(into, offset, number, width)
+    stored.region = region
+    lowering.emit(stored)
+}
+
+func rebuilt_in_place(object: Integer, rebuilder: Model.FunctionModel): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var target = lowering.new_register()
+    var arguments = List<Integer>()
+    arguments.append(object)
+    var key = rebuilder.key()
+    var called = LowIntermediaryRepresentation.Instructions.Call(target, key, arguments)
+    lowering.emit(called)
+    if not rebuilder.answer or lowering.counts_an_answer(rebuilder.answer) {
+        return counting.owned(target)
+    }
+    return lowering.single(target)
+}
+
+# ../../PROOFS.md#a-back-reference-read-holds-its-object
+func held_back(object: Integer): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var held = lowering.new_register()
+    var arguments = List<Integer>()
+    arguments.append(object)
+    var called = LowIntermediaryRepresentation.Instructions.Call(held, "_back_counted", arguments)
+    lowering.emit(called)
+    return counting.owned(held)
+}
+
+func lower_text(text: HighIntermediaryRepresentation.Values.TextConstant): Lowered {
+    var lowering = FunctionLowering(state)
+    var joins = TextJoins(lowering)
+    return joins.lower_text(text)
+}
+
+func lower_make_object(made: HighIntermediaryRepresentation.Values.MakeObject): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var class_key = made.value_type.name
+    var made_model = state.layout.program.class_named(class_key)
+    crash made_model
+    if state.program.static_singletons.contains(class_key) {
+        var static_object = static_object_of(class_key)
+        return lowering.single(static_object)
+    }
+    if made_model.is_singleton {
+        var made_singleton = lowering.singleton_of(class_key, made)
+        return lowering.single(made_singleton)
+    }
+    var object = make_object_for(class_key, made)
+    call_the_constructor(object, made)
+    if class_key == "ForeignCallback" {
+        var callbacks = Callbacks(lowering)
+        callbacks.handed_over(object, made)
+    }
+    return counting.owned(object)
+}
+
+# ../../OPTIMIZATIONS.md#a-singleton-that-holds-nothing-is-a-static-object
+func static_object_of(class_key: String): Integer {
+    var lowering = FunctionLowering(state)
+    var known = state.program.static_objects[class_key]
+    var label = 0
+    if known {
+        label = known
+    } else {
+        label = static_object_label(class_key)
+    }
+    var object = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(object, label)
+    lowering.emit(addressed)
+    return object
+}
+
+func static_object_label(class_key: String): Integer {
+    var lowering = FunctionLowering(state)
+    var size = state.layout.made_size_of(class_key)
+    var bytes = Buffer(0)
+    var index = 0
+    while index < size {
+        bytes.append(0)
+        index = index + 1
+    }
+    var class_id: Long = state.layout.class_id_of(class_key)
+    bytes.write_long_little_endian_at(0, class_id)
+    bytes.write_long_little_endian_at(8, state.layout.immortal_count)
+    var label = lowering.data_label(bytes)
+    state.program.static_objects[class_key] = label
+    state.program.name_state(label, "static.{class_key}")
+    return label
+}
+
+func make_object_for(class_key: String, made: HighIntermediaryRepresentation.Values.MakeObject): Integer {
+    if made.skips_the_defaults {
+        return make_object_with(class_key, "")
+    }
+    if made.constructor {
+        var constructor_key = made.constructor.key()
+        if state.trimmed_keys.contains(constructor_key) {
+            return make_object_with(class_key, "{constructor_key}$defaults")
+        }
+        expect_slots_with_defaults(constructor_key)
+    }
+    return make_object(class_key)
+}
+
+func expect_slots_with_defaults(constructor_key: String) {
+    var expects_its_slots_fresh = state.fresh_by_constructor.contains(constructor_key)
+    crash not expects_its_slots_fresh
+}
+
+func make_object(class_key: String): Integer {
+    return make_object_with(class_key, "{class_key}._attribute_defaults")
+}
+
+func make_object_with(class_key: String, defaults_key: String): Integer {
+    var lowering = FunctionLowering(state)
+    var is_a_text = class_key == "String" and defaults_key == "String._attribute_defaults"
+    if is_a_text and state.layout.plain_text_room >= 0 and state.layout.holds_texts_whole() {
+        var joins = TextJoins(lowering)
+        return joins.empty_text(state.layout.plain_text_room)
+    }
+    var size = state.layout.made_size_of(class_key)
+    var size_register = lowering.constant(size)
+    var object = lowering.new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(object, size_register)
+    var class_id = state.layout.class_id_of(class_key)
+    allocated.class_id = class_id
+    allocated.zeroed_bytes = state.layout.size_of(class_key)
+    lowering.emit(allocated)
+    var id_register = lowering.constant(class_id)
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(object, 0, id_register, 'bits_64')
+    lowering.emit(stored_id)
+    var one = lowering.constant(1)
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(object, 8, one, 'bits_64')
+    lowering.emit(stored_count)
+    if state.layout.is_back_held(class_key) {
+        var back_slot = state.layout.back_offset_of(class_key)
+        var stored_back = LowIntermediaryRepresentation.Instructions.Store(object, back_slot, one, 'bits_64')
+        lowering.emit(stored_back)
+    }
+    if not defaults_key.is_empty() {
+        var arguments = List<Integer>()
+        arguments.append(object)
+        var defaults = LowIntermediaryRepresentation.Instructions.Call(-1, defaults_key, arguments)
+        lowering.emit(defaults)
+    }
+    return object
+}
+
+func call_the_constructor(object: Integer, made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    fallback made.constructor
+    var constructor_key = made.constructor.key()
+    var outer = state.pending_releases
+    state.pending_releases = List<Integer>()
+    var arguments = List<Integer>()
+    arguments.append(object)
+    var constructing = List<String>()
+    constructing.append(constructor_key)
+    lowering.add_arguments(arguments, made.arguments, constructing)
+    if state.resumable_mode and lowering.is_resumable(constructor_key) and not lowering.is_a_singleton_class(made.value_type.name) {
+        var working = Working(lowering)
+        working.waited_into(constructor_key, arguments, -1, -1)
+    } else {
+        var called = LowIntermediaryRepresentation.Instructions.Call(-1, constructor_key, arguments)
+        lowering.emit(called)
+    }
+    counting.release_the_pending()
+    state.pending_releases = outer
+}
+
+func lower_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    if operation.operator == 'and' or operation.operator == 'or' {
+        return lower_logic(operation)
+    }
+    if operation.is_folded {
+        var folded = lowering.constant(operation.folded_number)
+        return lowering.single(folded)
+    }
+    var left = lowering.lower_value(operation.left)
+    var right = lowering.lower_value(operation.right)
+    var target = lowering.new_register()
+    crash operation.left
+    var operand_type = operation.left.value_type
+    var comparison = comparison_of(operation.operator)
+    if lowering.is_a_decimal(operand_type) {
+        return decimal_operation(operation, operand_type, left.value, right.value, target)
+    }
+    if comparison {
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(target, comparison, left.value, right.value)
+        compared.is_signed = lowering.is_signed(operand_type)
+        lowering.emit(compared)
+        counting.discard(left, operand_type)
+        crash operation.right
+        counting.discard(right, operation.right.value_type)
+        return lowering.single(target)
+    }
+    var arithmetic_operator = arithmetic_of(operation.operator)
+    var computed = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        target,
+        arithmetic_operator,
+        left.value,
+        right.value,
+    )
+    computed.width = lowering.width_of(operand_type)
+    computed.is_signed = lowering.is_signed(operand_type)
+    computed.is_checked = not operation.is_proven_to_fit
+    var divides = arithmetic_operator == 'divide' or arithmetic_operator == 'remainder'
+    if divides {
+        computed.is_checked = not operation.is_divisor_proven
+    }
+    computed.line = state.line
+    computed.shown = operation.shown
+    computed.type_name = operand_type.name
+    computed.path = state.path
+    lowering.emit(computed)
+    return lowering.single(target)
+}
+
+func decimal_operation(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+    operand_type: Model.Type,
+    left: Integer,
+    right: Integer,
+    target: Integer,
+): Lowered {
+    var lowering = FunctionLowering(state)
+    var is_double = operand_type.name == "Double"
+    var comparison = comparison_of(operation.operator)
+    if comparison {
+        var compared = LowIntermediaryRepresentation.Instructions.Decimal.Compare(target, comparison, left, right)
+        compared.is_double = is_double
+        lowering.emit(compared)
+        return lowering.single(target)
+    }
+    var arithmetic_operator = arithmetic_of(operation.operator)
+    if arithmetic_operator == 'remainder' {
+        return exact_remainder(left, right, target, is_double)
+    }
+    var computed = LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic(
+        target,
+        arithmetic_operator,
+        left,
+        right,
+    )
+    computed.is_double = is_double
+    lowering.emit(computed)
+    return lowering.single(target)
+}
+
+# ../../OPTIMIZATIONS.md#the-maths-functions-are-one-call-into-the-c-library
+func exact_remainder(left: Integer, right: Integer, target: Integer, is_double: Boolean): Lowered {
+    var lowering = FunctionLowering(state)
+    var size = 4
+    var name = "fmodf"
+    if is_double {
+        size = 8
+        name = "fmod"
+    }
+    var arguments = List<Integer>()
+    arguments.append(left)
+    arguments.append(right)
+    var sizes = List<Integer>()
+    sizes.append(size)
+    sizes.append(size)
+    var computed = LowIntermediaryRepresentation.Instructions.ImportCall(target, name, arguments)
+    computed.library = "ucrtbase.dll"
+    computed.decimal_sizes = sizes
+    computed.answer_decimal_size = size
+    lowering.emit(computed)
+    return lowering.single(target)
+}
+
+func lower_logic(operation: HighIntermediaryRepresentation.Values.MachineOperation): Lowered {
+    var lowering = FunctionLowering(state)
+    var target = lowering.new_register()
+    var left = lowering.lower_value(operation.left)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, left.value)
+    lowering.emit(copied)
+    var testing_block = state.current
+    var right_block = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(left.value, right_block, after)
+    if operation.operator == 'or' {
+        test = LowIntermediaryRepresentation.Instructions.Branch(left.value, after, right_block)
+    }
+    var pending_before = state.pending_releases.count()
+    var statement_before = state.statement_releases.count()
+    lowering.switch_to(right_block)
+    var right = lowering.lower_value(operation.right)
+    var copied_right = LowIntermediaryRepresentation.Instructions.Copy(target, right.value)
+    lowering.emit(copied_right)
+    lowering.jump_to(after)
+    lowering.switch_to(testing_block)
+    clear_the_skipped(state.pending_releases, pending_before)
+    clear_the_skipped(state.statement_releases, statement_before)
+    lowering.emit(test)
+    lowering.switch_to(after)
+    return lowering.single(target)
+}
+
+func clear_the_skipped(releases: List<Integer>, first: Integer) {
+    var lowering = FunctionLowering(state)
+    var index = first
+    while index < releases.count() {
+        var released = releases[index]
+        var zero = LowIntermediaryRepresentation.Instructions.Constant(released, 0)
+        lowering.emit(zero)
+        index = index + 1
+    }
+}
+
+func comparison_of(
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+): LowIntermediaryRepresentation.Instructions.Compare.Comparison? {
+    switch operator {
+        'equal': return 'equal'
+        'not_equal': return 'not_equal'
+        'less': return 'less'
+        'less_or_equal': return 'less_or_equal'
+        'greater': return 'greater'
+        'greater_or_equal': return 'greater_or_equal'
+        'add': return null
+        'subtract': return null
+        'multiply': return null
+        'divide': return null
+        'remainder': return null
+        'and': return null
+        'or': return null
+    }
+}
+
+func arithmetic_of(
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+): LowIntermediaryRepresentation.Instructions.Arithmetic.Operator {
+    switch operator {
+        'add': return 'add'
+        'subtract': return 'subtract'
+        'multiply': return 'multiply'
+        'divide': return 'divide'
+        'remainder': return 'remainder'
+        'equal': return 'remainder'
+        'not_equal': return 'remainder'
+        'less': return 'remainder'
+        'less_or_equal': return 'remainder'
+        'greater': return 'remainder'
+        'greater_or_equal': return 'remainder'
+        'and': return 'remainder'
+        'or': return 'remainder'
+    }
+}
+
+func lower_negation(negation: HighIntermediaryRepresentation.Values.Negation): Lowered {
+    var lowering = FunctionLowering(state)
+    var negated = lowering.lower_value(negation.negated)
+    var zero = lowering.constant(0)
+    var target = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'equal', negated.value, zero)
+    lowering.emit(compared)
+    return lowering.single(target)
+}
+
+func lower_class_test(test: HighIntermediaryRepresentation.Values.Class.Membership): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var tested = lowering.lower_value(test.tested)
+    crash test.tested
+    counting.release_later(tested, test.tested.value_type)
+    var target = lowering.new_register()
+    var zero = lowering.constant(0)
+    var present = lowering.new_register()
+    var compared_present = LowIntermediaryRepresentation.Instructions.Compare(present, 'not_equal', tested.value, zero)
+    lowering.emit(compared_present)
+    var reading = lowering.new_block()
+    var after = lowering.new_block()
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(target, present)
+    lowering.emit(copied)
+    var branched = LowIntermediaryRepresentation.Instructions.Branch(present, reading, after)
+    lowering.emit(branched)
+    lowering.switch_to(reading)
+    var class_id = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, tested.value, 0, 'bits_64')
+    lowering.emit(loaded)
+    if test.member.kind == 'shape' {
+        test_the_fillers(test.member, class_id, target)
+    } else {
+        var wanted = state.layout.class_id_of(test.member.name)
+        var wanted_register = lowering.constant(wanted)
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'equal', class_id, wanted_register)
+        lowering.emit(compared)
+    }
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    return lowering.single(target)
+}
+
+func test_the_fillers(shape: Model.Type, class_id: Integer, target: Integer) {
+    var lowering = FunctionLowering(state)
+    var zero = lowering.constant(0)
+    var cleared = LowIntermediaryRepresentation.Instructions.Copy(target, zero)
+    lowering.emit(cleared)
+    var fillers = state.layout.program.fillers_of(shape.name)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        if filler.kind == 'object' and not filler.is_a_walked_name {
+            var wanted = state.layout.class_id_of(filler.name)
+            var wanted_register = lowering.constant(wanted)
+            var matched = lowering.new_register()
+            var compared = LowIntermediaryRepresentation.Instructions.Compare(
+                matched,
+                'equal',
+                class_id,
+                wanted_register,
+            )
+            lowering.emit(compared)
+            var joined = LowIntermediaryRepresentation.Instructions.Arithmetic(target, 'bits_or', target, matched)
+            joined.is_checked = false
+            lowering.emit(joined)
+        }
+        index = index + 1
+    }
+}
+
+func lower_presence_test(test: HighIntermediaryRepresentation.Values.PresenceTest): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var reads = ListReads(lowering)
+    var ranged = reads.presence_of(test.tested)
+    if ranged {
+        return ranged
+    }
+    var tested = lowering.lower_value(test.tested)
+    crash test.tested
+    counting.release_later(tested, test.tested.value_type)
+    if tested.presence >= 0 {
+        return lowering.single(tested.presence)
+    }
+    var zero = lowering.constant(0)
+    var target = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'not_equal', tested.value, zero)
+    lowering.emit(compared)
+    return lowering.single(target)
+}
+
+func lower_number_room(room: HighIntermediaryRepresentation.Values.NumberRoom): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var made = lowering.lower_value(room.made)
+    var number = lowering.lower_value(room.number)
+    var storage = lowering.storage_of(made.value)
+    crash room.number
+    var width = lowering.width_of(room.number.value_type)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(storage, 0, number.value, width)
+    lowering.emit(stored)
+    var buffer_model = state.layout.program.class_named("Buffer")
+    crash buffer_model
+    var count_attribute = buffer_model.attribute_named("item_count")
+    crash count_attribute
+    var count_offset = state.layout.offset_of(count_attribute)
+    var counted = lowering.constant(room.width)
+    var count_stored = LowIntermediaryRepresentation.Instructions.Store(made.value, count_offset, counted, 'bits_32')
+    lowering.emit(count_stored)
+    return counting.owned(made.value)
+}
+
+func lower_class_object(object: HighIntermediaryRepresentation.Values.Class.Object): Lowered {
+    var lowering = FunctionLowering(state)
+    var kind = object.reflection_kind
+    var slot_key = "{kind}:{object.described}"
+    var label = lowering.slot_label_of(slot_key)
+    var slot = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slot, label)
+    lowering.emit(addressed)
+    var made = lowering.new_register()
+    var slot_state = lowering.new_register()
+    var loaded_state = LowIntermediaryRepresentation.Instructions.Load(slot_state, slot, 16, 'bits_64')
+    lowering.emit(loaded_state)
+    var filled = lowering.constant(2)
+    var is_filled = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_filled, 'equal', slot_state, filled)
+    lowering.emit(compared)
+    var making = lowering.new_block()
+    var ready = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(is_filled, ready, making)
+    lowering.emit(test)
+    lowering.switch_to(ready)
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(made, slot, 0, 'bits_64')
+    lowering.emit(loaded)
+    lowering.jump_to(after)
+    lowering.switch_to(making)
+    lowering.halt_on_state(
+        slot,
+        3,
+        "spite: a drop() at exit read the {kind} of {object.described} after it was let go: reflection objects are let go at exit, newest first, after the singletons made after them\n",
+    )
+    var thread = lowering.new_register()
+    var no_arguments = List<Integer>()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(thread, "GetCurrentThreadId", no_arguments)
+    lowering.emit(asked)
+    var never_made = lowering.constant(0)
+    var being_made = lowering.constant(1)
+    var before = lowering.new_register()
+    var claimed = LowIntermediaryRepresentation.Instructions.CompareExchange(before, slot, 16, never_made, being_made)
+    lowering.emit(claimed)
+    var won = lowering.new_register()
+    var compared_claim = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, never_made)
+    lowering.emit(compared_claim)
+    var building = lowering.new_block()
+    var someone_else = lowering.new_block()
+    var claim_test = LowIntermediaryRepresentation.Instructions.Branch(won, building, someone_else)
+    lowering.emit(claim_test)
+    lowering.switch_to(someone_else)
+    lowering.wait_for_the_filling(slot, thread, made, after)
+    lowering.switch_to(building)
+    var kept_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 32, thread, 'bits_64')
+    lowering.emit(kept_thread)
+    var fresh = reflection_object_of(kind)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 0, fresh, 'bits_64')
+    lowering.emit(stored)
+    lowering.record_with(slot, "_let_go_of_reflected_{kind}")
+    var fill_arguments = List<Integer>()
+    fill_arguments.append(fresh)
+    var filling = LowIntermediaryRepresentation.Instructions.Call(-1, "{kind}._fill_{object.described}", fill_arguments)
+    lowering.emit(filling)
+    var marked = LowIntermediaryRepresentation.Instructions.Store(slot, 16, filled, 'bits_64')
+    lowering.emit(marked)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(made, fresh)
+    lowering.emit(copied)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+    return lowering.single(made)
+}
+
+# ../../../spite_spec/specs/reflection.md#reflection-objects
+func reflection_object_of(kind: String): Integer {
+    var model = state.layout.program.class_named(kind)
+    crash model
+    var index = 0
+    while index < model.declared_functions.count() {
+        var declared = model.declared_functions[index]
+        var constructor_key = declared.key()
+        if declared.is_constructor and state.trimmed_keys.contains(constructor_key) {
+            return make_object_with(kind, "{constructor_key}$defaults")
+        }
+        index = index + 1
+    }
+    return make_object(kind)
+}
+
+func lower_class_of_value(made: HighIntermediaryRepresentation.Values.Class.OfValue): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var described = lowering.lower_value(made.described)
+    var target = lowering.new_register()
+    var class_id = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(class_id, described.value, 0, 'bits_64')
+    lowering.emit(loaded)
+    var after = lowering.new_block()
+    var index = 0
+    while index < made.candidates.count() {
+        var candidate = made.candidates[index]
+        var wanted = state.layout.class_id_of(candidate)
+        var wanted_register = lowering.constant(wanted)
+        var matches = lowering.new_register()
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', class_id, wanted_register)
+        lowering.emit(compared)
+        var answering = lowering.new_block()
+        var next = lowering.new_block()
+        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, answering, next)
+        lowering.emit(test)
+        lowering.switch_to(answering)
+        var object = HighIntermediaryRepresentation.Values.Class.Object(made.value_type, candidate)
+        var lowered_object = lower_class_object(object)
+        var copied = LowIntermediaryRepresentation.Instructions.Copy(target, lowered_object.value)
+        lowering.emit(copied)
+        lowering.jump_to(after)
+        lowering.switch_to(next)
+        index = index + 1
+    }
+    var label = lowering.text_label("spite: a value of no class this program knows, at {state.path}:{state.line}\n")
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label)
+    lowering.emit(stopped)
+    lowering.switch_to(after)
+    crash made.described
+    counting.discard(described, made.described.value_type)
+    return lowering.single(target)
+}
