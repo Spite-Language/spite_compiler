@@ -1,0 +1,247 @@
+var state = SourceState()
+
+func Calls(starting_state: SourceState) {
+    state = starting_state
+}
+
+func is_callable(call: Call): Boolean {
+    var type_kinds = Kinds(state)
+    return call.parameter_types.all(type_kinds.is_writable)
+}
+
+func is_listed(function: Model.FunctionModel): Boolean {
+    var is_an_accessor = function.name.starts_with("get_") or function.name.starts_with("set_")
+    var is_hidden = function.name.starts_with("_") or function.name == "drop" or is_an_accessor
+    var is_made = function.is_constructor or function.is_synthetic or function.is_a_member_template
+    var is_a_copy = not function.bound_member.is_empty()
+    var is_walked = function.is_a_walk_copy or not function.bound_function.is_empty() or function.is_an_attribute
+    return not is_hidden and not is_made and not is_a_copy and not is_walked
+}
+
+func declared_calls_of(model: Model.ClassModel): List<Call> {
+    var calls = List<Call>()
+    var index = 0
+    while index < model.declared_functions.count() {
+        var function = model.declared_functions[index]
+        if is_listed(function) {
+            var call = call_of(function)
+            calls.append(call)
+        }
+        index = index + 1
+    }
+    return calls
+}
+
+func call_of(function: Model.FunctionModel): Call {
+    var call = Call(function.name)
+    call.answer = function.answer
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var parameter_type = parameter.parameter_type
+        if parameter.is_variadic {
+            parameter_type = Model.Type('function', "...")
+        }
+        call.takes(parameter.name, parameter_type)
+        index = index + 1
+    }
+    return call
+}
+
+func calls_of(described: Model.Type): List<Call> {
+    var type_kinds = Kinds(state)
+    var kind = type_kinds.kind_of(described)
+    if kind == "list" {
+        return list_calls_of(described)
+    }
+    if kind == "dictionary" {
+        return dictionary_calls_of(described)
+    }
+    var model = type_kinds.class_model_of(described)
+    var calls = declared_calls_of(model)
+    var has_its_own = false
+    var index = 0
+    while index < calls.count() {
+        var call = calls[index]
+        if call.name == "to_debug" {
+            has_its_own = true
+        }
+        index = index + 1
+    }
+    if not has_its_own {
+        var debugged = Call("to_debug")
+        debugged.answer = state.context.text()
+        calls.append(debugged)
+    }
+    return calls
+}
+
+func answering(name: String, answer: Model.Type): Call {
+    var call = Call(name)
+    call.answer = answer
+    return call
+}
+
+func list_calls_of(described: Model.Type): List<Call> {
+    var type_kinds = Kinds(state)
+    var element = type_kinds.element_of(described)
+    var calls = List<Call>()
+    var integer = state.context.scalar_type("Integer")
+    var boolean = state.context.boolean()
+    var nullable_element = element.nullable()
+    var counted = answering("count", integer)
+    calls.append(counted)
+    var empty = answering("is_empty", boolean)
+    calls.append(empty)
+    var first = answering("first", nullable_element)
+    calls.append(first)
+    var last = answering("last", nullable_element)
+    calls.append(last)
+    if type_kinds.kind_of(element) == "object" and not element.is_nullable {
+        add_the_templates(described, element, calls)
+    }
+    return calls
+}
+
+func dictionary_calls_of(described: Model.Type): List<Call> {
+    var type_kinds = Kinds(state)
+    var calls = List<Call>()
+    var integer = state.context.scalar_type("Integer")
+    var boolean = state.context.boolean()
+    var counted = answering("count", integer)
+    calls.append(counted)
+    var empty = answering("is_empty", boolean)
+    calls.append(empty)
+    var has = answering("has", boolean)
+    has.function_name = "contains"
+    var key = type_kinds.key_of(described)
+    has.takes("key", key)
+    calls.append(has)
+    var keys = Call("keys")
+    keys.answers_the_keys = true
+    calls.append(keys)
+    return calls
+}
+
+func add_the_templates(described: Model.Type, element: Model.Type, calls: List<Call>) {
+    var type_kinds = Kinds(state)
+    var list_model = type_kinds.class_model_of(described)
+    var attributes = type_kinds.attributes_of(element)
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        add_member_templates(list_model, described, element, attribute.name, attribute.attribute_type, calls)
+        index = index + 1
+    }
+    var element_model = type_kinds.class_model_of(element)
+    var function_index = 0
+    while function_index < element_model.declared_functions.count() {
+        var function = element_model.declared_functions[function_index]
+        if is_listed(function) and function.parameters.is_empty() {
+            if function.answer {
+                add_member_templates(list_model, described, element, function.name, function.answer, calls)
+            } else {
+                add_an_each(list_model, function.name, calls)
+            }
+        }
+        function_index = function_index + 1
+    }
+}
+
+func add_an_each(list_model: Model.ClassModel, member: String, calls: List<Call>) {
+    if list_model.function_named("each_member") {
+        var each = Call("each_{member}")
+        calls.append(each)
+    }
+}
+
+func add_member_templates(
+    list_model: Model.ClassModel,
+    described: Model.Type,
+    element: Model.Type,
+    member: String,
+    member_type: Model.Type,
+    calls: List<Call>,
+) {
+    var type_kinds = Kinds(state)
+    var naming = Naming()
+    fallback not member_type.is_nullable
+    var kind = type_kinds.kind_of(member_type)
+    var is_a_number = kind == "scalar" and not state.context.is_a_truth_value(member_type) and state.writable_scalars.contains(member_type.name)
+    var integer = state.context.scalar_type("Integer")
+    var boolean = state.context.boolean()
+    if state.context.is_boolean(member_type) {
+        add_a_template(list_model, "filter_member", "filter_{member}", described, calls)
+        add_a_template(list_model, "count_member", "count_{member}", integer, calls)
+        add_a_template(list_model, "any_member", "any_{member}", boolean, calls)
+        add_a_template(list_model, "all_member", "all_{member}", boolean, calls)
+    }
+    if is_a_number {
+        add_a_template(list_model, "sum_member", "sum_{member}", member_type, calls)
+    }
+    if is_a_number or kind == "text" {
+        add_a_template(list_model, "sort_by_member", "sort_by_{member}", described, calls)
+    }
+    var is_a_value = kind == "scalar" or kind == "text" or kind == "enum" or kind == "object"
+    var is_mapped = is_a_value and not state.context.is_boolean(member_type)
+    if is_mapped and list_model.function_named("map_members") {
+        var mapped_type = state.context.resolver.list_type_of(member_type)
+        var plural = naming.plural_of(member)
+        add_a_template(list_model, "map_members", "map_{plural}", mapped_type, calls)
+    }
+    if type_kinds.is_writable(member_type) and list_model.function_named("find_by_member") {
+        var nullable_element = element.nullable()
+        var found = answering("find_by_{member}", nullable_element)
+        found.takes("value", member_type)
+        calls.append(found)
+    }
+}
+
+func add_a_template(
+    list_model: Model.ClassModel,
+    template: String,
+    name: String,
+    answer: Model.Type,
+    calls: List<Call>,
+) {
+    if list_model.function_named(template) {
+        var call = answering(name, answer)
+        calls.append(call)
+    }
+}
+
+func signature_of(call: Call): String {
+    var type_kinds = Kinds(state)
+    var pieces = List<String>()
+    var index = 0
+    while index < call.parameter_names.count() {
+        var parameter_name = call.parameter_names[index]
+        var parameter_type = call.parameter_types[index]
+        crash parameter_type
+        var shown = type_kinds.shown_of(parameter_type)
+        pieces.append("{parameter_name}: {shown}")
+        index = index + 1
+    }
+    var joined = pieces.join(", ")
+    var answered = "Nothing"
+    if call.answer {
+        answered = type_kinds.shown_of(call.answer)
+    }
+    return "{call.name}({joined}): {answered}"
+}
+
+func signatures_of(calls: List<Call>, keys_text: String): String {
+    var texts = List<String>()
+    var index = 0
+    while index < calls.count() {
+        var call = calls[index]
+        if call.answers_the_keys {
+            texts.append(keys_text)
+        } else {
+            var signature = signature_of(call)
+            texts.append(signature)
+        }
+        index = index + 1
+    }
+    return texts.join("\n")
+}

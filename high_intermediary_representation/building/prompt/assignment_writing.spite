@@ -1,0 +1,231 @@
+var state = SourceState()
+
+func AssignmentWriting(starting_state: SourceState) {
+    state = starting_state
+}
+
+func shown_back(described: Model.Type, is_read_nullable: Boolean): String {
+    var type_kinds = Type.Kinds(state)
+    var type_table = Type.Table(state)
+    if type_kinds.kind_of(described) == "opaque" {
+        return "prompt.say(\"\")"
+    }
+    var number = type_table.number_of(described)
+    if described.is_nullable or is_read_nullable {
+        return "show_or_null_{number}(read_back)"
+    }
+    return "show_{number}(read_back)"
+}
+
+func write_assignment(
+    name: String,
+    owner: String,
+    slot_type: Model.Type,
+    slot: String,
+    is_read_nullable: Boolean,
+    extra_parameter: String,
+    extra_argument: String,
+) {
+    var type_kinds = Type.Kinds(state)
+    var naming = Naming()
+    var emitting = Emitting(state)
+    var kind = type_kinds.kind_of(slot_type)
+    var shown = type_kinds.shown_of(slot_type)
+    var quoted_shown = naming.escaped(shown)
+    var shown_back_call = shown_back(slot_type, is_read_nullable)
+    emitting.out(0, "func {name}(value: {owner}{extra_parameter}) \{")
+    emitting.out(1, "if prompt.assigns_null() \{")
+    if slot_type.is_nullable {
+        var written_line = written_into(slot, "null")
+        emitting.out(2, written_line)
+        emitting.out(2, "prompt.say(\"null\")")
+    } else {
+        emitting.out(2, "prompt.never_null(\"{quoted_shown}\")")
+    }
+    emitting.out(2, "return")
+    emitting.out(1, "}")
+    emitting.out(1, "if prompt.assigns_a_literal() \{")
+    var takes_a_literal = is_literal_kind(slot_type)
+    if takes_a_literal {
+        emitting.out(2, "{name}_literal(value{extra_argument})")
+    } else if kind == "scalar" {
+        emitting.out(2, "prompt.unwritable(\"{quoted_shown}\")")
+    } else {
+        emitting.out(2, "prompt.mismatch(\"{quoted_shown}\")")
+    }
+    emitting.out(2, "return")
+    emitting.out(1, "}")
+    var classes = List<Model.Type>()
+    if kind == "union" {
+        classes = type_kinds.members_of(slot_type)
+    } else if kind != "opaque" {
+        var present = slot_type.present()
+        classes.append(present)
+    }
+    if not classes.is_empty() {
+        emitting.out(1, "var found = prompt.fetched")
+    }
+    var index = 0
+    while index < classes.count() {
+        var held = classes[index]
+        var held_written = type_kinds.written_of(held)
+        emitting.out(1, "if found.class == {held_written} \{")
+        var written_line = written_into(slot, "found")
+        emitting.out(2, written_line)
+        emitting.out(2, "var read_back = {slot_read(slot)}")
+        emitting.out(2, shown_back_call)
+        emitting.out(2, "return")
+        emitting.out(1, "}")
+        index = index + 1
+    }
+    emitting.out(1, "prompt.wrong_instance(\"{quoted_shown}\")")
+    emitting.out(0, "}")
+    emitting.blank()
+    if takes_a_literal {
+        write_literal_assignment(name, owner, slot_type, slot, shown_back_call, extra_parameter)
+    }
+}
+
+func is_literal_kind(slot_type: Model.Type): Boolean {
+    var type_kinds = Type.Kinds(state)
+    var present = slot_type.present()
+    return type_kinds.is_writable(present)
+}
+
+func written_into(slot: String, written: String): String {
+    if slot.starts_with("set_at(") {
+        var length = slot.length()
+        var inside = slot.slice(7, length - 1)
+        crash inside
+        return "value.set_at({inside}, {written})"
+    }
+    return "value.{slot} = {written}"
+}
+
+func slot_read(slot: String): String {
+    if slot.starts_with("set_at(") {
+        var length = slot.length()
+        var inside = slot.slice(7, length - 1)
+        crash inside
+        return "value.get_at({inside})"
+    }
+    return "value.{slot}"
+}
+
+func write_literal_assignment(
+    name: String,
+    owner: String,
+    slot_type: Model.Type,
+    slot: String,
+    shown_back_call: String,
+    extra_parameter: String,
+) {
+    var type_kinds = Type.Kinds(state)
+    var naming = Naming()
+    var emitting = Emitting(state)
+    var type_table = Type.Table(state)
+    var present = slot_type.present()
+    var kind = type_kinds.kind_of(present)
+    var shown = type_kinds.shown_of(slot_type)
+    var quoted_shown = naming.escaped(shown)
+    var literal_kind = type_kinds.literal_kind_of(present)
+    emitting.out(0, "func {name}_literal(value: {owner}{extra_parameter}) \{")
+    emitting.out(1, "fallback prompt.literal_fits(\"{literal_kind}\", \"{quoted_shown}\")")
+    if kind == "text" {
+        emitting.out(1, "var written = prompt.assigned_text()")
+        var written_line = written_into(slot, "written")
+        emitting.out(1, written_line)
+    } else if kind == "enum" {
+        var enum_number = type_table.number_of(present)
+        var enum_shown = type_kinds.shown_of(present)
+        var quoted_enum = naming.escaped(enum_shown)
+        emitting.out(1, "var written = prompt.assigned_symbol()")
+        emitting.out(1, "if not is_value_{enum_number}(written) \{")
+        emitting.out(2, "prompt.not_a_value(\"{quoted_enum}\")")
+        emitting.out(2, "return")
+        emitting.out(1, "}")
+        emitting.out(1, "var chosen = value_{enum_number}(written)")
+        var written_line = written_into(slot, "chosen")
+        emitting.out(1, written_line)
+    } else {
+        var reader = type_kinds.reader_of(present)
+        emitting.out(1, "var literal = prompt.assigned")
+        emitting.out(1, "var written = prompt.{reader}(literal)")
+        var written_line = written_into(slot, "written")
+        emitting.out(1, written_line)
+    }
+    var read = slot_read(slot)
+    emitting.out(1, "var read_back = {read}")
+    emitting.out(1, shown_back_call)
+    emitting.out(0, "}")
+    emitting.blank()
+}
+
+func write_object_assignment(number: Integer, described: Model.Type) {
+    var type_kinds = Type.Kinds(state)
+    var type_writing = Type.Writing(state)
+    var emitting = Emitting(state)
+    var written = type_kinds.written_of(described)
+    var refused = type_writing.no_attribute_of(described)
+    emitting.out(0, "func assign_{number}(value: {written}, at: Integer) \{")
+    emitting.out(1, "var kind = prompt.step_kind(at)")
+    emitting.out(1, "if kind != \"name\" \{")
+    emitting.out(2, refused)
+    emitting.out(2, "return")
+    emitting.out(1, "}")
+    emitting.out(1, "var name = prompt.step_name(at)")
+    var cases = List<String>()
+    var statements = List<String>()
+    var attributes = type_kinds.attributes_of(described)
+    var index = 0
+    while index < attributes.count() {
+        var attribute = attributes[index]
+        cases.append(attribute.name)
+        statements.append("put_{number}_{index}(value)")
+        index = index + 1
+    }
+    emitting.write_switch(1, "name", cases, statements, refused)
+    emitting.out(0, "}")
+    emitting.blank()
+    var put_index = 0
+    while put_index < attributes.count() {
+        var put = attributes[put_index]
+        write_assignment("put_{number}_{put_index}", written, put.attribute_type, put.name, false, "", "")
+        put_index = put_index + 1
+    }
+}
+
+func write_enum(number: Integer, described: Model.Type) {
+    var type_kinds = Type.Kinds(state)
+    var emitting = Emitting(state)
+    var written = type_kinds.written_of(described)
+    var values = type_kinds.values_of(described)
+    var tests = List<String>()
+    var index = 0
+    while index < values.count() {
+        var value = values[index]
+        tests.append("written == \"{value}\"")
+        index = index + 1
+    }
+    var joined = tests.join(" or ")
+    emitting.out(0, "func is_value_{number}(written: String): Boolean \{")
+    emitting.out(1, "return {joined}")
+    emitting.out(0, "}")
+    emitting.blank()
+    emitting.out(0, "func value_{number}(written: String): {written} \{")
+    var cases = List<String>()
+    var statements = List<String>()
+    var last = values.count() - 1
+    var value_index = 0
+    while value_index < last {
+        var each = values[value_index]
+        cases.append(each)
+        statements.append("return '{each}'")
+        value_index = value_index + 1
+    }
+    var last_value = values[last]
+    crash last_value
+    emitting.write_switch(1, "written", cases, statements, "return '{last_value}'")
+    emitting.out(0, "}")
+    emitting.blank()
+}

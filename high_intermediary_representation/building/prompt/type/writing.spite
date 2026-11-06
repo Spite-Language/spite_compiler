@@ -1,0 +1,404 @@
+var state = SourceState()
+
+func Writing(starting_state: SourceState) {
+    state = starting_state
+}
+
+func write_type(number: Integer, described: Model.Type) {
+    var type_kinds = Kinds(state)
+    var object_writing = ObjectWriting(state)
+    var call_writing = CallWriting(state)
+    var assignment_writing = AssignmentWriting(state)
+    var collection_writing = CollectionWriting(state)
+    var kind = type_kinds.kind_of(described)
+    fallback kind != "opaque"
+    if kind == "object" or kind == "list" or kind == "dictionary" {
+        object_writing.write_bytes(number, described, kind)
+    }
+    write_walk(number, described, kind)
+    write_reach(number, described)
+    write_end(number, described, kind)
+    write_show(number, described)
+    write_full(number, described, kind)
+    write_nested(number, described, kind)
+    if kind == "object" {
+        write_attribute_list(number, described)
+        write_object_step(number, described)
+        object_writing.write_object_names(number, described)
+        call_writing.write_calls(number, described)
+        assignment_writing.write_object_assignment(number, described)
+    } else if kind == "list" {
+        collection_writing.write_collection_step(number, described)
+        collection_writing.write_list_index(number, described)
+        call_writing.write_calls(number, described)
+        collection_writing.write_list_assignment(number, described)
+    } else if kind == "dictionary" {
+        collection_writing.write_collection_step(number, described)
+        collection_writing.write_dictionary_index(number, described)
+        call_writing.write_calls(number, described)
+        collection_writing.write_dictionary_assignment(number, described)
+    } else if kind == "enum" {
+        assignment_writing.write_enum(number, described)
+    } else if kind == "text" {
+        call_writing.write_calls(number, described)
+    }
+}
+
+func write_walk(number: Integer, described: Model.Type, kind: String) {
+    var type_kinds = Kinds(state)
+    var emitting = Emitting(state)
+    var naming = Naming()
+    var written = type_kinds.written_of(described)
+    emitting.out(0, "func walk_{number}(value: {written}, at: Integer) \{")
+    emitting.out(1, "if prompt.ends(at) \{")
+    emitting.out(2, "end_{number}(value, at)")
+    emitting.out(2, "return")
+    emitting.out(1, "}")
+    var steps = kind == "object" or kind == "list" or kind == "dictionary"
+    if steps {
+        emitting.out(1, "if prompt.assigns(at) \{")
+        emitting.out(2, "assign_{number}(value, at)")
+        emitting.out(2, "return")
+        emitting.out(1, "}")
+        emitting.out(1, "step_{number}(value, at)")
+    } else if kind == "union" {
+        write_union_dispatch(1, described, "walk_", "(value, at)", false)
+    } else if kind == "library" {
+        var library_name = naming.plain_short_of(written)
+        var quoted = naming.escaped(library_name)
+        emitting.out(1, "prompt.library_class(at, \"{quoted}\")")
+    } else {
+        if kind == "text" {
+            emitting.out(1, "if prompt.step_kind(at) == \"call\" \{")
+            emitting.out(2, "call_{number}(value, at)")
+            emitting.out(2, "return")
+            emitting.out(1, "}")
+        }
+        var shown = naming.short_of(written)
+        var quoted_shown = naming.escaped(shown)
+        emitting.out(1, "prompt.no_attributes(at, \"{quoted_shown}\")")
+    }
+    emitting.out(0, "}")
+    emitting.blank()
+}
+
+func write_reach(number: Integer, described: Model.Type) {
+    var type_kinds = Kinds(state)
+    var emitting = Emitting(state)
+    var written = type_kinds.written_of(described)
+    emitting.out(0, "func reach_{number}(value: {written}?, at: Integer) \{")
+    write_present_or_null(described, "walk_{number}(value, at)", "prompt.reached_null(at)")
+    emitting.out(0, "}")
+    emitting.blank()
+}
+
+func write_present_or_null(described: Model.Type, present: String, absent: String) {
+    var emitting = Emitting(state)
+    if state.context.is_boolean(described) {
+        emitting.out(1, "switch value \{")
+        emitting.out(2, "Boolean: {present}")
+        emitting.out(2, "Null: {absent}")
+        emitting.out(1, "}")
+        return
+    }
+    emitting.out(1, "if value \{")
+    emitting.out(2, present)
+    if not present.starts_with("return") {
+        emitting.out(2, "return")
+    }
+    emitting.out(1, "}")
+    emitting.out(1, absent)
+}
+
+func write_union_dispatch(depth: Integer, described: Model.Type, called: String, arguments: String, returns: Boolean) {
+    var type_kinds = Kinds(state)
+    var type_table = Table(state)
+    var emitting = Emitting(state)
+    var members = type_kinds.members_of(described)
+    var index = 0
+    while index < members.count() {
+        var member = members[index]
+        var number = type_table.number_of(member)
+        var written = type_kinds.written_of(member)
+        emitting.out(depth, "if value.class == {written} \{")
+        if returns {
+            emitting.out(depth + 1, "return {called}{number}{arguments}")
+        } else {
+            emitting.out(depth + 1, "{called}{number}{arguments}")
+            emitting.out(depth + 1, "return")
+        }
+        emitting.out(depth, "}")
+        index = index + 1
+    }
+    emitting.out(depth, "crash")
+}
+
+func write_end(number: Integer, described: Model.Type, kind: String) {
+    var type_kinds = Kinds(state)
+    var emitting = Emitting(state)
+    var naming = Naming()
+    var type_calls = Calls(state)
+    var written = type_kinds.written_of(described)
+    emitting.out(0, "func end_{number}(value: {written}, at: Integer) \{")
+    if kind == "union" {
+        emitting.out(1, "if prompt.shows() \{")
+        emitting.out(2, "show_{number}(value)")
+        emitting.out(2, "return")
+        emitting.out(1, "}")
+        write_union_dispatch(1, described, "end_", "(value, at)", false)
+        emitting.out(0, "}")
+        emitting.blank()
+        return
+    }
+    var shown = naming.short_of(written)
+    var quoted_shown = naming.escaped(shown)
+    var plain = naming.plain_short_of(written)
+    var quoted_plain = naming.escaped(plain)
+    var cases = List<String>()
+    var statements = List<String>()
+    cases.append("show")
+    statements.append("show_{number}(value)")
+    cases.append("attributes")
+    cases.append("functions")
+    if kind == "object" {
+        statements.append("list_attributes_{number}(value)")
+        var calls = type_calls.calls_of(described)
+        var signatures = type_calls.signatures_of(calls, "")
+        var quoted_signatures = naming.escaped(signatures)
+        statements.append("prompt.say(\"{quoted_signatures}\")")
+    } else if kind == "list" or kind == "dictionary" {
+        statements.append("prompt.no_attributes(at, \"{quoted_shown}\")")
+        var collection_calls = type_calls.calls_of(described)
+        var keys_text = ""
+        if kind == "dictionary" {
+            var key = type_kinds.key_of(described)
+            var key_shown = type_kinds.shown_of(key)
+            keys_text = "keys(): List<{key_shown}>"
+        }
+        var collection_signatures = type_calls.signatures_of(collection_calls, keys_text)
+        var quoted_collection = naming.escaped(collection_signatures)
+        statements.append("prompt.say(\"{quoted_collection}\")")
+    } else if kind == "library" {
+        statements.append("prompt.library_class(at, \"{quoted_plain}\")")
+        statements.append("prompt.library_class(at, \"{quoted_plain}\")")
+    } else {
+        statements.append("prompt.no_attributes(at, \"{quoted_shown}\")")
+        statements.append("prompt.no_functions(at, \"{quoted_shown}\")")
+    }
+    cases.append("fetch")
+    statements.append("prompt.fetch(value, \"{quoted_shown}\")")
+    var has_bytes = kind == "object" or kind == "list" or kind == "dictionary"
+    if has_bytes {
+        cases.append("bytes")
+        statements.append("bytes_{number}(value)")
+    }
+    emitting.out(1, "var mode = prompt.mode")
+    emitting.write_switch(1, "mode", cases, statements, "prompt.refuse_bytes(at)")
+    emitting.out(0, "}")
+    emitting.blank()
+}
+
+func write_show(number: Integer, described: Model.Type) {
+    var type_kinds = Kinds(state)
+    var naming = Naming()
+    var emitting = Emitting(state)
+    var written = type_kinds.written_of(described)
+    var value_shown = type_kinds.shown_of(described)
+    var quoted_value_shown = naming.escaped(value_shown)
+    emitting.out(0, "func show_{number}(value: {written}) \{")
+    emitting.out(1, "var shown = full_{number}(value)")
+    emitting.out(1, "prompt.say_a_value(shown, \"{quoted_value_shown}\")")
+    emitting.out(0, "}")
+    emitting.blank()
+    emitting.out(0, "func show_or_null_{number}(value: {written}?) \{")
+    write_present_or_null(described, "show_{number}(value)", "prompt.say(\"null\")")
+    emitting.out(0, "}")
+    emitting.blank()
+}
+
+func piece_of(described: Model.Type, expression: String): String {
+    var type_kinds = Kinds(state)
+    var naming = Naming()
+    var type_table = Table(state)
+    if type_kinds.kind_of(described) == "opaque" {
+        var opaque_shown = state.context.shown(described)
+        var quoted_opaque = naming.escaped(opaque_shown)
+        return "\"{quoted_opaque} \\\{...}\""
+    }
+    var number = type_table.number_of(described)
+    if described.is_nullable {
+        return "nested_or_null_{number}({expression})"
+    }
+    return "nested_{number}({expression})"
+}
+
+func write_full(number: Integer, described: Model.Type, kind: String) {
+    var type_kinds = Kinds(state)
+    var emitting = Emitting(state)
+    var naming = Naming()
+    var written = type_kinds.written_of(described)
+    var attributes = List<Model.AttributeModel>()
+    if kind == "object" {
+        attributes = type_kinds.attributes_of(described)
+    }
+    var unused = ""
+    if kind == "object" and attributes.is_empty() {
+        unused = "_"
+    }
+    emitting.out(0, "func full_{number}({unused}value: {written}): String \{")
+    var plain = naming.plain_short_of(written)
+    var quoted_plain = naming.escaped(plain)
+    if kind == "object" and attributes.is_empty() {
+        emitting.out(1, "return \"{quoted_plain} \\\{}\"")
+    } else if kind == "object" {
+        var parts = List<String>()
+        var index = 0
+        while index < attributes.count() {
+            var attribute = attributes[index]
+            var piece = piece_of(attribute.attribute_type, "value.{attribute.name}")
+            emitting.out(1, "var piece_{index} = {piece}")
+            parts.append("{attribute.name}: \{piece_{index}}")
+            index = index + 1
+        }
+        var joined = parts.join(", ")
+        emitting.out(1, "return \"{quoted_plain} \\\{ {joined} }\"")
+    } else if kind == "union" {
+        write_union_dispatch(1, described, "full_", "(value)", true)
+    } else {
+        emitting.out(1, "return nested_{number}(value)")
+    }
+    emitting.out(0, "}")
+    emitting.blank()
+}
+
+func write_nested(number: Integer, described: Model.Type, kind: String) {
+    var type_kinds = Kinds(state)
+    var emitting = Emitting(state)
+    var naming = Naming()
+    var written = type_kinds.written_of(described)
+    var is_constant = kind == "object" or kind == "library" or kind == "opaque"
+    var unused = ""
+    if is_constant {
+        unused = "_"
+    }
+    emitting.out(0, "func nested_{number}({unused}value: {written}): String \{")
+    var plain = naming.plain_short_of(written)
+    var quoted_plain = naming.escaped(plain)
+    var shown = naming.short_of(written)
+    var quoted_shown = naming.escaped(shown)
+    if is_constant {
+        emitting.out(1, "return \"{quoted_plain} \\\{...}\"")
+    } else if kind == "text" {
+        emitting.out(1, "return value")
+    } else if kind == "scalar" or kind == "enum" {
+        emitting.out(1, "return value.to_string()")
+    } else if kind == "list" or kind == "dictionary" {
+        emitting.out(1, "var counted = value.count()")
+        emitting.out(1, "return \"{quoted_shown}(\{counted})\"")
+    } else if kind == "union" {
+        write_union_dispatch(1, described, "nested_", "(value)", true)
+    }
+    emitting.out(0, "}")
+    emitting.blank()
+    emitting.out(0, "func nested_or_null_{number}(value: {written}?): String \{")
+    write_present_or_null(described, "return nested_{number}(value)", "return \"null\"")
+    emitting.out(0, "}")
+    emitting.blank()
+}
+
+func write_attribute_list(number: Integer, described: Model.Type) {
+    var type_kinds = Kinds(state)
+    var emitting = Emitting(state)
+    var naming = Naming()
+    var written = type_kinds.written_of(described)
+    var attributes = type_kinds.attributes_of(described)
+    var unused = ""
+    if attributes.is_empty() {
+        unused = "_"
+    }
+    emitting.out(0, "func list_attributes_{number}({unused}value: {written}) \{")
+    if attributes.is_empty() {
+        var plain = naming.plain_short_of(written)
+        var quoted_plain = naming.escaped(plain)
+        emitting.out(1, "prompt.say(\"{quoted_plain} has no attributes\")")
+    } else {
+        var listed = List<String>()
+        var index = 0
+        while index < attributes.count() {
+            var attribute = attributes[index]
+            var piece = piece_of(attribute.attribute_type, "value.{attribute.name}")
+            emitting.out(1, "var piece_{index} = {piece}")
+            var shown = type_kinds.shown_of(attribute.attribute_type)
+            var quoted_shown = naming.escaped(shown)
+            listed.append("{attribute.name}: {quoted_shown} = \{piece_{index}}")
+            index = index + 1
+        }
+        var joined = listed.join("\\n")
+        emitting.out(1, "prompt.say(\"{joined}\")")
+    }
+    emitting.out(0, "}")
+    emitting.blank()
+}
+
+func walk_of(described: Model.Type, expression: String): String {
+    var type_kinds = Kinds(state)
+    var naming = Naming()
+    var type_table = Table(state)
+    if type_kinds.kind_of(described) == "opaque" {
+        var opaque_shown = state.context.shown(described)
+        var quoted_opaque = naming.escaped(opaque_shown)
+        return "prompt.opaque(at + 1, \"{quoted_opaque}\")"
+    }
+    var number = type_table.number_of(described)
+    if described.is_nullable {
+        return "reach_{number}({expression}, at + 1)"
+    }
+    return "walk_{number}({expression}, at + 1)"
+}
+
+func known_names_of(described: Model.Type): String {
+    var type_kinds = Kinds(state)
+    var naming = Naming()
+    var attributes = type_kinds.attributes_of(described)
+    var names = attributes.map_names()
+    var joined = names.join(", ")
+    return naming.escaped(joined)
+}
+
+func no_attribute_of(described: Model.Type): String {
+    var type_kinds = Kinds(state)
+    var naming = Naming()
+    var written = type_kinds.written_of(described)
+    var plain = naming.plain_short_of(written)
+    var quoted_plain = naming.escaped(plain)
+    var known = known_names_of(described)
+    return "prompt.no_attribute(at, \"{quoted_plain}\", \"{known}\")"
+}
+
+func no_element_of(described: Model.Type): String {
+    var type_kinds = Kinds(state)
+    var naming = Naming()
+    var shown = type_kinds.shown_of(described)
+    var quoted_shown = naming.escaped(shown)
+    return "prompt.no_attribute(at, \"{quoted_shown}\", \"\")"
+}
+
+func write_object_step(number: Integer, described: Model.Type) {
+    var type_kinds = Kinds(state)
+    var emitting = Emitting(state)
+    var written = type_kinds.written_of(described)
+    emitting.out(0, "func step_{number}(value: {written}, at: Integer) \{")
+    emitting.out(1, "var kind = prompt.step_kind(at)")
+    var cases = List<String>()
+    var statements = List<String>()
+    cases.append("call")
+    statements.append("call_{number}(value, at)")
+    cases.append("singleton")
+    statements.append("bind(at)")
+    cases.append("name")
+    statements.append("name_{number}(value, at)")
+    var refused = no_attribute_of(described)
+    emitting.write_switch(1, "kind", cases, statements, refused)
+    emitting.out(0, "}")
+    emitting.blank()
+}
