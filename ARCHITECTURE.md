@@ -387,7 +387,7 @@ validator only ever sees what stays an error:
 | Layer | Entry, called from | Rules |
 |---|---|---|
 | tokens | `fixes/tokens/every_fix.spite`'s `fixed`, per file between the lexer and the parser (`AbstractSyntaxTree.run`) | `misspelt_keyword` |
-| syntax tree | `fixes/abstract_syntax_tree/every_fix.spite`'s `fixed`, per file as it is read (`SymbolTable.read_class`) | `misplaced_comment`, `declaration_order` (the printer prints declarations in the enforced order), `after_return`, `local_names`, `default_guard` |
+| syntax tree | `fixes/abstract_syntax_tree/every_fix.spite`'s `fixed`, per file as it is read (`SymbolTable.read_class`) | `misplaced_comment`, `declaration_order` (the printer prints declarations in the enforced order), `type_member_form`, `after_return`, `local_names`, `default_guard` |
 | symbols | `fixes/symbols/every_fix.spite`'s `fixed`, once, when every class is read (`Symbols.run`), and it writes and restarts right there | `unneeded_load`, `repeated_declaration` (a `union` or `type` two classes of a root declare with one name and content moves to the entry class of the lowest namespace holding every copy) |
 | after building | `fixes/after_building/every_fix.spite`: `fixed_a_check` from the proof `proven_checks` before each refusal, `fixed_a_terminal_if` from `guard_asserts`, `fixed_a_walk` before the rules after building, `fixed_an_attribute` from `every_attribute_is_read` | `proven_check` (a `crash` or `fallback` line that proves nothing), `decided_condition` (an `if`, a `while` or a `fallback` decided while compiling), `known_if` (an `if` on what is already narrowed, proven or a decided class test), `terminal_if`, `copy_to_narrow`, `unread_plain_local`, `unread_attribute` |
 

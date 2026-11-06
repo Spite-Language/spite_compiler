@@ -630,6 +630,7 @@ func filled_shape(given: Model.Type, wanted: Model.Type) {
     } else {
         fits_as_a_class(shape, given, shown)
     }
+    refuse_a_filler_nothing_can_assign(shape, given, shown)
     var fillers = context.program.fillers_of(shape.key)
     var known = false
     var index = 0
@@ -704,6 +705,8 @@ func fits_as_a_class(shape: Model.ShapeModel, given: Model.Type, shown: String) 
 func debugged_when_asked(filler: Model.ClassModel, shape: Model.ShapeModel) {
     fallback shape.member_named("to_debug")
     fallback not filler.function_named("to_debug")
+    var held = filler.attribute_named("to_debug")
+    fallback not held or held.attribute_type.kind != 'function'
     var debugging = Debugging(context, this)
     debugging.make_to_debug_of(filler)
 }
@@ -733,11 +736,117 @@ func need_a_filling_function(
         function = filler.function_named("to_debug")
     }
     if not function {
+        function = held_function_of(filler, member, shown, shape)
+    }
+    if not function {
         typing.refuse_not_a_fit(context, shown, shape.name, member.name)
     }
     crash function
     refuse_a_mistyped_function(function, member, filler, shape, shown)
     need(function)
+}
+
+func held_function_of(
+    filler: Model.ClassModel,
+    member: Model.FunctionModel,
+    shown: String,
+    shape: Model.ShapeModel,
+): Model.FunctionModel? {
+    fallback member.is_a_function_member
+    var attribute = filler.attribute_named(member.name)
+    fallback attribute
+    var given = filler.type_of_an_instance()
+    var wanted = type_the_member_holds(member)
+    crash wanted
+    refuse_a_mistyped_holding(attribute, wanted, member, given, shape, shown)
+    if attribute.attribute_type.is_nullable {
+        var found_shown = shown_with_an_article(attribute.attribute_type)
+        typing.refuse_a_mistyped_fit(
+            context,
+            shown,
+            shape.name,
+            "attribute '{member.name}' is {found_shown}, which may hold no function, and the type needs one",
+        )
+    }
+    return calling_the_held_function(filler, attribute)
+}
+
+func calling_the_held_function(filler: Model.ClassModel, attribute: Model.AttributeModel): Model.FunctionModel {
+    var held = attribute.attribute_type
+    var made = Model.FunctionModel(attribute.name, filler.key)
+    made.is_synthetic = true
+    made.answer = held.answer
+    filler.declared_functions.append(made)
+    var passed = List<SpiteCompiler.Value>()
+    var index = 0
+    while index < held.parameters.count() {
+        var taken = held.parameters[index]
+        var name = "given_{index}"
+        var parameter = Model.ParameterModel(name, taken, false)
+        made.parameters.append(parameter)
+        var read = HighIntermediaryRepresentation.Values.LocalRead(taken, name)
+        passed.append(read)
+        index = index + 1
+    }
+    var own_type = filler.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var holding = HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
+    var through = HighIntermediaryRepresentation.Values.Function.ValueCall(holding, passed)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    if held.answer {
+        through.value_type = held.answer
+        var answered = HighIntermediaryRepresentation.Statements.Return(through)
+        body.statements.append(answered)
+    } else {
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(through)
+        body.statements.append(evaluated)
+    }
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func type_the_member_holds(member: Model.FunctionModel): Model.Type? {
+    if not member.is_a_function_member {
+        return member.answer
+    }
+    var made = Model.Type('function', "Spite.Function")
+    made.parameters = member.parameters.map_parameter_types()
+    made.answer = member.answer
+    return made
+}
+
+func note_a_member_assigned(shape: Model.ShapeModel, member: Model.FunctionModel) {
+    fallback member.is_a_function_member
+    shape.assigned_members.append(member.name)
+    var fillers = context.program.fillers_of(shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        var filler_shown = context.shown(filler)
+        refuse_a_filler_nothing_can_assign(shape, filler, filler_shown)
+        index = index + 1
+    }
+}
+
+func refuse_a_filler_nothing_can_assign(shape: Model.ShapeModel, given: Model.Type, shown: String) {
+    var index = 0
+    while index < shape.assigned_members.count() {
+        var assigned = shape.assigned_members[index]
+        if not holds_the_assigned_member(given, assigned) {
+            typing.refuse_a_function_assigned_through_a_type(context, shown, shape.name, assigned)
+        }
+        index = index + 1
+    }
+}
+
+func holds_the_assigned_member(given: Model.Type, assigned: String): Boolean {
+    fallback context.has_a_class(given)
+    var filler = context.class_of(given)
+    if filler.attribute_named(assigned) {
+        return true
+    }
+    return false
 }
 
 # ../../PROOFS.md#a-value-fits-a-type
@@ -755,8 +864,19 @@ func refuse_a_mistyped_attribute(
     shown: String,
 ) {
     fallback is_a_written_member(member, shape)
-    fallback member.answer
-    var wanted: Model.Type = member.answer
+    var wanted = type_the_member_holds(member)
+    fallback wanted
+    refuse_a_mistyped_holding(attribute, wanted, member, given, shape, shown)
+}
+
+func refuse_a_mistyped_holding(
+    attribute: Model.AttributeModel,
+    wanted: Model.Type,
+    member: Model.FunctionModel,
+    given: Model.Type,
+    shape: Model.ShapeModel,
+    shown: String,
+) {
     var found = attribute.attribute_type
     if not fits_the_member_type(found, wanted, given, shape) {
         var found_shown = shown_with_an_article(found)
@@ -973,6 +1093,11 @@ func has_the_member(
     var function = model.function_named(member.name)
     if function and not member.is_an_attribute {
         return has_the_function_types(found, function, member, shape)
+    }
+    if attribute and member.is_a_function_member {
+        var wanted = type_the_member_holds(member)
+        crash wanted
+        return fits_the_member_type(attribute.attribute_type, wanted, found, shape)
     }
     if attribute or function {
         return true
@@ -8173,6 +8298,7 @@ func fits_the_shape(bound: Model.Type, described: Model.Type): Boolean {
         var filling_attribute = filler.attribute_named(member.name)
         var is_filled = filling_function and not member.is_an_attribute
         is_filled = is_filled or filling_attribute and member.is_an_attribute
+        is_filled = is_filled or filling_attribute and member.is_a_function_member
         fallback is_filled
         index = index + 1
     }
