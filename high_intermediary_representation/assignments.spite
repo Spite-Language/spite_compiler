@@ -20,6 +20,7 @@ var waits_write = true
 var skips_fresh_objects = false
 var makes_a_fresh_object = false
 var fresh_locals = List<String>()
+var fresh_writes = List<HighIntermediaryRepresentation.Statements.Assign.Attribute>()
 var taken_by_signature = Dictionary<String, List<String>>()
 var current_parameters = List<String>()
 var parameter_calls = List<String>()
@@ -99,6 +100,7 @@ func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
     var makes_its_object = function.function.is_constructor or function.function.name == "_attribute_defaults"
     makes_a_fresh_object = skips_fresh_objects and makes_its_object
     fresh_locals = List<String>()
+    fresh_writes = List<HighIntermediaryRepresentation.Statements.Assign.Attribute>()
     current_parameters = List<String>()
     function.function.parameters.each(note_a_parameter)
     parameter_calls = List<String>()
@@ -408,6 +410,7 @@ func read_a_statement(statement: SpiteCompiler.Statement) {
 
 func read_a_declaration(declared: HighIntermediaryRepresentation.Statements.Declare) {
     read_a_value(declared.value)
+    hand_on(declared.value)
     var made = declared.value
     var is_made_here = made.class == HighIntermediaryRepresentation.Values.MakeObject
     if skips_fresh_objects and is_made_here {
@@ -428,10 +431,26 @@ func read_an_assignment(assigned: HighIntermediaryRepresentation.Statements.Assi
         fresh_locals.remove_at(place)
     }
     read_a_value(assigned.value)
+    hand_on(assigned.value)
 }
 
 func read_a_return(returned: HighIntermediaryRepresentation.Statements.Return) {
     read_a_value(returned.value)
+    hand_on(returned.value)
+}
+
+# ../PROOFS.md#a-call-keeps-a-proof-it-cannot-change
+func hand_on(value: SpiteCompiler.Value?) {
+    fallback value and not fresh_locals.is_empty()
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        hand_on(value.converted)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        var place = fresh_locals.index_of(value.name)
+        if place {
+            fresh_locals.remove_at(place)
+        }
+    }
 }
 
 func read_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
@@ -443,14 +462,17 @@ func read_an_attribute_write(written: HighIntermediaryRepresentation.Statements.
     var attribute_key = attribute_key_of(written.attribute)
     var is_fresh = makes_a_fresh_object and written.object.class == HighIntermediaryRepresentation.Values.ThisRead
     var object = written.object
-    if object.class == HighIntermediaryRepresentation.Values.LocalRead {
-        is_fresh = is_fresh or fresh_locals.contains(object.name)
+    if object.class == HighIntermediaryRepresentation.Values.LocalRead and fresh_locals.contains(object.name) {
+        is_fresh = true
+        written.is_to_a_fresh_object = true
+        fresh_writes.append(written)
     }
     if not is_fresh {
         current_writes.append(attribute_key)
     }
     read_a_value(written.object)
     read_a_value(written.value)
+    hand_on(written.value)
 }
 
 func read_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
@@ -464,6 +486,7 @@ func read_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assig
     }
     read_a_value(written.object)
     read_a_value(written.value)
+    hand_on(written.value)
 }
 
 func read_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
@@ -478,8 +501,26 @@ func read_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
 }
 
 func read_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    var fresh_before = fresh_locals.copy()
+    var first_write = fresh_writes.count()
     read_a_value(loop.condition)
     read_a_block(loop.body)
+    count_the_writes_handed_on_in_a_loop(fresh_before, first_write)
+}
+
+# ../PROOFS.md#a-call-keeps-a-proof-it-cannot-change
+func count_the_writes_handed_on_in_a_loop(fresh_before: List<String>, first_write: Integer) {
+    var index = first_write
+    while index < fresh_writes.count() {
+        var written = fresh_writes[index]
+        var object = written.object
+        if object.class == HighIntermediaryRepresentation.Values.LocalRead and fresh_before.contains(object.name) and not fresh_locals.contains(object.name) {
+            written.is_to_a_fresh_object = false
+            var attribute_key = attribute_key_of(written.attribute)
+            current_writes.append(attribute_key)
+        }
+        index = index + 1
+    }
 }
 
 func read_a_present(value: SpiteCompiler.Value) {
@@ -537,6 +578,7 @@ func read_a_call(call: HighIntermediaryRepresentation.Values.Call) {
     }
     current_calls.append(key)
     read_a_value(call.receiver)
+    hand_on(call.receiver)
     call.arguments.each(read_a_present)
     if skips_fresh_objects {
         pass_the_values(call.arguments)
@@ -612,6 +654,7 @@ func read_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall
             current_calls.append("$value")
         }
         read_a_value(argument)
+        hand_on(argument)
         index = index + 1
     }
     read_a_value(call.library)
@@ -633,6 +676,7 @@ func read_a_taken_function(taken: HighIntermediaryRepresentation.Values.Function
         same.append(key)
     }
     read_a_value(taken.receiver)
+    hand_on(taken.receiver)
 }
 
 func read_a_function_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
@@ -670,6 +714,7 @@ func pass_the_values(arguments: List<SpiteCompiler.Value>) {
 }
 
 func pass_a_value(argument: SpiteCompiler.Value) {
+    hand_on(argument)
     if argument.class == HighIntermediaryRepresentation.Values.Function.Value {
         var key = argument.function.key()
         current_calls.append(key)
@@ -724,6 +769,7 @@ func read_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
         index = index + 1
     }
     read_a_value(call.receiver)
+    hand_on(call.receiver)
     call.arguments.each(read_a_present)
     if skips_fresh_objects {
         pass_the_values(call.arguments)

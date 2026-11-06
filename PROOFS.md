@@ -143,10 +143,12 @@ as when each was refused while building.
   which keep a test, are not.
 - **Rule**: a narrowed attribute read is refused when a call built between the check and the read may assign that
   attribute, followed through everything the call reaches, or when a write through another object that could break what was proven sits between them: a value that may be null,
-  or one of another class than the narrowed one (not one to the same path, which the builder already follows, nor one to an object made in the same function).
+  or one of another class than the narrowed one (not one to the same path, which the builder already follows, nor one to an object made in the same function and not handed on yet).
+  A call or a write that may assign an earlier attribute of the path counts whatever it writes, since it changes which object is read.
   A write of a value of the narrowed type leaves the proof true, whichever object it reached. What a call may assign is decided by the attribute's
-  class and name: a constructor's writes to its own object and writes to an object made in the same function are
-  not writes to anything a proof reads; a wait writes nothing in a program that makes no `Concurrent` or
+  class and name: a constructor's writes to its own object and writes to an object made in the same function, before
+  it is stored, copied, passed, called on, taken with a function or returned (for a local made before a loop, before
+  the loop if the body hands it on), are not writes to anything a proof reads (`Assignments.hand_on`, which marks the write `is_to_a_fresh_object`); a wait writes nothing in a program that makes no `Concurrent` or
   `Parallel`, and anything in one that does; a call through a function value reaches the functions taken as values
   with its signature, and a function that only calls its parameters reaches the functions each caller passes it; a
   `drop()` that may run is followed too. Inside a loop, a call anywhere in the body undoes a narrowing made before
@@ -169,7 +171,8 @@ as when each was refused while building.
   tests/narrowing_kept_across_harmless_call; conformance/call_undoes_proof, conformance/branch_undoes_proof,
   conformance/receiver_call_undoes_proof, conformance/count_undoes_proof, conformance/bound_proofs_undone,
   conformance/structural_index_undone, conformance/call_on_other_undoes_narrowing,
-  conformance/call_in_loop_undoes_narrowing.
+  conformance/call_in_loop_undoes_narrowing, conformance/narrowed_past_a_write_to_an_earlier_attribute,
+  conformance/narrowed_past_a_write_to_an_object_handed_on, tests/narrowed_past_filling_a_new_object.
 
 ### An address keeps its owner alive
 
