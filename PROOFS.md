@@ -158,8 +158,7 @@ as when each was refused while building.
 
 ### A call keeps a proof it cannot change
 
-- **Status**: partly built: every narrowing a read relies on without a test is checked; the `[]` and count proofs,
-  which keep a test, are not.
+- **Status**: built, for every narrowing a read relies on without a test and for the `[]` and count proofs, which keep a test.
 - **Rule**: a narrowed attribute read is refused when a call built between the check and the read may assign that
   attribute, followed through everything the call reaches, or when a write through another object that could break what was proven sits between them: a value that may be null,
   or one of another class than the narrowed one (not one to the same path, which the builder already follows, nor one to an object made in the same function and not handed on yet).
@@ -175,11 +174,12 @@ as when each was refused while building.
   `drop()` that may run is followed too. Inside a loop, a call anywhere in the body undoes a narrowing made before
   the loop for the next pass ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: no re-check after a harmless call; a call that may null what was proven is never read past.
-- **Missing**: a `[]` or count proof is undone only by a direct shrinking call, a bare call of the class's own
-  function and a call on a `[]` receiver (a read it keeps halts, "is outside its list", when the list changed); a
+  A read proven by a `[]` or count proof (`NarrowedRead.watched_lists`) is refused past a call that may shrink its list, whatever the call's answer is used for: `Assignments.note_a_shrink` writes a key for each shrinking call in the program's own code, by the attribute that holds the list, or by the list's class when a parameter or another list's item reaches it. A `fallback`, `crash` or `if` on the same read after a call tests the list again and proves it anew. A local made in the function and not handed on is not counted, and neither is what the library does inside its own functions, since a call of a library function that shrinks is itself the shrinking call.
+- **Missing**: a shrink through a local alias of an attribute's list in the same function, and a count kept in a `var` before a call that shrinks (a read they keep halts, "is outside its list", when the list changed); a
   call inside a condition is ordered after the block it guards.
 - **Falls back**: refused, "'keeper.target' was proven before line 12, where 'forget(...)' may assign 'target'
-  again, so this read would use what the call left there, unproven: prove 'keeper.target' again after that line";
+  again, so this read would use what the call left there, unproven: prove 'keeper.target' again after that line"
+  (a list: "'items[0]' was proven before line 9, where 'trim(...)' may shrink what it reads, so this read may fall outside it: prove 'items[0]' again after that line");
   in a loop, at the call, "'forget(...)' inside this loop may change 'target', which undoes what was proven about
   'keeper.target' before the loop, and the next pass would read it unproven: prove it inside the loop instead". The
   message names the function that writes when it is not the one called.
@@ -197,7 +197,8 @@ as when each was refused while building.
   conformance/crash_and_call_undoes_proof; conformance/call_undoes_proof, conformance/branch_undoes_proof,
   conformance/receiver_call_undoes_proof, conformance/count_undoes_proof, conformance/bound_proofs_undone,
   conformance/structural_index_undone, conformance/call_on_other_undoes_narrowing,
-  conformance/call_in_loop_undoes_narrowing, conformance/narrowed_past_a_write_to_an_earlier_attribute,
+  conformance/call_in_loop_undoes_narrowing, conformance/shrink_undoes_proof_*, tests/shrink_keeps_the_proofs_it_cannot_reach,
+  conformance/narrowed_past_a_write_to_an_earlier_attribute,
   conformance/narrowed_past_a_write_to_an_object_handed_on, tests/narrowed_past_filling_a_new_object.
 
 ### An address keeps its owner alive
@@ -421,8 +422,7 @@ as when each was refused while building.
 - **In a `while`** (D1448): a `<=` bound and the count facts prove the reads of its body as they do after a `crash`:
   `while at + 3 <= values.count()` proves `values[at]` to `values[at + 2]`, `while queue.count() > 1` proves
   `queue[0]` and `queue[1]`.
-- **Missing**: undoing a proof inside the loop that read it is not refused, and a shrinking call inside an
-  assignment or an argument does not undo it (each read still halts when its list changed, see the next section).
+- **Missing**: a count kept in a `var` before a call that shrinks the list (each read still halts when its list changed, see the next section).
 - **Falls back**: an unproven read is a `T?`; where a `T` is needed it is refused, "'...' may be missing, since every
   '[ ]' answers a 'T?' ...: ..., or prove the count first, 'crash list.count() > 2'".
 - **Lives in**: the proving is building, since it decides whether a read is a `T`: `loops.spite`
