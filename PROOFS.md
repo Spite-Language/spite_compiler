@@ -89,12 +89,20 @@ as when each was refused while building.
 - **Status**: built, wider than the old rule.
 - **Rule**: each side of an `and` holds where the whole holds, and later sides see the earlier ones narrowed; the
   right side of an `or` sees the left side's opposite. This holds in every condition, `while` and a plain
-  expression included ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  expression included, and a `while` body starts with every side of its `and` narrowed. No side of an `or` narrows
+  where the whole holds ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: one line proves several reads (`if node and node.ready`).
 - **Falls back**: the sides are tested in order, so a later side is never read unproven.
-- **Lives in**: embedded, `statements.spite` (`read_a_binary_fact`), `values.spite` (`logic_value`,
-  `right_condition_of`).
-- **Checked by**: tests/and_narrowing, tests/and_return_narrowing.
+- **Lives in**: embedded, `statements.spite` (`read_a_binary_fact`), `loops.spite` (`read_a_present_side`),
+  `values.spite` (`logic_value`, `right_condition_of`).
+- **Checked by**: tests/and_narrowing, tests/and_return_narrowing, tests/while_and_narrows;
+  conformance/while_or_proves_nothing, conformance/while_and_or_proves_nothing,
+  conformance/while_and_inner_or_proves_nothing, conformance/while_and_not_proves_nothing,
+  conformance/while_and_proves_nothing_after_the_loop, conformance/while_and_attribute_written_in_the_body,
+  conformance/while_and_local_written_in_the_body, conformance/while_and_written_in_a_branch,
+  conformance/while_and_written_around_an_inner_loop, conformance/while_and_earlier_link_written,
+  conformance/while_and_item_written_in_the_body, conformance/while_and_call_in_the_body,
+  conformance/while_and_write_through_another_object.
 
 ### An `if` that leaves proves the rest
 
@@ -122,18 +130,29 @@ as when each was refused while building.
   below the items, and every item's narrowing when the value may be null; assigning it a value that cannot be null
   keeps its own narrowing. Inside a `while`, assigning a value that may be null to a path narrowed before the loop
   and read in it is an error: for an attribute at once, for a local or a parameter when the end of the body leaves
-  it unnarrowed (a check later in the same pass keeps it)
+  it unnarrowed (a check later in the same pass keeps it). An assignment in a block that always leaves undoes nothing
+  after that block, and no next pass reads it, when the block sits inside the loop that holds the assignment; every
+  other path keeps it undone: a block that falls through, an `else` that falls through, a loop inside the leaving
+  block that goes around
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
 - **Buys**: nothing stale is read: a narrowed read has no run-time test.
 - **Falls back**: refused, "assigning to '...' inside this loop undoes a narrowing made before the loop, and the
   next pass would read it unproven: narrow it inside the loop instead"; after the assignment, a read is refused
   until it is proven again.
 - **Lives in**: forgetting is building, `assignments.spite` (`assign_a_name`,
-  `assign_an_attribute`), `statements.spite` (`forget_the_stored_items`), `scope.spite` (`forget`, `forget_below`, `forget_below_the_items`, `keep_present`); the
+  `assign_an_attribute`), `statements.spite` (`forget_the_stored_items`, `finish_a_stretch`), `context.spite` (`note_the_loop_writes_left_behind`), `scope.spite` (`forget`, `forget_below`, `forget_below_the_items`, `keep_present`, `hold_the_narrowings`, `let_go_of_the_narrowings`); the
   refusals in a loop are the proof `proofs/loop_narrowings`, judging what `note_an_undone_loop_check` and
   `note_an_undone_path` recorded.
 - **Checked by**: tests/narrowed_value_assignment, tests/proof_again_in_loop, tests/narrowing_snapshot_copy,
-  tests/loop_narrows_its_local_again; conformance/narrowed_name_reassigned, conformance/path_narrow_assignment,
+  tests/loop_narrows_its_local_again, tests/narrowed_past_a_same_path_write_that_returns;
+  conformance/same_path_write_falls_through, conformance/same_path_write_in_an_else,
+  conformance/same_path_write_in_both_branches, conformance/same_path_write_in_a_then_that_stays,
+  conformance/same_path_write_in_a_branch_that_may_stay, conformance/same_path_write_before_a_loop_that_may_stay,
+  conformance/same_path_read_after_the_write, conformance/same_path_write_in_a_switch_case_that_stays,
+  conformance/same_path_write_around_a_loop, conformance/same_path_write_around_a_loop_in_a_leaving_block,
+  conformance/alias_write_around_a_loop_in_a_leaving_block,
+  conformance/same_path_write_around_a_loop_that_may_stay, conformance/same_local_write_around_a_loop_that_may_stay,
+  conformance/same_item_write_falls_through; conformance/narrowed_name_reassigned, conformance/path_narrow_assignment,
   conformance/path_narrow_loop, conformance/narrowed_path_undone_below, conformance/narrowed_local_undone_in_loop,
   conformance/assigned_start_undoes_narrowing, conformance/index_store_undoes_narrowing.
 
@@ -145,7 +164,8 @@ as when each was refused while building.
   attribute, followed through everything the call reaches, or when a write through another object that could break what was proven sits between them: a value that may be null,
   or one of another class than the narrowed one (not one to the same path, which the builder already follows, nor one to an object made in the same function and not handed on yet).
   A call or a write that may assign an earlier attribute of the path counts whatever it writes, since it changes which object is read.
-  One in a block that always leaves does not reach a read after that block (`NarrowedRead.is_left_behind`); a block that falls through, and a loop that goes around after it, still count.
+  One in a block that always leaves does not reach a read after that block, nor a read before it in that block when the block sits inside the read's own loop (`NarrowedRead.is_left_behind`); a block that falls through, and a loop that goes around after it, still count.
+  A call in a condition counts: `fallback` and `crash` log theirs, and a fact of an `and` (or of the `or` of a guard that leaves) is proven before any call on a later side, while a fact on a later side is proven after it (`statements.spite`: `note_the_facts_before_a_call`, `log_a_condition_that_calls`; `values.spite`: `right_condition_of`, for what a later side reads).
   A write of a value of the narrowed type leaves the proof true, whichever object it reached. What a call may assign is decided by the attribute's
   class and name: a constructor's writes to its own object and writes to an object made in the same function, before
   it is stored, copied, passed, called on, taken with a function or returned (for a local made before a loop, before
@@ -169,7 +189,12 @@ as when each was refused while building.
   built since its check (`statements.spite`: `log_the_calls_of`); what a call may assign is
   `high_intermediary_representation/assignments.spite` read for narrowings (`read_for_narrowings`).
 - **Checked by**: tests/receiver_call_effects, tests/same_name_call_effects,
-  tests/narrowing_kept_across_harmless_call; conformance/call_undoes_proof, conformance/branch_undoes_proof,
+  tests/narrowing_kept_across_harmless_call; conformance/condition_call_after_the_if_fact,
+  conformance/condition_call_after_the_while_fact, conformance/condition_call_before_a_later_side,
+  conformance/condition_call_before_a_later_while_side, conformance/condition_call_in_a_leaving_or,
+  conformance/condition_call_before_the_right_of_an_or, conformance/condition_call_in_a_plain_value,
+  conformance/fallback_call_undoes_proof, conformance/crash_call_undoes_proof, conformance/fallback_and_call_undoes_proof,
+  conformance/crash_and_call_undoes_proof; conformance/call_undoes_proof, conformance/branch_undoes_proof,
   conformance/receiver_call_undoes_proof, conformance/count_undoes_proof, conformance/bound_proofs_undone,
   conformance/structural_index_undone, conformance/call_on_other_undoes_narrowing,
   conformance/call_in_loop_undoes_narrowing, conformance/narrowed_past_a_write_to_an_earlier_attribute,
@@ -564,7 +589,8 @@ as when each was refused while building.
 
 - **Status**: partly built (D768).
 - **Rule**: every whole-number local and parameter has a range from literals, assignments and the conditions in
-  force; `count()`, `length()`, `%`, `minimum`, `maximum` and `clamp` bound their answers; loops widen counters and
+  force (every side of an `and` that holds, every side of an `or` that does not, as after `if amount > 100 or
+  amount < 0 { return 1 }`); `count()`, `length()`, `%`, `minimum`, `maximum` and `clamp` bound their answers; loops widen counters and
   count passes; a total holds at most `passes` terms
   ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#a-range-proves-a-check-unneeded)).
 - **Buys**: an operation the ranges prove carries no overflow check.
@@ -574,7 +600,8 @@ as when each was refused while building.
 - **Falls back**: the check stays and is listed by `--optimization-report`.
 - **Lives in**: the proof `proofs/ranges`, a speed proof run after the acceptance proofs, over every function built from
   the source; it records its fact on each operation (`proves_no_ranges`, the unchecked arithmetic) for the lowering.
-- **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room, tests/down_counter_ranges.
+- **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room, tests/down_counter_ranges,
+  tests/leaving_or_proves_ranges.
 
 ### The range of a register
 
