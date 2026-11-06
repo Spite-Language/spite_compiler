@@ -75,7 +75,9 @@ clearing a function's facts once it has, so no fact outlives the round that prov
 
 ### The proofs, in order
 
-0. `proven_present`: the `T?` locals, attributes and answers every assignment or `return` of which is present
+0. `proven_present`: first the literal conversions (`literal_conversions`, which evaluates each conversion of a literal
+   the builder recorded over the high representation, so it runs in every build and `--check` agrees with `--build`);
+   then the `T?` locals, attributes and answers every assignment or `return` of which is present
    (`present_assignments` and `present_answers`, run together until neither proves more), recorded as the builder
    context's `PresenceFacts`, which `present_values` and `proven_checks` read. A refusal the builder makes first
    proves them over the functions built so far.
@@ -87,7 +89,8 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    - `loop_narrowings`: an assignment inside a loop does not undo a narrowing the next pass reads;
    - `guard_asserts`: a guard `fallback` answers only "nothing", and a last `if` is not a hidden guard;
    - `lost_writes`: a write to an object only this function holds is read, and a name read from a list is not
-     assigned as its last mention.
+     assigned as its last mention;
+   - `literal_conversions`: a literal's conversion did not answer `null`.
    A refusal the builder still makes asks this walk first, so the earliest error is the one told.
 2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program (the call
    inside a call, unused names, and the lone hole, which reads whether each hole the builder built is text), and the
@@ -128,6 +131,7 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
 
 ### The high passes, in order
 
+0. `literal_answers`: a number or an enum value the proof `literal_conversions` worked out replaces its call.
 1. `setup_list_calls`: each recorded loop over a setup's list is one direct call per item, to the function of the
    item's class. This is what makes a stage's `run` direct calls in order.
 2. `fused_chains`: a `List` or `Vector` template called on the answer of `filter_` and `map_` steps is one call to

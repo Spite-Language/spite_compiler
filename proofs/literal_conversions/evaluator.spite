@@ -1,0 +1,602 @@
+# ../../PROOFS.md#a-literal-that-converts-is-a-t
+
+var program = Model.ProgramModel()
+var built_functions = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var default_chunks = Dictionary<String, Dictionary<String, List<SpiteCompiler.Statement>>>()
+var drops_with_work = Dictionary<String, Boolean>()
+var numbers = Numbers()
+var intrinsics = Intrinsics()
+var nothing = Held('nothing')
+var frame = Frame(nothing)
+var answered_and_dropped = Held('nothing')
+var failed = false
+var steps = 0
+var total_steps = 0
+var depth = 0
+var _most_steps_of_a_literal = 1000000
+var _most_steps_of_a_program = 20000000
+var _deepest = 200
+
+func Evaluator(starting_context: HighIntermediaryRepresentation.Building.Context) {
+    program = starting_context.program
+    starting_context.built_so_far.each(note_a_function)
+    starting_context.synthetic_functions.each(note_a_function)
+}
+
+func note_a_function(built: HighIntermediaryRepresentation.HighFunction) {
+    var key = built.function.key()
+    built_functions[key] = built
+}
+
+func answer_of(call: HighIntermediaryRepresentation.Values.Call): Held? {
+    failed = false
+    steps = 0
+    depth = 0
+    frame = Frame(nothing)
+    var answer = evaluated_call(call)
+    fallback not failed
+    return answer
+}
+
+func given_up(): Held {
+    failed = true
+    return answered_and_dropped
+}
+
+func counts_a_step(): Boolean {
+    steps = steps + 1
+    total_steps = total_steps + 1
+    if steps > _most_steps_of_a_literal or total_steps > _most_steps_of_a_program {
+        failed = true
+    }
+    return not failed
+}
+
+func run_block(block: HighIntermediaryRepresentation.Statements.Block) {
+    var index = 0
+    while index < block.statements.count() {
+        fallback not failed and not frame.is_returning
+        var statement = block.statements[index]
+        run_statement(statement)
+        index = index + 1
+    }
+}
+
+func run_statement(statement: SpiteCompiler.Statement) {
+    fallback counts_a_step()
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: run_a_declaration(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: run_a_local_assignment(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: run_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: given_up_on_a_statement()
+        HighIntermediaryRepresentation.Statements.Evaluate: run_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.If: run_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: run_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Return: run_a_return(statement)
+        HighIntermediaryRepresentation.Statements.Stop: given_up_on_a_statement()
+        HighIntermediaryRepresentation.Statements.Block: run_block(statement)
+    }
+}
+
+func given_up_on_a_statement() {
+    failed = true
+}
+
+func run_a_declaration(declaration: HighIntermediaryRepresentation.Statements.Declare) {
+    var held = evaluated(declaration.value)
+    frame.locals[declaration.name] = held
+}
+
+func run_a_local_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign) {
+    var held = evaluated(assigned.value)
+    frame.locals[assigned.name] = held
+}
+
+func run_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    var holder = evaluated(written.object)
+    var object = numbers.object_in(holder)
+    if not object {
+        failed = true
+        return
+    }
+    var held = evaluated(written.value)
+    object.held_attributes[written.attribute.name] = held
+}
+
+func run_an_evaluation(evaluation: HighIntermediaryRepresentation.Statements.Evaluate) {
+    if evaluation.waited {
+        failed = true
+        return
+    }
+    answered_and_dropped = evaluated(evaluation.value)
+}
+
+func run_an_if(made: HighIntermediaryRepresentation.Statements.If) {
+    var condition = evaluated(made.condition)
+    fallback not failed
+    if condition.kind != 'whole' {
+        failed = true
+        return
+    }
+    if condition.whole != 0 {
+        run_block(made.then_branch)
+        return
+    }
+    fallback made.else_branch
+    run_block(made.else_branch)
+}
+
+func run_a_while(looped: HighIntermediaryRepresentation.Statements.While) {
+    var running = true
+    while running {
+        var condition = evaluated(looped.condition)
+        if failed or condition.kind != 'whole' {
+            failed = true
+            return
+        }
+        running = condition.whole != 0
+        if running {
+            run_block(looped.body)
+            running = not failed and not frame.is_returning and counts_a_step()
+        }
+    }
+}
+
+func run_a_return(returned: HighIntermediaryRepresentation.Statements.Return) {
+    frame.is_returning = true
+    fallback returned.value
+    frame.answer = evaluated(returned.value)
+}
+
+func evaluated(value: SpiteCompiler.Value?): Held {
+    if not value or not counts_a_step() {
+        return given_up()
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.TextConstant: return text_held(value.text)
+        HighIntermediaryRepresentation.Values.WholeNumber: return numbers.whole_held(value.number)
+        HighIntermediaryRepresentation.Values.DecimalNumber: return decimal_constant(value)
+        HighIntermediaryRepresentation.Values.NullConstant: return Held('absent')
+        HighIntermediaryRepresentation.Values.LocalRead: return local_read(value)
+        HighIntermediaryRepresentation.Values.ThisRead: return frame.receiver
+        HighIntermediaryRepresentation.Values.AttributeRead: return attribute_read(value)
+        HighIntermediaryRepresentation.Values.Call: return evaluated_call(value)
+        HighIntermediaryRepresentation.Values.MakeObject: return made_object(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: return operated(value)
+        HighIntermediaryRepresentation.Values.Negation: return negated(value)
+        HighIntermediaryRepresentation.Values.ForeignCall: return foreign_called(value)
+        HighIntermediaryRepresentation.Values.Class.Membership: return membership(value)
+        HighIntermediaryRepresentation.Values.PresenceTest: return presence_tested(value)
+        HighIntermediaryRepresentation.Values.Conversion: return converted(value)
+        HighIntermediaryRepresentation.Values.Function.Value: return given_up()
+        HighIntermediaryRepresentation.Values.Function.ValueCall: return given_up()
+        HighIntermediaryRepresentation.Values.NumberRoom: return number_room(value)
+        HighIntermediaryRepresentation.Values.ShapeCall: return shape_called(value)
+        HighIntermediaryRepresentation.Values.EnumText: return enum_text(value)
+        HighIntermediaryRepresentation.Values.EnumFromText: return enum_from_text(value)
+        HighIntermediaryRepresentation.Values.Class.Object: return given_up()
+        HighIntermediaryRepresentation.Values.Class.OfValue: return given_up()
+        HighIntermediaryRepresentation.Values.Function.Fact: return given_up()
+    }
+}
+
+func text_held(text: String): Held {
+    var size = text.length()
+    var buffer = HeldObject("Buffer")
+    var index = 0
+    while index < size {
+        var code = text.byte_at(index)
+        buffer.bytes.append(code)
+        index = index + 1
+    }
+    var count: Long = size
+    buffer.held_attributes["item_count"] = numbers.whole_held(count)
+    buffer.held_attributes["_capacity"] = numbers.whole_held(count)
+    var buffer_held = Held('object')
+    buffer_held.object = buffer
+    var made = HeldObject("String")
+    made.held_attributes["_buffer"] = buffer_held
+    made.held_attributes["_length"] = numbers.whole_held(count)
+    var made_held = Held('object')
+    made_held.object = made
+    return made_held
+}
+
+func decimal_constant(number: HighIntermediaryRepresentation.Values.DecimalNumber): Held {
+    var read = numbers.read_a_decimal(number.written, number.value_type.name)
+    if read {
+        return read
+    }
+    return given_up()
+}
+
+func local_read(read: HighIntermediaryRepresentation.Values.LocalRead): Held {
+    var held = frame.locals[read.name]
+    if held {
+        return held
+    }
+    return given_up()
+}
+
+func attribute_read(read: HighIntermediaryRepresentation.Values.AttributeRead): Held {
+    var holder = evaluated(read.object)
+    var object = numbers.object_in(holder)
+    if not object {
+        return given_up()
+    }
+    var held = object.held_attributes[read.attribute.name]
+    if held {
+        return held
+    }
+    return attribute_default(object, read.attribute.name)
+}
+
+func chunks_of(class_key: String): Dictionary<String, List<SpiteCompiler.Statement>> {
+    var known = default_chunks[class_key]
+    if known {
+        return known
+    }
+    var chunks = Dictionary<String, List<SpiteCompiler.Statement>>()
+    default_chunks[class_key] = chunks
+    var defaults = built_functions["{class_key}._attribute_defaults"]
+    fallback defaults
+    var pending = List<SpiteCompiler.Statement>()
+    var index = 0
+    while index < defaults.body.statements.count() {
+        var statement = defaults.body.statements[index]
+        pending.append(statement)
+        if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+            chunks[statement.attribute.name] = pending
+            pending = List<SpiteCompiler.Statement>()
+        }
+        index = index + 1
+    }
+    return chunks
+}
+
+func attribute_default(object: HeldObject, name: String): Held {
+    var chunks = chunks_of(object.class_key)
+    var chunk = chunks[name]
+    if not chunk {
+        return given_up()
+    }
+    var caller = frame
+    frame = Frame(nothing)
+    var last = chunk.count() - 1
+    var index = 0
+    while index < last {
+        var statement = chunk[index]
+        run_statement(statement)
+        index = index + 1
+    }
+    var writing = chunk[last]
+    var held = nothing
+    if writing.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        held = evaluated(writing.value)
+    }
+    frame = caller
+    object.held_attributes[name] = held
+    return held
+}
+
+func evaluated_list(values: List<SpiteCompiler.Value>): List<Held> {
+    var made = List<Held>()
+    var index = 0
+    while index < values.count() {
+        var value = values[index]
+        var held = evaluated(value)
+        made.append(held)
+        index = index + 1
+    }
+    return made
+}
+
+func a_fallback_noted(call: HighIntermediaryRepresentation.Values.Call): Held {
+    var arguments = evaluated_list(call.arguments)
+    if call.function.name != "failed" or arguments.count() != 2 {
+        return given_up()
+    }
+    var streams = arguments[1]
+    if not streams or streams.kind != 'whole' or streams.whole != 0 {
+        return given_up()
+    }
+    return nothing
+}
+
+func evaluated_call(call: HighIntermediaryRepresentation.Values.Call): Held {
+    if call.function.owner == "Spite.Asserts" {
+        return a_fallback_noted(call)
+    }
+    var receiver = nothing
+    if call.receiver {
+        receiver = evaluated(call.receiver)
+    }
+    var arguments = evaluated_list(call.arguments)
+    if failed {
+        return nothing
+    }
+    return function_called(call.function, receiver, arguments)
+}
+
+func function_called(function: Model.FunctionModel, receiver: Held, arguments: List<Held>): Held {
+    var key = function.key()
+    var found = built_functions[key]
+    if not found {
+        var answer = intrinsics.answer_of(function, receiver, arguments)
+        if answer {
+            return answer
+        }
+        return given_up()
+    }
+    if depth >= _deepest {
+        return given_up()
+    }
+    var caller = frame
+    frame = Frame(receiver)
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if index >= arguments.count() {
+            frame = caller
+            return given_up()
+        }
+        var argument = arguments[index]
+        frame.locals[parameter.name] = argument
+        index = index + 1
+    }
+    depth = depth + 1
+    run_block(found.body)
+    depth = depth - 1
+    var answer = frame.answer
+    frame = caller
+    return answer
+}
+
+func made_object(made: HighIntermediaryRepresentation.Values.MakeObject): Held {
+    var key = made.value_type.name
+    var model = program.class_named(key)
+    if not model or model.is_singleton or not made.foreign_place.is_empty() or made.skips_the_defaults {
+        return given_up()
+    }
+    if does_work_when_dropped(model) {
+        return given_up()
+    }
+    var arguments = evaluated_list(made.arguments)
+    if failed {
+        return nothing
+    }
+    var object = HeldObject(key)
+    var held = Held('object')
+    held.object = object
+    if made.constructor {
+        answered_and_dropped = function_called(made.constructor, held, arguments)
+    }
+    return held
+}
+
+func does_work_when_dropped(model: Model.ClassModel): Boolean {
+    if drops_with_work.contains(model.key) {
+        return drops_with_work[model.key] == true
+    }
+    var drop = model.function_named("drop")
+    var does_work = model.key != "DynamicLibrary"
+    if not drop {
+        does_work = false
+    }
+    drops_with_work[model.key] = does_work
+    return does_work
+}
+
+func operated(operation: HighIntermediaryRepresentation.Values.MachineOperation): Held {
+    if operation.operator == 'and' or operation.operator == 'or' {
+        return decided(operation)
+    }
+    var left = evaluated(operation.left)
+    var right = evaluated(operation.right)
+    if failed {
+        return nothing
+    }
+    var answer = operated_on(operation, left, right)
+    if answer {
+        return answer
+    }
+    return given_up()
+}
+
+func operated_on(operation: HighIntermediaryRepresentation.Values.MachineOperation, left: Held, right: Held): Held? {
+    crash operation.left
+    var left_type = operation.left.value_type.name
+    if left.kind == 'whole' and right.kind == 'whole' {
+        return numbers.whole_operated(operation.operator, left.whole, right.whole, left_type, operation.value_type.name)
+    }
+    fallback left.kind == 'decimal' and right.kind == 'decimal'
+    return numbers.decimal_operated(operation.operator, left.decimal, right.decimal, operation.value_type.name)
+}
+
+func decided(operation: HighIntermediaryRepresentation.Values.MachineOperation): Held {
+    var left = evaluated(operation.left)
+    if failed or left.kind != 'whole' {
+        return given_up()
+    }
+    var is_decided_by_the_left = operation.operator == 'and' and left.whole == 0 or operation.operator == 'or' and left.whole != 0
+    if is_decided_by_the_left {
+        return left
+    }
+    return evaluated(operation.right)
+}
+
+func negated(negation: HighIntermediaryRepresentation.Values.Negation): Held {
+    var inner = evaluated(negation.negated)
+    if failed or inner.kind != 'whole' {
+        return given_up()
+    }
+    var is_false = inner.whole == 0
+    return numbers.truth_held(is_false)
+}
+
+func foreign_called(called: HighIntermediaryRepresentation.Values.ForeignCall): Held {
+    var is_a_reading = called.function_name == "strtod" or called.function_name == "strtof"
+    if not is_a_reading {
+        return given_up()
+    }
+    var library = evaluated(called.library)
+    var arguments = evaluated_list(called.arguments)
+    if failed or arguments.is_empty() {
+        return given_up()
+    }
+    var library_object = numbers.object_in(library)
+    var text = arguments[0]
+    if not library_object or not text {
+        return given_up()
+    }
+    var text_object = numbers.object_in(text)
+    var name_held = library_object.held_attributes["file_name"]
+    if not text_object or not name_held {
+        return given_up()
+    }
+    var name_object = numbers.object_in(name_held)
+    if not name_object {
+        return given_up()
+    }
+    var library_name = intrinsics.text_of(name_object)
+    if library_name != "ucrtbase.dll" {
+        return given_up()
+    }
+    var written = intrinsics.text_of(text_object)
+    var type_name = "Float"
+    if called.function_name == "strtod" {
+        type_name = "Double"
+    }
+    var read = numbers.read_a_decimal(written, type_name)
+    if read {
+        return read
+    }
+    return given_up()
+}
+
+func membership(asked: HighIntermediaryRepresentation.Values.Class.Membership): Held {
+    var tested = evaluated(asked.tested)
+    if tested.kind == 'absent' {
+        return numbers.truth_held(false)
+    }
+    var object = numbers.object_in(tested)
+    if not object or asked.member.kind != 'object' {
+        return given_up()
+    }
+    var is_the_class = object.class_key == asked.member.name
+    return numbers.truth_held(is_the_class)
+}
+
+func presence_tested(test: HighIntermediaryRepresentation.Values.PresenceTest): Held {
+    var tested = evaluated(test.tested)
+    if failed or tested.kind == 'nothing' {
+        return given_up()
+    }
+    var is_present = tested.kind != 'absent'
+    return numbers.truth_held(is_present)
+}
+
+func converted(conversion: HighIntermediaryRepresentation.Values.Conversion): Held {
+    var held = evaluated(conversion.converted)
+    if failed {
+        return nothing
+    }
+    var kind = conversion.kind
+    if kind == 'nullable' or kind == 'into_union' or kind == 'into_shape' {
+        return held
+    }
+    if held.kind == 'absent' or held.kind == 'nothing' {
+        return given_up()
+    }
+    if kind == 'present' or kind == 'proven' {
+        return held
+    }
+    var turns_a_number = kind == 'widen' or kind == 'narrow' or kind == 'to_decimal' or kind == 'to_whole' or kind == 'narrow_decimal'
+    if not turns_a_number or not conversion.converted {
+        return given_up()
+    }
+    var given_type = conversion.converted.value_type
+    if given_type.kind == 'enumeration' and kind == 'widen' {
+        return held
+    }
+    var answer = numbers.cast(held, given_type.name, conversion.value_type.name)
+    if answer {
+        return answer
+    }
+    return given_up()
+}
+
+func number_room(room: HighIntermediaryRepresentation.Values.NumberRoom): Held {
+    var made = evaluated(room.made)
+    var number = evaluated(room.number)
+    var object = numbers.object_in(made)
+    if failed or not object or room.width > object.bytes.count() {
+        return given_up()
+    }
+    var is_a_number = number.kind == 'whole' or number.kind == 'decimal'
+    if not is_a_number {
+        return given_up()
+    }
+    var bits = number.whole
+    if number.kind == 'decimal' {
+        var type_name = "Double"
+        if room.width == 4 {
+            type_name = "Float"
+        }
+        bits = numbers.bits_of_a_decimal(number.decimal, type_name)
+    }
+    intrinsics.put_bits(object, 0, room.width, bits)
+    return made
+}
+
+func shape_called(called: HighIntermediaryRepresentation.Values.ShapeCall): Held {
+    var receiver = evaluated(called.receiver)
+    var arguments = evaluated_list(called.arguments)
+    var object = numbers.object_in(receiver)
+    if failed or not object {
+        return given_up()
+    }
+    var key = "{object.class_key}.{called.member.name}"
+    var found = built_functions[key]
+    if not found {
+        return given_up()
+    }
+    return function_called(found.function, receiver, arguments)
+}
+
+func enum_text(asked: HighIntermediaryRepresentation.Values.EnumText): Held {
+    var number = evaluated(asked.number)
+    if failed or number.kind != 'whole' {
+        return given_up()
+    }
+    var index = 0
+    while index < asked.enumeration.numbers.count() {
+        if asked.enumeration.numbers[index] == number.whole {
+            var name = asked.enumeration.values[index]
+            if not name {
+                return given_up()
+            }
+            return text_held(name)
+        }
+        index = index + 1
+    }
+    return given_up()
+}
+
+func enum_from_text(asked: HighIntermediaryRepresentation.Values.EnumFromText): Held {
+    var text = evaluated(asked.text)
+    var object = numbers.object_in(text)
+    if failed or not object {
+        return given_up()
+    }
+    var written = intrinsics.text_of(object)
+    var place = asked.enumeration.values.index_of(written)
+    if not place {
+        return Held('absent')
+    }
+    var number = asked.enumeration.numbers[place]
+    if not number {
+        return given_up()
+    }
+    return numbers.whole_held(number)
+}

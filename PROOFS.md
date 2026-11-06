@@ -243,10 +243,31 @@ as when each was refused while building.
 - **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions,
   conformance/copy_to_narrow_not_leaving; tests/narrowing_snapshot_copy.
 
+### A literal that converts is a `T`
+
+- **Status**: built (D1874, D1888).
+- **Rule**: a conversion that answers `T?` is worked out while compiling when the value it reads is written at that
+  very place: literal text with no hole, or a literal number with its sign. A conversion that answers a value is a
+  present `T`; one that answers `null` is a compile error naming the literal and the conversion. An enum read by the
+  compiler's own conversion is decided where it is written, with no evaluation.
+- **Buys**: `var paint: Color = "#ff8000"` and `client.connect("127.0.0.1", 8080)` need no narrowing, and a mistyped
+  literal cannot reach a run.
+- **Falls back**: the evaluator (`proofs/literal_conversions/evaluator.spite`) walks the high representation over its
+  own model of objects; it stops, and the value stays the run-time `T?` it is declared, at anything only a run can do:
+  a foreign call other than `strtod`/`strtof` of `ucrtbase.dll`, a singleton, a write through a `this` it did not
+  make, a function value, a reflected class, a `stop`, an arithmetic that would halt or overflow, a read past a
+  buffer, or more than 1 000 000 steps for one literal (20 000 000 for the program). A local holding a literal is not
+  a literal, an interpolated text is not one, and neither is text joined with `+`. A check of one such value is the
+  "already narrowed" error of the next section.
+- **Lives in**: `proofs/literal_conversions` (run first of all by `proven_present`, so its facts feed the rest;
+  its refusals are judged in `recorded_sites` in the order built, in `validators/high_intermediary_representation/literal_conversion`),
+  and the builder's `note_a_literal_conversion`, `text_literal_read_into_an_enum` and `number_literal_read_into_an_enum`.
+  It runs in every build, `--check`, `--development`, `--hot-reload` and `--repl` too.
+- **Checked by**: tests/literal_conversion_*; conformance/literal_conversion_*.
+
 ### A value proven present is a `T`
 
-- **Status**: partly built (D1719): the local, attribute and answer proofs are built; the answer of a call the
-  compiler evaluates while compiling (spite_compiler#229, #230) is missing.
+- **Status**: built (D1719): locals, attributes and answers, and the literal conversions the proof above decides.
 - **Rule**: a `T?` the compiler proves present is a `T` where it is read, with nothing written: a local every
   assignment of which in its function is present, an attribute of a program class whose default and every
   assignment anywhere in the built program are present, and a function of the program every `return` of which is

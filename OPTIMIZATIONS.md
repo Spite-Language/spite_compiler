@@ -2022,6 +2022,15 @@ values a division or product by 1, and a sum, difference, or, exclusive or or sh
 side. The evaluation knows the answer, so what follows folds too: `entity % 1 >= 0` is a jump. None of these can
 halt, so a check they carried has nothing to report.
 
+## A literal that converts is its answer
+
+`var count: Integer = "42"` has its answer in hand once the proof `literal_conversions` has run
+([PROOFS.md](PROOFS.md#a-literal-that-converts-is-a-t)). The high pass `literal_answers` writes a number or an enum value
+in place of the call, and `unreached_functions` drops the parsing when nothing else reaches it. `Float` and `Double`
+read through `strtof` and `strtod`, which the low evaluation never runs, so this is what takes them out of the
+executable. A conversion that answers an object (`Color`, `Date`) stays a call, which the low evaluation folds where it
+can. A build that inspects the running program (`--development`, `--hot-reload`, `--repl`) keeps the call.
+
 ## An operand the evaluation knows is written as a constant
 
 When an arithmetic or a comparison is left with one operand the evaluation knows but the register holding it is

@@ -294,8 +294,12 @@ func converted_by_its_class(value: SpiteCompiler.Value, wanted: Model.Type): Spi
     }
     var reads_text = given.kind == 'object' and given.name == "String"
     var read_in_place = wanted.kind == 'scalar' or wanted.kind == 'enumeration'
-    fallback not reads_text or not read_in_place or wanted.is_nullable
+    var is_a_literal = is_a_written_literal(value)
+    fallback not reads_text or not read_in_place or wanted.is_nullable or is_a_literal
     if reads_text and wanted.kind == 'enumeration' {
+        if is_a_literal {
+            return text_literal_read_into_an_enum(value, wanted)
+        }
         return text_read_into_an_enum(value, wanted)
     }
     if given.kind == 'enumeration' and wanted.kind == 'scalar' and wanted.name == "Integer" {
@@ -308,6 +312,10 @@ func converted_by_its_class(value: SpiteCompiler.Value, wanted: Model.Type): Spi
     var whole = ["Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong"]
     if wanted.kind == 'enumeration' and whole.contains(owner.key) {
         var present_enum = wanted.present()
+        if is_a_literal {
+            var named = number_literal_read_into_an_enum(value, present_enum)
+            return fitted(named, wanted)
+        }
         var numbered = number_read_into_an_enum(value, present_enum)
         return fitted(numbered, wanted)
     }
@@ -331,12 +339,14 @@ func converted_by_a_conversion(value: SpiteCompiler.Value, wanted: Model.Type): 
     fallback conversion
     var reads_text = value.value_type.kind == 'object' and value.value_type.name == "String"
     var may_fail = conversion.answer and conversion.answer.is_nullable
-    fallback not reads_text or not may_fail or wanted.is_nullable or wanted.kind != 'scalar'
+    var is_a_literal = is_a_written_literal(value)
+    fallback not reads_text or not may_fail or wanted.is_nullable or wanted.kind != 'scalar' or is_a_literal
     need(conversion)
     var receiver = unused_receiver_of(target_type)
     var given = List<SpiteCompiler.Value>()
     given.append(value)
     var called_conversion = HighIntermediaryRepresentation.Values.Call(conversion, receiver, given)
+    note_a_literal_conversion(value, called_conversion, wanted)
     return fitted(called_conversion, wanted)
 }
 
@@ -360,7 +370,61 @@ func converted_by_its_owner(value: SpiteCompiler.Value, wanted: Model.Type): Spi
     var given = List<SpiteCompiler.Value>()
     given.append(value)
     var called_conversion = HighIntermediaryRepresentation.Values.Call(conversion, receiver, given)
+    note_a_literal_conversion(value, called_conversion, wanted)
     return fitted(called_conversion, wanted)
+}
+
+# ../../PROOFS.md#a-literal-that-converts-is-a-t
+func is_a_written_literal(value: SpiteCompiler.Value): Boolean {
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        return value.is_written
+    }
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value.is_written
+    }
+    if value.class == HighIntermediaryRepresentation.Values.DecimalNumber {
+        return value.is_written
+    }
+    if value.class == HighIntermediaryRepresentation.Values.MachineOperation {
+        return value.is_a_written_negative
+    }
+    return false
+}
+
+func shown_literal_of(value: SpiteCompiler.Value): String {
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        return "\"{value.text}\""
+    }
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value.number.to_string()
+    }
+    if value.class == HighIntermediaryRepresentation.Values.DecimalNumber {
+        return value.written
+    }
+    if value.class == HighIntermediaryRepresentation.Values.MachineOperation {
+        return value.written_negative
+    }
+    return ""
+}
+
+# ../../PROOFS.md#a-literal-that-converts-is-a-t
+func note_a_literal_conversion(
+    value: SpiteCompiler.Value,
+    conversion_call: HighIntermediaryRepresentation.Values.Call,
+    wanted: Model.Type,
+) {
+    fallback conversion_call.value_type.is_nullable and is_a_written_literal(value)
+    var literal = shown_literal_of(value)
+    var segments = wanted.name.split(".")
+    var made_name = segments.last()
+    crash made_name
+    var given_shown = context.shown(value.value_type)
+    var conversion = "{made_name}(from: {given_shown})"
+    var site = LiteralSite(context, conversion_call, literal, conversion)
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        site.written_decimal = value.text.trim()
+    }
+    context.note_a_literal_site(site)
 }
 
 func unused_receiver_of(made_type: Model.Type): SpiteCompiler.Value {
@@ -417,6 +481,33 @@ func preset_of(
     var receiver = unused_receiver_of(described)
     var no_arguments = List<SpiteCompiler.Value>()
     return HighIntermediaryRepresentation.Values.Call(preset, receiver, no_arguments)
+}
+
+# ../../PROOFS.md#a-literal-that-converts-is-a-t
+func text_literal_read_into_an_enum(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value {
+    var enumeration = enum_model_of(wanted)
+    var literal = shown_literal_of(value)
+    var name = ""
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        name = value.text
+    }
+    var rule = Validators.HighIntermediaryRepresentation.LiteralConversion.Validator()
+    rule.check_an_enum_name(context, literal, name, enumeration)
+    var found = enum_value(name, wanted)
+    return fitted(found, wanted)
+}
+
+# ../../PROOFS.md#a-literal-that-converts-is-a-t
+func number_literal_read_into_an_enum(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value {
+    var enumeration = enum_model_of(wanted)
+    var number: Long = 0
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        number = value.number
+    }
+    var literal = shown_literal_of(value)
+    var rule = Validators.HighIntermediaryRepresentation.LiteralConversion.Validator()
+    rule.check_an_enum_number(context, literal, number, enumeration)
+    return HighIntermediaryRepresentation.Values.WholeNumber(wanted, number)
 }
 
 func text_read_into_an_enum(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value {
@@ -1130,6 +1221,17 @@ func literal_value(
 }
 
 func whole_number_value(written: String, expected: Model.Type?): SpiteCompiler.Value {
+    var made = plain_whole_number_value(written, expected)
+    if made.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        made.is_written = true
+    }
+    if made.class == HighIntermediaryRepresentation.Values.DecimalNumber {
+        made.is_written = true
+    }
+    return made
+}
+
+func plain_whole_number_value(written: String, expected: Model.Type?): SpiteCompiler.Value {
     var number: Long? = written
     if not number and expected {
         var wanted_type = expected.present()
@@ -1191,7 +1293,9 @@ func decimal_value(written: String, expected: Model.Type?): SpiteCompiler.Value 
         decimal_type = context.scalar_type("Double")
     }
     refuse_a_decimal_too_large(written, decimal_type.name)
-    return HighIntermediaryRepresentation.Values.DecimalNumber(decimal_type, written)
+    var made = HighIntermediaryRepresentation.Values.DecimalNumber(decimal_type, written)
+    made.is_written = true
+    return made
 }
 
 func refuse_a_decimal_too_large(written: String, type_name: String) {
@@ -1370,6 +1474,7 @@ func text_value(literal: AbstractSyntaxTree.Shapes.Expressions.TextLiteral): Spi
             need_text_constants()
             var written = piece.value()
             var constant = HighIntermediaryRepresentation.Values.TextConstant(written)
+            constant.is_written = literal.pieces.count() == 1 and not piece.hole
             joined = joined_with(joined, constant)
         }
         if piece.hole {
@@ -9144,7 +9249,9 @@ func unary_value(
     }
     if operand.class == HighIntermediaryRepresentation.Values.WholeNumber {
         var zero: Long = 0
-        return HighIntermediaryRepresentation.Values.WholeNumber(operand.value_type, zero - operand.number)
+        var negative = HighIntermediaryRepresentation.Values.WholeNumber(operand.value_type, zero - operand.number)
+        negative.is_written = operand.is_written
+        return negative
     }
     var zero_value: SpiteCompiler.Value = HighIntermediaryRepresentation.Values.WholeNumber(operand.value_type, 0)
     if is_a_decimal_type(operand.value_type) {
@@ -9160,6 +9267,10 @@ func unary_value(
     var printer = Printers.Spite.ExpressionPrinter(unary.operand)
     var negated = printer.text()
     made.shown = "0 - {negated}"
+    if operand.class == HighIntermediaryRepresentation.Values.DecimalNumber and operand.is_written {
+        made.is_a_written_negative = true
+        made.written_negative = "-{operand.written}"
+    }
     return made
 }
 
