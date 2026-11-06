@@ -1,0 +1,117 @@
+var state = VectorLoopState()
+
+func MemoryTranslating(starting_state: VectorLoopState) {
+    state = starting_state
+}
+
+func element_size_of(width: LowIntermediaryRepresentation.Instructions.Load.Width): Integer {
+    switch width {
+        'bits_8': return 1
+        'bits_16': return 2
+        'bits_32': return 4
+        'bits_64': return 8
+    }
+}
+
+func translate_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
+    var lanes = Lanes(state)
+    var whole_translating = WholeTranslating(state)
+    var target = loaded.target
+    if target == state.counter or lanes.integer_at(state.chain_of, target) >= 0 or loaded.is_swapped {
+        state.failed = true
+        return
+    }
+    if lanes.operand_kind(loaded.address) != 3 {
+        state.failed = true
+        return
+    }
+    var size = element_size_of(loaded.width)
+    var scale = lanes.long_at(state.scales, loaded.address)
+    if scale != size {
+        state.failed = true
+        return
+    }
+    var decimal_size = lanes.integer_at(state.decimal_sizes, target)
+    var format = whole_translating.whole_format_of(loaded.width)
+    if decimal_size == 4 and loaded.width == 'bits_32' {
+        format = 'float'
+    } else if decimal_size == 8 and loaded.width == 'bits_64' {
+        format = 'double'
+    } else if decimal_size != 0 {
+        state.failed = true
+        return
+    } else if loaded.width == 'bits_32' and not loaded.is_signed {
+        format = 'whole_64'
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('load', 0)
+    step.format = format
+    step.width = loaded.width
+    step.is_signed = loaded.is_signed
+    step.base = lanes.integer_at(state.bases, loaded.address)
+    var moved = lanes.long_at(state.shifts, loaded.address)
+    var offset = moved + loaded.offset
+    if offset < -1000000 or offset > 1000000 {
+        state.failed = true
+        return
+    }
+    step.offset = offset
+    note_a_stream(step.base, step.offset, size, false)
+    var lane = lanes.new_lane(format)
+    step.target = lane
+    state.looping.body.append(step)
+    lanes.set_lane(target, lane)
+}
+
+func translate_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
+    var lanes = Lanes(state)
+    if lanes.operand_kind(stored.address) != 3 or stored.is_swapped {
+        state.failed = true
+        return
+    }
+    var size = element_size_of(stored.width)
+    var scale = lanes.long_at(state.scales, stored.address)
+    if scale != size or size < 4 {
+        state.failed = true
+        return
+    }
+    var format: LowIntermediaryRepresentation.Vector.Step.Format = 'whole_32'
+    var source_kind = lanes.operand_kind(stored.source)
+    if source_kind == 1 {
+        var source_lane = lanes.integer_at(state.lanes_of, stored.source)
+        format = lanes.lane_format_of(source_lane)
+        if size == 4 and lanes.is_wide(format) {
+            format = 'whole_32'
+        }
+        if size == 8 and not lanes.is_wide(format) {
+            format = 'whole_64'
+        }
+        if (format == 'double' or format == 'whole_64') and size != 8 {
+            state.failed = true
+        }
+    } else if size == 8 {
+        format = 'whole_64'
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('store', -1)
+    step.format = format
+    step.width = stored.width
+    step.left = lanes.lane_in(stored.source, format, true)
+    step.base = lanes.integer_at(state.bases, stored.address)
+    var moved = lanes.long_at(state.shifts, stored.address)
+    var offset = moved + stored.offset
+    if offset < -1000000 or offset > 1000000 {
+        state.failed = true
+        return
+    }
+    step.offset = offset
+    if not state.failed {
+        note_a_stream(step.base, step.offset, size, true)
+        state.looping.body.append(step)
+    }
+}
+
+func note_a_stream(base: Integer, offset: Integer, size: Integer, is_store: Boolean) {
+    state.stream_bases.append(base)
+    state.stream_offsets.append(offset)
+    state.stream_sizes.append(size)
+    state.stream_stores.append(is_store)
+}

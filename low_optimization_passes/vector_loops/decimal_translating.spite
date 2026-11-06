@@ -1,0 +1,318 @@
+var _most_blocks_walked = 400
+
+var state = VectorLoopState()
+
+func DecimalTranslating(starting_state: VectorLoopState) {
+    state = starting_state
+}
+
+func decimal_format_of(is_double: Boolean): LowIntermediaryRepresentation.Vector.Step.Format {
+    if is_double {
+        return 'double'
+    }
+    return 'float'
+}
+
+func translate_decimal(arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic) {
+    var lanes = Lanes(state)
+    var format = decimal_format_of(arithmetic.is_double)
+    var target = arithmetic.target
+    if target == state.counter {
+        state.failed = true
+        return
+    }
+    var operator = arithmetic.operator
+    var plain = operator == 'add' or operator == 'subtract' or operator == 'multiply' or operator == 'divide'
+    if not plain and operator != 'square_root' {
+        state.failed = true
+        return
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('decimal', 0)
+    step.arithmetic = operator
+    step.format = format
+    var accumulator = lanes.integer_at(state.chain_of, target)
+    if accumulator >= 0 {
+        translate_a_decimal_link(arithmetic, step, accumulator)
+        return
+    }
+    step.left = lanes.lane_in(arithmetic.left, format, false)
+    step.right = lanes.lane_in(arithmetic.right, format, false)
+    if not state.failed {
+        var lane = lanes.new_lane(format)
+        step.target = lane
+        state.looping.body.append(step)
+        lanes.set_lane(target, lane)
+    }
+}
+
+func translate_a_decimal_link(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic,
+    step: LowIntermediaryRepresentation.Vector.Step,
+    accumulator: Integer,
+) {
+    var whole_translating = WholeTranslating(state)
+    var lanes = Lanes(state)
+    var chained = arithmetic.left
+    var term = arithmetic.right
+    if state.chain_of[arithmetic.right] == accumulator and arithmetic.right != arithmetic.left or arithmetic.right == accumulator {
+        chained = arithmetic.right
+        term = arithmetic.left
+    }
+    var lane = -1
+    if chained == accumulator {
+        lane = whole_translating.open_an_accumulator(accumulator, step.format, false, 'bits_32')
+        bound_the_sum(accumulator, arithmetic.is_double)
+    } else {
+        lane = lanes.integer_at(state.lanes_of, chained)
+    }
+    if lane < 0 or state.failed {
+        state.failed = true
+        return
+    }
+    step.left = lane
+    step.right = lanes.lane_in(term, step.format, false)
+    note_a_term(term)
+    if not state.failed {
+        var made = 0
+        if arithmetic.target == accumulator {
+            made = whole_translating.accumulator_lane_of(accumulator)
+        } else {
+            made = lanes.new_lane(step.format)
+        }
+        step.target = made
+        state.looping.body.append(step)
+        lanes.set_lane(arithmetic.target, made)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-sum-is-split-into-lanes-only-where-every-partial-sum-is-exact
+func bound_the_sum(accumulator: Integer, is_double: Boolean) {
+    if state.looping.most_trips >= 0 or state.sum_terms.count() > 0 {
+        state.failed = true
+        return
+    }
+    state.sum_size = 4
+    if is_double {
+        state.sum_size = 8
+    }
+    state.sum_terms = List<LowOptimizationPasses.VectorLoops.Exact>()
+    state.sum_start = entering_fact(accumulator, state.sum_size)
+}
+
+func note_a_term(term: Integer) {
+    var fact = term_fact(term)
+    state.sum_terms.append(fact)
+}
+
+func term_fact(term: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    var lanes = Lanes(state)
+    var kind = lanes.operand_kind(term)
+    if kind == 5 {
+        var number = lanes.operand_value(term)
+        return state.sums.decoded(number, state.sum_size)
+    }
+    var source = term
+    if kind == 7 {
+        source = lanes.integer_at(state.aliases, term)
+    }
+    return state.sums.decimal_of(state.function_index, source, state.sum_size)
+}
+
+func settle_the_sum() {
+    if not state.sum_terms.is_empty() {
+        var start = state.sum_start
+        if start.is_empty or not start.is_known or start.negative_zero {
+            state.failed = true
+            return
+        }
+        var exponent = 100000
+        if not start.is_zero() {
+            exponent = start.exponent
+        }
+        var index = 0
+        while index < state.sum_terms.count() {
+            var term = state.sum_terms[index]
+            if term.is_empty or not term.is_known {
+                state.failed = true
+                return
+            }
+            if not term.is_zero() {
+                exponent = exponent.minimum(term.exponent)
+            }
+            index = index + 1
+        }
+        if exponent == 100000 {
+            state.sum_terms = List<LowOptimizationPasses.VectorLoops.Exact>()
+            return
+        }
+        var precision = state.sums.precision_of(state.sum_size)
+        var smallest = state.sums.smallest_exponent_of(state.sum_size)
+        var largest = state.sums.largest_exponent_of(state.sum_size)
+        if exponent < smallest or exponent + precision > largest {
+            state.failed = true
+            return
+        }
+        var each: Long = 0
+        index = 0
+        while index < state.sum_terms.count() {
+            var counted = state.sum_terms[index]
+            if not state.sums.aligns(counted, exponent) {
+                state.failed = true
+                return
+            }
+            var counted_largest = counted.largest()
+            var most = state.sums.aligned(counted_largest, counted.exponent, exponent)
+            each = each + most
+            if each > state.sums.safe {
+                state.failed = true
+                return
+            }
+            index = index + 1
+        }
+        if not state.sums.aligns(start, exponent) {
+            state.failed = true
+            return
+        }
+        var start_largest = start.largest()
+        var first = state.sums.aligned(start_largest, start.exponent, exponent)
+        var room: Long = 1
+        room = room.shifted_left(precision)
+        room = room - 1 - first
+        if room < 0 or each <= 0 {
+            state.failed = true
+            return
+        }
+        state.looping.most_trips = room / each
+        state.sum_terms = List<LowOptimizationPasses.VectorLoops.Exact>()
+    }
+}
+
+func entering_fact(register: Integer, size: Integer): LowOptimizationPasses.VectorLoops.Exact {
+    var loop_finding = LoopFinding(state)
+    var result = LowOptimizationPasses.VectorLoops.Exact()
+    var visited = List<Boolean>()
+    var block_index = 0
+    while block_index < state.function.blocks.count() {
+        visited.append(false)
+        block_index = block_index + 1
+    }
+    var waiting = List<Integer>()
+    var coming = loop_finding.predecessors_of(state.header)
+    var index = 0
+    while index < coming.count() {
+        var from_block = coming[index]
+        crash from_block
+        if state.in_path[from_block] != true {
+            waiting.append(from_block)
+        }
+        index = index + 1
+    }
+    var walked = 0
+    while not waiting.is_empty() {
+        walked = walked + 1
+        var last_index = waiting.count() - 1
+        var block_at = waiting[last_index]
+        crash block_at
+        waiting.remove_at(last_index)
+        if block_at == state.header or state.in_path[block_at] == true or walked > _most_blocks_walked {
+            return state.sums.unknown_fact()
+        }
+        if visited[block_at] != true {
+            visited[block_at] = true
+            var found = fact_defined_in(block_at, register, size)
+            if found {
+                result = state.sums.joined_or_taken(result, found)
+            } else if block_at == 0 {
+                if register >= state.function.parameter_count {
+                    return state.sums.unknown_fact()
+                }
+                var parameter = state.sums.decimal_of(state.function_index, register, size)
+                result = state.sums.joined_or_taken(result, parameter)
+            } else {
+                var earlier = loop_finding.predecessors_of(block_at)
+                earlier.each(waiting.append)
+            }
+        }
+    }
+    if result.is_empty {
+        return state.sums.unknown_fact()
+    }
+    return result
+}
+
+func fact_defined_in(block_index: Integer, register: Integer, size: Integer): LowOptimizationPasses.VectorLoops.Exact? {
+    var block = state.function.blocks[block_index]
+    crash block
+    var place = block.instructions.count() - 1
+    while place >= 0 {
+        var instruction = block.instructions[place]
+        crash instruction
+        state.operands.read(instruction)
+        if state.operands.defines.contains(register) {
+            return state.sums.definition_fact(state.function_index, instruction, size)
+        }
+        place = place - 1
+    }
+    return null
+}
+
+func translate_a_decimal_compare(compare: LowIntermediaryRepresentation.Instructions.Decimal.Compare) {
+    var lanes = Lanes(state)
+    var format = decimal_format_of(compare.is_double)
+    var result_format: LowIntermediaryRepresentation.Vector.Step.Format = 'whole_32'
+    if compare.is_double {
+        result_format = 'whole_64'
+    }
+    var target = compare.target
+    if target == state.counter or lanes.integer_at(state.chain_of, target) >= 0 {
+        state.failed = true
+        return
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('decimal_compare', 0)
+    step.comparison = compare.comparison
+    step.format = result_format
+    step.from_format = format
+    step.left = lanes.lane_in(compare.left, format, false)
+    step.right = lanes.lane_in(compare.right, format, false)
+    if not state.failed {
+        var lane = lanes.new_lane(result_format)
+        step.target = lane
+        state.looping.body.append(step)
+        lanes.set_lane(target, lane)
+    }
+}
+
+func translate_a_conversion(conversion: LowIntermediaryRepresentation.Instructions.Decimal.Conversion) {
+    var lanes = Lanes(state)
+    var guard_translating = GuardTranslating(state)
+    var target = conversion.target
+    if target == state.counter or lanes.integer_at(state.chain_of, target) >= 0 or conversion.to_decimal_size == 0 {
+        state.failed = true
+        return
+    }
+    var format = decimal_format_of(conversion.to_decimal_size == 8)
+    var from_format: LowIntermediaryRepresentation.Vector.Step.Format = 'whole_32'
+    if conversion.from_decimal_size == 4 {
+        from_format = 'float'
+    }
+    if conversion.from_decimal_size == 8 {
+        from_format = 'double'
+    }
+    if conversion.from_decimal_size == 0 and conversion.whole_width == 'bits_64' {
+        var source_kind = lanes.operand_kind(conversion.source)
+        if source_kind == 1 and guard_translating.is_a_wide_lane(conversion.source) {
+            state.failed = true
+            return
+        }
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('convert', 0)
+    step.format = format
+    step.from_format = from_format
+    step.left = lanes.lane_in(conversion.source, from_format, false)
+    if not state.failed {
+        var lane = lanes.new_lane(format)
+        step.target = lane
+        state.looping.body.append(step)
+        lanes.set_lane(target, lane)
+    }
+}

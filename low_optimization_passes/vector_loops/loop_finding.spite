@@ -1,0 +1,260 @@
+var state = VectorLoopState()
+
+func LoopFinding(starting_state: VectorLoopState) {
+    state = starting_state
+}
+
+func count_the_definitions() {
+    state.definitions = List<Integer>()
+    state.known = List<Boolean>()
+    state.values = List<Long>()
+    var register = 0
+    while register < state.register_total {
+        state.definitions.append(0)
+        state.known.append(false)
+        state.values.append(0)
+        register = register + 1
+    }
+    var block_index = 0
+    while block_index < state.function.blocks.count() {
+        var block = state.function.blocks[block_index]
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            state.operands.read(instruction)
+            state.operands.defines.each(count_a_definition)
+            place = place + 1
+        }
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < state.function.blocks.count() {
+        var constant_block = state.function.blocks[block_index]
+        constant_block.instructions.each(note_a_constant)
+        block_index = block_index + 1
+    }
+}
+
+func count_a_definition(register: Integer) {
+    var count = state.definitions[register]
+    crash count
+    state.definitions[register] = count + 1
+}
+
+func note_a_constant(instruction: SpiteCompiler.Instruction) {
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Constant {
+        var target = instruction.target
+        if state.definitions[target] == 1 and target >= state.function.parameter_count {
+            state.known[target] = true
+            state.values[target] = instruction.number
+        }
+    }
+}
+
+func is_constant(register: Integer): Boolean {
+    fallback register >= 0 and register < state.known.count()
+    return state.known[register] == true
+}
+
+func constant_value(register: Integer): Long {
+    var value = state.values[register]
+    crash value
+    return value
+}
+
+func find_the_predecessors() {
+    state.predecessors = List<List<Integer>>()
+    var block_index = 0
+    while block_index < state.function.blocks.count() {
+        var coming = List<Integer>()
+        state.predecessors.append(coming)
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < state.function.blocks.count() {
+        var block = state.function.blocks[block_index]
+        var last = block.instructions.last()
+        if last {
+            note_the_edges(block_index, last)
+        }
+        block_index = block_index + 1
+    }
+}
+
+func note_the_edges(from_block: Integer, last: SpiteCompiler.Instruction) {
+    if last.class == LowIntermediaryRepresentation.Instructions.Jump {
+        note_an_edge(from_block, last.block)
+    }
+    if last.class == LowIntermediaryRepresentation.Instructions.Branch {
+        note_an_edge(from_block, last.when_true)
+        if last.when_false != last.when_true {
+            note_an_edge(from_block, last.when_false)
+        }
+    }
+}
+
+func note_an_edge(from_block: Integer, to_block: Integer) {
+    var coming = state.predecessors[to_block]
+    crash coming
+    coming.append(from_block)
+}
+
+func predecessors_of(block_index: Integer): List<Integer> {
+    var coming = state.predecessors[block_index]
+    crash coming
+    return coming
+}
+
+func try_the_loop_at(block_index: Integer) {
+    var block = state.function.blocks[block_index]
+    crash block
+    var last = block.instructions.last()
+    var first = block.instructions.first()
+    var paired = block.instructions.count() == 2 and first and last
+    if paired and first.class == LowIntermediaryRepresentation.Instructions.Compare and last.class == LowIntermediaryRepresentation.Instructions.Branch {
+        var signed_below = first.comparison == 'less' and first.is_signed and first.left >= 0 and first.right >= 0
+        if signed_below and last.condition == first.target and state.definitions[first.target] == 1 {
+            state.header = block_index
+            state.counter = first.left
+            try_the_loop(first.right, last.when_true)
+        }
+    }
+}
+
+func try_the_loop(bound: Integer, start: Integer) {
+    var translating = Translating(state)
+    var loop_placing = LoopPlacing(state)
+    state.failed = false
+    find_the_path(start)
+    if not state.failed {
+        start_the_loop(bound)
+    }
+    if not state.failed and state.body_defined[bound] == 0 {
+        translating.translate_the_path()
+    } else {
+        state.failed = true
+    }
+    if not state.failed {
+        loop_placing.finish_the_loop()
+    }
+}
+
+func find_the_path(start: Integer) {
+    state.path = List<Integer>()
+    state.stop_blocks = List<Integer>()
+    state.in_path = List<Boolean>()
+    var block_index = 0
+    while block_index < state.function.blocks.count() {
+        state.in_path.append(false)
+        block_index = block_index + 1
+    }
+    var current = start
+    var steps = 0
+    while current != state.header {
+        steps = steps + 1
+        if steps > 64 or current < 0 or current >= state.function.blocks.count() {
+            state.failed = true
+            return
+        }
+        if state.in_path[current] == true {
+            state.failed = true
+            return
+        }
+        state.in_path[current] = true
+        state.path.append(current)
+        var coming = predecessors_of(current)
+        if coming.count() != 1 {
+            state.failed = true
+            return
+        }
+        var block = state.function.blocks[current]
+        var last = block.instructions.last()
+        if not last {
+            state.failed = true
+            return
+        }
+        current = next_on_the_path(last)
+    }
+    if state.path.is_empty() {
+        state.failed = true
+    }
+}
+
+func next_on_the_path(last: SpiteCompiler.Instruction): Integer {
+    if last.class == LowIntermediaryRepresentation.Instructions.Jump {
+        return last.block
+    }
+    if last.class == LowIntermediaryRepresentation.Instructions.Branch {
+        if is_a_stop_block(last.when_true) {
+            state.stop_blocks.append(last.when_true)
+            return last.when_false
+        }
+        if is_a_stop_block(last.when_false) {
+            state.stop_blocks.append(last.when_false)
+            return last.when_true
+        }
+    }
+    state.failed = true
+    return -1
+}
+
+func is_a_stop_block(block_index: Integer): Boolean {
+    var block = state.function.blocks[block_index]
+    crash block
+    var last = block.instructions.last()
+    var coming = predecessors_of(block_index)
+    if last and last.class == LowIntermediaryRepresentation.Instructions.Stop {
+        return not last.continues and coming.count() == 1
+    }
+    return false
+}
+
+func start_the_loop(bound: Integer) {
+    var body_study = BodyStudy(state)
+    state.looping = LowIntermediaryRepresentation.Instructions.VectorLoop(state.counter)
+    state.looping.limits.append(bound)
+    state.kinds = List<Integer>()
+    state.lanes_of = List<Integer>()
+    state.scales = List<Long>()
+    state.shifts = List<Long>()
+    state.bases = List<Integer>()
+    state.aliases = List<Integer>()
+    state.guard_limits = List<Integer>()
+    state.guard_positive = List<Boolean>()
+    state.decimal_sizes = List<Integer>()
+    state.body_defined = List<Integer>()
+    state.body_read = List<Integer>()
+    state.chain_of = List<Integer>()
+    var register = 0
+    while register < state.register_total {
+        state.kinds.append(0)
+        state.lanes_of.append(-1)
+        state.scales.append(0)
+        state.shifts.append(0)
+        state.bases.append(-1)
+        state.aliases.append(-1)
+        state.guard_limits.append(-1)
+        state.guard_positive.append(true)
+        state.decimal_sizes.append(0)
+        state.body_defined.append(0)
+        state.body_read.append(0)
+        state.chain_of.append(-1)
+        register = register + 1
+    }
+    state.lane_formats = List<LowIntermediaryRepresentation.Vector.Step.Format>()
+    state.broadcast_keys = Dictionary<Long, Integer>()
+    state.widened_lanes = Dictionary<Integer, Integer>()
+    state.narrowed_lanes = Dictionary<Integer, Integer>()
+    state.stream_bases = List<Integer>()
+    state.stream_offsets = List<Integer>()
+    state.stream_sizes = List<Integer>()
+    state.stream_stores = List<Boolean>()
+    state.has_checked_sums = false
+    state.stepped = false
+    state.sum_terms = List<LowOptimizationPasses.VectorLoops.Exact>()
+    state.sum_start = LowOptimizationPasses.VectorLoops.Exact()
+    state.body_count = 0
+    state.kinds[state.counter] = 6
+    state.scales[state.counter] = 1
+    body_study.study_the_body()
+}

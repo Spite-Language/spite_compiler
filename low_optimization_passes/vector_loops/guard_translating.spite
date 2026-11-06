@@ -1,0 +1,129 @@
+var state = VectorLoopState()
+
+func GuardTranslating(starting_state: VectorLoopState) {
+    state = starting_state
+}
+
+func translate_a_compare(compare: LowIntermediaryRepresentation.Instructions.Compare) {
+    var lanes = Lanes(state)
+    var translating = Translating(state)
+    var left_kind = lanes.operand_kind(compare.left)
+    var right_kind = lanes.operand_kind(compare.right)
+    var target = compare.target
+    if target == state.counter or lanes.integer_at(state.chain_of, target) >= 0 {
+        state.failed = true
+        return
+    }
+    if left_kind == 4 or right_kind == 4 {
+        negate_a_guard(compare, left_kind, right_kind)
+        return
+    }
+    if left_kind == 6 or right_kind == 6 {
+        make_a_guard(compare, left_kind, right_kind)
+        return
+    }
+    if left_kind < 0 or right_kind < 0 or translating.is_affine(left_kind) or translating.is_affine(right_kind) or not compare.is_signed {
+        state.failed = true
+        return
+    }
+    var format: LowIntermediaryRepresentation.Vector.Step.Format = 'whole_32'
+    if is_a_wide_lane(compare.left) or is_a_wide_lane(compare.right) {
+        format = 'whole_64'
+    }
+    var step = LowIntermediaryRepresentation.Vector.Step('compare', 0)
+    step.comparison = compare.comparison
+    step.format = format
+    step.left = lanes.lane_in(compare.left, format, false)
+    step.right = lanes.lane_in(compare.right, format, false)
+    if not state.failed {
+        var lane = lanes.new_lane(format)
+        step.target = lane
+        state.looping.body.append(step)
+        lanes.set_lane(target, lane)
+    }
+}
+
+func is_a_wide_lane(register: Integer): Boolean {
+    var lanes = Lanes(state)
+    fallback lanes.operand_kind(register) == 1
+    var lane = lanes.integer_at(state.lanes_of, register)
+    return lanes.lane_format_of(lane) == 'whole_64'
+}
+
+func make_a_guard(
+    compare: LowIntermediaryRepresentation.Instructions.Compare,
+    left_kind: Integer,
+    right_kind: Integer,
+) {
+    var lanes = Lanes(state)
+    var limit = -1
+    if compare.comparison == 'less' and left_kind == 6 and (right_kind == 8 or right_kind == 7) {
+        limit = compare.right
+    }
+    if compare.comparison == 'greater' and right_kind == 6 and (left_kind == 8 or left_kind == 7) {
+        limit = compare.left
+    }
+    if limit < 0 {
+        state.failed = true
+        return
+    }
+    if not compare.is_signed {
+        state.looping.counts_from_zero = true
+    }
+    var alias = lanes.integer_at(state.aliases, limit)
+    if alias >= 0 {
+        limit = alias
+    }
+    state.kinds[compare.target] = 4
+    state.guard_limits[compare.target] = limit
+    state.guard_positive[compare.target] = true
+}
+
+func negate_a_guard(
+    compare: LowIntermediaryRepresentation.Instructions.Compare,
+    left_kind: Integer,
+    right_kind: Integer,
+) {
+    var lanes = Lanes(state)
+    var translating = Translating(state)
+    var guard = compare.left
+    var other = compare.right
+    var other_kind = right_kind
+    if right_kind == 4 {
+        guard = compare.right
+        other = compare.left
+        other_kind = left_kind
+    }
+    var against_zero = other_kind == 5 and lanes.operand_value(other) == 0
+    var tests = compare.comparison == 'equal' or compare.comparison == 'not_equal'
+    if not against_zero or not tests {
+        state.failed = true
+        return
+    }
+    translating.copy_the_guard(compare.target, guard)
+    if compare.comparison == 'equal' {
+        state.guard_positive[compare.target] = state.guard_positive[guard] != true
+    }
+}
+
+func translate_a_guard(branch: LowIntermediaryRepresentation.Instructions.Branch) {
+    var lanes = Lanes(state)
+    if lanes.operand_kind(branch.condition) != 4 {
+        state.failed = true
+        return
+    }
+    var continues_when_true = state.stop_blocks.contains(branch.when_false)
+    var positive = state.guard_positive[branch.condition] == true
+    if continues_when_true != positive {
+        state.failed = true
+        return
+    }
+    var limit = lanes.integer_at(state.guard_limits, branch.condition)
+    if limit < 0 {
+        state.failed = true
+        return
+    }
+    if not state.looping.limits.contains(limit) {
+        state.looping.limits.append(limit)
+    }
+}

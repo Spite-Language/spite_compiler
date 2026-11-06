@@ -1,0 +1,250 @@
+var state = VectorLoopState()
+
+func BodyStudy(starting_state: VectorLoopState) {
+    state = starting_state
+}
+
+func study_the_body() {
+    var first_reads = List<Boolean>()
+    var register = 0
+    while register < state.register_total {
+        first_reads.append(false)
+        register = register + 1
+    }
+    var path_index = 0
+    while path_index < state.path.count() {
+        var block_index = state.path[path_index]
+        crash block_index
+        var block = state.function.blocks[block_index]
+        crash block
+        var place = 0
+        while place < block.instructions.count() {
+            var instruction = block.instructions[place]
+            state.operands.read(instruction)
+            var used = 0
+            while used < state.operands.uses.count() {
+                var read = state.operands.uses[used]
+                crash read
+                var count = state.body_read[read]
+                crash count
+                state.body_read[read] = count + 1
+                if state.body_defined[read] == 0 {
+                    first_reads[read] = true
+                }
+                used = used + 1
+            }
+            var defined = 0
+            while defined < state.operands.defines.count() {
+                var target = state.operands.defines[defined]
+                crash target
+                var defined_count = state.body_defined[target]
+                crash defined_count
+                state.body_defined[target] = defined_count + 1
+                defined = defined + 1
+            }
+            note_decimal_sizes(instruction)
+            state.body_count = state.body_count + 1
+            place = place + 1
+        }
+        path_index = path_index + 1
+    }
+    if state.body_count > 80 {
+        state.failed = true
+        return
+    }
+    register = 0
+    while register < state.register_total and not state.failed {
+        var carried = first_reads[register] == true and state.body_defined[register] != 0
+        if carried and register != state.counter {
+            find_a_chain(register)
+        }
+        register = register + 1
+    }
+    check_what_leaves()
+}
+
+func note_decimal_sizes(instruction: SpiteCompiler.Instruction) {
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic {
+        var size = 4
+        if instruction.is_double {
+            size = 8
+        }
+        note_a_decimal_size(instruction.target, size)
+        note_a_decimal_size(instruction.left, size)
+        note_a_decimal_size(instruction.right, size)
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Decimal.Compare {
+        var compared_size = 4
+        if instruction.is_double {
+            compared_size = 8
+        }
+        note_a_decimal_size(instruction.left, compared_size)
+        note_a_decimal_size(instruction.right, compared_size)
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Decimal.Conversion {
+        note_a_decimal_size(instruction.source, instruction.from_decimal_size)
+        note_a_decimal_size(instruction.target, instruction.to_decimal_size)
+    }
+}
+
+func note_a_decimal_size(register: Integer, size: Integer) {
+    if not (register < 0 or size == 0) {
+        var held = state.decimal_sizes[register]
+        crash held
+        if held != 0 and held != size {
+            state.failed = true
+        }
+        state.decimal_sizes[register] = size
+    }
+}
+
+func check_what_leaves() {
+    var block_index = 0
+    while block_index < state.function.blocks.count() {
+        var outside = state.in_path[block_index] != true and not state.stop_blocks.contains(block_index)
+        if outside {
+            var block = state.function.blocks[block_index]
+            block.instructions.each(check_a_reading_outside)
+        }
+        block_index = block_index + 1
+    }
+}
+
+func check_a_reading_outside(instruction: SpiteCompiler.Instruction) {
+    state.operands.read(instruction)
+    var used = 0
+    while used < state.operands.uses.count() {
+        var read = state.operands.uses[used]
+        crash read
+        var defined_here = state.body_defined[read] != 0
+        var carried = read == state.counter or state.chain_of[read] == read
+        if defined_here and not carried {
+            state.failed = true
+        }
+        used = used + 1
+    }
+}
+
+func body_instruction_at(position: Integer): SpiteCompiler.Instruction? {
+    var seen = 0
+    var path_index = 0
+    while path_index < state.path.count() and not state.failed {
+        var block_index = state.path[path_index]
+        crash block_index
+        var block = state.function.blocks[block_index]
+        crash block
+        var count = block.instructions.count()
+        if position < seen + count {
+            return block.instructions[position - seen]
+        }
+        seen = seen + count
+        path_index = path_index + 1
+    }
+    return null
+}
+
+# ../../OPTIMIZATIONS.md#a-sum-over-a-loop-is-kept-in-lanes
+func find_a_chain(accumulator: Integer) {
+    if state.body_defined[accumulator] != 1 or state.body_read[accumulator] != 1 {
+        state.failed = true
+        return
+    }
+    var current = accumulator
+    var position = 0
+    var links = 0
+    var first_kind = -1
+    while links < 8 {
+        var found = next_reading(current, position)
+        if found < 0 {
+            state.failed = true
+            return
+        }
+        var instruction = body_instruction_at(found)
+        if not instruction {
+            state.failed = true
+            return
+        }
+        var kind = chain_kind_of(instruction, current)
+        if kind < 0 or first_kind >= 0 and kind != first_kind {
+            state.failed = true
+            return
+        }
+        first_kind = kind
+        var target = target_of(instruction)
+        if target < 0 {
+            state.failed = true
+            return
+        }
+        state.chain_of[target] = accumulator
+        if target == accumulator {
+            state.chain_of[accumulator] = accumulator
+            return
+        }
+        if state.body_defined[target] != 1 or state.body_read[target] != 1 {
+            state.failed = true
+            return
+        }
+        current = target
+        position = found + 1
+        links = links + 1
+    }
+    state.failed = true
+}
+
+func next_reading(register: Integer, from_position: Integer): Integer {
+    var position = from_position
+    while position < state.body_count {
+        var instruction = body_instruction_at(position)
+        crash instruction
+        state.operands.read(instruction)
+        if state.operands.uses.contains(register) {
+            return position
+        }
+        position = position + 1
+    }
+    return -1
+}
+
+func target_of(instruction: SpiteCompiler.Instruction): Integer {
+    state.operands.read(instruction)
+    if state.operands.defines.count() != 1 {
+        return -1
+    }
+    var target = state.operands.defines[0]
+    crash target
+    return target
+}
+
+func chain_kind_of(instruction: SpiteCompiler.Instruction, chained: Integer): Integer {
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic {
+        var on_the_left = instruction.left == chained and instruction.right != chained
+        var on_the_right = instruction.right == chained and instruction.left != chained
+        var adds = instruction.operator == 'add' and (on_the_left or on_the_right)
+        var subtracts = instruction.operator == 'subtract' and on_the_left
+        if not adds and not subtracts {
+            return -1
+        }
+        if instruction.is_double {
+            return 1
+        }
+        return 0
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        var whole_left = instruction.left == chained and instruction.right != chained
+        var whole_right = instruction.right == chained and instruction.left != chained
+        var whole_adds = instruction.operator == 'add' and (whole_left or whole_right)
+        var whole_subtracts = instruction.operator == 'subtract' and whole_left
+        if not whole_adds and not whole_subtracts or not instruction.is_signed {
+            return -1
+        }
+        var kind = 2
+        if instruction.width == 'bits_64' {
+            kind = 3
+        }
+        if instruction.is_checked {
+            kind = kind + 2
+        }
+        return kind
+    }
+    return -1
+}

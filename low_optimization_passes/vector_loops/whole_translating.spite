@@ -1,0 +1,239 @@
+var _largest_long: Long = 9223372036854775807
+var _largest_integer: Long = 2147483647
+
+var state = VectorLoopState()
+
+func WholeTranslating(starting_state: VectorLoopState) {
+    state = starting_state
+}
+
+func whole_format_of(
+    width: LowIntermediaryRepresentation.Instructions.Load.Width,
+): LowIntermediaryRepresentation.Vector.Step.Format {
+    if width == 'bits_64' {
+        return 'whole_64'
+    }
+    return 'whole_32'
+}
+
+func translate_a_whole(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var lanes = Lanes(state)
+    var format = whole_format_of(arithmetic.width)
+    if arithmetic.width != 'bits_64' and arithmetic.width != 'bits_32' {
+        state.failed = true
+        return
+    }
+    if format == 'whole_32' and not arithmetic.is_signed {
+        state.failed = true
+        return
+    }
+    var operator = arithmetic.operator
+    var keeps_low_bits = operator != 'shift_right'
+    var step = LowIntermediaryRepresentation.Vector.Step('whole', 0)
+    step.arithmetic = operator
+    step.format = format
+    step.is_signed = arithmetic.is_signed
+    switch operator {
+        'add': step.right = lanes.lane_in(arithmetic.right, format, true)
+        'subtract': step.right = lanes.lane_in(arithmetic.right, format, true)
+        'multiply': step.right = lanes.lane_in(arithmetic.right, format, true)
+        'bits_and': step.right = lanes.lane_in(arithmetic.right, format, true)
+        'bits_or': step.right = lanes.lane_in(arithmetic.right, format, true)
+        'bits_xor': step.right = lanes.lane_in(arithmetic.right, format, true)
+        'shift_left': step.offset = shift_count_of(arithmetic.right, format)
+        'shift_right': step.offset = shift_count_of(arithmetic.right, format)
+        'divide': state.failed = true
+        'remainder': state.failed = true
+        'square_root': state.failed = true
+    }
+    if operator == 'multiply' and format == 'whole_64' {
+        state.failed = true
+    }
+    if operator == 'shift_right' and format == 'whole_64' and arithmetic.is_signed {
+        state.failed = true
+    }
+    if not state.failed {
+        step.left = lanes.lane_in(arithmetic.left, format, keeps_low_bits)
+        if not state.failed {
+            var lane = lanes.new_lane(format)
+            step.target = lane
+            state.looping.body.append(step)
+            lanes.set_lane(arithmetic.target, lane)
+        }
+    }
+}
+
+func shift_count_of(register: Integer, format: LowIntermediaryRepresentation.Vector.Step.Format): Integer {
+    var lanes = Lanes(state)
+    if lanes.operand_kind(register) != 5 {
+        state.failed = true
+        return 0
+    }
+    var count = lanes.operand_value(register)
+    var most: Long = 31
+    if format == 'whole_64' {
+        most = 63
+    }
+    if count < 0 or count > most {
+        state.failed = true
+        return 0
+    }
+    return count
+}
+
+func translate_a_whole_link(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var lanes = Lanes(state)
+    var accumulator = lanes.integer_at(state.chain_of, arithmetic.target)
+    var chained = arithmetic.left
+    var term = arithmetic.right
+    if state.chain_of[arithmetic.right] == accumulator and arithmetic.right != arithmetic.left {
+        chained = arithmetic.right
+        term = arithmetic.left
+    }
+    if state.chain_of[chained] != accumulator and chained != accumulator {
+        state.failed = true
+        return
+    }
+    var chained_lane = accumulator_lane(accumulator, chained, arithmetic)
+    if not state.failed {
+        var format = lanes.lane_format_of(chained_lane)
+        var step = LowIntermediaryRepresentation.Vector.Step('whole', 0)
+        step.arithmetic = arithmetic.operator
+        step.format = format
+        step.left = chained_lane
+        if arithmetic.is_checked {
+            state.has_checked_sums = true
+            var narrow_term = lane_of_a_term(term, arithmetic.width)
+            if not state.failed {
+                step.right = lanes.widened(narrow_term, true)
+                add_to_the_check(accumulator, narrow_term)
+            }
+        } else {
+            step.right = lanes.lane_in(term, format, true)
+        }
+        if not state.failed {
+            var lane = 0
+            if arithmetic.target == accumulator {
+                lane = accumulator_lane_of(accumulator)
+            } else {
+                lane = lanes.new_lane(format)
+            }
+            step.target = lane
+            state.looping.body.append(step)
+            lanes.set_lane(arithmetic.target, lane)
+        }
+    }
+}
+
+func lane_of_a_term(term: Integer, width: LowIntermediaryRepresentation.Instructions.Load.Width): Integer {
+    var lanes = Lanes(state)
+    var kind = lanes.operand_kind(term)
+    if kind != 1 {
+        state.failed = true
+        return 0
+    }
+    var lane = lanes.integer_at(state.lanes_of, term)
+    var format = lanes.lane_format_of(lane)
+    if format == 'whole_64' and width == 'bits_32' {
+        return lanes.narrowed(lane)
+    }
+    if format != 'whole_32' {
+        state.failed = true
+    }
+    return lane
+}
+
+func accumulator_lane(
+    accumulator: Integer,
+    chained: Integer,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+): Integer {
+    var lanes = Lanes(state)
+    if chained != accumulator {
+        var lane = lanes.integer_at(state.lanes_of, chained)
+        if lane < 0 {
+            state.failed = true
+        }
+        return lane
+    }
+    var format = whole_format_of(arithmetic.width)
+    if arithmetic.is_checked {
+        format = 'whole_64'
+    }
+    return open_an_accumulator(accumulator, format, arithmetic.is_checked, arithmetic.width)
+}
+
+func accumulator_lane_of(accumulator: Integer): Integer {
+    var index = state.looping.accumulators.index_of(accumulator)
+    crash index
+    var step = state.looping.setup[setup_index_of(accumulator)]
+    crash step
+    return step.target
+}
+
+func setup_index_of(accumulator: Integer): Integer {
+    var index = 0
+    while index < state.looping.setup.count() {
+        var step = state.looping.setup[index]
+        if step.operation == 'zero' and step.source == accumulator {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func open_an_accumulator(
+    accumulator: Integer,
+    format: LowIntermediaryRepresentation.Vector.Step.Format,
+    checked: Boolean,
+    width: LowIntermediaryRepresentation.Instructions.Load.Width,
+): Integer {
+    var lanes = Lanes(state)
+    var lane = lanes.new_lane(format)
+    var step = LowIntermediaryRepresentation.Vector.Step('zero', lane)
+    step.format = format
+    step.source = accumulator
+    state.looping.setup.append(step)
+    state.looping.accumulators.append(accumulator)
+    state.looping.accumulator_formats.append(format)
+    if checked {
+        var check = lanes.new_lane('whole_64')
+        var zeroed = LowIntermediaryRepresentation.Vector.Step('zero', check)
+        zeroed.format = 'whole_64'
+        zeroed.source = -1
+        state.looping.setup.append(zeroed)
+        state.looping.check_lanes.append(check)
+        var most: Long = _largest_long
+        if width == 'bits_32' {
+            most = _largest_integer
+        }
+        state.looping.check_limits.append(most)
+    } else {
+        state.looping.check_lanes.append(-1)
+        state.looping.check_limits.append(-1)
+    }
+    state.kinds[accumulator] = 1
+    state.lanes_of[accumulator] = lane
+    return lane
+}
+
+func add_to_the_check(accumulator: Integer, narrow_term: Integer) {
+    var lanes = Lanes(state)
+    var index = state.looping.accumulators.index_of(accumulator)
+    crash index
+    var check = state.looping.check_lanes[index]
+    crash check
+    var absolute = lanes.new_lane('whole_32')
+    var taken = LowIntermediaryRepresentation.Vector.Step('absolute', absolute)
+    taken.left = narrow_term
+    taken.format = 'whole_32'
+    state.looping.body.append(taken)
+    var wide = lanes.widened(absolute, false)
+    var added = LowIntermediaryRepresentation.Vector.Step('whole', check)
+    added.arithmetic = 'add'
+    added.format = 'whole_64'
+    added.left = check
+    added.right = wide
+    state.looping.body.append(added)
+}

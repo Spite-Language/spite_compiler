@@ -1,0 +1,262 @@
+var state = VectorLoopState()
+
+func Translating(starting_state: VectorLoopState) {
+    state = starting_state
+}
+
+func translate_the_path() {
+    var guard_translating = GuardTranslating(state)
+    var path_index = 0
+    while path_index < state.path.count() and not state.failed {
+        var block_index = state.path[path_index]
+        crash block_index
+        var block = state.function.blocks[block_index]
+        crash block
+        var count = block.instructions.count()
+        var place = 0
+        while place + 1 < count and not state.failed {
+            var instruction = block.instructions[place]
+            translate(instruction)
+            place = place + 1
+        }
+        var last = block.instructions.last()
+        crash last
+        if last.class == LowIntermediaryRepresentation.Instructions.Branch and not state.failed {
+            guard_translating.translate_a_guard(last)
+        }
+        path_index = path_index + 1
+    }
+    if not state.stepped {
+        state.failed = true
+    }
+}
+
+func translate(instruction: SpiteCompiler.Instruction) {
+    var guard_translating = GuardTranslating(state)
+    var decimal_translating = DecimalTranslating(state)
+    var memory_translating = MemoryTranslating(state)
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Constant: translate_a_constant(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: translate_a_copy(instruction)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: translate_arithmetic(instruction)
+        LowIntermediaryRepresentation.Instructions.Compare: guard_translating.translate_a_compare(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: decimal_translating.translate_decimal(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: decimal_translating.translate_a_decimal_compare(instruction)
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: decimal_translating.translate_a_conversion(instruction)
+        LowIntermediaryRepresentation.Instructions.Load: memory_translating.translate_a_load(instruction)
+        LowIntermediaryRepresentation.Instructions.Store: memory_translating.translate_a_store(instruction)
+        LowIntermediaryRepresentation.Instructions.Select: translate_a_selection(instruction)
+        LowIntermediaryRepresentation.Instructions.Call: state.failed = true
+        LowIntermediaryRepresentation.Instructions.CallAt: state.failed = true
+        LowIntermediaryRepresentation.Instructions.ForeignAddress: state.failed = true
+        LowIntermediaryRepresentation.Instructions.DataAddress: state.failed = true
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: state.failed = true
+        LowIntermediaryRepresentation.Instructions.Allocate: state.failed = true
+        LowIntermediaryRepresentation.Instructions.Retain: state.failed = true
+        LowIntermediaryRepresentation.Instructions.Free: state.failed = true
+        LowIntermediaryRepresentation.Instructions.Resize: state.failed = true
+        LowIntermediaryRepresentation.Instructions.CopyBytes: state.failed = true
+        LowIntermediaryRepresentation.Instructions.OpenLibrary: state.failed = true
+        LowIntermediaryRepresentation.Instructions.Jump: state.failed = true
+        LowIntermediaryRepresentation.Instructions.Branch: state.failed = true
+        LowIntermediaryRepresentation.Instructions.Return: state.failed = true
+        LowIntermediaryRepresentation.Instructions.FrameAddress: state.failed = true
+        LowIntermediaryRepresentation.Instructions.ThreadIdentity: state.failed = true
+        LowIntermediaryRepresentation.Instructions.FrameRoom: state.failed = true
+        LowIntermediaryRepresentation.Instructions.StartThread: state.failed = true
+        LowIntermediaryRepresentation.Instructions.JoinThread: state.failed = true
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: state.failed = true
+        LowIntermediaryRepresentation.Instructions.ImportCall: state.failed = true
+        LowIntermediaryRepresentation.Instructions.CompareExchange: state.failed = true
+        LowIntermediaryRepresentation.Instructions.Stop: state.failed = true
+        LowIntermediaryRepresentation.Instructions.Exit: state.failed = true
+        LowIntermediaryRepresentation.Instructions.VectorLoop: state.failed = true
+    }
+}
+
+func translate_a_selection(selecting: LowIntermediaryRepresentation.Instructions.Select) {
+    var lanes = Lanes(state)
+    var guard_translating = GuardTranslating(state)
+    var target = selecting.target
+    if target == state.counter or lanes.integer_at(state.chain_of, target) >= 0 {
+        state.failed = true
+        return
+    }
+    var format: LowIntermediaryRepresentation.Vector.Step.Format = 'whole_32'
+    var wide_true = guard_translating.is_a_wide_lane(selecting.when_true)
+    var wide_false = guard_translating.is_a_wide_lane(selecting.when_false)
+    if wide_true or wide_false {
+        format = 'whole_64'
+    }
+    var picked = lanes.lane_in(selecting.when_true, format, false)
+    var kept = lanes.lane_in(selecting.when_false, format, false)
+    var condition = lanes.lane_in(selecting.condition, format, true)
+    if not state.failed {
+        var zero = zero_lane(format)
+        var mask = whole_step('subtract', format, zero, condition)
+        var differing = whole_step('bits_xor', format, picked, kept)
+        var masked = whole_step('bits_and', format, differing, mask)
+        var chosen = whole_step('bits_xor', format, kept, masked)
+        lanes.set_lane(target, chosen)
+    }
+}
+
+func zero_lane(format: LowIntermediaryRepresentation.Vector.Step.Format): Integer {
+    var lanes = Lanes(state)
+    var code = lanes.format_code(format)
+    var key: Long = -1000000000
+    key = key - code
+    if state.broadcast_keys.contains(key) {
+        var held = state.broadcast_keys[key]
+        crash held
+        return held
+    }
+    var lane = lanes.new_lane(format)
+    var step = LowIntermediaryRepresentation.Vector.Step('broadcast', lane)
+    step.format = format
+    step.number = 0
+    state.looping.setup.append(step)
+    state.broadcast_keys[key] = lane
+    return lane
+}
+
+func whole_step(
+    operator: LowIntermediaryRepresentation.Instructions.Arithmetic.Operator,
+    format: LowIntermediaryRepresentation.Vector.Step.Format,
+    left: Integer,
+    right: Integer,
+): Integer {
+    var lanes = Lanes(state)
+    var lane = lanes.new_lane(format)
+    var step = LowIntermediaryRepresentation.Vector.Step('whole', lane)
+    step.arithmetic = operator
+    step.format = format
+    step.left = left
+    step.right = right
+    state.looping.body.append(step)
+    return lane
+}
+
+func translate_a_constant(constant: LowIntermediaryRepresentation.Instructions.Constant) {
+    state.kinds[constant.target] = 5
+    state.shifts[constant.target] = constant.number
+    state.aliases[constant.target] = -1
+}
+
+func translate_a_copy(copy: LowIntermediaryRepresentation.Instructions.Copy) {
+    var lanes = Lanes(state)
+    var kind = lanes.operand_kind(copy.source)
+    var target = copy.target
+    if target == state.counter or lanes.integer_at(state.chain_of, target) >= 0 {
+        state.failed = true
+        return
+    }
+    if kind == 1 {
+        copy_the_lane(target, copy.source)
+    } else if kind == 2 {
+        copy_the_affine(target, copy.source, 2)
+    } else if kind == 3 {
+        copy_the_affine(target, copy.source, 3)
+    } else if kind == 6 {
+        copy_the_affine(target, copy.source, 2)
+    } else if kind == 4 {
+        copy_the_guard(target, copy.source)
+    } else if kind == 5 {
+        copy_the_constant(target, copy.source)
+    } else if kind == 8 {
+        alias_to(target, copy.source)
+    } else if kind == 7 {
+        copy_the_alias(target, copy.source)
+    } else {
+        state.failed = true
+    }
+}
+
+func copy_the_lane(target: Integer, source: Integer) {
+    var lanes = Lanes(state)
+    var lane = lanes.integer_at(state.lanes_of, source)
+    lanes.set_lane(target, lane)
+}
+
+func copy_the_alias(target: Integer, source: Integer) {
+    var lanes = Lanes(state)
+    var alias = lanes.integer_at(state.aliases, source)
+    alias_to(target, alias)
+}
+
+func copy_the_affine(target: Integer, source: Integer, kind: Integer) {
+    var lanes = Lanes(state)
+    state.kinds[target] = kind
+    state.scales[target] = lanes.long_at(state.scales, source)
+    state.shifts[target] = lanes.long_at(state.shifts, source)
+    state.bases[target] = lanes.integer_at(state.bases, source)
+}
+
+func copy_the_guard(target: Integer, source: Integer) {
+    var lanes = Lanes(state)
+    state.kinds[target] = 4
+    state.guard_limits[target] = lanes.integer_at(state.guard_limits, source)
+    state.guard_positive[target] = state.guard_positive[source] == true
+}
+
+func copy_the_constant(target: Integer, source: Integer) {
+    var lanes = Lanes(state)
+    state.kinds[target] = 5
+    state.shifts[target] = lanes.operand_value(source)
+    state.aliases[target] = -1
+}
+
+func alias_to(target: Integer, source: Integer) {
+    if source < 0 {
+        state.failed = true
+        return
+    }
+    state.kinds[target] = 7
+    state.aliases[target] = source
+}
+
+func is_affine(kind: Integer): Boolean {
+    return kind == 2 or kind == 6
+}
+
+func translate_arithmetic(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var lanes = Lanes(state)
+    var whole_translating = WholeTranslating(state)
+    var address_translating = AddressTranslating(state)
+    var target = arithmetic.target
+    if target == state.counter {
+        translate_the_step(arithmetic)
+        return
+    }
+    if lanes.integer_at(state.chain_of, target) >= 0 {
+        whole_translating.translate_a_whole_link(arithmetic)
+        return
+    }
+    var left_kind = lanes.operand_kind(arithmetic.left)
+    var right_kind = lanes.operand_kind(arithmetic.right)
+    var touches_the_counter = is_affine(left_kind) or is_affine(right_kind) or left_kind == 3 or right_kind == 3
+    if touches_the_counter {
+        address_translating.translate_an_address(arithmetic, left_kind, right_kind)
+        return
+    }
+    if arithmetic.is_checked or left_kind < 0 or right_kind < 0 {
+        state.failed = true
+        return
+    }
+    whole_translating.translate_a_whole(arithmetic)
+}
+
+func translate_the_step(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+    var loop_finding = LoopFinding(state)
+    var steps_by_one = arithmetic.operator == 'add' and arithmetic.left == state.counter and loop_finding.is_constant(arithmetic.right)
+    if not steps_by_one or state.stepped or arithmetic.is_checked {
+        state.failed = true
+        return
+    }
+    if loop_finding.constant_value(arithmetic.right) != 1 {
+        state.failed = true
+        return
+    }
+    state.stepped = true
+    state.kinds[state.counter] = 9
+}
