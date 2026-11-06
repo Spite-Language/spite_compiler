@@ -21,6 +21,14 @@ like "is this call ever reached" or "may this value be null" has no answer on th
 - `builder.spite`: builds every reached function, one at a time, as names ask for them, through `building/`.
 - `building`: the builder's concerns, one file each, around the `Context` it builds in (`building/context.spite`) and
   the sites it records for the proofs (`building/recorded_site.spite`).
+  `building/statements.spite` is the entry of the statements builder: it keeps its fields in one object,
+  `StatementsState` (`building/statements_state.spite`), which every concern takes (never the `Statements`, which would
+  be a reference cycle). The concerns call each other both ways, so a function that needs another makes one over the
+  same state as a local (`var statements = Statements(state)`). `building/statements.spite` holds blocks and bodies,
+  `build`, the variable, evaluation, return, `if` and `fallback`; `building/assignments.spite` the writes;
+  `building/loops.spite` the `while`, the renewal of lists and the loop checks; `building/switches.spite` the `switch`;
+  `building/crashes.spite` the `crash` and the site it is recorded under; `building/reports.spite` the programs that
+  print a crash's and a fallback's report.
 - `building/folded/constants.spite` and `building/folded/known_copies.spite`: what a question on a class or namespace known while
   compiling answers, and the copy of a function that knows it.
 - `statements` and `values`: the representation itself, data only, one file per kind; the unions of both are

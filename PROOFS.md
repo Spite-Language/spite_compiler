@@ -46,9 +46,9 @@ used.
 | `StatementSite` | `statements.spite` (`note_a_block`, `note_a_statement`), every block entered and left and every statement of the program's own code, before it is built | the statement list and index, the blocks around it, the line, and a `ScopeView`: every name in scope with its internal name, its narrowed type and its declared type | `proofs/lost_writes` |
 | `PresenceSite` | `values.spite` (`note_a_maybe_null`, `note_a_maybe_null_type`), `statements.spite` (`note_a_maybe_boolean`) | a value that may be null where a value is needed: its type, the value (for the list read it came from), what was wanted, the member or operator | `proofs/present_values` |
 | `CheckSite` | `statements.spite` (`note_a_proven_check`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`, `note_a_narrowed_copy`) | the check written and what the scope says already proved it, the checked type, the copy and its source | `proofs/proven_checks` |
-| `CheckSite` | `statements.spite` (`note_an_undone_loop_check`, `note_an_undone_path`) | a path assigned a value that may be null inside a loop: whether it was narrowed before the loop and read in it, or whether the end of the body left it narrowed | `proofs/loop_narrowings` |
-| `GuardSite` | `statements.spite` (`default_return`, `note_a_terminal_if`) | a guard `fallback` with no "nothing" to answer, or an `if` that may be the last statement | `proofs/guard_asserts` |
-| `SwitchSite`, `VectorSite` | `statements.spite`, `constraints.spite` | a switch's cases and members, a `Vector` made | `proofs/switch_cover`, `proofs/vector_fit` |
+| `CheckSite` | `assignments.spite` (`note_an_undone_loop_check`, `note_an_undone_path`) | a path assigned a value that may be null inside a loop: whether it was narrowed before the loop and read in it, or whether the end of the body left it narrowed | `proofs/loop_narrowings` |
+| `GuardSite` | `crashes.spite` (`default_return`), `statements.spite` (`note_a_terminal_if`) | a guard `fallback` with no "nothing" to answer, or an `if` that may be the last statement | `proofs/guard_asserts` |
+| `SwitchSite`, `VectorSite` | `switches.spite`, `constraints.spite` | a switch's cases and members, a `Vector` made | `proofs/switch_cover`, `proofs/vector_fit` |
 
 `building/function_entry.spite` puts a proof back inside the function of a site (its class, its function, its line,
 and the member a member template binds), so a validator names the same place it named while building.
@@ -128,8 +128,8 @@ as when each was refused while building.
 - **Falls back**: refused, "assigning to '...' inside this loop undoes a narrowing made before the loop, and the
   next pass would read it unproven: narrow it inside the loop instead"; after the assignment, a read is refused
   until it is proven again.
-- **Lives in**: forgetting is building, `statements.spite` (`assign_a_name`, `assign_an_attribute`,
-  `forget_the_stored_items`), `scope.spite` (`forget`, `forget_below`, `forget_below_the_items`, `keep_present`); the
+- **Lives in**: forgetting is building, `assignments.spite` (`assign_a_name`,
+  `assign_an_attribute`), `statements.spite` (`forget_the_stored_items`), `scope.spite` (`forget`, `forget_below`, `forget_below_the_items`, `keep_present`); the
   refusals in a loop are the proof `proofs/loop_narrowings`, judging what `note_an_undone_loop_check` and
   `note_an_undone_path` recorded.
 - **Checked by**: tests/narrowed_value_assignment, tests/proof_again_in_loop, tests/narrowing_snapshot_copy,
@@ -319,7 +319,7 @@ as when each was refused while building.
   ([failure.md](../SpiteLanguage/specs/failure.md#fallback-is-control-flow)).
 - **Buys**: a guard written once, whose answer the answer type states.
 - **Falls back**: refused, "'fallback' returns what the answer type builds with no arguments, and a ... has none ...".
-- **Lives in**: `statements.spite` (`default_return`, `is_built_with_no_arguments`), the proof `proofs/guard_asserts`,
+- **Lives in**: `crashes.spite` (`default_return`, `is_built_with_no_arguments`), the proof `proofs/guard_asserts`,
   judging every `fallback` whose answer type has no such value and every `if` the builder recorded
   (`note_a_terminal_if`), and `validators/abstract_syntax_tree/default_guard`.
 - **Checked by**: tests/fallback_answers, conformance/default_answer_enum,
@@ -341,7 +341,7 @@ as when each was refused while building.
   over 'target' has no case for Null: 'target' is a Monster?, and a switch over a 'T?' covers its value and null, so
   a null cannot be forgotten; add the cases".
 - **Lives in**: the proof `proofs/switch_cover`, which judges every switch the builder recorded before writing it as
-  `if`s (`context.switch_sites`, from `statements.spite`: `check_the_cover`, `check_the_nullable_cover`) with the
+  `if`s (`context.switch_sites`, from `switches.spite`: `check_the_cover`, `check_the_nullable_cover`) with the
   validator `validators/high_intermediary_representation/switch_cover`; a case of the wrong kind is still refused
   while building the case, and `validators/abstract_syntax_tree/switch_cases` checks the written cases.
   A switch is built as a chain of `if`s, so its cover is judged while it is built.
@@ -372,9 +372,9 @@ as when each was refused while building.
   assignment or an argument does not undo it (each read still halts when its list changed, see the next section).
 - **Falls back**: an unproven read is a `T?`; where a `T` is needed it is refused, "'...' may be missing, since every
   '[ ]' answers a 'T?' ...: ..., or prove the count first, 'crash list.count() > 2'".
-- **Lives in**: the proving is building, since it decides whether a read is a `T`: `statements.spite`
-  (`read_a_bound`, `read_a_counted_list`, `read_a_counted_member`, `read_a_turned_bound`, `whole_index_of`,
-  `note_a_counted_list`, `forget_after_a_shrinking_call`), `values.spite` (`index_value`, `proven_by_its_path`); the
+- **Lives in**: the proving is building, since it decides whether a read is a `T`: `loops.spite`
+  (`read_a_bound`, `read_a_counted_list`, `whole_index_of`), `statements.spite` (`read_a_counted_member`,
+  `read_a_turned_bound`, `note_a_counted_list`, `forget_after_a_shrinking_call`), `values.spite` (`index_value`, `proven_by_its_path`); the
   refusal of an unproven read where a `T` is needed is the proof `proofs/present_values`.
 - **Checked by**: tests/count_bound_proofs, tests/bound_proofs, tests/count_in_name_proves, tests/structural_index,
   tests/proof_again_in_loop, tests/compared_count_proves_read, tests/while_bound_facts; conformance/index_reads,
@@ -439,8 +439,8 @@ as when each was refused while building.
 - **Buys**: a slice of a list is read with one guard.
 - **Falls back**: the read is a `T?` and is narrowed. The guard proves only the top: a negative base or counter
   halts at the read, as every proven read does ("... is outside its list ...").
-- **Lives in**: `high_intermediary_representation/building/windows.spite`, called by `statements.spite` from the
-  leaving `if`, the `fallback`, the `crash` and the loop condition.
+- **Lives in**: `high_intermediary_representation/building/windows.spite`, called by `statements.spite` (the leaving
+  `if`, the `fallback`), `crashes.spite` (the `crash`) and `loops.spite` (the loop condition).
 - **Checked by**: tests/list_base_counter.
 
 ### A counted loop reads its items unchecked
@@ -812,7 +812,7 @@ as when each was refused while building.
   build.
 - **Falls back**: refused, "'crash ...' always halts in ...: its condition is decided while compiling and is false
   ...".
-- **Lives in**: the proof `proofs/folded_crashes`, run once the facts are answered; `statements.spite` (`build_crash`)
+- **Lives in**: the proof `proofs/folded_crashes`, run once the facts are answered; `crashes.spite` (`build_crash`)
   stops compiling the block after a `crash` it folded.
 - **Checked by**: conformance/folded_crash, conformance/folded_build_crash, conformance/folded_crash_and_side,
   conformance/empty_walk_crash, conformance/snapshot_argument_writes, conformance/folded_crash_numbers,

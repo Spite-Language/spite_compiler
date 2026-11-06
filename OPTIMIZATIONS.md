@@ -3810,7 +3810,7 @@ func group() {
 
 A `clear()` of a list of lists followed by a counted loop (the counter a whole number, or declared just before the
 loop from a literal, counted by one up to a literal) whose body only makes a new empty list of the item class and
-appends it is one call, `List._renew_lists(wanted)` (`high_intermediary_representation/building/statements.spite`;
+appends it is one call, `List._renew_lists(wanted)` (`high_intermediary_representation/building/loops.spite`;
 the compiler writes the function itself in `building/held_once_forms.spite`, never the library, D1735): every item only this list holds is emptied in place and kept, its storage with
 it, in the slot the loop would have filled with a new list; an item held anywhere else is replaced by a new list,
 and the items past `wanted` are let go. The loop then appends nothing more than it would have, and its counter

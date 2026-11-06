@@ -224,7 +224,7 @@ folders and flags that exist. The size of every file is held by `validators/abst
 | fix rule | `fixes/<layer>/<rule>/fix.spite` (class `Fix`), and `every_fix.spite` in the layer; `fixes/fixes.spite` writes |
 | printer | `printers/<printer>/printer.spite` (class `Printer`) |
 | emitter | `generators/<target>/instructions/<instruction>.spite` per instruction kind |
-| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet, except `building/prompt` (`SourceState`, and `*_text.spite` for the texts it writes), `building/reflection.spite` (`ReflectionState`) and `low_optimization_passes/vector_loops` (`VectorLoopState`), which keep their fields in one state object every concern class takes, as the lowering does |
+| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet, except `building/prompt` (`SourceState`, and `*_text.spite` for the texts it writes), `building/reflection.spite` (`ReflectionState`), `building/statements.spite` (`StatementsState`) and `low_optimization_passes/vector_loops` (`VectorLoopState`), which keep their fields in one state object every concern class takes, as the lowering does |
 | helper | next to what uses it; a helper several passes read lives in the stage folder (`high_optimization_passes/references.spite`), though a few low passes still read each other's `Pass` and `compile_time_evaluation`'s `Frame` and `Machine` |
 
 The passes and proofs are registered in the constructor of their stage's entry class, in order; there is no
@@ -267,6 +267,19 @@ unions and types), `declarations` (the objects describing one declaration), `wra
 function), `member_lists` (a class's attribute and function lists), `fills` (the fill of each reflection object) and
 `making` (the constructor of every reflected class). A caller names the concern: `reflection.class_objects.class_object`,
 `resolver.types.type_in`.
+
+The statements builder (`high_intermediary_representation/building/statements.spite`) keeps its fields in
+`StatementsState` (`statements_state.spite`) and builds a block and each statement. Like the lowering, its concerns call
+each other both ways, since an `if` builds a block and a block builds a loop, so none holds another as an attribute: a
+function that needs another concern makes one over the same state as a local (`var statements = Statements(state)`).
+`statements` holds the block and body orchestration, the exhaustive `switch` over the written statements (`build`), the
+variable, the evaluation, the return, the `if` and the `fallback`, the facts an `if` proves and what the builder
+records for the proofs; `assignments` writes a name, an attribute, a bound member, a shape and an index and forgets
+what a write undoes; `loops` builds the `while`, the renewal of a list of lists and the checks a loop asks of a count
+or a bound; `switches` builds the `switch`, checks its cover and its case kinds and reads a case's condition; `crashes`
+builds the `crash`, the guard's failure, and the site and identity a crash is recorded under; `reports` writes the
+program that prints a crash's report and the parts of the failed condition it shows. A caller outside names the entry:
+`statements.function_body_of`.
 
 ## The targets
 
