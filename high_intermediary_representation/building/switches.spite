@@ -1,0 +1,411 @@
+var state = StatementsState()
+
+func Switches(starting_state: StatementsState) {
+    state = starting_state
+}
+
+func build_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement) {
+    var statements = Statements(state)
+    var subject = state.values.value_of(statement.value, null)
+    var printer = Printers.Spite.ExpressionPrinter(statement.value)
+    var path = printer.text()
+    if subject.value_type.is_nullable {
+        statements.note_a_loop_copy(statement.value)
+    }
+    check_the_case_kinds(statement, subject.value_type)
+    var closed_values = Validators.HighIntermediaryRepresentation.SwitchCover.Validator()
+    closed_values.check_closed_values(state.context, subject.value_type, path, statement.line)
+    if is_closed(subject.value_type) {
+        check_the_cover(statement, subject.value_type, path)
+    }
+    check_the_rest_of_values(statement, subject.value_type, path)
+    state.context.line = statement.line
+    var narrowed_path = statements.path_of(statement.value, path)
+    var is_computed = statement.value.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    if is_computed {
+        subject = state.values.held_once(subject)
+        statements.flush_the_pending()
+    }
+    var chain = switch_chain(statement, subject, narrowed_path, 0)
+    crash chain
+    if subject.value_type.is_nullable {
+        check_the_nullable_cover(statement, subject.value_type, path)
+    }
+    statements.add(chain)
+}
+
+func switch_chain(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    subject: SpiteCompiler.Value,
+    path: String,
+    index: Integer,
+): SpiteCompiler.Statement? {
+    var statements = Statements(state)
+    var switch_case = statement.cases[index]
+    fallback switch_case
+    var written = switch_case.value
+    var paths = List<String>()
+    var types = List<Model.Type>()
+    var is_the_rest = false
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        is_the_rest = written.name == "_"
+    }
+    var is_a_union = subject.value_type.kind == 'union' and not subject.value_type.is_nullable
+    if is_the_rest and is_a_union {
+        var rest_type = rest_of_the_union(statement, subject.value_type, index)
+        paths.append(path)
+        types.append(rest_type)
+        var rest_body = statements.narrowed_block_of(
+            switch_case.body,
+            paths,
+            types,
+            "the 'switch' on line {statement.line}",
+        )
+        name_the_case(rest_body, written, statement.line)
+        return rest_body
+    }
+    if is_the_rest {
+        var other_body = statements.block_of(switch_case.body)
+        name_the_case(other_body, written, statement.line)
+        return other_body
+    }
+    state.context.line = statement.line
+    if not subject.value_type.is_nullable {
+        state.context.line = switch_case.line
+    }
+    var condition = case_condition(subject, written, path, paths, types)
+    var body = statements.narrowed_block_of(switch_case.body, paths, types, "the 'switch' on line {statement.line}")
+    name_the_case(body, written, statement.line)
+    var is_the_last = index == statement.cases.count() - 1
+    var present = subject.value_type.present()
+    var is_a_whole_boolean = is_a_boolean_type(subject.value_type) and statement.cases.count() == 2
+    if is_the_last and (is_closed(present) or is_a_whole_boolean) {
+        return body
+    }
+    var rest = switch_chain(statement, subject, path, index + 1)
+    var else_branch: HighIntermediaryRepresentation.Statements.Block? = null
+    if rest {
+        var wrapped = HighIntermediaryRepresentation.Statements.Block()
+        wrapped.statements.append(rest)
+        else_branch = wrapped
+    }
+    var made = HighIntermediaryRepresentation.Statements.If(condition, body, else_branch)
+    made.line = statement.line
+    return made
+}
+
+func name_the_case(
+    body: HighIntermediaryRepresentation.Statements.Block,
+    written: SpiteCompiler.Expression?,
+    line: Integer,
+) {
+    crash written
+    var printer = Printers.Spite.ExpressionPrinter(written)
+    body.case_written = printer.text()
+    body.switch_line = line
+}
+
+func rest_of_the_union(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    union_type: Model.Type,
+    rest_index: Integer,
+): Model.Type {
+    var covered = List<String>()
+    var index = 0
+    while index < rest_index {
+        var switch_case = statement.cases[index]
+        crash switch_case
+        var class_path = state.values.class_path_of(switch_case.value)
+        if not class_path.is_empty() {
+            var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+            var member = state.context.resolver.types.class_type_in(
+                class_path,
+                no_arguments,
+                state.context.current_class,
+                state.context.line,
+            )
+            covered.append(member.name)
+        }
+        index = index + 1
+    }
+    var united = state.values.union_model_of(union_type)
+    var left = List<Model.Type>()
+    var left_names = List<String>()
+    var member_index = 0
+    while member_index < united.members.count() {
+        var held = united.members[member_index]
+        if not covered.contains(held.name) {
+            left.append(held)
+            var segments = held.name.split(".")
+            var simple = segments.last()
+            crash simple
+            left_names.append(simple)
+        }
+        member_index = member_index + 1
+    }
+    if left.count() != 1 {
+        return rest_union(united, left, left_names)
+    }
+    return left[0]
+}
+
+func rest_union(united: Model.UnionModel, left: List<Model.Type>, left_names: List<String>): Model.Type {
+    var parts = united.key.split(".")
+    var last = parts.count() - 1
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = state.context.program.class_named(owner_key)
+    crash owner
+    var joined = left_names.join("_or_")
+    var simple = "{united.name}_of_{joined}"
+    var known = owner.union_named(simple)
+    if not known {
+        var made = Model.UnionModel("{owner_key}.{simple}", simple)
+        made.members = left
+        owner.unions.append(made)
+    }
+    return Model.Type('union', "{owner_key}.{simple}")
+}
+
+# ../../../spite_spec/specs/values_and_types.md#unions-in-full
+func is_a_boolean_type(value_type: Model.Type): Boolean {
+    return state.context.is_a_truth_value(value_type)
+}
+
+func check_the_cover(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    subject_type: Model.Type,
+    path: String,
+) {
+    var written = List<String>()
+    var index = 0
+    while index < statement.cases.count() {
+        var switch_case = statement.cases[index]
+        var printer = Printers.Spite.ExpressionPrinter(switch_case.value)
+        var text = printer.text()
+        var segments = text.split(".")
+        var last = segments.count() - 1
+        var simple = segments[last]
+        crash simple
+        written.append(simple)
+        index = index + 1
+    }
+    var every = List<String>()
+    var is_an_enum = subject_type.kind == 'enumeration'
+    var subject = path
+    if is_an_enum {
+        var enumeration = state.values.enum_model_of(subject_type)
+        var value_index = 0
+        while value_index < enumeration.values.count() {
+            var value = enumeration.values[value_index]
+            every.append("'{value}'")
+            value_index = value_index + 1
+        }
+    } else {
+        var united = state.values.union_model_of(subject_type)
+        subject = united.name
+        var member_index = 0
+        while member_index < united.members.count() {
+            var member = united.members[member_index]
+            var member_segments = member.name.split(".")
+            var member_last = member_segments.count() - 1
+            var member_name = member_segments[member_last]
+            crash member_name
+            every.append(member_name)
+            member_index = member_index + 1
+        }
+    }
+    var shown_whole = state.context.shown(subject_type)
+    var shown_segments = shown_whole.split(".")
+    var shown = shown_segments.last()
+    crash shown
+    if subject_type.kind == 'union' {
+        subject = shown
+    }
+    var rest_line = rest_line_of(statement, is_an_enum)
+    var site = SwitchSite(state.context.current_class, state.context.current_function, statement.line, rest_line)
+    site.shown = shown
+    site.subject = subject
+    site.is_an_enum = is_an_enum
+    site.every = every
+    site.written = written
+    state.context.switch_sites.append(site)
+}
+
+func check_the_nullable_cover(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    subject_type: Model.Type,
+    path: String,
+) {
+    var present = subject_type.present()
+    var is_a_union = present.kind == 'union'
+    var is_an_object = present.kind == 'object'
+    fallback is_a_union or is_an_object
+    var written = written_cases_of(statement)
+    var every = List<String>()
+    if is_a_union {
+        var united = state.values.union_model_of(present)
+        var member_index = 0
+        while member_index < united.members.count() {
+            var member = united.members[member_index]
+            var member_segments = member.name.split(".")
+            var member_name = member_segments.last()
+            crash member_name
+            every.append(member_name)
+            member_index = member_index + 1
+        }
+    } else {
+        var present_segments = present.name.split(".")
+        var present_name = present_segments.last()
+        crash present_name
+        every.append(present_name)
+    }
+    every.append("Null")
+    var shown_whole = state.context.shown(subject_type)
+    var shown_segments = shown_whole.split(".")
+    var shown = shown_segments.last()
+    crash shown
+    var rest_line = rest_line_of(statement, false)
+    var site = SwitchSite(state.context.current_class, state.context.current_function, statement.line, rest_line)
+    site.shown = shown
+    site.subject = path
+    site.is_nullable = true
+    site.every = every
+    site.written = written
+    state.context.switch_sites.append(site)
+}
+
+func written_cases_of(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement): List<String> {
+    var written = List<String>()
+    var index = 0
+    while index < statement.cases.count() {
+        var switch_case = statement.cases[index]
+        var printer = Printers.Spite.ExpressionPrinter(switch_case.value)
+        var text = printer.text()
+        var segments = text.split(".")
+        var simple = segments.last()
+        crash simple
+        written.append(simple)
+        index = index + 1
+    }
+    return written
+}
+
+func rest_line_of(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement, is_an_enum: Boolean): Integer {
+    var last = statement.cases.count() - 1
+    var place = last
+    if not is_an_enum and last > 0 {
+        place = last - 1
+    }
+    var switch_case = statement.cases[place]
+    crash switch_case
+    return switch_case.line
+}
+
+func check_the_case_kinds(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement, subject_type: Model.Type) {
+    fallback not subject_type.is_nullable
+    var is_an_enum = subject_type.kind == 'enumeration'
+    var is_a_union = subject_type.kind == 'union'
+    fallback is_an_enum or is_a_union
+    var index = 0
+    while index < statement.cases.count() {
+        var switch_case = statement.cases[index]
+        state.context.line = switch_case.line
+        check_a_case_kind(switch_case.value, subject_type, is_an_enum)
+        index = index + 1
+    }
+}
+
+func check_a_case_kind(written: SpiteCompiler.Expression?, subject_type: Model.Type, is_an_enum: Boolean) {
+    var shown = state.context.shown(subject_type)
+    var class_path = state.values.class_path_of(written)
+    var first_value = ""
+    var first_member = ""
+    if is_an_enum {
+        first_value = first_value_of(subject_type)
+    } else {
+        first_member = first_member_of(subject_type)
+    }
+    var cases = Validators.HighIntermediaryRepresentation.SwitchCover.Validator()
+    cases.check_a_case_kind(state.context, written, class_path, shown, is_an_enum, first_value, first_member)
+}
+
+func first_value_of(subject_type: Model.Type): String {
+    var enumeration = state.values.enum_model_of(subject_type)
+    var first = enumeration.values[0]
+    crash first
+    return first
+}
+
+func first_member_of(subject_type: Model.Type): String {
+    var united = state.values.union_model_of(subject_type)
+    var member = united.members[0]
+    crash member
+    var member_segments = member.name.split(".")
+    var member_name = member_segments.last()
+    crash member_name
+    return member_name
+}
+
+func check_the_rest_of_values(
+    statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement,
+    subject_type: Model.Type,
+    path: String,
+) {
+    var is_a_whole_number = subject_type.kind == 'scalar' and state.values.is_a_whole_number(subject_type)
+    var last = statement.cases.last()
+    crash last
+    var cases = Validators.HighIntermediaryRepresentation.SwitchCover.Validator()
+    cases.check_a_rest_case(state.context, subject_type, is_a_whole_number, last.value, path, statement.line)
+}
+
+func is_closed(subject_type: Model.Type): Boolean {
+    fallback not subject_type.is_nullable
+    return subject_type.kind == 'enumeration' or subject_type.kind == 'union'
+}
+
+func case_condition(
+    subject: SpiteCompiler.Value,
+    written: SpiteCompiler.Expression?,
+    path: String,
+    paths: List<String>,
+    types: List<Model.Type>,
+): SpiteCompiler.Value {
+    var class_path = state.values.class_path_of(written)
+    var is_nullable = subject.value_type.is_nullable
+    if is_nullable and is_the_null_case(class_path) {
+        var there = HighIntermediaryRepresentation.Values.PresenceTest(subject)
+        return HighIntermediaryRepresentation.Values.Negation(there)
+    }
+    if not class_path.is_empty() {
+        var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+        var member = state.context.resolver.types.class_type_in(
+            class_path,
+            no_arguments,
+            state.context.current_class,
+            state.context.line,
+        )
+        paths.append(path)
+        types.append(member)
+        var present = subject.value_type.present()
+        if is_nullable and member.is_the_same_as(present) {
+            return HighIntermediaryRepresentation.Values.PresenceTest(subject)
+        }
+        return HighIntermediaryRepresentation.Values.Class.Membership(subject, member)
+    }
+    var expected = subject.value_type
+    var constant = state.values.value_of(written, expected)
+    if state.values.is_machine_comparable(expected) {
+        var boolean = state.context.boolean()
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', subject, constant)
+    }
+    var arguments = List<SpiteCompiler.Value>()
+    arguments.append(constant)
+    return state.values.method_call(subject, "equals", arguments)
+}
+
+func is_the_null_case(class_path: List<String>): Boolean {
+    fallback class_path.count() == 1
+    var only = class_path[0]
+    return only == "Null"
+}
