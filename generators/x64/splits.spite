@@ -1,0 +1,533 @@
+var no_allocation = NoAllocation()
+var state: AllocationState = no_allocation.state
+var answers = Answers(state)
+var intervals = Intervals(state)
+var lives = Lives(state)
+var occupancy = Occupancy(state)
+
+func Splits(starting_state: AllocationState) {
+    state = starting_state
+    answers = Answers(starting_state)
+    intervals = Intervals(starting_state)
+    lives = Lives(starting_state)
+    occupancy = Occupancy(starting_state)
+}
+
+# ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
+func takes_a_split_volatile(register: Integer): Boolean {
+    var decimal_size = state.decimal_sizes[register]
+    crash decimal_size
+    if decimal_size > 0 {
+        return takes_a_split_decimal(register)
+    }
+    var slot_blocks = clobbered_blocks(register)
+    fallback not slot_blocks.is_empty() and split_pays(register, slot_blocks)
+    var kept_starts = List<Integer>()
+    var kept_ends = List<Integer>()
+    keep_the_stretches(register, slot_blocks, kept_starts, kept_ends)
+    fallback not kept_starts.is_empty()
+    var index = 0
+    while index < state.volatile_homes.count() {
+        var candidate = state.volatile_homes[index]
+        crash candidate
+        if occupancy.may_hold(candidate, register) and occupancy.is_free_over(candidate, kept_starts, kept_ends) {
+            split_around(register, slot_blocks, kept_starts, kept_ends)
+            occupancy.give(candidate, register)
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func clobbered_blocks(register: Integer): List<Integer> {
+    var found = List<Integer>()
+    var blocks = state.value_blocks[register]
+    var block_starts = state.value_block_starts[register]
+    var block_ends = state.value_block_ends[register]
+    crash blocks
+    crash block_starts
+    crash block_ends
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        var start = block_starts[index]
+        var end = block_ends[index]
+        crash block_index
+        crash start
+        crash end
+        if occupancy.clobbered_between(start, end) and not found.contains(block_index) {
+            found.append(block_index)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func keep_the_stretches(
+    register: Integer,
+    slot_blocks: List<Integer>,
+    kept_starts: List<Integer>,
+    kept_ends: List<Integer>,
+) {
+    var blocks = state.value_blocks[register]
+    var block_starts = state.value_block_starts[register]
+    var block_ends = state.value_block_ends[register]
+    crash blocks
+    crash block_starts
+    crash block_ends
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        var start = block_starts[index]
+        var end = block_ends[index]
+        crash block_index
+        crash start
+        crash end
+        if not slot_blocks.contains(block_index) {
+            intervals.add_to_stretches(kept_starts, kept_ends, start, end)
+        }
+        index = index + 1
+    }
+}
+
+func split_pays(register: Integer, slot_blocks: List<Integer>): Boolean {
+    return split_gain(register, slot_blocks) > 0
+}
+
+func split_gain(register: Integer, slot_blocks: List<Integer>): Long {
+    var slots = block_set(slot_blocks)
+    var benefit: Long = 0
+    var counted = Dictionary<Long, Boolean>()
+    var blocks = state.value_blocks[register]
+    crash blocks
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        crash block_index
+        var key: Long = block_index
+        if slots[key] != true and counted[key] != true {
+            counted[key] = true
+            benefit = benefit + lives.weight_in(register, block_index)
+        }
+        index = index + 1
+    }
+    return benefit - moves_of(register, slot_blocks, slots)
+}
+
+func block_set(blocks: List<Integer>): Dictionary<Long, Boolean> {
+    var made = Dictionary<Long, Boolean>()
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        crash block_index
+        var key: Long = block_index
+        made[key] = true
+        index = index + 1
+    }
+    return made
+}
+
+func holds(blocks: Dictionary<Long, Boolean>, block_index: Integer): Boolean {
+    var key: Long = block_index
+    return blocks[key] == true
+}
+
+func moves_of(register: Integer, slot_blocks: List<Integer>, slots: Dictionary<Long, Boolean>): Long {
+    var cost: Long = 0
+    var index = 0
+    while index < slot_blocks.count() {
+        var slot_block = slot_blocks[index]
+        crash slot_block
+        cost = cost + moves_around(register, slot_block, slots)
+        index = index + 1
+    }
+    return cost
+}
+
+func moves_around(register: Integer, slot_block: Integer, slots: Dictionary<Long, Boolean>): Long {
+    var cost: Long = 0
+    var coming = state.predecessors[slot_block]
+    var leaving = state.successors[slot_block]
+    crash coming
+    crash leaving
+    var index = 0
+    while lives.is_live_into(register, slot_block) and index < coming.count() {
+        var predecessor = coming[index]
+        crash predecessor
+        if not holds(slots, predecessor) {
+            cost = cost + lives.edge_weight(predecessor, slot_block)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < leaving.count() {
+        var successor = leaving[index]
+        crash successor
+        if lives.is_live_into(register, successor) and not holds(slots, successor) {
+            cost = cost + lives.edge_weight(slot_block, successor)
+        }
+        index = index + 1
+    }
+    return cost
+}
+
+func split_around(register: Integer, slot_blocks: List<Integer>, kept_starts: List<Integer>, kept_ends: List<Integer>) {
+    state.segment_starts[register] = kept_starts
+    state.segment_ends[register] = kept_ends
+    state.is_split[register] = true
+    state.split_values.append(register)
+    var index = 0
+    while index < slot_blocks.count() {
+        var slot_block = slot_blocks[index]
+        crash slot_block
+        state.slot_keys[answers.key_of(register, slot_block)] = true
+        index = index + 1
+    }
+}
+
+func gave_up_a_constant(slot: Integer, register: Integer): Boolean {
+    var conflicts = occupancy.conflicts_on(slot, register)
+    fallback conflicts.count() == 1
+    var other = conflicts[0]
+    crash other
+    fallback state.decimal_constants[other] == true and state.is_split[other] != true and not occupancy.crosses_a_vector_loop(other)
+    state.homes[other] = -1
+    state.is_constant[other] = true
+    var holding = state.assigned[slot]
+    crash holding
+    var at = holding.index_of(other)
+    crash at
+    holding.remove_at(at)
+    var ever_holding = state.every_holder[slot]
+    crash ever_holding
+    var ever_at = ever_holding.index_of(other)
+    crash ever_at
+    ever_holding.remove_at(ever_at)
+    occupancy.give(slot, register)
+    return true
+}
+
+func spill_the_cheapest(register: Integer) {
+    var cheapest_physical = -1
+    var cheapest_other = -1
+    var cheapest_weight: Long = weight_of(register)
+    var cheapest_length: Long = length_of(register)
+    var index = 0
+    while index < state.keeping.count() {
+        var candidate = state.keeping[index]
+        crash candidate
+        var conflicts = occupancy.conflicts_on(candidate, register)
+        if conflicts.count() == 1 {
+            var other = conflicts[0]
+            crash other
+            var other_weight: Long = weight_of(other)
+            var other_length: Long = length_of(other)
+            if other_weight * cheapest_length < cheapest_weight * other_length {
+                cheapest_physical = candidate
+                cheapest_other = other
+                cheapest_weight = other_weight
+                cheapest_length = other_length
+            }
+        }
+        index = index + 1
+    }
+    if cheapest_physical < 0 {
+        state.homes[register] = -1
+        fallback not takes_a_loop_split(register)
+        return
+    }
+    state.homes[cheapest_other] = -1
+    var holding = state.assigned[cheapest_physical]
+    crash holding
+    var at = holding.index_of(cheapest_other)
+    crash at
+    holding.remove_at(at)
+    var ever_holding = state.every_holder[cheapest_physical]
+    crash ever_holding
+    var ever_at = ever_holding.index_of(cheapest_other)
+    crash ever_at
+    ever_holding.remove_at(ever_at)
+    occupancy.give(cheapest_physical, register)
+    fallback not occupancy.takes_a_whole_volatile(cheapest_other, false, 3)
+    fallback not takes_a_split_volatile(cheapest_other)
+    fallback not takes_a_loop_split(cheapest_other)
+}
+
+# ../../OPTIMIZATIONS.md#a-value-spilled-outside-a-loop-lives-in-a-register-inside-it
+func takes_a_loop_split(register: Integer): Boolean {
+    fallback not occupancy.crosses_a_vector_loop(register)
+    var depth = deepest_use_of(register)
+    while depth >= 1 {
+        if takes_a_split_at(register, depth) {
+            return true
+        }
+        depth = depth - 1
+    }
+    return false
+}
+
+func takes_a_split_at(register: Integer, depth: Integer): Boolean {
+    var slot_blocks = shallower_blocks(register, depth)
+    fallback not slot_blocks.is_empty() and split_pays(register, slot_blocks)
+    var kept_starts = List<Integer>()
+    var kept_ends = List<Integer>()
+    keep_the_stretches(register, slot_blocks, kept_starts, kept_ends)
+    fallback not kept_starts.is_empty()
+    var decimal_size = state.decimal_sizes[register]
+    crash decimal_size
+    if decimal_size > 0 {
+        return took_a_decimal_over(register, slot_blocks, kept_starts, kept_ends)
+    }
+    var index = 0
+    while index < state.keeping.count() {
+        var candidate = state.keeping[index]
+        crash candidate
+        if occupancy.is_free_over(candidate, kept_starts, kept_ends) {
+            split_around(register, slot_blocks, kept_starts, kept_ends)
+            occupancy.give(candidate, register)
+            return true
+        }
+        index = index + 1
+    }
+    if not stretches_clobbered(kept_starts, kept_ends) {
+        index = 0
+        while index < state.volatile_homes.count() {
+            var candidate = state.volatile_homes[index]
+            crash candidate
+            if occupancy.may_hold(candidate, register) and occupancy.is_free_over(candidate, kept_starts, kept_ends) {
+                split_around(register, slot_blocks, kept_starts, kept_ends)
+                occupancy.give(candidate, register)
+                return true
+            }
+            index = index + 1
+        }
+    }
+    return took_from_a_holder(register, slot_blocks, kept_starts, kept_ends)
+}
+
+# ../../OPTIMIZATIONS.md#a-value-that-barely-uses-a-loop-gives-its-register-to-one-that-does
+func took_from_a_holder(
+    register: Integer,
+    slot_blocks: List<Integer>,
+    kept_starts: List<Integer>,
+    kept_ends: List<Integer>,
+): Boolean {
+    var kept_blocks = Dictionary<Long, Boolean>()
+    var gain: Long = 0
+    var measured = false
+    var index = 0
+    while index < state.keeping.count() {
+        var candidate = state.keeping[index]
+        crash candidate
+        var holder = lone_holder_over(candidate, kept_starts, kept_ends)
+        if holder >= 0 and not measured {
+            measured = true
+            kept_blocks = blocks_outside(register, slot_blocks)
+            gain = split_gain(register, slot_blocks)
+        }
+        if holder >= 0 and gave_way(holder, kept_blocks, gain) {
+            split_around(register, slot_blocks, kept_starts, kept_ends)
+            occupancy.give(candidate, register)
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func blocks_outside(register: Integer, slot_blocks: List<Integer>): Dictionary<Long, Boolean> {
+    var slots = block_set(slot_blocks)
+    var found = Dictionary<Long, Boolean>()
+    var blocks = state.value_blocks[register]
+    crash blocks
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        crash block_index
+        if not holds(slots, block_index) {
+            var key: Long = block_index
+            found[key] = true
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func lone_holder_over(physical: Integer, kept_starts: List<Integer>, kept_ends: List<Integer>): Integer {
+    var found = -1
+    var first_kept = kept_starts[0]
+    crash first_kept
+    var holding = state.every_holder[physical]
+    crash holding
+    var index = 0
+    while index < holding.count() {
+        var other = holding[index]
+        crash other
+        var other_starts = state.segment_starts[other]
+        var other_ends = state.segment_ends[other]
+        var other_end = state.ends[other]
+        crash other_starts
+        crash other_ends
+        crash other_end
+        var reaches = other_end >= first_kept
+        if reaches and intervals.stretches_overlap(other_starts, other_ends, kept_starts, kept_ends) {
+            if found >= 0 {
+                return -1
+            }
+            found = other
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func gave_way(holder: Integer, kept_blocks: Dictionary<Long, Boolean>, gain: Long): Boolean {
+    fallback holder >= state.function.parameter_count and state.is_split[holder] != true
+    var decimal_size = state.decimal_sizes[holder]
+    var joined = state.joined_lefts[holder]
+    crash decimal_size
+    crash joined
+    fallback decimal_size <= 0 and joined < 0 and not occupancy.crosses_a_vector_loop(holder)
+    var holder_slots = List<Integer>()
+    var taken = Dictionary<Long, Boolean>()
+    var blocks = state.value_blocks[holder]
+    crash blocks
+    var loss: Long = 0
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        crash block_index
+        var key: Long = block_index
+        if kept_blocks[key] == true and taken[key] != true {
+            taken[key] = true
+            holder_slots.append(block_index)
+            loss = loss + lives.weight_in(holder, block_index)
+        }
+        index = index + 1
+    }
+    fallback not holder_slots.is_empty()
+    loss = loss + moves_of(holder, holder_slots, taken)
+    fallback gain > loss
+    var holder_starts = List<Integer>()
+    var holder_ends = List<Integer>()
+    keep_the_stretches(holder, holder_slots, holder_starts, holder_ends)
+    fallback not holder_starts.is_empty()
+    split_around(holder, holder_slots, holder_starts, holder_ends)
+    return true
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-leaves-its-register-only-where-it-must
+func takes_a_split_decimal(register: Integer): Boolean {
+    fallback not occupancy.crosses_a_vector_loop(register)
+    var slot_blocks = clobbered_blocks(register)
+    fallback not slot_blocks.is_empty() and split_pays(register, slot_blocks)
+    var kept_starts = List<Integer>()
+    var kept_ends = List<Integer>()
+    keep_the_stretches(register, slot_blocks, kept_starts, kept_ends)
+    fallback not kept_starts.is_empty()
+    return took_a_decimal_over(register, slot_blocks, kept_starts, kept_ends)
+}
+
+func took_a_decimal_over(
+    register: Integer,
+    slot_blocks: List<Integer>,
+    kept_starts: List<Integer>,
+    kept_ends: List<Integer>,
+): Boolean {
+    var clobbered = stretches_clobbered(kept_starts, kept_ends)
+    var candidate = 3
+    while candidate < 16 {
+        var slot = 16 + candidate
+        var usable = candidate >= state.first_kept_decimal or not clobbered
+        if usable and occupancy.is_free_over(slot, kept_starts, kept_ends) {
+            split_around(register, slot_blocks, kept_starts, kept_ends)
+            occupancy.give(slot, register)
+            return true
+        }
+        candidate = candidate + 1
+    }
+    return false
+}
+
+func deepest_use_of(register: Integer): Integer {
+    var deepest = 0
+    var blocks = state.value_blocks[register]
+    crash blocks
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        crash block_index
+        var depth = state.depths[block_index]
+        crash depth
+        if depth > deepest and lives.weight_in(register, block_index) > 0 {
+            deepest = depth
+        }
+        index = index + 1
+    }
+    return deepest
+}
+
+func shallower_blocks(register: Integer, deepest: Integer): List<Integer> {
+    var found = List<Integer>()
+    var blocks = state.value_blocks[register]
+    crash blocks
+    var index = 0
+    while index < blocks.count() {
+        var block_index = blocks[index]
+        crash block_index
+        var depth = state.depths[block_index]
+        crash depth
+        if depth < deepest and not found.contains(block_index) {
+            found.append(block_index)
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func stretches_clobbered(kept_starts: List<Integer>, kept_ends: List<Integer>): Boolean {
+    var index = 0
+    while index < kept_starts.count() {
+        var start = kept_starts[index]
+        var end = kept_ends[index]
+        crash start
+        crash end
+        if occupancy.clobbered_between(start, end) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func length_of(register: Integer): Integer {
+    var made_starts = state.segment_starts[register]
+    var made_ends = state.segment_ends[register]
+    crash made_starts
+    crash made_ends
+    var length = 8
+    var index = 0
+    while index < made_starts.count() {
+        var start = made_starts[index]
+        var end = made_ends[index]
+        crash start
+        crash end
+        length = length + end - start + 1
+        index = index + 1
+    }
+    return length
+}
+
+func weight_of(register: Integer): Integer {
+    if answers.is_rematerialised(register) {
+        var block_index = state.rematerialised_blocks[register]
+        crash block_index
+        var depth = state.depths[block_index]
+        crash depth
+        return lives.weight_at_depth(depth)
+    }
+    var weight = state.weights[register]
+    crash weight
+    return weight
+}
