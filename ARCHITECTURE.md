@@ -224,7 +224,7 @@ folders and flags that exist. The size of every file is held by `validators/abst
 | fix rule | `fixes/<layer>/<rule>/fix.spite` (class `Fix`), and `every_fix.spite` in the layer; `fixes/fixes.spite` writes |
 | printer | `printers/<printer>/printer.spite` (class `Printer`) |
 | emitter | `generators/<target>/instructions/<instruction>.spite` per instruction kind |
-| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet |
+| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet, except `building/prompt` (`SourceState`, and `*_text.spite` for the texts it writes) and `low_optimization_passes/vector_loops` (`VectorLoopState`), which keep their fields in one state object every concern class takes, as the lowering does |
 | helper | next to what uses it; a helper several passes read lives in the stage folder (`high_optimization_passes/references.spite`), though a few low passes still read each other's `Pass` and `compile_time_evaluation`'s `Frame` and `Machine` |
 
 The passes and proofs are registered in the constructor of their stage's entry class, in order; there is no
@@ -291,7 +291,7 @@ handle writes none of it, and a program that never starts calls in a row has no 
 
 The rest is Spite code the compiler holds as text (`symbols/machinery_text.spite`: the fault and crash reports
 `Spite.Fault`, the fallback ring `Spite.Fallbacks`, the deep copy table `Spite.CopyTable`; and, only in a `--repl` build,
-`high_intermediary_representation/building/prompt_text.spite`: `Spite.Prompt` and `Spite.PromptPath`). The first
+`high_intermediary_representation/building/prompt/text.spite`: `Spite.Prompt` and `Spite.PromptPath`). The first
 time a program names one, the symbol table adds it as a generated class under the program's
 `.spite/build/spite/`, with the library's rights; a program that never needs one reads none of it. No folder holds
 them, so nothing can load them, and a program that names one of them, or any `Spite.Internal` name, is refused.
