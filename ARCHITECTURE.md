@@ -224,7 +224,7 @@ folders and flags that exist. The size of every file is held by `validators/abst
 | fix rule | `fixes/<layer>/<rule>/fix.spite` (class `Fix`), and `every_fix.spite` in the layer; `fixes/fixes.spite` writes |
 | printer | `printers/<printer>/printer.spite` (class `Printer`) |
 | emitter | `generators/<target>/instructions/<instruction>.spite` per instruction kind |
-| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet, except `building/prompt` (`SourceState`, and `*_text.spite` for the texts it writes) and `low_optimization_passes/vector_loops` (`VectorLoopState`), which keep their fields in one state object every concern class takes, as the lowering does |
+| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet, except `building/prompt` (`SourceState`, and `*_text.spite` for the texts it writes), `building/reflection.spite` (`ReflectionState`) and `low_optimization_passes/vector_loops` (`VectorLoopState`), which keep their fields in one state object every concern class takes, as the lowering does |
 | helper | next to what uses it; a helper several passes read lives in the stage folder (`high_optimization_passes/references.spite`), though a few low passes still read each other's `Pass` and `compile_time_evaluation`'s `Frame` and `Machine` |
 
 The passes and proofs are registered in the constructor of their stage's entry class, in order; there is no
@@ -246,6 +246,27 @@ primitives, a switch or another concern makes one over the same state as a local
 a singleton, and `conversions` the conversions, boxing, shape calls and the checks of decimals and ranges. The
 collaborators that write one kind of function (`working`, `settling`, `callbacks`, `list_reads` and the rest) take the
 `FunctionLowering` they write into and reach its fields through `lowering.state`.
+
+## The resolver and the reflection builder
+
+A class too large for one file keeps its fields in one state object, and each concern is a class beside it that takes
+that object (never the entry, which would be a reference cycle), as the emitter does. The more basic class never
+names the one above it.
+
+The resolver (`name_resolution/resolver.spite`) only holds the state and the concerns and starts the resolution.
+`ResolutionState` holds the fields; `same_members` finds a union or type already written under another name,
+`instances` (the `monomorphiser`) is the worklist of classes to fill and the generic instances minted for it, `types`
+resolves a written type, `owners` works out the owner and class of the names of a template, and `reading` reads a class
+file's declarations into the model. A class waiting in the worklist is filled by a `Reading` that `instances` makes when
+it drains the list, since `types` asks for a drain and `reading` asks `types` for a type.
+
+The reflection builder (`high_intermediary_representation/building/reflection.spite`) is split the same way, over
+`ReflectionState`: `described_names` (names and paths), `features` (which reflection functions the program asks for),
+`writing` (constants, locals and calls a fill writes), `class_objects` (the objects of classes, namespaces, enums,
+unions and types), `declarations` (the objects describing one declaration), `wrappers` (the wrappers of a described
+function), `member_lists` (a class's attribute and function lists), `fills` (the fill of each reflection object) and
+`making` (the constructor of every reflected class). A caller names the concern: `reflection.class_objects.class_object`,
+`resolver.types.type_in`.
 
 ## The targets
 

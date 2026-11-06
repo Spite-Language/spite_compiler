@@ -96,6 +96,22 @@ member is answered when the class is compiled.
 
 - `name_resolution.spite`: the entry, `NameResolution(symbols, folder, flags, written_flags, bare_flags)`; its `run` finds the
   types, mints the instances, resolves the signatures and answers the `Model.ProgramModel`, then hands what it found to the rules.
-- `resolver.spite`: the work: find the types, resolve them, mint the instances, and mint the instances the instances need.
+- `resolver.spite`: the entry of the work: it holds the state and the concerns, and `resolve` adds every class read and fills them.
+  Its fields live in one object, `ResolutionState`, which every concern takes (never the `Resolver`, which would be a
+  reference cycle); a concern never names one above it, and the `Resolver` makes them in this order.
+- `resolution_state.spite`: the fields: the symbol table, the program being made, the classes waiting to be filled, the
+  class being read and the line, and what a bound member and a function being read need.
+- `same_members.spite`: a union or type with the same members as one already seen, so two names for one meaning stay one.
+- `instances.spite`: the worklist of classes to fill and the generic instances minted for it: the name of an instance
+  (`List_of_Integer`), the ones the compiler makes without a file (`Spite.Work`, a list, a dictionary of text) and the
+  instance a constructor's arguments decide. It drains the worklist with a `Reading` made for the drain, so that
+  `types` can ask for one.
+- `types.spite`: a type as written to a type of the model: a path, a type parameter, a dependent member, a declared
+  enum, union or type, and the arguments of a generic; and the rules about a class named wrongly, which it hands to the
+  validators.
+- `owners.spite`: for a function that takes a declaration of the class it walks, the owner of the declaration and the
+  class of each value it reads, found from how the function uses it.
+- `reading.spite`: a class file's declarations read into its class model (enums, unions, types, attributes, functions and
+  their parameters), a template's functions specialised for a member, and the ranges a template's parameters write.
 - `inference.spite`: the type of an expression written in a default or a constructor call, read without building it.
 - `place.spite`: where a message names a function, found only when a message is told.
