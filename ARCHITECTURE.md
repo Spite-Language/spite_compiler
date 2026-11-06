@@ -311,13 +311,17 @@ call keeps (in the order values take them), the scratch registers a value may ho
 calls, the first decimal register a call keeps (16 when none is kept), and the room a caller leaves above its
 arguments (the shadow space).
 
-`x64/allocation.spite` is one class whose functions are grouped by phase, and `allocate` calls the phases by name: `lay_out_the_blocks` (block
-layout), `read_the_operands` (counts, constants, decimals), `fold_the_addresses` (fused compares, folded addresses,
-rematerialised loads), `find_the_flow` (positions, edges, reachability, loop depths), `find_the_lives` (liveness), `build_the_intervals`
-(segments and joined copies) and `place_the_values` (placement, which splits and spills through the same lists). Each phase
-reads what the ones before it filled, in the lists `allocation.spite` begins with, and the file keeps each phase's functions together in that order, with the
-answers the emitter asks last. The layout runs first because the emitter reads it for a function the rest skips, and liveness runs after the
-flow because it walks the blocks in layout order.
+`x64/allocation.spite` is the allocator's entry: its lists live in one object, `AllocationState` (`allocation_state.spite`), and
+`allocate` calls the phases by name, each a class of its own that reads and fills those lists through the state it is given:
+`lay_out_the_blocks` and `find_the_flow` (`block_flow.spite`: block layout, positions, edges, reachability, loop depths),
+`read_the_operands` (`operand_readings.spite`: counts, constants, decimals), `fold_the_addresses` (`address_folds.spite`: fused
+compares, folded addresses, rematerialised loads), `find_the_lives` (`lives.spite`: liveness, weights, live sets),
+`build_the_intervals` (`intervals.spite`: segments and joined copies) and `place_the_values` (`placement.spite`, which asks
+`occupancy.spite` what a physical register may hold where and `splits.spite` for the split and spill choice). `answers.spite` holds
+what the emitter asks once the registers are placed (`home_of`, `moves_on_the_edge`, ...) and the small readers of the tables the phases share.
+`NoAllocation` (`no_allocation.spite`) is the state a phase holds until its constructor is given the real one, so making a phase
+builds no lists. Each phase reads what the ones before it filled. The layout runs first because the emitter reads it for a function
+the rest skips, and liveness runs after the flow because it walks the blocks in layout order.
 
 ## What the compiler writes itself
 
