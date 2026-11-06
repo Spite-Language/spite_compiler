@@ -1,0 +1,288 @@
+var empty_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var walk = AbstractSyntaxTree.Walk.Walk(empty_file)
+var class_name = ""
+var found_problems = List<Diagnostics.Problem>()
+var names = Validators.AbstractSyntaxTree.Names.Validator()
+var abbreviations = Validators.AbstractSyntaxTree.Names.Abbreviations()
+var dictated = Validators.AbstractSyntaxTree.UnusedNames.Dictated()
+var attribute_names = List<String>()
+var underscore = 95
+
+# ../../../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
+func fixed(starting_walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: String): List<Diagnostics.Problem> {
+    walk = starting_walk
+    class_name = starting_class_name
+    found_problems = List<Diagnostics.Problem>()
+    attribute_names = walk.attribute_declarations.map_names()
+    walk.function_declarations.each(fix_the_parameters)
+    walk.statements.each(fix_a_local)
+    return found_problems
+}
+
+func fix_the_parameters(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration) {
+    fallback function.body
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        fix_a_parameter(function, parameter.name)
+        index = index + 1
+    }
+}
+
+func fix_a_parameter(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration, name: String) {
+    var right = spelled(function, name, function.line, "parameter")
+    fallback right.starts_with("_") and not dictated.is_dictated(function, attribute_names)
+    var reading = Validators.AbstractSyntaxTree.UnusedNames.Reads()
+    var key = function.declared_key()
+    reading.read_the_function(walk, key)
+    if reading.reads.contains(right) {
+        take_the_underscore_off(function, right, function.line)
+    }
+}
+
+func fix_a_local(found: AbstractSyntaxTree.Walk.Found.Statement) {
+    var statement = found.statement
+    fallback statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement
+    var function = walk.function_named(found.function_name)
+    crash function
+    var right = spelled(function, statement.name, statement.line, "variable")
+    fallback right.starts_with("_")
+    var reading = Validators.AbstractSyntaxTree.UnusedNames.Reads()
+    reading.read_the_function(walk, found.function_name)
+    if reading.is_read_while_declared(statement) {
+        take_the_underscore_off(function, right, statement.line)
+    }
+}
+
+func spelled(
+    function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    line: Integer,
+    what: String,
+): String {
+    var right = name
+    if not is_lowercase_past_the_underscore(right) {
+        var snake = snake_case_of(right)
+        right = step(
+            function,
+            right,
+            snake,
+            line,
+            "the {what} '{right}' was not written in snake_case, lowercase words joined by underscores; renamed it '{snake}'",
+        )
+    }
+    var joined = joined_once(right)
+    if joined != right {
+        right = step(
+            function,
+            right,
+            joined,
+            line,
+            "the {what} '{right}' joined its words with more than one underscore or ended with one; renamed it '{joined}'",
+        )
+    }
+    var full = spelled_out(right)
+    if full != right {
+        right = step(
+            function,
+            right,
+            full,
+            line,
+            "'{right}' abbreviated, and Spite has no abbreviations outside its own keywords; renamed it '{full}'",
+        )
+    }
+    return right
+}
+
+func take_the_underscore_off(
+    function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    line: Integer,
+) {
+    var bare = bare_of(name)
+    fallback is_free(function, name, bare)
+    rename(
+        function,
+        name,
+        bare,
+        line,
+        "'{name}' was read, so it must not start with an underscore: only a parameter the body ignores is named that way; renamed it '{bare}'",
+    )
+}
+
+func step(
+    function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    right: String,
+    line: Integer,
+    text: String,
+): String {
+    if not is_free(function, name, right) {
+        return name
+    }
+    rename(function, name, right, line, text)
+    return right
+}
+
+func rename(
+    function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    right: String,
+    line: Integer,
+    text: String,
+) {
+    var renaming = Fixes.Renaming(function, name, right)
+    renaming.run()
+    var problem = Diagnostics.Problem(walk.file.path, line, text)
+    problem.class_name = class_name
+    problem.function_name = function.declared_key()
+    problem.is_fix = true
+    found_problems.append(problem)
+}
+
+func is_free(
+    function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    right: String,
+): Boolean {
+    fallback right.length() > 1 or names.is_an_axis(right)
+    fallback right != "from" and not is_a_word_of_the_language(right)
+    fallback not takes_a_declaration(function)
+    fallback not attribute_names.contains(name) and not attribute_names.contains(right)
+    var function_names = walk.function_declarations.map_names()
+    fallback not function_names.contains(name) and not function_names.contains(right)
+    return not is_mentioned_in(function, right)
+}
+
+func is_a_word_of_the_language(word: String): Boolean {
+    var lexer = AbstractSyntaxTree.Lexer.Lexer(walk.file.path, "", 1)
+    return lexer.keywords.contains(word)
+}
+
+func takes_a_declaration(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration): Boolean {
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if dictated.describes_a_declaration(parameter.declared_type) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func is_mentioned_in(function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration, name: String): Boolean {
+    var parameter_names = function.parameters.map_names()
+    if parameter_names.contains(name) {
+        return true
+    }
+    var holder = AbstractSyntaxTree.Shapes.SourceFile("", "")
+    holder.declarations.append(function)
+    var inside = AbstractSyntaxTree.Walk.Walk(holder)
+    var index = 0
+    while index < inside.expressions.count() {
+        var found = inside.expressions[index]
+        crash found.expression
+        if found.expression.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression and found.expression.name == name {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < inside.statements.count() {
+        var found_statement = inside.statements[index]
+        crash found_statement.statement
+        if found_statement.statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement and found_statement.statement.name == name {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func bare_of(name: String): String {
+    fallback name.starts_with("_")
+    var name_length = name.length()
+    var sliced = name.slice(1, name_length)
+    crash sliced
+    return sliced
+}
+
+func is_lowercase_past_the_underscore(name: String): Boolean {
+    if name.starts_with("_") {
+        var bare = bare_of(name)
+        return names.is_a_lowercase_name(bare)
+    }
+    return names.is_a_lowercase_name(name)
+}
+
+func snake_case_of(name: String): String {
+    var shown = ""
+    var index = 0
+    var previous = underscore
+    while index < name.length() {
+        var code = name.byte_at(index)
+        var letter = name[index]
+        crash letter
+        var is_upper = names.is_an_upper_letter(code)
+        var fits = names.is_a_lower_letter(code) or is_upper or names.is_a_digit(code) or code == underscore
+        fallback fits and not (is_upper and names.is_an_upper_letter(previous))
+        if is_upper and previous != underscore {
+            shown = "{shown}_"
+        }
+        var lowered = letter.lower_case()
+        shown = "{shown}{lowered}"
+        previous = code
+        index = index + 1
+    }
+    return shown
+}
+
+func joined_once(name: String): String {
+    var shown = ""
+    var index = 0
+    var previous = 0
+    while index < name.length() {
+        var code = name.byte_at(index)
+        var letter = name[index]
+        crash letter
+        if code != underscore or previous != underscore {
+            shown = "{shown}{letter}"
+        }
+        previous = code
+        index = index + 1
+    }
+    while shown.ends_with("_") {
+        var end = shown.length() - 1
+        var cut = shown.slice(0, end)
+        crash cut
+        shown = cut
+    }
+    return shown
+}
+
+func spelled_out(name: String): String {
+    var words = names.words_of(name)
+    var spelled_words = List<String>()
+    var has_a_full_word = false
+    var index = 0
+    while index < words.count() {
+        var word = words[index]
+        var meanings = abbreviations.meanings_of(word)
+        if not meanings.is_empty() {
+            return name
+        }
+        var full = abbreviations.full_word_of(word)
+        if full.is_empty() {
+            spelled_words.append(word)
+        } else {
+            spelled_words.append(full)
+            has_a_full_word = true
+        }
+        index = index + 1
+    }
+    if has_a_full_word {
+        return names.spelled_like(name, spelled_words)
+    }
+    return name
+}

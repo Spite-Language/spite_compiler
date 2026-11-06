@@ -13,6 +13,7 @@ func fixed(starting_walk: AbstractSyntaxTree.Walk.Walk, starting_class_name: Str
     else_if_lines = List<Integer>()
     walk.statements.each(note_an_else_if)
     walk.statements.each(fix_found)
+    walk.statements.each(hoist_found)
     return found_problems
 }
 
@@ -96,6 +97,81 @@ func replace(
     problem.function_name = found.function_name
     problem.is_fix = true
     found_problems.append(problem)
+}
+
+# ../../../../spite_spec/specs/style.md#the-compiler-fixes-what-has-one-fix
+func hoist_found(found: AbstractSyntaxTree.Walk.Found.Statement) {
+    var statement = found.statement
+    fallback statement.class == AbstractSyntaxTree.Shapes.Statements.IfStatement
+    fallback statement.else_branch and not else_if_lines.contains(statement.line)
+    fallback statement.else_branch.is_an_else_if and statement.else_branch.statements.count() == 1
+    var inner = statement.else_branch.statements[0]
+    if inner.class == AbstractSyntaxTree.Shapes.Statements.IfStatement {
+        hoist_the_guard(found, statement, inner)
+    }
+}
+
+func hoist_the_guard(
+    found: AbstractSyntaxTree.Walk.Found.Statement,
+    statement: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+    guard: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+) {
+    fallback not guard.else_branch
+    crash guard.then_branch
+    fallback guard.then_branch.statements.count() == 1
+    var only = guard.then_branch.statements[0]
+    fallback only.class == AbstractSyntaxTree.Shapes.Statements.ReturnStatement
+    var function = walk.function_named(found.function_name)
+    crash function
+    crash guard.condition
+    fallback not function.is_a_constructor_of(class_name)
+    fallback not holds_a_comment(guard.line, guard.then_branch.end_line)
+    if only.value {
+        fallback defaults.is_the_default(function, only.value)
+    } else {
+        fallback not function.result
+    }
+    var disjoint = Fixes.AbstractSyntaxTree.DefaultGuard.Disjoint(function)
+    fallback disjoint.holds(statement.condition, guard.condition)
+    var opposite = Validators.AbstractSyntaxTree.DefaultGuard.Opposite()
+    var turned = opposite.of(guard.condition)
+    var printer = Printers.Spite.ExpressionPrinter(turned)
+    var asserted = printer.text()
+    var hoisted = AbstractSyntaxTree.Shapes.Statements.FallbackStatement(turned)
+    hoisted.line = statement.line
+    crash found.holder
+    crash statement.condition
+    crash statement.then_branch
+    var alone = AbstractSyntaxTree.Shapes.Statements.IfStatement(statement.condition, statement.then_branch, null)
+    alone.line = statement.line
+    insert_above(found.holder.statements, statement.line, hoisted, alone)
+    var problem = Diagnostics.Problem(
+        walk.file.path,
+        guard.line,
+        "this 'else if' only returned, and no value passes both it and the 'if' above it; wrote 'fallback {asserted}' above that 'if'",
+    )
+    problem.class_name = class_name
+    problem.function_name = found.function_name
+    problem.is_fix = true
+    found_problems.append(problem)
+}
+
+func insert_above(
+    statements: List<SpiteCompiler.WrittenStatement>,
+    line: Integer,
+    hoisted: AbstractSyntaxTree.Shapes.Statements.FallbackStatement,
+    alone: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+) {
+    var index = 0
+    while index < statements.count() {
+        var statement = statements[index]
+        if statement.line == line {
+            statements[index] = alone
+            statements.insert(index, hoisted)
+            return
+        }
+        index = index + 1
+    }
 }
 
 func holds_a_comment(first_line: Integer, last_line: Integer): Boolean {

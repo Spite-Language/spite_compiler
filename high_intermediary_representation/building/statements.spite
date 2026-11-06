@@ -202,8 +202,8 @@ func add(statement: SpiteCompiler.Statement) {
 # ../../PROOFS.md#a-call-keeps-a-proof-it-cannot-change
 func log_the_calls_of(statement: SpiteCompiler.Statement) {
     switch statement {
-        HighIntermediaryRepresentation.Statements.Declare: log_a_value(statement.value, statement.line)
-        HighIntermediaryRepresentation.Statements.Assign.Assign: log_a_value(statement.value, statement.line)
+        HighIntermediaryRepresentation.Statements.Declare: log_a_declaration(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: log_an_assignment(statement)
         HighIntermediaryRepresentation.Statements.Assign.Attribute: log_an_attribute_write(statement)
         HighIntermediaryRepresentation.Statements.Assign.ThroughShape: log_a_shape_write(statement)
         HighIntermediaryRepresentation.Statements.Evaluate: log_an_evaluation(statement)
@@ -215,12 +215,39 @@ func log_the_calls_of(statement: SpiteCompiler.Statement) {
     }
 }
 
+func log_a_declaration(declared: HighIntermediaryRepresentation.Statements.Declare) {
+    var made = declared.value
+    if made.class == HighIntermediaryRepresentation.Values.MakeObject {
+        context.scope.fresh_locals.append(declared.name)
+    }
+    log_a_value(declared.value, declared.line)
+}
+
+func log_an_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign) {
+    var place = context.scope.fresh_locals.index_of(assigned.name)
+    if place {
+        context.scope.fresh_locals.remove_at(place)
+    }
+    log_a_value(assigned.value, assigned.line)
+}
+
 func log_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    var object = written.object
+    var is_fresh = false
+    if object.class == HighIntermediaryRepresentation.Values.LocalRead {
+        is_fresh = context.scope.fresh_locals.contains(object.name)
+    }
+    if not is_fresh {
+        var at = context.logged_calls.count()
+        context.logged_writes[at] = written
+    }
     log_a_value(written.object, written.line)
     log_a_value(written.value, written.line)
 }
 
 func log_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    var at = context.logged_calls.count()
+    context.logged_writes[at] = written
     log_a_value(written.object, written.line)
     log_a_value(written.value, written.line)
 }
@@ -319,7 +346,7 @@ func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
     note_a_text_local(name, statement.name, value)
     var kept_type = local_type.present()
     if given_type.is_the_same_as(kept_type) {
-        note_a_copy(statement, name, local_type)
+        note_a_copy(statement, name, local_type, value)
     }
     if value.class == HighIntermediaryRepresentation.Values.Conversion and value.kind == 'proven' {
         context.proven_locals.append(name)
@@ -409,6 +436,7 @@ func note_a_copy(
     statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement,
     internal_name: String,
     local_type: Model.Type,
+    value: SpiteCompiler.Value,
 ) {
     fallback local_type.is_nullable and is_a_bare_path(statement.value)
     fallback not (statement.declared_type and context.current_class.shown.contains("<"))
@@ -431,6 +459,21 @@ func note_a_copy(
         index = index + 1
     }
     context.scope.note_a_copy(internal_name, statement.name, source, statement.line)
+    context.scope.copied_stamps[internal_name] = context.logged_calls.count()
+    var attributes = List<Model.AttributeModel>()
+    note_the_attributes_read(value, attributes)
+    context.scope.copied_attributes[internal_name] = attributes
+}
+
+# ../../PROOFS.md#a-copy-made-to-narrow-is-an-error
+func note_the_attributes_read(value: SpiteCompiler.Value?, attributes: List<Model.AttributeModel>) {
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        attributes.append(value.attribute)
+        note_the_attributes_read(value.object, attributes)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        note_the_attributes_read(value.converted, attributes)
+    }
 }
 
 func is_a_bare_path(written: SpiteCompiler.Expression?): Boolean {
@@ -490,6 +533,7 @@ func note_a_narrowed_copy(fact_path: String) {
     site.source = source
     site.written = written_name
     site.line = line
+    site.copied_path = fact_path
     context.note_a_check_site(site)
 }
 

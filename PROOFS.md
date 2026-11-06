@@ -142,7 +142,9 @@ as when each was refused while building.
 - **Status**: partly built: every narrowing a read relies on without a test is checked; the `[]` and count proofs,
   which keep a test, are not.
 - **Rule**: a narrowed attribute read is refused when a call built between the check and the read may assign that
-  attribute, followed through everything the call reaches. What a call may assign is decided by the attribute's
+  attribute, followed through everything the call reaches, or when a write through another object that could break what was proven sits between them: a value that may be null,
+  or one of another class than the narrowed one (not one to the same path, which the builder already follows, nor one to an object made in the same function).
+  A write of a value of the narrowed type leaves the proof true, whichever object it reached. What a call may assign is decided by the attribute's
   class and name: a constructor's writes to its own object and writes to an object made in the same function are
   not writes to anything a proof reads; a wait writes nothing in a program that makes no `Concurrent` or
   `Parallel`, and anything in one that does; a call through a function value reaches the functions taken as values
@@ -190,6 +192,7 @@ as when each was refused while building.
   call-free condition on the very next statement of the same block, a `fallback`/`crash` that folds true, and a check
   of a value that cannot be null are refused, naming where it was proven
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  Where the check is a line of its own or an `if`, in a program's own file, `fixes/after_building` rewrites it before the refusal.
 - **Buys**: no dead checks in the source.
 - **How**: inside a `while`, only a proof made inside that loop makes a check redundant (the frame of the scope the
   path was narrowed in is compared with the loop's), since an assignment later in the loop would leave the next
@@ -224,6 +227,7 @@ as when each was refused while building.
   refused: narrow the source itself. `if not copy { }` tests it whether or not its block leaves. A snapshot taken
   before its source changes is allowed
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  A local whose source (an attribute, or one along its path) a call or a write through any object may change between the copy and a read of the local keeps a value, so it is not a copy: the builder records those reads as `NarrowedRead`s with their `copy_line`, and `proven_checks` asks the question `narrowings_kept_across_calls` asks.
 - **Buys**: one name per value.
 - **Falls back**: refused, "'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('fallback
   tracker') and use it directly".
