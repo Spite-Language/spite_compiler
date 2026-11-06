@@ -1,0 +1,252 @@
+var no_allocation = NoAllocation()
+var state: AllocationState = no_allocation.state
+
+func Answers(starting_state: AllocationState) {
+    state = starting_state
+}
+
+func fill_with_numbers(numbers: List<Integer>, count: Integer, value: Integer) {
+    numbers.clear()
+    var index = 0
+    while index < count {
+        numbers.append(value)
+        index = index + 1
+    }
+}
+
+func fill_with_flags(flags: List<Boolean>, count: Integer) {
+    flags.clear()
+    var index = 0
+    while index < count {
+        flags.append(false)
+        index = index + 1
+    }
+}
+
+func key_of(register: Integer, block_index: Integer): Long {
+    var key: Long = register
+    return key * state.block_total + block_index
+}
+
+func constant_of(register: Integer): Boolean {
+    fallback register >= 0 and register < state.register_total
+    return state.is_constant[register] == true
+}
+
+func value_of(register: Integer): Long {
+    var value = state.constants[register]
+    crash value
+    return value
+}
+
+func reading_count_of(register: Integer): Integer {
+    var count = state.readings[register]
+    crash count
+    return count
+}
+
+func decimal_size_of(register: Integer): Integer {
+    fallback register >= 0 and register < state.decimal_sizes.count()
+    var size = state.decimal_sizes[register]
+    crash size
+    return size
+}
+
+func is_fused(register: Integer): Boolean {
+    fallback register >= 0 and register < state.register_total
+    return state.fused[register] == true
+}
+
+func is_elided(instruction: SpiteCompiler.Instruction): Boolean {
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Constant {
+        return constant_of(instruction.target)
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Arithmetic {
+        return is_elided_target(instruction.target)
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.DataAddress {
+        return is_elided_target(instruction.target)
+    }
+    return false
+}
+
+# ../../OPTIMIZATIONS.md#a-read-of-the-programs-data-is-one-instruction
+func data_label_of(register: Integer): Integer {
+    if register < 0 or register >= state.register_total {
+        return -1
+    }
+    var label = state.data_labels[register]
+    crash label
+    return label
+}
+
+# ../../OPTIMIZATIONS.md#a-value-read-from-a-singleton-that-never-changes-is-read-again-rather-than-spilled
+func data_label_of_load(register: Integer): Integer {
+    var label = state.rematerialised_labels[register]
+    crash label
+    return label
+}
+
+func is_rematerialised(register: Integer): Boolean {
+    fallback register >= 0 and register < state.register_total
+    return state.rematerialised[register] == true
+}
+
+func is_elided_target(register: Integer): Boolean {
+    fallback register >= 0 and register < state.register_total
+    return state.elided_targets[register] == true
+}
+
+func is_folded_address(register: Integer): Boolean {
+    fallback register >= 0 and register < state.register_total
+    var base = state.address_bases[register]
+    crash base
+    return base >= 0
+}
+
+func base_of(register: Integer): Integer {
+    var base = state.address_bases[register]
+    crash base
+    return base
+}
+
+func index_of(register: Integer): Integer {
+    var index = state.address_indexes[register]
+    crash index
+    return index
+}
+
+func scale_of(register: Integer): Integer {
+    var scale = state.address_scales[register]
+    crash scale
+    return scale
+}
+
+func displacement_of(register: Integer): Integer {
+    var displacement = state.address_displacements[register]
+    crash displacement
+    return displacement
+}
+
+func expanded_uses(uses: List<Integer>): List<Integer> {
+    var made = List<Integer>()
+    var index = 0
+    while index < uses.count() {
+        var register = uses[index]
+        var is_data = data_label_of(register) >= 0
+        if is_folded_address(register) {
+            var base = base_of(register)
+            made.append(base)
+            var folded_index = index_of(register)
+            if folded_index >= 0 {
+                made.append(folded_index)
+            }
+        } else if not is_data {
+            made.append(register)
+        }
+        index = index + 1
+    }
+    return made
+}
+
+func ends_the_block(instruction: SpiteCompiler.Instruction): Boolean {
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Jump {
+        return true
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Branch {
+        return true
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Return {
+        return true
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Exit {
+        return true
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Stop {
+        return not instruction.continues
+    }
+    return false
+}
+
+func home_of(register: Integer): Integer {
+    return home_in(register, state.current_block)
+}
+
+# ../../OPTIMIZATIONS.md#a-value-leaves-a-scratch-register-only-around-a-call
+func home_in(register: Integer, block_index: Integer): Integer {
+    if register < 0 or register >= state.homes.count() {
+        return -1
+    }
+    var home = state.homes[register]
+    crash home
+    if home >= 16 {
+        return -1
+    }
+    var split = home >= 0 and block_index >= 0 and state.is_split[register] == true
+    if split and state.slot_keys[key_of(register, block_index)] == true {
+        return -1
+    }
+    return home
+}
+
+func is_a_volatile_home(home: Integer): Boolean {
+    return state.volatile_homes.contains(home)
+}
+
+func moves_at_the_head(block_index: Integer): Boolean {
+    fallback not state.split_values.is_empty()
+    var coming = state.predecessors[block_index]
+    crash coming
+    return coming.count() == 1
+}
+
+func moves_on_the_edge(from_block: Integer, to_block: Integer): Boolean {
+    fallback not state.split_values.is_empty()
+    var entering = state.entering_registers[to_block]
+    crash entering
+    var index = 0
+    while index < entering.count() {
+        var register = entering[index]
+        crash register
+        if differs_on_the_edge(register, from_block, to_block) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func differs_on_the_edge(register: Integer, from_block: Integer, to_block: Integer): Boolean {
+    fallback state.is_split[register] == true
+    return place_in(register, from_block) != place_in(register, to_block)
+}
+
+func place_in(register: Integer, block_index: Integer): Integer {
+    var home = state.homes[register]
+    crash home
+    if home < 0 {
+        return -1
+    }
+    var split = block_index >= 0 and state.is_split[register] == true
+    if split and state.slot_keys[key_of(register, block_index)] == true {
+        return -1
+    }
+    return home
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
+func decimal_home_in(register: Integer, block_index: Integer): Integer {
+    if register < 0 or register >= state.homes.count() {
+        return -1
+    }
+    var home = place_in(register, block_index)
+    if home >= 16 {
+        return home - 16
+    }
+    return -1
+}
+
+# ../../OPTIMIZATIONS.md#a-decimal-lives-in-a-decimal-register
+func decimal_home_of(register: Integer): Integer {
+    return decimal_home_in(register, state.current_block)
+}
