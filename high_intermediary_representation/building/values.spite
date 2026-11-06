@@ -3482,6 +3482,7 @@ func made_from_a_bound_type(
         crash plain
         return plain
     }
+    refuse_making_what_makes_nothing(made_type)
     var made = context.class_of(made_type)
     context.need_defaults(made.key)
     var constructor = constructor_of(made)
@@ -3622,12 +3623,25 @@ func constructed(
     return constructed_as(call, made_type, class_path, expected)
 }
 
+func refuse_making_what_makes_nothing(made_type: Model.Type) {
+    var segments = made_type.name.split(".")
+    var shown = segments.last()
+    crash shown
+    if made_type.kind == 'shape' {
+        typing.refuse_a_made_type(context, shown)
+    }
+    if made_type.kind == 'union' {
+        typing.refuse_a_made_union(context, shown)
+    }
+}
+
 func constructed_as(
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     made_type: Model.Type,
     class_path: List<String>,
     expected: Model.Type?,
 ): SpiteCompiler.Value {
+    refuse_making_what_makes_nothing(made_type)
     refuse_a_conversion_by_name(call, made_type, expected)
     var made = context.class_of(made_type)
     var constraints = Constraints(context, this)
@@ -4115,6 +4129,7 @@ func call_through_a_value(
     local_type: Model.Type,
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
 ): SpiteCompiler.Value {
+    refuse_a_value_call_of_another_count(local_type, call)
     var arguments = List<SpiteCompiler.Value>()
     var fixed_count = call.arguments.count()
     if local_type.is_variadic {
@@ -4140,6 +4155,22 @@ func call_through_a_value(
         made.value_type = local_type.answer
     }
     return made
+}
+
+func refuse_a_value_call_of_another_count(
+    local_type: Model.Type,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var wanted_count = local_type.parameters.count()
+    var given_count = call.arguments.count()
+    var is_wrong = given_count != wanted_count
+    if local_type.is_variadic {
+        is_wrong = given_count < wanted_count - 1
+    }
+    fallback is_wrong
+    var printer = Printers.Spite.ExpressionPrinter(call.callee)
+    var shown = printer.text()
+    typing.refuse_argument_count(context, shown, wanted_count, given_count)
 }
 
 func member_call(
@@ -6827,6 +6858,11 @@ func method_call(
         typing.refuse_unknown_member(context, shown, name)
     }
     crash function
+    if given_count != function.parameters.count() {
+        var called_name = "{owner.shown}.{name}"
+        var wanted_count = function.parameters.count()
+        typing.refuse_argument_count(context, called_name, wanted_count, given_count)
+    }
     context.need(function)
     var given = List<SpiteCompiler.Value>()
     var index = 0
@@ -7581,6 +7617,10 @@ func index_value(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): 
         typing.refuse_not_indexed(context, shown, "indexing", "get_at(index)")
     }
     crash function
+    if function.parameters.count() != 1 {
+        var indexed_type = context.shown(target.value_type)
+        typing.refuse_not_indexed(context, indexed_type, "indexing", "get_at(index)")
+    }
     context.need(function)
     var parameter = function.parameters[0]
     crash parameter
@@ -8807,6 +8847,7 @@ func operator_call(
     }
     var name = operator_function_name(operator)
     refuse_a_missing_operator(left, name, "this operator", "{name}(other)")
+    refuse_an_operator_of_another_count(left, name, "this operator", "{name}(other)", 1)
     if asks_equality {
         refuse_a_comparison_across_classes(left, right)
     }
@@ -8829,6 +8870,25 @@ func refuse_a_missing_operator(operand: SpiteCompiler.Value, name: String, opera
     fallback not member_template_of(owner, name)
     var shown = context.shown(operand_type)
     typing.refuse_a_missing_operator(context, operator_text, shown, needed)
+}
+
+func refuse_an_operator_of_another_count(
+    operand: SpiteCompiler.Value,
+    name: String,
+    operator_text: String,
+    needed: String,
+    wanted_count: Integer,
+) {
+    var operand_type = operand.value_type
+    var is_a_class = operand_type.kind == 'object' and not operand_type.is_nullable
+    fallback is_a_class and context.has_a_class(operand_type)
+    var owner = context.class_of(operand_type)
+    var function = owner.function_named(name)
+    fallback function
+    var given_count = function.parameters.count()
+    fallback given_count != wanted_count
+    var shown = context.shown(operand_type)
+    typing.refuse_an_operator_of_another_count(context, operator_text, shown, needed, name, given_count)
 }
 
 func compares_identity(left: SpiteCompiler.Value): Boolean {
@@ -9398,6 +9458,7 @@ func unary_value(
     var operand = value_of(unary.operand, expected)
     if operand.value_type.kind == 'object' {
         refuse_a_missing_operator(operand, "negate", "'-'", "negate()")
+        refuse_an_operator_of_another_count(operand, "negate", "'-'", "negate()", 0)
         var no_arguments = List<SpiteCompiler.Value>()
         return method_call(operand, "negate", no_arguments)
     }
