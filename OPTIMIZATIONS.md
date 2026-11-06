@@ -156,10 +156,39 @@ objects with a copy of the class's defaults that leaves that attribute out, so t
 
 **When it applies:** to an attribute the constructor assigns in its own body, outside any `if` or loop, before
 any statement that reads it or that names `this` other than to assign or read an attribute (a call on `this`, or
-`this` passed on). The default left out must be quiet: a constant, a text, or an object whose making assigns only
-its own attributes from quiet values, calls nothing the compiler cannot see the end of, cannot stop the program
-(a check on its arguments that the constants given to it decide is followed), and whose class has no `drop()`. A
-class whose defaults name `this`, or read another attribute, is made from all of its defaults.
+`this` passed on). The default left out must be quiet: a constant, a text, or an object whose making calls nothing
+the compiler cannot see the end of, cannot stop the program (a check on its arguments that the constants given to it
+decide is followed), and whose class has no `drop()`. A making that reads only what is left out with it only touches
+objects it made itself, so it may write through their attributes (`state.symbols = starting_symbols`) and append to
+a list of its own.
+
+A default may read an attribute that is left out with it: `var writing = Writing(state)` beside `var state = State()`
+goes when the constructor replaces both. Each constructor's left-out defaults count when the compiler asks whether
+making that class is quiet, so a tier of objects that each hold the next, and each replace what they hold, makes
+nothing it replaces at any depth. The compiler asks again until nothing more can be left out.
+
+**A singleton a default uses first:** making a singleton can be seen, so a default left out still uses every
+singleton it would have used, in the same order and at the same place among the other defaults: its object is not
+made, and the singleton's first use stays. The default is not quiet at all if it holds on to the singleton in any
+other way than an attribute of the object it makes (a local, an argument, a union), reads anything of the
+singleton, calls it, or uses it only on one side of an `if`.
+
+**When it does not apply:**
+
+- an attribute that stays reads it: a later default that reads an attribute whose own default is left out keeps both;
+- it reads an attribute that stays, or a left-out attribute that holds one, unless the constructors of its makings
+  only keep what they are given (each statement stores into the new object, with no call and no write through what
+  it is handed), and the constructor reaches it having run only plain writes, touching nothing that stays:
+  `var values = Values(context)` goes beside a `context` that stays when `Values` only stores it. Holding what stays
+  is carried along a chain: `var writer = Writer(keeper)` stays when `keeper` holds a kept object and `Writer` could
+  change it. The plain writes keep the moment a `drop()` runs where it was: what a left-out default held is still
+  held by what stays until the constructor replaces that default;
+- the class's defaults read an attribute before its default is written, name `this`, or write anything but an
+  attribute of `this`: the class is made from all of its defaults. A default that reads too soon can crash, so a
+  making of such a class is never quiet;
+- a singleton is written, called or passed on anywhere in the making, which is a change the rest of the program can
+  see; output, a foreign call, a wait, a loop, arithmetic and a check the constants do not decide are not quiet either;
+- the constructor returns first or names `this` before it assigns the attribute.
 
 **What a program can observe:** fewer allocations. A default left out is not made, so nothing it would have made
 is ever counted, dropped or freed.
@@ -177,6 +206,23 @@ func Holder(start: Integer) {
 
 `Holder(start)` makes neither the default list nor the default text. Three million holders went from 3.1 s to
 1.5 s.
+
+```spite
+var state = State()
+var writing = Writing(state)
+var reading = Reading(state)
+
+func Concern(starting_state: State) {
+    state = starting_state
+    writing = Writing(starting_state)
+    reading = Reading(starting_state)
+}
+```
+
+`Concern(state)` makes one object, however many concerns hold the next: its constructor's makings are all it runs.
+A compiler split this way (#302) went from 17.5 s to 0.56 s to check `tests/enum_reflection`, against 0.62 s for the
+same compiler before the split, and the compiler as it stands from 0.70 s to 0.52 s, since `Values(context)`, made
+all over its builder, no longer makes another `Context`.
 
 A copy written by the compiler (`copy()` and `deep_copy()` of a class that has none of its own, without a table)
 assigns every attribute itself, so it makes its object with no defaults at all: copying an `Order` whose defaults

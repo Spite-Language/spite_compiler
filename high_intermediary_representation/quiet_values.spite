@@ -2,6 +2,11 @@ var model = Model.ProgramModel()
 var bodies = Dictionary<String, HighFunction>()
 var visiting = List<String>()
 var quiet_calls = ["Buffer._resize_room"]
+var answers = Dictionary<String, List<HighIntermediaryRepresentation.Values.MakeObject>>()
+var refused = Dictionary<String, Boolean>()
+var first_uses = List<HighIntermediaryRepresentation.Values.MakeObject>()
+var for_dropped_defaults = false
+var functions_not_quiet = List<String>()
 
 func QuietValues(high: HighProgram) {
     model = high.model
@@ -13,10 +18,25 @@ func note_a_function(function: HighFunction) {
     bodies[key] = function
 }
 
+# ../OPTIMIZATIONS.md#defaults-the-constructor-replaces-are-never-made
+func note_the_defaults_left(constructor_key: String, left: HighFunction) {
+    bodies["{constructor_key}$defaults"] = left
+}
+
+func mark_as_not_quiet(key: String) {
+    functions_not_quiet.append(key)
+}
+
+func forget_the_answers() {
+    answers = Dictionary<String, List<HighIntermediaryRepresentation.Values.MakeObject>>()
+    refused = Dictionary<String, Boolean>()
+}
+
 func is_quiet(value: SpiteCompiler.Value?, bound: Dictionary<String, Long>): Boolean {
     if not value {
         return true
     }
+    fallback not for_dropped_defaults or not holds_a_singleton(value)
     switch value {
         HighIntermediaryRepresentation.Values.WholeNumber: return true
         HighIntermediaryRepresentation.Values.DecimalNumber: return true
@@ -43,6 +63,15 @@ func is_quiet(value: SpiteCompiler.Value?, bound: Dictionary<String, Long>): Boo
         HighIntermediaryRepresentation.Values.Class.OfValue: return false
         HighIntermediaryRepresentation.Values.Function.Fact: return false
     }
+}
+
+func holds_a_singleton(value: SpiteCompiler.Value): Boolean {
+    var value_type = value.value_type
+    var held = model.class_named(value_type.name)
+    if held {
+        return held.is_singleton
+    }
+    return false
 }
 
 func are_quiet(values: List<SpiteCompiler.Value>, bound: Dictionary<String, Long>): Boolean {
@@ -77,7 +106,8 @@ func is_a_quiet_making(
     fallback are_quiet(made.arguments, bound)
     var no_arguments = List<SpiteCompiler.Value>()
     var no_bound = Dictionary<String, Long>()
-    fallback is_a_quiet_function("{class_key}._attribute_defaults", no_arguments, no_bound)
+    var defaults_key = defaults_of_a_making(made)
+    fallback is_a_quiet_function(defaults_key, no_arguments, no_bound)
     if not made.constructor {
         return true
     }
@@ -85,8 +115,22 @@ func is_a_quiet_making(
     return is_a_quiet_function(constructor_key, made.arguments, bound)
 }
 
+func defaults_of_a_making(made: HighIntermediaryRepresentation.Values.MakeObject): String {
+    if made.constructor {
+        var constructor_key = made.constructor.key()
+        var left = "{constructor_key}$defaults"
+        if bodies.contains(left) {
+            return left
+        }
+    }
+    return "{made.value_type.name}._attribute_defaults"
+}
+
 func is_a_quiet_call(call: HighIntermediaryRepresentation.Values.Call, bound: Dictionary<String, Long>): Boolean {
     fallback is_quiet(call.receiver, bound) and are_quiet(call.arguments, bound)
+    if for_dropped_defaults and is_an_append_to_a_list(call) {
+        return true
+    }
     var key = call.function.key()
     if not call.function.has_a_body() {
         return quiet_calls.contains(key)
@@ -94,10 +138,18 @@ func is_a_quiet_call(call: HighIntermediaryRepresentation.Values.Call, bound: Di
     return is_a_quiet_function(key, call.arguments, bound)
 }
 
+func is_an_append_to_a_list(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    fallback call.function.name == "append"
+    var owner = model.class_named(call.function.owner)
+    fallback owner
+    return owner.shown.starts_with("List<") and owner.bound_types.contains("$element_type")
+}
+
 func is_a_quiet_function(key: String, arguments: List<SpiteCompiler.Value>, outer: Dictionary<String, Long>): Boolean {
     var function = bodies[key]
-    fallback function and not visiting.contains(key)
+    fallback function and not visiting.contains(key) and not functions_not_quiet.contains(key)
     var bound = Dictionary<String, Long>()
+    var question = key
     var index = 0
     while index < function.function.parameters.count() and index < arguments.count() {
         var parameter = function.function.parameters[index]
@@ -105,14 +157,69 @@ func is_a_quiet_function(key: String, arguments: List<SpiteCompiler.Value>, oute
         var known = constant_of(argument, outer)
         if known {
             bound[parameter.name] = known
+            question = "{question} {parameter.name}={known}"
         }
         index = index + 1
     }
+    var answered = answers[question]
+    if answered {
+        note_first_uses(answered)
+        return true
+    }
+    fallback not refused.contains(question)
+    var outer_uses = first_uses
+    first_uses = List<HighIntermediaryRepresentation.Values.MakeObject>()
     visiting.append(key)
     var quiet = is_a_quiet_block(function.body, bound)
     var last = visiting.count() - 1
     visiting.remove_at(last)
-    return quiet
+    var own_uses = first_uses
+    first_uses = outer_uses
+    if not quiet {
+        refused[question] = true
+        return false
+    }
+    answers[question] = own_uses
+    note_first_uses(own_uses)
+    return true
+}
+
+func note_first_uses(uses: List<HighIntermediaryRepresentation.Values.MakeObject>) {
+    uses.each(note_a_first_use)
+}
+
+func note_a_first_use(made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var index = 0
+    while index < first_uses.count() {
+        var known = first_uses[index]
+        fallback known.value_type.name != made.value_type.name
+        index = index + 1
+    }
+    first_uses.append(made)
+}
+
+func notes_a_singleton_made(value: SpiteCompiler.Value?): Boolean {
+    fallback for_dropped_defaults
+    if value.class == HighIntermediaryRepresentation.Values.MakeObject {
+        var made_model = model.class_named(value.value_type.name)
+        fallback made_model
+        fallback made_model.is_singleton and value.arguments.is_empty()
+        note_a_first_use(value)
+        return true
+    }
+    return false
+}
+
+# ../OPTIMIZATIONS.md#defaults-the-constructor-replaces-are-never-made
+func first_uses_of_a_write(
+    written: HighIntermediaryRepresentation.Statements.Assign.Attribute,
+): List<HighIntermediaryRepresentation.Values.MakeObject>? {
+    first_uses = List<HighIntermediaryRepresentation.Values.MakeObject>()
+    var bound = Dictionary<String, Long>()
+    if is_a_quiet_write(written, bound) {
+        return first_uses
+    }
+    return null
 }
 
 func constant_of(value: SpiteCompiler.Value?, bound: Dictionary<String, Long>): Long? {
@@ -160,7 +267,22 @@ func is_a_quiet_write(
     written: HighIntermediaryRepresentation.Statements.Assign.Attribute,
     bound: Dictionary<String, Long>,
 ): Boolean {
+    if for_dropped_defaults {
+        return is_a_quiet_write_of_a_new_object(written, bound)
+    }
     fallback written.object.class == HighIntermediaryRepresentation.Values.ThisRead
+    return is_quiet(written.value, bound)
+}
+
+func is_a_quiet_write_of_a_new_object(
+    written: HighIntermediaryRepresentation.Statements.Assign.Attribute,
+    bound: Dictionary<String, Long>,
+): Boolean {
+    fallback is_quiet(written.object, bound)
+    var on_this = written.object.class == HighIntermediaryRepresentation.Values.ThisRead
+    if on_this and notes_a_singleton_made(written.value) {
+        return true
+    }
     return is_quiet(written.value, bound)
 }
 
@@ -169,6 +291,9 @@ func is_a_quiet_evaluation(
     bound: Dictionary<String, Long>,
 ): Boolean {
     fallback not evaluated.waited
+    if notes_a_singleton_made(evaluated.value) {
+        return true
+    }
     return is_quiet(evaluated.value, bound)
 }
 
@@ -180,8 +305,10 @@ func is_a_quiet_if(branch: HighIntermediaryRepresentation.Statements.If, bound: 
     if folded == 0 {
         return is_a_quiet_block(branch.else_branch, bound)
     }
+    var uses_before = first_uses.count()
     var quiet = is_quiet(branch.condition, bound) and is_a_quiet_block(branch.then_branch, bound)
-    return quiet and is_a_quiet_block(branch.else_branch, bound)
+    quiet = quiet and is_a_quiet_block(branch.else_branch, bound)
+    return quiet and first_uses.count() == uses_before
 }
 
 func folded_condition(condition: SpiteCompiler.Value?, bound: Dictionary<String, Long>): Integer {

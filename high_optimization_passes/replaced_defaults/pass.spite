@@ -5,6 +5,14 @@ var trimmed = List<HighIntermediaryRepresentation.HighFunction>()
 var trimmed_keys = List<String>()
 var skipped_attributes = Dictionary<String, List<String>>()
 var fresh_by_constructor = Dictionary<String, List<String>>()
+var defaults_left = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var left_out_more = false
+var took_one_back = false
+var carrying = List<String>()
+var touched_before = Dictionary<String, List<String>>()
+var plain_so_far = true
+var constructors = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var following = List<String>()
 var replaced = List<String>()
 var observed = List<String>()
 var escaped = false
@@ -13,9 +21,17 @@ var escaped = false
 func optimized(high: HighIntermediaryRepresentation.HighProgram) {
     fallback high.will_be_lowered()
     program = high
-    quiet = HighIntermediaryRepresentation.QuietValues(high)
+    var asked = HighIntermediaryRepresentation.QuietValues(high)
+    asked.for_dropped_defaults = true
+    quiet = asked
     high.built_functions.each(note_a_default)
-    high.built_functions.each(trim_for_a_constructor)
+    left_out_more = true
+    while left_out_more {
+        left_out_more = false
+        asked.forget_the_answers()
+        high.built_functions.each(trim_for_a_constructor)
+    }
+    high.built_functions.each(record_what_is_left)
     note_the_fresh_slots()
     high.trimmed_defaults = trimmed
     high.trimmed_keys = trimmed_keys
@@ -23,8 +39,13 @@ func optimized(high: HighIntermediaryRepresentation.HighProgram) {
 }
 
 func note_a_default(function: HighIntermediaryRepresentation.HighFunction) {
+    if function.function.is_constructor {
+        var constructor_key = function.function.key()
+        constructors[constructor_key] = function
+    }
     if function.function.name == "_attribute_defaults" {
         defaults[function.function.owner] = function
+        note_defaults_that_read_too_soon(function)
     }
 }
 
@@ -54,93 +75,348 @@ func is_made_fresh(constructor_key: String): Boolean {
     return false
 }
 
+func record_what_is_left(constructor: HighIntermediaryRepresentation.HighFunction) {
+    var key = constructor.function.key()
+    var variant = defaults_left[key]
+    fallback variant
+    trimmed.append(variant)
+    trimmed_keys.append(key)
+}
+
 func trim_for_a_constructor(constructor: HighIntermediaryRepresentation.HighFunction) {
     fallback constructor.function.is_constructor
     var class_key = constructor.function.owner
     var found = defaults[class_key]
     fallback found
-    fallback not any_default_names_this(found.body)
+    fallback defaults_can_be_left_out(found.body)
     replaced = List<String>()
     note_the_leading_writes(constructor.body)
     fallback not replaced.is_empty()
-    var body = HighIntermediaryRepresentation.Statements.Block()
+    var skipped = attributes_left_out(found.body)
+    fallback not skipped.is_empty()
+    var key = constructor.function.key()
+    var known = skipped_attributes[key]
+    if known {
+        fallback skipped.count() > known.count()
+    }
+    var body = body_without(found.body, skipped)
+    var variant = HighIntermediaryRepresentation.HighFunction(found.function, body)
+    defaults_left[key] = variant
+    skipped_attributes[key] = skipped
+    crash quiet
+    quiet.note_the_defaults_left(key, variant)
+    left_out_more = true
+}
+
+func note_defaults_that_read_too_soon(function: HighIntermediaryRepresentation.HighFunction) {
+    fallback not reads_in_order(function.body)
+    crash quiet
+    var key = function.function.key()
+    quiet.mark_as_not_quiet(key)
+}
+
+func defaults_can_be_left_out(body: HighIntermediaryRepresentation.Statements.Block): Boolean {
+    fallback body.statements.all(is_a_plain_default)
+    return reads_in_order(body)
+}
+
+func reads_in_order(body: HighIntermediaryRepresentation.Statements.Block): Boolean {
+    var written = List<String>()
+    var index = 0
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        var reads = reads_of(statement)
+        fallback not escaped
+        fallback holds_every_one(written, reads)
+        note_a_written_default(written, statement)
+        index = index + 1
+    }
+    return true
+}
+
+func note_a_written_default(written: List<String>, statement: SpiteCompiler.Statement) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        written.append(statement.attribute.name)
+    }
+}
+
+func holds_every_one(names: List<String>, wanted: List<String>): Boolean {
+    var index = 0
+    while index < wanted.count() {
+        var name = wanted[index]
+        fallback names.contains(name)
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_plain_default(statement: SpiteCompiler.Statement): Boolean {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: return true
+        HighIntermediaryRepresentation.Statements.Evaluate: return true
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return is_a_write_on_this(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return false
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: return false
+        HighIntermediaryRepresentation.Statements.If: return false
+        HighIntermediaryRepresentation.Statements.While: return false
+        HighIntermediaryRepresentation.Statements.Return: return false
+        HighIntermediaryRepresentation.Statements.Stop: return false
+        HighIntermediaryRepresentation.Statements.Block: return false
+    }
+}
+
+func is_a_write_on_this(written: HighIntermediaryRepresentation.Statements.Assign.Attribute): Boolean {
+    return written.object.class == HighIntermediaryRepresentation.Values.ThisRead
+}
+
+func reads_of(statement: SpiteCompiler.Statement): List<String> {
+    observed = List<String>()
+    escaped = false
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        observe(statement.value)
+    } else {
+        observe_a_statement(statement)
+    }
+    return observed
+}
+
+func attributes_left_out(body: HighIntermediaryRepresentation.Statements.Block): List<String> {
     var skipped = List<String>()
     var index = 0
-    while index < found.body.statements.count() {
-        var statement = found.body.statements[index]
-        if is_skipped(statement) {
-            note_a_skipped(skipped, statement)
-        } else {
-            body.statements.append(statement)
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        note_a_candidate(skipped, statement)
+        index = index + 1
+    }
+    took_one_back = true
+    while took_one_back {
+        took_one_back = false
+        carrying = List<String>()
+        var position = 0
+        while position < body.statements.count() {
+            var read_by = body.statements[position]
+            take_back_what_a_statement_needs(read_by, skipped)
+            position = position + 1
+        }
+    }
+    return skipped
+}
+
+func take_back_what_a_statement_needs(statement: SpiteCompiler.Statement, skipped: List<String>) {
+    var reads = reads_of(statement)
+    if is_a_write_left_out(statement, skipped) {
+        decide_a_write_left_out(statement, reads, skipped)
+        return
+    }
+    var index = 0
+    while index < reads.count() {
+        var read = reads[index]
+        if skipped.contains(read) {
+            take_back(skipped, read)
         }
         index = index + 1
     }
-    fallback body.statements.count() < found.body.statements.count()
-    var variant = HighIntermediaryRepresentation.HighFunction(found.function, body)
-    trimmed.append(variant)
-    var key = constructor.function.key()
-    trimmed_keys.append(key)
-    skipped_attributes[key] = skipped
 }
 
-func note_a_skipped(skipped: List<String>, statement: SpiteCompiler.Statement) {
-    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
-        skipped.append(statement.attribute.name)
+func decide_a_write_left_out(statement: SpiteCompiler.Statement, reads: List<String>, skipped: List<String>) {
+    fallback not holds_every_one(skipped, reads) or reads.any(is_carrying)
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute and carries_quietly(statement, skipped) {
+        carrying.append(statement.attribute.name)
+        return
+    }
+    take_back_a_write(skipped, statement)
+}
+
+func carries_quietly(
+    written: HighIntermediaryRepresentation.Statements.Assign.Attribute,
+    skipped: List<String>,
+): Boolean {
+    return is_only_kept(written.value) and leaves_what_stays_alone(written, skipped)
+}
+
+func is_carrying(name: String): Boolean {
+    return carrying.contains(name)
+}
+
+func leaves_what_stays_alone(
+    written: HighIntermediaryRepresentation.Statements.Assign.Attribute,
+    skipped: List<String>,
+): Boolean {
+    var touched = touched_before[written.attribute.name]
+    fallback touched
+    return holds_every_one(skipped, touched)
+}
+
+func is_only_kept(value: SpiteCompiler.Value?): Boolean {
+    fallback value
+    switch value {
+        HighIntermediaryRepresentation.Values.MakeObject: return a_making_only_keeps(value)
+        HighIntermediaryRepresentation.Values.Conversion: return is_only_kept(value.converted)
+        HighIntermediaryRepresentation.Values.AttributeRead: return is_only_kept(value.object)
+        HighIntermediaryRepresentation.Values.LocalRead: return true
+        HighIntermediaryRepresentation.Values.ThisRead: return true
+        HighIntermediaryRepresentation.Values.WholeNumber: return true
+        HighIntermediaryRepresentation.Values.DecimalNumber: return true
+        HighIntermediaryRepresentation.Values.TextConstant: return true
+        HighIntermediaryRepresentation.Values.NullConstant: return true
+        HighIntermediaryRepresentation.Values.Call: return false
+        HighIntermediaryRepresentation.Values.ShapeCall: return false
+        HighIntermediaryRepresentation.Values.Function.ValueCall: return false
+        HighIntermediaryRepresentation.Values.ForeignCall: return false
+        HighIntermediaryRepresentation.Values.Class.OfValue: return false
+        HighIntermediaryRepresentation.Values.Class.Membership: return false
+        HighIntermediaryRepresentation.Values.Class.Object: return false
+        HighIntermediaryRepresentation.Values.EnumFromText: return false
+        HighIntermediaryRepresentation.Values.EnumText: return false
+        HighIntermediaryRepresentation.Values.Function.Value: return false
+        HighIntermediaryRepresentation.Values.Function.Fact: return false
+        HighIntermediaryRepresentation.Values.MachineOperation: return false
+        HighIntermediaryRepresentation.Values.NumberRoom: return false
+        HighIntermediaryRepresentation.Values.Negation: return false
+        HighIntermediaryRepresentation.Values.PresenceTest: return false
     }
 }
 
-func is_skipped(statement: SpiteCompiler.Statement): Boolean {
+func is_a_present_value_only_kept(value: SpiteCompiler.Value): Boolean {
+    return is_only_kept(value)
+}
+
+func a_making_only_keeps(made: HighIntermediaryRepresentation.Values.MakeObject): Boolean {
+    fallback made.arguments.all(is_a_present_value_only_kept)
+    if not made.constructor {
+        return true
+    }
+    var key = made.constructor.key()
+    var constructor = constructors[key]
+    fallback constructor and not following.contains(key)
+    following.append(key)
+    var keeps = a_constructor_only_keeps(constructor.body)
+    var last = following.count() - 1
+    following.remove_at(last)
+    return keeps
+}
+
+func a_constructor_only_keeps(body: HighIntermediaryRepresentation.Statements.Block): Boolean {
+    var assigned = List<String>()
+    var index = 0
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        fallback a_statement_only_keeps(statement, assigned)
+        index = index + 1
+    }
+    return true
+}
+
+func a_statement_only_keeps(statement: SpiteCompiler.Statement, assigned: List<String>): Boolean {
     if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
-        return is_a_skipped_write(statement)
+        fallback is_only_kept(statement.value)
+        fallback lands_on_a_new_object(statement.object, assigned)
+        if statement.object.class == HighIntermediaryRepresentation.Values.ThisRead {
+            assigned.append(statement.attribute.name)
+        }
+        return true
     }
     return false
+}
+
+func lands_on_a_new_object(object: SpiteCompiler.Value?, assigned: List<String>): Boolean {
+    if object.class == HighIntermediaryRepresentation.Values.ThisRead {
+        return true
+    }
+    if object.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        fallback object.object.class == HighIntermediaryRepresentation.Values.ThisRead
+        return not assigned.contains(object.attribute.name)
+    }
+    return false
+}
+
+func take_back_a_write(skipped: List<String>, statement: SpiteCompiler.Statement) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        take_back(skipped, statement.attribute.name)
+    }
+}
+
+func take_back(skipped: List<String>, name: String) {
+    var at = skipped.index_of(name)
+    crash at
+    skipped.remove_at(at)
+    took_one_back = true
+}
+
+func is_a_write_left_out(statement: SpiteCompiler.Statement, skipped: List<String>): Boolean {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        return skipped.contains(statement.attribute.name)
+    }
+    return false
+}
+
+func note_a_candidate(skipped: List<String>, statement: SpiteCompiler.Statement) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute and is_a_skipped_write(statement) {
+        skipped.append(statement.attribute.name)
+    }
 }
 
 func is_a_skipped_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute): Boolean {
     fallback replaced.contains(written.attribute.name)
     fallback not reads_a_local(written.value)
     crash quiet
-    var bound = Dictionary<String, Long>()
-    return quiet.is_quiet(written.value, bound)
-}
-
-func any_default_names_this(body: HighIntermediaryRepresentation.Statements.Block): Boolean {
-    var index = 0
-    while index < body.statements.count() {
-        var statement = body.statements[index]
-        if statement_names_this(statement) {
-            return true
-        }
-        index = index + 1
+    var uses = quiet.first_uses_of_a_write(written)
+    if uses {
+        return true
     }
     return false
 }
 
-func statement_names_this(statement: SpiteCompiler.Statement): Boolean {
-    switch statement {
-        HighIntermediaryRepresentation.Statements.Declare: return names_this(statement.value)
-        HighIntermediaryRepresentation.Statements.Assign.Attribute: return a_write_names_this(statement)
-        HighIntermediaryRepresentation.Statements.Assign.Assign: return true
-        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: return true
-        HighIntermediaryRepresentation.Statements.Evaluate: return true
-        HighIntermediaryRepresentation.Statements.If: return true
-        HighIntermediaryRepresentation.Statements.While: return true
-        HighIntermediaryRepresentation.Statements.Return: return true
-        HighIntermediaryRepresentation.Statements.Stop: return true
-        HighIntermediaryRepresentation.Statements.Block: return true
+func body_without(
+    body: HighIntermediaryRepresentation.Statements.Block,
+    skipped: List<String>,
+): HighIntermediaryRepresentation.Statements.Block {
+    var left = HighIntermediaryRepresentation.Statements.Block()
+    var index = 0
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        if is_a_write_left_out(statement, skipped) {
+            keep_the_first_uses_of_a_statement(left, statement)
+        } else {
+            left.statements.append(statement)
+        }
+        index = index + 1
+    }
+    return left
+}
+
+func keep_the_first_uses_of_a_statement(
+    left: HighIntermediaryRepresentation.Statements.Block,
+    statement: SpiteCompiler.Statement,
+) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        keep_the_first_uses(left, statement)
     }
 }
 
-func a_write_names_this(written: HighIntermediaryRepresentation.Statements.Assign.Attribute): Boolean {
-    if written.object.class != HighIntermediaryRepresentation.Values.ThisRead {
-        return true
+func keep_the_first_uses(
+    left: HighIntermediaryRepresentation.Statements.Block,
+    written: HighIntermediaryRepresentation.Statements.Assign.Attribute,
+) {
+    crash quiet
+    var uses = quiet.first_uses_of_a_write(written)
+    crash uses
+    var index = 0
+    while index < uses.count() {
+        var made = uses[index]
+        var again = HighIntermediaryRepresentation.Values.MakeObject(made.value_type, made.constructor, made.arguments)
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(again)
+        evaluated.line = written.line
+        left.statements.append(evaluated)
+        index = index + 1
     }
-    return names_this(written.value)
 }
 
 func note_the_leading_writes(body: HighIntermediaryRepresentation.Statements.Block) {
     observed = List<String>()
     escaped = false
+    plain_so_far = true
+    touched_before = Dictionary<String, List<String>>()
     var index = 0
     while not escaped and index < body.statements.count() {
         var statement = body.statements[index]
@@ -154,19 +430,40 @@ func note_a_constructor_statement(statement: SpiteCompiler.Statement) {
         note_a_constructor_write(statement)
         return
     }
+    plain_so_far = false
     observe_a_statement(statement)
 }
 
 func note_a_constructor_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
     if written.object.class != HighIntermediaryRepresentation.Values.ThisRead {
+        plain_so_far = false
         observe_a_statement(written)
         return
     }
     observe(written.value)
+    plain_so_far = plain_so_far and is_only_kept(written.value)
     var name = written.attribute.name
     if not escaped and not observed.contains(name) and not replaced.contains(name) {
+        note_what_was_touched_first(name)
         replaced.append(name)
     }
+}
+
+func add_every_one(names: List<String>, added: List<String>) {
+    var index = 0
+    while index < added.count() {
+        var name = added[index]
+        names.append(name)
+        index = index + 1
+    }
+}
+
+func note_what_was_touched_first(name: String) {
+    fallback plain_so_far
+    var touched = List<String>()
+    add_every_one(touched, observed)
+    add_every_one(touched, replaced)
+    touched_before[name] = touched
 }
 
 func observe_a_statement(statement: SpiteCompiler.Statement) {
@@ -275,51 +572,6 @@ func observe_a_read(read: HighIntermediaryRepresentation.Values.AttributeRead) {
     observe(read.object)
 }
 
-func names_this(value: SpiteCompiler.Value?): Boolean {
-    fallback value
-    switch value {
-        HighIntermediaryRepresentation.Values.ThisRead: return true
-        HighIntermediaryRepresentation.Values.Call: return names_this_in_a_call(value.receiver, value.arguments)
-        HighIntermediaryRepresentation.Values.ShapeCall: return names_this_in_a_call(value.receiver, value.arguments)
-        HighIntermediaryRepresentation.Values.Function.ValueCall: return names_this_in_a_call(value.called, value.arguments)
-        HighIntermediaryRepresentation.Values.ForeignCall: return names_this_in_a_call(value.library, value.arguments)
-        HighIntermediaryRepresentation.Values.MakeObject: return names_this_in_a_call(null, value.arguments)
-        HighIntermediaryRepresentation.Values.Conversion: return names_this(value.converted)
-        HighIntermediaryRepresentation.Values.AttributeRead: return names_this(value.object)
-        HighIntermediaryRepresentation.Values.Class.OfValue: return names_this(value.described)
-        HighIntermediaryRepresentation.Values.Class.Membership: return names_this(value.tested)
-        HighIntermediaryRepresentation.Values.EnumFromText: return names_this(value.text)
-        HighIntermediaryRepresentation.Values.EnumText: return names_this(value.number)
-        HighIntermediaryRepresentation.Values.Function.Value: return names_this(value.receiver)
-        HighIntermediaryRepresentation.Values.MachineOperation: return names_this_in_either(value.left, value.right)
-        HighIntermediaryRepresentation.Values.NumberRoom: return names_this_in_either(value.made, value.number)
-        HighIntermediaryRepresentation.Values.Negation: return names_this(value.negated)
-        HighIntermediaryRepresentation.Values.PresenceTest: return names_this(value.tested)
-        HighIntermediaryRepresentation.Values.WholeNumber: return false
-        HighIntermediaryRepresentation.Values.DecimalNumber: return false
-        HighIntermediaryRepresentation.Values.TextConstant: return false
-        HighIntermediaryRepresentation.Values.NullConstant: return false
-        HighIntermediaryRepresentation.Values.LocalRead: return false
-        HighIntermediaryRepresentation.Values.Class.Object: return false
-        HighIntermediaryRepresentation.Values.Function.Fact: return false
-    }
-}
-
-func names_this_in_either(first: SpiteCompiler.Value?, second: SpiteCompiler.Value?): Boolean {
-    return names_this(first) or names_this(second)
-}
-
-func names_this_in_a_call(receiver: SpiteCompiler.Value?, arguments: List<SpiteCompiler.Value>): Boolean {
-    if names_this(receiver) {
-        return true
-    }
-    return arguments.any(names_this_present)
-}
-
-func names_this_present(value: SpiteCompiler.Value): Boolean {
-    return names_this(value)
-}
-
 func reads_a_local(value: SpiteCompiler.Value?): Boolean {
     fallback value
     switch value {
@@ -331,8 +583,8 @@ func reads_a_local(value: SpiteCompiler.Value?): Boolean {
         HighIntermediaryRepresentation.Values.TextConstant: return false
         HighIntermediaryRepresentation.Values.NullConstant: return false
         HighIntermediaryRepresentation.Values.ThisRead: return false
-        HighIntermediaryRepresentation.Values.AttributeRead: return false
-        HighIntermediaryRepresentation.Values.Call: return false
+        HighIntermediaryRepresentation.Values.AttributeRead: return reads_a_local(value.object)
+        HighIntermediaryRepresentation.Values.Call: return a_call_reads_a_local(value)
         HighIntermediaryRepresentation.Values.MachineOperation: return false
         HighIntermediaryRepresentation.Values.Negation: return false
         HighIntermediaryRepresentation.Values.ForeignCall: return false
@@ -348,6 +600,10 @@ func reads_a_local(value: SpiteCompiler.Value?): Boolean {
         HighIntermediaryRepresentation.Values.Class.OfValue: return false
         HighIntermediaryRepresentation.Values.Function.Fact: return false
     }
+}
+
+func a_call_reads_a_local(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    return reads_a_local(call.receiver) or any_reads_a_local(call.arguments)
 }
 
 func any_reads_a_local(values: List<SpiteCompiler.Value>): Boolean {
