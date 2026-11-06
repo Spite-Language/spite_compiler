@@ -1045,8 +1045,8 @@ as when each was refused while building.
 ### A deep copy copies a graph with its shape
 
 - **Status**: partly built (D724, D1252, D1397).
-- **Rule**: a class whose attributes can reach itself, or reach a back reference, is copied through a table made
-  for the call, so a cycle is copied once per object
+- **Rule**: a class whose attributes can reach itself, or a class that does, or reach a back reference, is copied
+  through a table made for the call, so a cycle is copied once per object however the program reaches it
   ([memory.md](../SpiteLanguage/specs/memory.md)).
 - **How**: a class reaches another through an object attribute, a bound type, or a union attribute (each member of
   the union); a union attribute inside a table copy is copied through its member's `_deep_copy_in`, dispatched on
