@@ -145,6 +145,7 @@ as when each was refused while building.
   attribute, followed through everything the call reaches, or when a write through another object that could break what was proven sits between them: a value that may be null,
   or one of another class than the narrowed one (not one to the same path, which the builder already follows, nor one to an object made in the same function and not handed on yet).
   A call or a write that may assign an earlier attribute of the path counts whatever it writes, since it changes which object is read.
+  One in a block that always leaves does not reach a read after that block (`NarrowedRead.is_left_behind`); a block that falls through, and a loop that goes around after it, still count.
   A write of a value of the narrowed type leaves the proof true, whichever object it reached. What a call may assign is decided by the attribute's
   class and name: a constructor's writes to its own object and writes to an object made in the same function, before
   it is stored, copied, passed, called on, taken with a function or returned (for a local made before a loop, before
