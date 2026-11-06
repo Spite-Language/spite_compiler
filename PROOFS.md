@@ -830,7 +830,7 @@ as when each was refused while building.
 - **Status**: built, for what `building/folded/constants.spite` answers.
 - **Rule**: a class or namespace named in the code, `$T`, `class`, the parameter of a walk over classes or namespaces,
   and a `var` or a parameter given one of these and never assigned again are constants, and so are their `name`,
-  `name_with_namespaces`, `classes`, `namespaces` and `functions`, `Spite.Namespace.instances`; `count()`, `is_empty()`, `map_names()`,
+  `name_with_namespaces`, `classes`, `namespaces` and `functions`, `Spite.Namespace.instances`, a list literal that only names classes or only names namespaces; `count()`, `is_empty()`, `map_names()`,
   `contains`, `count_name_starts_with` and `count_name_ends_with` of a constant list; `starts_with`, `ends_with`,
   `contains`, `split` and `length()` of a constant text; and `==`, `!=`, the orders, `and`, `or` and `not` over them.
   Each answers what the object made at run time would answer, from the same names (`DescribedNames`, `namespaces_of_the_program`).
@@ -841,11 +841,11 @@ as when each was refused while building.
   mention in the function is a read (`stays_as_it_was`) or an argument of a function that only reads it. Anything else is
   built as it was written, at run time, undecided.
 - **Buys**: a walk whose every check folds costs nothing at run time: no reflection object is made for it, and a `crash` that
-  holds is not written. A walk over `Spite.Namespace.instances` that checks the program's layout refuses the build.
+  holds is not written. A walk over `Spite.Namespace.instances` that checks the program's layout refuses the build, as the compiler's own `folder_layout` does (`tests/compiler_folder_layout_broken`).
 - **Falls back**: what does not fold (an attribute's list, a call on another object, a text with holes, an index) is run time, so
   a `crash` under it is not decided.
 - **Lives in**: `building/folded/constants.spite`, `building/folded/known_copies.spite`, asked first by `Values.value_of`.
-- **Checked by**: tests/reflection_names_fold, tests/namespace_walk_decided; conformance/reflection_name_crash,
+- **Checked by**: tests/reflection_names_fold, tests/namespace_walk_decided, tests/known_list_walk, tests/class_name_is_short; conformance/reflection_name_crash, conformance/known_list_walk_crash, conformance/walk_name_crash,
   conformance/reflection_count_crash, conformance/reflection_names_contains_crash, conformance/namespace_walk_crash,
   conformance/namespace_walk_helper_crash.
 
