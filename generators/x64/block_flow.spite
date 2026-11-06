@@ -1,0 +1,285 @@
+var no_allocation = NoAllocation()
+var state: AllocationState = no_allocation.state
+var answers = Answers(state)
+
+func BlockFlow(starting_state: AllocationState) {
+    state = starting_state
+    answers = Answers(starting_state)
+}
+
+func lay_out_the_blocks() {
+    var count = state.function.blocks.count()
+    state.layout = List<Integer>()
+    state.layout_positions = List<Integer>()
+    var placed = List<Boolean>()
+    var index = 0
+    while index < count {
+        placed.append(false)
+        state.layout_positions.append(0)
+        index = index + 1
+    }
+    state.deferred_blocks.clear()
+    var start = 0
+    while start < count {
+        if start == 0 or not only_stops(start) {
+            lay_out_a_path(start, placed)
+        }
+        start = start + 1
+    }
+    start = 0
+    while start < count {
+        lay_out_a_path(start, placed)
+        start = start + 1
+    }
+}
+
+func lay_out_a_path(start: Integer, placed: List<Boolean>) {
+    var block = start
+    while block >= 0 {
+        while block >= 0 and placed[block] != true {
+            placed[block] = true
+            state.layout_positions[block] = state.layout.count()
+            state.layout.append(block)
+            block = preferred_next(block, placed)
+        }
+        block = next_deferred(placed)
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-block-that-only-stops-the-program-is-written-after-the-function
+func only_stops(block_index: Integer): Boolean {
+    var block = state.function.blocks[block_index]
+    crash block
+    var last = block.instructions.last()
+    fallback last
+    return last.class == LowIntermediaryRepresentation.Instructions.Stop
+}
+
+func next_deferred(placed: List<Boolean>): Integer {
+    while not state.deferred_blocks.is_empty() {
+        var block = state.deferred_blocks.remove_last()
+        crash block
+        if placed[block] != true {
+            return block
+        }
+    }
+    return -1
+}
+
+func preferred_next(block: Integer, placed: List<Boolean>): Integer {
+    var found = state.function.blocks[block]
+    crash found
+    var following = block + 1
+    if following >= state.function.blocks.count() {
+        following = -1
+    }
+    var last = found.instructions.last()
+    if not last {
+        return following
+    }
+    if last.class == LowIntermediaryRepresentation.Instructions.Jump {
+        return last.block
+    }
+    if last.class == LowIntermediaryRepresentation.Instructions.Branch {
+        var true_stops = only_stops(last.when_true)
+        var false_stops = only_stops(last.when_false)
+        if true_stops and not false_stops {
+            return last.when_false
+        }
+        if false_stops and not true_stops {
+            return last.when_true
+        }
+        if placed[last.when_true] != true {
+            state.deferred_blocks.append(last.when_false)
+            return last.when_true
+        }
+        return last.when_false
+    }
+    if answers.ends_the_block(last) {
+        return -1
+    }
+    return following
+}
+
+func find_the_flow() {
+    number_the_positions()
+    find_the_vector_loops()
+    find_the_edges()
+    find_the_depths()
+}
+
+func number_the_positions() {
+    var block_count = state.function.blocks.count()
+    answers.fill_with_numbers(state.block_heads, block_count, 0)
+    answers.fill_with_numbers(state.block_tails, block_count, 0)
+    var position = 1
+    var layout_index = 0
+    while layout_index < state.layout.count() {
+        var block_index = state.layout[layout_index]
+        var block = state.function.blocks[block_index]
+        crash block
+        state.block_heads[block_index] = position
+        position = position + 1
+        var last = position - 1
+        var index = 0
+        while index < block.instructions.count() {
+            last = position
+            position = position + 1
+            index = index + 1
+        }
+        state.block_tails[block_index] = last
+        layout_index = layout_index + 1
+    }
+    state.position_total = position
+}
+
+# ../../OPTIMIZATIONS.md#a-counted-loop-over-numbers-runs-eight-at-a-time
+func find_the_vector_loops() {
+    state.vector_positions.clear()
+    state.vector_operands.clear()
+    var layout_index = 0
+    while layout_index < state.layout.count() {
+        var block_index = state.layout[layout_index]
+        crash block_index
+        var block = state.function.blocks[block_index]
+        crash block
+        var head = state.block_heads[block_index]
+        crash head
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction.class == LowIntermediaryRepresentation.Instructions.VectorLoop {
+                state.vector_positions.append(head + 1 + index)
+                state.operands.read(instruction)
+                var touched = List<Integer>()
+                state.operands.uses.each(touched.append)
+                state.operands.defines.each(touched.append)
+                state.vector_operands.append(touched)
+            }
+            index = index + 1
+        }
+        layout_index = layout_index + 1
+    }
+}
+
+func find_the_edges() {
+    var block_index = 0
+    while block_index < state.function.blocks.count() {
+        var made = List<Integer>()
+        state.successors.append(made)
+        var coming = List<Integer>()
+        state.predecessors.append(coming)
+        block_index = block_index + 1
+    }
+    block_index = 0
+    while block_index < state.function.blocks.count() {
+        var block = state.function.blocks[block_index]
+        var leaving = state.successors[block_index]
+        crash leaving
+        var falls_through = true
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            add_the_targets(instruction, leaving)
+            falls_through = not answers.ends_the_block(instruction)
+            index = index + 1
+        }
+        if falls_through and block_index + 1 < state.function.blocks.count() {
+            leaving.append(block_index + 1)
+        }
+        block_index = block_index + 1
+    }
+    find_the_reachable()
+    block_index = 0
+    while block_index < state.function.blocks.count() {
+        if state.reachable[block_index] == true {
+            add_the_arrivals(block_index)
+        } else {
+            var leaves_nothing = List<Integer>()
+            state.successors[block_index] = leaves_nothing
+        }
+        block_index = block_index + 1
+    }
+}
+
+func find_the_reachable() {
+    var block_count = state.function.blocks.count()
+    answers.fill_with_flags(state.reachable, block_count)
+    fallback not state.function.blocks.is_empty()
+    var waiting = List<Integer>()
+    waiting.append(0)
+    state.reachable[0] = true
+    while not waiting.is_empty() {
+        var taken = waiting.remove_last()
+        crash taken
+        var leaving = state.successors[taken]
+        crash leaving
+        var index = 0
+        while index < leaving.count() {
+            var next = leaving[index]
+            if state.reachable[next] != true {
+                state.reachable[next] = true
+                waiting.append(next)
+            }
+            index = index + 1
+        }
+    }
+}
+
+func add_the_arrivals(block_index: Integer) {
+    var leaving = state.successors[block_index]
+    crash leaving
+    var leaving_index = 0
+    while leaving_index < leaving.count() {
+        var successor = leaving[leaving_index]
+        var arriving = state.predecessors[successor]
+        crash arriving
+        arriving.append(block_index)
+        leaving_index = leaving_index + 1
+    }
+}
+
+func add_the_targets(instruction: SpiteCompiler.Instruction, leaving: List<Integer>) {
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Jump {
+        leaving.append(instruction.block)
+    }
+    if instruction.class == LowIntermediaryRepresentation.Instructions.Branch {
+        leaving.append(instruction.when_true)
+        leaving.append(instruction.when_false)
+    }
+}
+
+func find_the_depths() {
+    var block_count = state.function.blocks.count()
+    answers.fill_with_numbers(state.depths, block_count, 0)
+    var block_index = 0
+    while block_index < block_count {
+        var leaving = state.successors[block_index]
+        crash leaving
+        var from_position = state.layout_positions[block_index]
+        crash from_position
+        var leaving_index = 0
+        while leaving_index < leaving.count() {
+            var successor = leaving[leaving_index]
+            var to_position = state.layout_positions[successor]
+            crash to_position
+            if to_position <= from_position {
+                deepen(to_position, from_position)
+            }
+            leaving_index = leaving_index + 1
+        }
+        block_index = block_index + 1
+    }
+}
+
+func deepen(from_position: Integer, to_position: Integer) {
+    var position = from_position
+    while position <= to_position {
+        var block = state.layout[position]
+        crash block
+        var depth = state.depths[block]
+        crash depth
+        state.depths[block] = depth + 1
+        position = position + 1
+    }
+}
