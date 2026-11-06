@@ -196,6 +196,9 @@ as when each was refused while building.
   of a value that cannot be null are refused, naming where it was proven
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
   Where the check is a line of its own or an `if`, in a program's own file, `fixes/after_building` rewrites it before the refusal.
+  A check after a write or a call that undoes the proof is a new proof, not a repeat: the builder reads the attribute itself for it
+  (`Values.note_a_rechecked_read`) and narrows again, and only the whole build answers which it is, by what `a call keeps a proof` answers (`KeptCopies.may_change_under`).
+  A class test the type answers, after such a write, is left to that rule's refusal, and proving the value first (`fallback holder.figure`) forgets the class.
 - **Buys**: no dead checks in the source.
 - **How**: inside a `while`, only a proof made inside that loop makes a check redundant (the frame of the scope the
   path was narrowed in is compared with the loop's), since an assignment later in the loop would leave the next
