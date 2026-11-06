@@ -21,6 +21,8 @@ like "is this call ever reached" or "may this value be null" has no answer on th
 - `builder.spite`: builds every reached function, one at a time, as names ask for them, through `building/`.
 - `building`: the builder's concerns, one file each, around the `Context` it builds in (`building/context.spite`) and
   the sites it records for the proofs (`building/recorded_site.spite`).
+- `building/folded/constants.spite` and `building/folded/known_copies.spite`: what a question on a class or namespace known while
+  compiling answers, and the copy of a function that knows it.
 - `statements` and `values`: the representation itself, data only, one file per kind; the unions of both are
   declared in `spite_compiler.spite`.
 - `ownership`: which parameters a function keeps and how a value is used, which the lowering counts with.

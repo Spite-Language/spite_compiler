@@ -1117,6 +1117,18 @@ A function that waits (a resumable function, whose values live in a heap frame a
 the lowering wrote it by every pass, and its values stay in its frame: the frame is sized from its registers
 before these passes run, and a value must be in the frame when the function resumes.
 
+## A walk over known classes makes no reflection object
+
+`Monster.name`, `Part.classes.count()`, `Part.classes.map_names().contains("Alpha")` and a walk over
+`Spite.Namespace.instances` are answered while the function is built (`building/folded/constants.spite`,
+[PROOFS.md](PROOFS.md#a-walk-over-known-classes-is-decided-while-compiling)), so no `Spite.Class` or `Spite.Namespace` is made for
+them and no table is filled. A `crash` that holds there writes nothing, a `fallback` a walk copy folds false records no trace, and the local holding a
+known list is not declared. What such a walk leaves is a call of a copy per item that does next to nothing; not every copy is inlined away yet (spite_compiler#299's check leaves about 1600 of them).
+
+The compile-time evaluation's budget (`fits`, in `partial_evaluation.spite`) compares a function's registers with
+`most_cells / blocks` rather than multiplying them, so a function too large for the evaluation is one it leaves alone, whatever its size,
+and never an `Integer` that does not fit.
+
 ## A late answer keeps only its taken branch
 
 `function_waits` and `function_writes_parameter` are answered only once every function is built (D673), so both

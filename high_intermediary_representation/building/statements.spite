@@ -307,6 +307,12 @@ func build(statement: SpiteCompiler.WrittenStatement) {
 }
 
 func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    var constants = values.known_constants()
+    var constant = constants.known_local(statement)
+    if constant and constants.has_no_value_to_hold(constant) {
+        constants.declare_a_known_local(statement.name, constant)
+        return
+    }
     var known = KnownCalls(context, values)
     var known_call = known.made_by(statement)
     if known_call {
@@ -334,6 +340,9 @@ func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStat
     made.line = statement.line
     made.hides = hidden
     add(made)
+    if constant {
+        context.known_locals[name] = constant
+    }
     forget_what_the_call_writes(statement.value)
     forget_what_a_receiver_call_shrinks(value)
     note_a_counted_list(name, statement.value)
@@ -513,8 +522,6 @@ func note_a_maybe_boolean(condition: SpiteCompiler.Expression?, linked: SpiteCom
 func folded_unheld_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement): SpiteCompiler.Value {
     var pending_before = context.pending.count()
     var unheld = values.condition_of(statement.condition)
-    var folded = Validators.HighIntermediaryRepresentation.FoldedCrash.Validator()
-    folded.check(context, statement.condition, unheld)
     while context.pending.count() > pending_before {
         crash context.pending.remove_last()
     }
@@ -733,7 +740,7 @@ func note_a_check_that_always_holds(
         holds = condition.number != 0
     }
     var function = context.current_function
-    var is_a_walk = not function.bound_parameter.is_empty() or not function.bound_member.is_empty()
+    var is_a_walk = function.is_walked()
     var is_generic = not context.current_class.bound_types.is_empty()
     fallback holds and not is_a_walk and not is_generic
     var path = context.path()
@@ -762,7 +769,7 @@ func note_a_decided_condition(
     var is_a_check = keyword == "fallback" or keyword == "crash"
     fallback not is_a_check or not holds
     var function = context.current_function
-    var is_a_walk = not function.bound_parameter.is_empty() or not function.bound_member.is_empty()
+    var is_a_walk = function.is_walked()
     var is_generic = not context.current_class.bound_types.is_empty()
     var reads_a_setting = context.folded_build_reads > build_reads_before
     fallback not is_a_walk and not is_generic and not reads_a_setting
@@ -1662,7 +1669,7 @@ func note_a_check_of_a_proven_value(
     keyword: String,
 ) {
     var function = context.current_function
-    var is_a_walk = not function.bound_parameter.is_empty() or not function.bound_member.is_empty()
+    var is_a_walk = function.is_walked()
     var is_generic = not context.current_class.bound_types.is_empty()
     fallback not is_a_walk and not is_generic
     var tested_written = written
@@ -1724,7 +1731,7 @@ func note_a_plain_local(
 ) {
     fallback not local_type.is_nullable
     var function = context.current_function
-    var is_a_walk = not function.bound_parameter.is_empty() or not function.bound_member.is_empty()
+    var is_a_walk = function.is_walked()
     var is_generic = not context.current_class.bound_types.is_empty()
     var written = statement.value
     var is_made = false
@@ -2581,7 +2588,10 @@ func build_a_guard(statement: AbstractSyntaxTree.Shapes.Statements.FallbackState
         holds = decided.number != 0
     }
     var failed = HighIntermediaryRepresentation.Statements.Block()
-    var noting = noted_failure(statement)
+    var noting: SpiteCompiler.Statement? = null
+    if not leaves_a_walk_copy(condition) {
+        noting = noted_failure(statement)
+    }
     if noting {
         failed.statements.append(noting)
     }
@@ -2612,6 +2622,12 @@ func build_a_guard(statement: AbstractSyntaxTree.Shapes.Statements.FallbackState
     var windows = Windows(context, values)
     windows.note_a_guard(statement.condition)
     return holds
+}
+
+# ../../PROOFS.md#a-walk-over-known-classes-is-decided-while-compiling
+func leaves_a_walk_copy(condition: SpiteCompiler.Value): Boolean {
+    fallback context.current_function.is_a_walk_copy
+    return is_decided_false(condition)
 }
 
 func operands_of(condition: SpiteCompiler.Expression?): String {
@@ -2861,13 +2877,19 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
         stopping.each(add)
         return
     }
+    var constants = values.known_constants()
+    if constants.holds_for_certain(statement.condition) {
+        var always_true = values.boolean_constant(true)
+        note_a_check_that_always_holds(always_true, "crash", statement.condition)
+        return
+    }
     note_a_proven_check(statement.condition)
     note_a_proven_read_check(statement.condition, "crash")
     note_a_check_of_a_plain_value(statement.condition, "crash")
     note_a_repeated_check(statement.condition, statement.line)
     note_a_proven_divisor(statement.condition, statement.line)
     var build_fields = Validators.HighIntermediaryRepresentation.FoldedCrash.Validator()
-    build_fields.check_a_build_field(context, statement.condition)
+    var field_is_false = build_fields.is_a_false_build_field(context, statement.condition)
     var identity = identity_of_a_site(statement.condition, "|crash")
     var message = "{place}, site {identity}"
     var written = statement.condition
@@ -2887,8 +2909,6 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
         linked = values.with_its_links(rewritten)
     }
     var condition = values.condition_of(linked)
-    var folded = Validators.HighIntermediaryRepresentation.FoldedCrash.Validator()
-    folded.check(context, statement.condition, condition)
     note_a_check_that_always_holds(condition, "crash", written)
     note_a_check_of_a_proven_value(written, condition, "crash")
     flush_the_pending()
@@ -2902,15 +2922,41 @@ func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement)
     var printer = Printers.Spite.ExpressionPrinter(statement.condition)
     made.crashes_unless = printer.text()
     made.decided_condition = unheld
+    if field_is_false {
+        var never_holds = values.boolean_constant(false)
+        made.decided_condition = HighIntermediaryRepresentation.Values.Negation(never_holds)
+    }
     add(made)
     if reported_count > held_before {
         let_go_after_the_check(first_held, statement.line)
+    }
+    if always_halts(condition, unheld) {
+        var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+        stopped.line = statement.line
+        add(stopped)
+        rest_is_folded_away = true
+        return
     }
     read_facts(statement.condition)
     narrow_all(facts_paths, facts_types)
     note_the_checks("crash", statement.condition, statement.line)
     var windows = Windows(context, values)
     windows.note_a_guard(statement.condition)
+}
+
+# ../../PROOFS.md#a-crash-that-folds-false-is-a-compile-error
+func always_halts(condition: SpiteCompiler.Value, unheld: SpiteCompiler.Value?): Boolean {
+    if unheld.class == HighIntermediaryRepresentation.Values.Negation {
+        return is_decided_false(unheld.negated)
+    }
+    return is_decided_false(condition)
+}
+
+func is_decided_false(condition: SpiteCompiler.Value?): Boolean {
+    fallback condition
+    var decided = decided_number_of(condition)
+    fallback decided
+    return decided.number == 0
 }
 
 # ../../OPTIMIZATIONS.md#a-reported-calls-answer-is-let-go-after-its-check

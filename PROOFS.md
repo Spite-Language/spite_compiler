@@ -793,18 +793,54 @@ as when each was refused while building.
 ### A `crash` that folds false is a compile error
 
 - **Status**: built.
-- **Rule**: a `fallback` or a `crash` that asks only compile-time questions folds; a `crash` that folds false in a
-  function the program reaches is refused, naming the instance and each side of an `and`; a `fallback` that folds
-  false answers its default and the rest of its block is not compiled
+- **Rule**: a `fallback` or a `crash` that asks only what is decided while compiling folds; a `crash` that folds false is
+  refused when the program would stop there every time the function runs and the program reaches the function, naming
+  the instance and each side of an `and`; a `fallback` that folds false answers its default and the rest of its block is
+  not compiled, and so is the rest of a block after a `crash` that folds false
   ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md)).
-- **Buys**: a generic class that cannot work for a class is refused for it.
+- **Decided**: a `Build` field, a `Fact`, a Boolean constant, a comparison of two written numbers, and every answer of
+  the next section. The condition of an `if` on such a value decides which branch counts.
+- **Not refused**: a `crash` in a branch that never runs; one under an `if`, a `while` or a `switch` case not decided while compiling, or after a `return`, a
+  `fallback` or a `crash` under one, since the function can run without reaching it, and it stays a `crash` that halts at run time; one in a function the
+  program does not reach, in every build. The refusal is this proof's and never the builder's, so a function built only
+  because an inspectable build keeps it (`CommandLine.Inspection`), or called only from a branch a late fact drops, is not refused.
+- **Reach**: `proofs/folded_crashes/reach.spite`, walked only once a `crash` is found, so a program with none pays nothing:
+  from the entries, what tree shaking protects and the constructors of singletons, through `HighOptimizationPasses.References`, without the branch a decided
+  condition drops. A function value in a reflection table's fill is not followed, so a function only `call_function()` runs
+  is not refused and halts at run time naming its `crash`.
+- **Buys**: a generic class that cannot work for a class is refused for it, and a broken shape of the program stops the
+  build.
 - **Falls back**: refused, "'crash ...' always halts in ...: its condition is decided while compiling and is false
   ...".
-- **Lives in**: the proof `proofs/folded_crashes`, run once the facts are answered, and embedded in
-  `statements.spite` (`build_crash`, `refuse_a_folded_crash`) for a `crash` the builder folds while building it.
+- **Lives in**: the proof `proofs/folded_crashes`, run once the facts are answered; `statements.spite` (`build_crash`)
+  stops compiling the block after a `crash` it folded.
 - **Checked by**: conformance/folded_crash, conformance/folded_build_crash, conformance/folded_crash_and_side,
-  conformance/empty_walk_crash, conformance/snapshot_argument_writes; tests/folded_crash_uncalled,
-  tests/folded_checks.
+  conformance/empty_walk_crash, conformance/snapshot_argument_writes, conformance/folded_crash_numbers,
+  conformance/folded_crash_after_a_decided_if; tests/folded_crash_uncalled, tests/folded_checks, tests/folded_crash_not_decided.
+
+### A walk over known classes is decided while compiling
+
+- **Status**: built, for what `building/folded/constants.spite` answers.
+- **Rule**: a class or namespace named in the code, `$T`, `class`, the parameter of a walk over classes or namespaces,
+  and a `var` or a parameter given one of these and never assigned again are constants, and so are their `name`,
+  `name_with_namespaces`, `classes`, `namespaces` and `functions`, `Spite.Namespace.instances`; `count()`, `is_empty()`, `map_names()`,
+  `contains`, `count_name_starts_with` and `count_name_ends_with` of a constant list; `starts_with`, `ends_with`,
+  `contains`, `split` and `length()` of a constant text; and `==`, `!=`, the orders, `and`, `or` and `not` over them.
+  Each answers what the object made at run time would answer, from the same names (`DescribedNames`, `namespaces_of_the_program`).
+- **Walks**: `each` over a constant list of classes or namespaces with a walker of the class is one call per item, of a copy
+  of the walker that knows it (`known_arguments`); inside any walk copy, a call of a function of the class with a constant argument is a
+  copy that knows the argument, at most eight copies deep (`_deepest_copy`), past which it stays a run-time call.
+- **A list stays known only while nothing can write to it**: a local or parameter holding a known list is known only when each
+  mention in the function is a read (`stays_as_it_was`) or an argument of a function that only reads it. Anything else is
+  built as it was written, at run time, undecided.
+- **Buys**: a walk whose every check folds costs nothing at run time: no reflection object is made for it, and a `crash` that
+  holds is not written. A walk over `Spite.Namespace.instances` that checks the program's layout refuses the build.
+- **Falls back**: what does not fold (an attribute's list, a call on another object, a text with holes, an index) is run time, so
+  a `crash` under it is not decided.
+- **Lives in**: `building/folded/constants.spite`, `building/folded/known_copies.spite`, asked first by `Values.value_of`.
+- **Checked by**: tests/reflection_names_fold, tests/namespace_walk_decided; conformance/reflection_name_crash,
+  conformance/reflection_count_crash, conformance/reflection_names_contains_crash, conformance/namespace_walk_crash,
+  conformance/namespace_walk_helper_crash.
 
 ### Tree shaking: what `main` can reach
 

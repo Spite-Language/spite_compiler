@@ -1,0 +1,671 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+var described_names = DescribedNames()
+
+func Constants(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+# ../../../../spite_spec/specs/reflection.md#known-while-compiling
+func folded(expression: SpiteCompiler.Expression): SpiteCompiler.Value? {
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return read_of_a_known_name(expression)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return folded_answer(expression)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return folded_call(expression)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return folded_answer(expression)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return folded_answer(expression)
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return null
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: return null
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return null
+        AbstractSyntaxTree.Shapes.Expressions.ListLiteral: return null
+        AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: return null
+        AbstractSyntaxTree.Shapes.Expressions.EntryLiteral: return null
+    }
+}
+
+func read_of_a_known_name(
+    identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): SpiteCompiler.Value? {
+    fallback context.current_function.known_arguments or not context.known_locals.is_empty()
+    var known = known_local_named(identifier.name)
+    fallback known
+    return value_of_any(known)
+}
+
+func folded_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): SpiteCompiler.Value? {
+    var callee = call.callee
+    if callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        fallback context.current_function.is_a_walk_copy
+        var copies = KnownCopies(context, values, this)
+        return copies.called_with_knowns(call, callee.name)
+    }
+    return folded_answer(call)
+}
+
+func folded_answer(expression: SpiteCompiler.Expression): SpiteCompiler.Value? {
+    var known = known_of(expression)
+    fallback known
+    fallback known.is_reflected
+    switch known.kind {
+        'text': return values.described_text(known.text)
+        'number': return number_value(known.number)
+        'truth': return truth_value(known)
+        'list': return null
+        'class': return null
+        'namespace': return null
+        'function': return null
+    }
+}
+
+func truth_value(known: Model.KnownValue): SpiteCompiler.Value {
+    var holds = known.is_true()
+    return values.boolean_constant(holds)
+}
+
+func number_value(number: Long): SpiteCompiler.Value {
+    var integer = context.scalar_type("Integer")
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, number)
+}
+
+func value_of_any(known: Model.KnownValue): SpiteCompiler.Value? {
+    var reflection = Reflection(context, values)
+    switch known.kind {
+        'text': return values.described_text(known.text)
+        'number': return number_value(known.number)
+        'truth': return truth_value(known)
+        'list': return list_value(known)
+        'class': return reflection.class_objects.class_object(known.text)
+        'namespace': return reflection.class_objects.namespace_object(known.text)
+        'function': return null
+    }
+}
+
+func list_value(known: Model.KnownValue): SpiteCompiler.Value {
+    var list_type = list_type_of(known)
+    var listed = values.new_list(list_type)
+    var index = 0
+    while index < known.items.count() {
+        var item = known.items[index]
+        var read = value_of_any(item)
+        crash read
+        values.append_to(listed, read)
+        index = index + 1
+    }
+    return listed
+}
+
+func list_type_of(known: Model.KnownValue): Model.Type {
+    var element = Model.Type('object', known.text)
+    return context.resolver.monomorphiser.list_type_of(element)
+}
+
+func holds_for_certain(condition: SpiteCompiler.Expression?): Boolean {
+    fallback condition
+    var known = known_of(condition)
+    fallback known
+    return known.is_reflected and known.is_true()
+}
+
+func known_of(expression: SpiteCompiler.Expression?): Model.KnownValue? {
+    fallback expression
+    switch expression {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return known_name(expression)
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return known_literal(expression)
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: return known_text_literal(expression)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return known_member(expression)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return known_call(expression)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return known_binary(expression)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return known_negation(expression)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return null
+        AbstractSyntaxTree.Shapes.Expressions.ListLiteral: return null
+        AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: return null
+        AbstractSyntaxTree.Shapes.Expressions.EntryLiteral: return null
+    }
+}
+
+func known_local_named(name: String): Model.KnownValue? {
+    var internal_name = context.scope.internal_name_of(name)
+    if internal_name {
+        return context.known_locals[internal_name]
+    }
+    fallback context.current_function.known_arguments
+    return context.current_function.known_arguments[name]
+}
+
+func known_name(identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression): Model.KnownValue? {
+    var known = known_local_named(identifier.name)
+    if known {
+        return known
+    }
+    var function = context.current_function
+    fallback function.binds_a_class and identifier.name == function.bound_parameter
+    fallback not context.scope.internal_name_of(identifier.name)
+    return known_object_named_by(identifier)
+}
+
+func known_described_by_a_name(
+    identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): Model.KnownValue? {
+    var known = known_name(identifier)
+    if known {
+        return known
+    }
+    fallback not context.scope.internal_name_of(identifier.name)
+    var names_a_class = identifier.is_a_class_name or identifier.name.starts_with("$") or identifier.name == "class"
+    fallback names_a_class
+    return known_object_named_by(identifier)
+}
+
+func known_object_named_by(expression: SpiteCompiler.Expression): Model.KnownValue? {
+    var arguments = values.type_arguments_of(expression)
+    fallback arguments.is_empty()
+    var path = values.class_path_of(expression)
+    if not path.is_empty() {
+        var written = path.join(".")
+        var folder = context.resolver.state.symbols.namespace_folder(written)
+        if folder {
+            return reflected('namespace', folder.namespace)
+        }
+        var declared = context.resolver.types.declared_type_in(path, context.current_class)
+        fallback not declared or declared.kind != 'enumeration'
+    }
+    var class_key = values.constant_class_of(expression)
+    fallback class_key
+    return reflected('class', class_key)
+}
+
+func reflected(kind: Model.KnownValue.Kind, text: String): Model.KnownValue {
+    var zero: Long = 0
+    var made = Model.KnownValue(kind, text, zero)
+    made.is_reflected = true
+    return made
+}
+
+func known_literal(literal: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression): Model.KnownValue? {
+    if literal.kind == 'keyword_true' {
+        return truth(true, false)
+    }
+    if literal.kind == 'keyword_false' {
+        return truth(false, false)
+    }
+    fallback literal.kind == 'integer_literal'
+    var number: Long? = literal.text
+    fallback number
+    return Model.KnownValue('number', "", number)
+}
+
+func known_text_literal(literal: AbstractSyntaxTree.Shapes.Expressions.TextLiteral): Model.KnownValue? {
+    var text = values.plain_text_of(literal)
+    fallback text
+    var zero: Long = 0
+    return Model.KnownValue('text', text, zero)
+}
+
+func truth(holds: Boolean, is_reflected: Boolean): Model.KnownValue {
+    var number: Long = 0
+    if holds {
+        number = 1
+    }
+    var made = Model.KnownValue('truth', "", number)
+    made.is_reflected = is_reflected
+    return made
+}
+
+func known_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Model.KnownValue? {
+    var name = member.name
+    if name == "instances" {
+        return known_instances(member)
+    }
+    var is_asked = name == "name" or name == "name_with_namespaces" or name == "classes"
+    fallback is_asked or name == "namespaces" or name == "functions"
+    var function = context.current_function
+    var target = member.target
+    if function.binds_a_class and name == "name" and target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        fallback target.name != function.bound_parameter
+    }
+    var described = known_described(member.target)
+    fallback described
+    if described.kind == 'namespace' {
+        return member_of_a_namespace(described.text, name)
+    }
+    fallback described.kind == 'class'
+    return member_of_a_class(described.text, name)
+}
+
+func known_described(target: SpiteCompiler.Expression?): Model.KnownValue? {
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return known_described_by_a_name(target)
+    }
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return known_object_named_by(target)
+    }
+    return null
+}
+
+func known_instances(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Model.KnownValue? {
+    var path = values.class_path_of(member.target)
+    var written = path.join(".")
+    fallback written == "Spite.Namespace"
+    var reflection = Reflection(context, values)
+    var names = reflection.class_objects.namespaces_of_the_program()
+    var listed = reflected('list', "Spite.Namespace")
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var item = reflected('namespace', name)
+        listed.items.append(item)
+        index = index + 1
+    }
+    return listed
+}
+
+# ../../../../spite_spec/specs/reflection.md#reflection-objects
+func member_of_a_namespace(described: String, name: String): Model.KnownValue? {
+    if name == "name" {
+        var last = described_names.last_name_of(described)
+        return reflected('text', last)
+    }
+    if name == "name_with_namespaces" {
+        return reflected('text', described)
+    }
+    var folder = context.resolver.state.symbols.namespace_folder(described)
+    fallback folder
+    if name == "classes" {
+        return classes_of_a_folder(folder)
+    }
+    if name == "namespaces" {
+        return namespaces_of_a_folder(folder)
+    }
+    return null
+}
+
+func classes_of_a_folder(folder: Mapping.MappedFolder): Model.KnownValue {
+    var listed = reflected('list', "Spite.Class")
+    var index = 0
+    while index < folder.files.count() {
+        var file = folder.files[index]
+        var model = context.resolver.monomorphiser.class_model_named(file.namespace)
+        if model {
+            var item = reflected('class', model.key)
+            listed.items.append(item)
+        }
+        index = index + 1
+    }
+    return listed
+}
+
+func namespaces_of_a_folder(folder: Mapping.MappedFolder): Model.KnownValue {
+    var listed = reflected('list', "Spite.Namespace")
+    var index = 0
+    while index < folder.folders.count() {
+        var inner = folder.folders[index]
+        var item = reflected('namespace', inner.namespace)
+        listed.items.append(item)
+        index = index + 1
+    }
+    return listed
+}
+
+func member_of_a_class(described: String, name: String): Model.KnownValue? {
+    var model = context.program.class_named(described)
+    fallback model
+    if name == "name_with_namespaces" {
+        return reflected('text', model.shown)
+    }
+    if name == "name" {
+        var simple = described_names.simple_name_of(model.shown)
+        return reflected('text', simple)
+    }
+    fallback name == "functions"
+    var listed = reflected('list', "Spite.FunctionDeclaration")
+    add_the_functions_of(model, listed)
+    return listed
+}
+
+func add_the_functions_of(model: Model.ClassModel, listed: Model.KnownValue) {
+    fallback model.key != context.program.entry
+    var reflection = Reflection(context, values)
+    var index = 0
+    while index < model.declared_functions.count() {
+        var declared = model.declared_functions[index]
+        if not declared.is_synthetic and reflection.declarations.is_listed(declared) {
+            var item = reflected('function', declared.name)
+            listed.items.append(item)
+        }
+        index = index + 1
+    }
+}
+
+func known_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Model.KnownValue? {
+    var callee = call.callee
+    if callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return known_answer_of(callee, call.arguments)
+    }
+    return null
+}
+
+func known_answer_of(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    written: List<SpiteCompiler.Expression>,
+): Model.KnownValue? {
+    var name = callee.name
+    if written.is_empty() {
+        fallback name == "count" or name == "is_empty" or name == "map_names" or name == "length"
+        var asked = known_of(callee.target)
+        fallback asked
+        return known_answer_without_arguments(asked, name)
+    }
+    fallback written.count() == 1
+    var takes_a_text = name == "contains" or name == "starts_with" or name == "ends_with" or name == "split"
+    fallback takes_a_text or name == "count_name_starts_with" or name == "count_name_ends_with"
+    var target = known_of(callee.target)
+    fallback target
+    var argument = written[0]
+    var given = known_of(argument)
+    fallback given and given.kind == 'text'
+    var answer = known_answer_with_a_text(target, name, given.text)
+    fallback answer
+    answer.is_reflected = target.is_reflected or given.is_reflected
+    return answer
+}
+
+func known_answer_without_arguments(asked: Model.KnownValue, name: String): Model.KnownValue? {
+    var answer: Model.KnownValue? = null
+    if asked.kind == 'list' {
+        answer = list_answer(asked, name)
+    }
+    if asked.kind == 'text' and name == "length" {
+        var length: Long = asked.text.length()
+        answer = Model.KnownValue('number', "", length)
+    }
+    fallback answer
+    answer.is_reflected = asked.is_reflected
+    return answer
+}
+
+func list_answer(listed: Model.KnownValue, name: String): Model.KnownValue? {
+    if name == "count" {
+        var count: Long = listed.items.count()
+        return Model.KnownValue('number', "", count)
+    }
+    if name == "is_empty" {
+        var is_empty = listed.items.is_empty()
+        return truth(is_empty, false)
+    }
+    if name == "map_names" {
+        return names_of_the_items(listed)
+    }
+    return null
+}
+
+func names_of_the_items(listed: Model.KnownValue): Model.KnownValue {
+    var names = reflected('list', "String")
+    var index = 0
+    while index < listed.items.count() {
+        var item = listed.items[index]
+        var name = name_of_an_item(item)
+        var named = reflected('text', name)
+        names.items.append(named)
+        index = index + 1
+    }
+    return names
+}
+
+func name_of_an_item(item: Model.KnownValue): String {
+    if item.kind == 'class' {
+        var model = context.program.class_named(item.text)
+        crash model
+        return described_names.simple_name_of(model.shown)
+    }
+    if item.kind == 'namespace' {
+        return described_names.last_name_of(item.text)
+    }
+    return item.text
+}
+
+func known_answer_with_a_text(target: Model.KnownValue, name: String, text: String): Model.KnownValue? {
+    if target.kind == 'text' {
+        return text_answer(target.text, name, text)
+    }
+    fallback target.kind == 'list'
+    if name == "contains" {
+        return list_holds_a_text(target, text)
+    }
+    if name == "count_name_starts_with" {
+        return counted_by_name(target, text, "")
+    }
+    if name == "count_name_ends_with" {
+        return counted_by_name(target, "", text)
+    }
+    return null
+}
+
+func text_answer(held: String, name: String, text: String): Model.KnownValue? {
+    if name == "starts_with" {
+        var starts = held.starts_with(text)
+        return truth(starts, false)
+    }
+    if name == "ends_with" {
+        var ends = held.ends_with(text)
+        return truth(ends, false)
+    }
+    if name == "contains" {
+        var holds = held.contains(text)
+        return truth(holds, false)
+    }
+    fallback name == "split"
+    var pieces = held.split(text)
+    var listed = reflected('list', "String")
+    var index = 0
+    while index < pieces.count() {
+        var piece = pieces[index]
+        var item = reflected('text', piece)
+        listed.items.append(item)
+        index = index + 1
+    }
+    return listed
+}
+
+func list_holds_a_text(listed: Model.KnownValue, text: String): Model.KnownValue? {
+    fallback listed.text == "String"
+    var index = 0
+    while index < listed.items.count() {
+        var item = listed.items[index]
+        if item.text == text {
+            return truth(true, false)
+        }
+        index = index + 1
+    }
+    return truth(false, false)
+}
+
+func counted_by_name(listed: Model.KnownValue, prefix: String, suffix: String): Model.KnownValue {
+    var count: Long = 0
+    var index = 0
+    while index < listed.items.count() {
+        var item = listed.items[index]
+        var name = name_of_an_item(item)
+        if name.starts_with(prefix) and name.ends_with(suffix) {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    return Model.KnownValue('number', "", count)
+}
+
+func known_negation(unary: AbstractSyntaxTree.Shapes.Expressions.UnaryExpression): Model.KnownValue? {
+    fallback unary.operator == 'not'
+    var operand = known_of(unary.operand)
+    fallback operand and operand.kind == 'truth'
+    var flipped = operand.is_false()
+    return truth(flipped, operand.is_reflected)
+}
+
+func known_binary(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Model.KnownValue? {
+    var operator = binary.operator
+    if operator == 'and' {
+        return known_and(binary)
+    }
+    if operator == 'or' {
+        return known_or(binary)
+    }
+    var is_an_equality = operator == 'equal_equal' or operator == 'not_equal'
+    var is_an_order = operator == 'less' or operator == 'less_or_equal' or operator == 'greater' or operator == 'greater_or_equal'
+    fallback is_an_equality or is_an_order
+    var left = known_of(binary.left)
+    fallback left
+    var right = known_of(binary.right)
+    fallback right and left.kind == right.kind
+    var compared = compared_knowns(operator, left, right)
+    fallback compared
+    compared.is_reflected = left.is_reflected or right.is_reflected
+    return compared
+}
+
+func known_and(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Model.KnownValue? {
+    var left = known_of(binary.left)
+    fallback left and left.kind == 'truth'
+    if left.is_false() {
+        return left
+    }
+    var right = known_of(binary.right)
+    fallback right and right.kind == 'truth'
+    var is_reflected = left.is_reflected or right.is_reflected
+    var holds = right.is_true()
+    return truth(holds, is_reflected)
+}
+
+func known_or(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Model.KnownValue? {
+    var left = known_of(binary.left)
+    fallback left and left.kind == 'truth'
+    if left.is_true() {
+        return left
+    }
+    var right = known_of(binary.right)
+    fallback right and right.kind == 'truth'
+    var is_reflected = left.is_reflected or right.is_reflected
+    var holds = right.is_true()
+    return truth(holds, is_reflected)
+}
+
+func compared_knowns(
+    operator: AbstractSyntaxTree.Tokens.Token.Kind,
+    left: Model.KnownValue,
+    right: Model.KnownValue,
+): Model.KnownValue? {
+    if left.kind == 'number' {
+        return compared_numbers(operator, left.number, right.number)
+    }
+    var is_a_plain_value = left.kind == 'text' or left.kind == 'truth'
+    fallback is_a_plain_value
+    var same = left.text == right.text and left.number == right.number
+    if operator == 'equal_equal' {
+        return truth(same, false)
+    }
+    if operator == 'not_equal' {
+        var differs = not same
+        return truth(differs, false)
+    }
+    return null
+}
+
+func compared_numbers(operator: AbstractSyntaxTree.Tokens.Token.Kind, left: Long, right: Long): Model.KnownValue? {
+    var holds = false
+    if operator == 'equal_equal' {
+        holds = left == right
+    } else if operator == 'not_equal' {
+        holds = left != right
+    } else if operator == 'less' {
+        holds = left < right
+    } else if operator == 'less_or_equal' {
+        holds = left <= right
+    } else if operator == 'greater' {
+        holds = left > right
+    } else if operator == 'greater_or_equal' {
+        holds = left >= right
+    } else {
+        return null
+    }
+    return truth(holds, false)
+}
+
+# ../../../PROOFS.md#a-walk-over-known-classes-is-decided-while-compiling
+func known_local(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement): Model.KnownValue? {
+    fallback not statement.declared_type
+    var known = known_of(statement.value)
+    fallback known and known.is_reflected and known.kind != 'function'
+    fallback not values.is_assigned_again(statement.name)
+    var copies = KnownCopies(context, values, this)
+    fallback context.current_function.declaration
+    fallback copies.stays_as_it_was(context.current_function.declaration, statement.name, known, 0)
+    return known
+}
+
+func has_no_value_to_hold(known: Model.KnownValue): Boolean {
+    return known.has_no_value_to_hold()
+}
+
+func declare_a_known_local(written_name: String, known: Model.KnownValue) {
+    var local_type = type_of_a_known(known)
+    var name = context.scope.declare_written(written_name, local_type)
+    context.known_locals[name] = known
+}
+
+func type_of_a_known(known: Model.KnownValue): Model.Type {
+    if known.kind == 'list' {
+        return list_type_of(known)
+    }
+    if known.kind == 'class' {
+        return Model.Type('object', "Spite.Class")
+    }
+    return Model.Type('object', "Spite.Namespace")
+}
+
+# ../../../../spite_spec/specs/metaprogramming.md#walks
+func walked(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    fallback callee.name == "each" and call.arguments.count() == 1
+    var argument = call.arguments[0]
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return walked_by(callee, argument.name)
+    }
+    return null
+}
+
+func walked_by(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    walker_name: String,
+): SpiteCompiler.Value? {
+    var walker = context.current_class.function_named(walker_name)
+    fallback walker and walker.template_index < 0 and walker.parameters.count() == 1
+    var parameter = walker.parameters[0]
+    var taken = parameter.parameter_type
+    fallback taken.kind == 'object' and not taken.is_nullable
+    fallback taken.name == "Spite.Class" or taken.name == "Spite.Namespace"
+    var listed = known_of(callee.target)
+    fallback listed and listed.kind == 'list' and listed.text == taken.name
+    var copies = KnownCopies(context, values, this)
+    fallback copies.takes_a_known_item(walker, listed)
+    var index = 0
+    while index < listed.items.count() {
+        var item = listed.items[index]
+        var made = copies.walk_copy(walker, item)
+        values.need(made)
+        var arguments = List<SpiteCompiler.Value>()
+        var own = values.this_value()
+        var walk_call = HighIntermediaryRepresentation.Values.Call(made, own, arguments)
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(walk_call)
+        evaluated.line = context.line
+        context.pending.append(evaluated)
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
