@@ -1,0 +1,513 @@
+var state = StatementsState()
+
+func Assignments(starting_state: StatementsState) {
+    state = starting_state
+}
+
+func build_assignment(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    crash statement.target
+    assign_to(statement, statement.target)
+}
+
+func assign_to(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement, target: SpiteCompiler.Expression) {
+    var statements = Statements(state)
+    var known = KnownCalls(state.context, state.values)
+    var filled = known.fill_of(statement)
+    if filled {
+        statements.add(filled)
+        return
+    }
+    switch target {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: assign_a_name(statement, target)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: assign_a_member(statement, target)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: assign_an_index(statement, target)
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: state.typing.refuse_not_assignable(state.context)
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: state.typing.refuse_not_assignable(state.context)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: state.typing.refuse_not_assignable(state.context)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: state.typing.refuse_not_assignable(state.context)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: state.typing.refuse_not_assignable(state.context)
+        AbstractSyntaxTree.Shapes.Expressions.ListLiteral: state.typing.refuse_not_assignable(state.context)
+        AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: state.typing.refuse_not_assignable(state.context)
+        AbstractSyntaxTree.Shapes.Expressions.EntryLiteral: state.typing.refuse_not_assignable(state.context)
+    }
+}
+
+func assign_a_name(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+) {
+    var statements = Statements(state)
+    var known = KnownCalls(state.context, state.values)
+    known.forget_a_declaration(target.name)
+    var internal_name = state.context.scope.internal_name_of(target.name)
+    if internal_name {
+        var declared_type = state.context.scope.types[internal_name]
+        crash declared_type
+        var value = state.values.fitted_value_of(statement.value, declared_type)
+        var was_narrowed = state.context.scope.narrowed_type_of(internal_name)
+        if was_narrowed and may_be_null(value) {
+            note_an_undone_loop_proof(statement, internal_name)
+        }
+        if declared_type.is_nullable and is_present(value) {
+            var present = declared_type.present()
+            state.context.scope.keep_present(internal_name, target.name, present)
+        } else {
+            state.context.scope.forget(internal_name)
+            state.context.scope.forget_mentions(target.name)
+        }
+        state.context.counted_lists.remove_at(internal_name)
+        var windows = Windows(state.context, state.values)
+        windows.forget_a_name(target.name)
+        windows.forget_an_area_name(target.name)
+        statements.forget_an_index_local(internal_name)
+        var appending = Appending(state.context, state.values)
+        if appending.pieces_appended_to(internal_name, declared_type, value) {
+            var appended = appending.statements_of(internal_name, declared_type, statement.line)
+            appended.each(statements.add)
+            return
+        }
+        var made = HighIntermediaryRepresentation.Statements.Assign.Assign(internal_name, value)
+        made.line = statement.line
+        statements.add(made)
+        return
+    }
+    var attribute = state.context.current_class.attribute_named(target.name)
+    var setter = state.context.current_class.function_named("set_{target.name}")
+    if not attribute and setter and setter.parameters.count() == 1 {
+        var own_object = state.values.this_value()
+        state.context.scope.forget("this.{target.name}")
+        set_through(statement, own_object, setter)
+        return
+    }
+    if not attribute {
+        state.typing.refuse_unknown_name(state.context, target.name)
+    }
+    crash attribute
+    var own = state.values.this_value()
+    state.context.scope.forget(target.name)
+    assign_an_attribute(statement, own, attribute, "this.{target.name}")
+}
+
+func assign_a_member(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+) {
+    fallback not assigns_a_walked_value(statement, target)
+    refuse_a_constant(target)
+    var object = state.values.value_of(target.target, null)
+    if object.value_type.kind == 'shape' and not object.value_type.is_nullable {
+        assign_through_a_shape(statement, object, target.name)
+        return
+    }
+    var owner = state.values.present_class_of(object)
+    var attribute = owner.attribute_named(target.name)
+    var is_outside = owner.key != state.context.current_class.key
+    var file_path = state.context.path()
+    var is_generated = file_path.contains("/.spite/")
+    if owner.key == "Build" and attribute and not is_generated {
+        state.typing.refuse_a_build_write(state.context, target.name)
+    }
+    var setter = owner.function_named("set_{target.name}")
+    if not setter and is_outside {
+        setter = state.values.member_template_of(owner, "set_{target.name}")
+    }
+    var writes_through_a_setter = is_outside or not attribute
+    if writes_through_a_setter and setter {
+        var set_printer = Printers.Spite.ExpressionPrinter(target)
+        var set_path = set_printer.text()
+        state.context.scope.forget(set_path)
+        set_through(statement, object, setter)
+        return
+    }
+    var getter = owner.function_named("get_{target.name}")
+    if not attribute and getter {
+        state.typing.refuse_read_only(state.context, owner.shown, target.name)
+    }
+    if not attribute {
+        var shown = state.context.shown(object.value_type)
+        state.typing.refuse_unknown_member(state.context, shown, target.name)
+    }
+    crash attribute
+    var printer = Printers.Spite.ExpressionPrinter(target)
+    var path = printer.text()
+    assign_an_attribute(statement, object, attribute, path)
+}
+
+func refuse_a_constant(target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var class_path = state.values.class_path_of(target.target)
+    var written = class_path.join(".")
+    fallback state.values.scalars.is_a_scalar(written)
+    state.typing.refuse_constant_assigned(state.context, "{written}.{target.name}")
+}
+
+func assign_through_a_shape(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    object: SpiteCompiler.Value,
+    name: String,
+) {
+    var statements = Statements(state)
+    var shape = state.context.program.shape_keyed(object.value_type.name)
+    crash shape
+    var member = shape.member_named(name)
+    var shown = state.context.shown(object.value_type)
+    if not member {
+        state.typing.refuse_unknown_member(state.context, shown, name)
+    }
+    crash member
+    if not member.is_an_attribute {
+        state.typing.refuse_read_only(state.context, shown, name)
+    }
+    crash member.answer
+    var value = state.values.fitted_value_of(statement.value, member.answer)
+    var made = HighIntermediaryRepresentation.Statements.Assign.ThroughShape(object, shape, name, value)
+    made.line = statement.line
+    statements.add(made)
+}
+
+func assigns_a_walked_value(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): Boolean {
+    var function = state.context.current_function
+    fallback function.walked_object and target.name == "value"
+    var described = target.target
+    if described.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return assigned_through_the_walk(statement, described, function)
+    }
+    return false
+}
+
+func assigned_through_the_walk(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    described: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+    function: Model.FunctionModel,
+): Boolean {
+    fallback described.name == function.bound_parameter
+    var read = state.values.walked_value(function)
+    if read.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        assign_the_bound_attribute(statement, read)
+        return true
+    }
+    return false
+}
+
+# ../../../spite_spec/specs/json.md#json-is-reflection-not-a-library
+func held_for_the_table(object: SpiteCompiler.Value): SpiteCompiler.Value {
+    var statements = Statements(state)
+    if object.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return object
+    }
+    if object.class == HighIntermediaryRepresentation.Values.ThisRead {
+        return object
+    }
+    state.values.temporary_count = state.values.temporary_count + 1
+    var name = state.context.scope.declare("keyed_{state.values.temporary_count}", object.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, object.value_type, object)
+    declared.line = state.context.line
+    statements.add(declared)
+    return HighIntermediaryRepresentation.Values.LocalRead(object.value_type, name)
+}
+
+# ../../OPTIMIZATIONS.md#a-buffer-grows-where-its-count-does
+func held_for_the_room(object: SpiteCompiler.Value): SpiteCompiler.Value {
+    var statements = Statements(state)
+    var rooms = RoomForms(state.context, state.values)
+    if rooms.again(object) {
+        return object
+    }
+    state.values.temporary_count = state.values.temporary_count + 1
+    var name = state.context.scope.declare("room_{state.values.temporary_count}", object.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, object.value_type, object)
+    declared.line = state.context.line
+    statements.add(declared)
+    return HighIntermediaryRepresentation.Values.LocalRead(object.value_type, name)
+}
+
+func counted_for_the_room(count: SpiteCompiler.Value): SpiteCompiler.Value {
+    var statements = Statements(state)
+    if count.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return count
+    }
+    if count.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return count
+    }
+    state.values.temporary_count = state.values.temporary_count + 1
+    var name = state.context.scope.declare("counted_{state.values.temporary_count}", count.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, count.value_type, count)
+    declared.line = state.context.line
+    statements.add(declared)
+    return HighIntermediaryRepresentation.Values.LocalRead(count.value_type, name)
+}
+
+func add_the_table(object: SpiteCompiler.Value, attribute: Model.AttributeModel) {
+    var statements = Statements(state)
+    var folded_keys = Folded.Keys(state.context, state.values)
+    var filling = folded_keys.filled_table(object, attribute)
+    filling.each(statements.add)
+}
+
+func assign_an_attribute(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    object: SpiteCompiler.Value,
+    attribute: Model.AttributeModel,
+    path: String,
+) {
+    var statements = Statements(state)
+    var folded_keys = Folded.Keys(state.context, state.values)
+    var fills_a_table = false
+    if folded_keys.is_a_key_map(attribute.attribute_type) {
+        fills_a_table = folded_keys.record(statement.value, attribute)
+    }
+    var value = state.values.fitted_value_of(statement.value, attribute.attribute_type)
+    var target = object
+    if fills_a_table {
+        value = folded_keys.copied(value, attribute)
+        target = held_for_the_table(object)
+    }
+    var was_narrowed = state.context.scope.narrowed_type_of(path)
+    if was_narrowed and may_be_null(value) {
+        note_an_undone_loop_check(statement, path)
+    }
+    state.context.scope.forget(path)
+    forget_the_printed_path(path)
+    var rooms = RoomForms(state.context, state.values)
+    if rooms.holds_room(attribute) and not rooms.needs_no_room(value) {
+        target = held_for_the_room(target)
+        value = counted_for_the_room(value)
+        var object_again = rooms.again(target)
+        crash object_again
+        var count_again = rooms.again(value)
+        crash count_again
+        var growing = rooms.room_for(object_again, attribute, count_again)
+        growing.line = statement.line
+        statements.add(growing)
+    }
+    var made = HighIntermediaryRepresentation.Statements.Assign.Attribute(target, attribute, value)
+    made.line = statement.line
+    statements.add(made)
+    if fills_a_table {
+        add_the_table(target, attribute)
+    }
+    fallback was_narrowed
+    narrow_a_present_assignment(value, attribute, path)
+}
+
+func forget_the_printed_path(path: String) {
+    fallback path.starts_with("this.")
+    var length = path.length()
+    var printed = path.slice(5, length)
+    crash printed
+    state.context.scope.forget(printed)
+}
+
+func may_be_null(value: SpiteCompiler.Value): Boolean {
+    if value.class == HighIntermediaryRepresentation.Values.Conversion and value.kind == 'nullable' {
+        crash value.converted
+        return value.converted.value_type.is_nullable
+    }
+    return value.value_type.is_nullable
+}
+
+# ../../PROOFS.md#assigning-undoes-a-proof
+func note_an_undone_loop_check(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement, path: String) {
+    var site = CheckSite("undone in the loop", state.context)
+    var base = state.context.loop_bases.last()
+    if base {
+        var frame = state.context.scope.frame_of(path)
+        site.has_a_loop = true
+        site.is_narrowed_outside = frame >= 0 and frame < base
+    }
+    site.is_read_in_the_loop = state.context.loop_reads.contains(path)
+    crash statement.target
+    var printer = Printers.Spite.ExpressionPrinter(statement.target)
+    site.written = printer.text()
+    state.context.note_a_loop_site(site)
+}
+
+# ../../PROOFS.md#assigning-undoes-a-proof
+func note_an_undone_loop_proof(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement, path: String) {
+    var base = state.context.loop_bases.last()
+    fallback base
+    var frame = state.context.scope.frame_of(path)
+    fallback frame >= 0 and frame < base
+    fallback state.context.loop_reads.contains(path)
+    crash statement.target
+    var printer = Printers.Spite.ExpressionPrinter(statement.target)
+    state.context.undone_paths.append(path)
+    state.context.undone_lines.append(statement.line)
+    var written = printer.text()
+    state.context.undone_texts.append(written)
+    var depth = state.context.loop_bases.count()
+    state.context.undone_depths.append(depth)
+}
+
+func note_what_the_loop_left_undone() {
+    var depth = state.context.loop_bases.count()
+    var index = state.context.undone_paths.count() - 1
+    while index >= 0 {
+        var undone_depth = state.context.undone_depths[index]
+        crash undone_depth
+        if undone_depth == depth {
+            note_an_undone_path(index)
+            state.context.undone_paths.remove_at(index)
+            state.context.undone_lines.remove_at(index)
+            state.context.undone_texts.remove_at(index)
+            state.context.undone_depths.remove_at(index)
+        }
+        index = index - 1
+    }
+}
+
+func note_an_undone_path(index: Integer) {
+    var path = state.context.undone_paths[index]
+    crash path
+    var line = state.context.undone_lines[index]
+    var written = state.context.undone_texts[index]
+    crash line
+    crash written
+    var site = CheckSite("left undone", state.context)
+    if state.context.scope.narrowed_type_of(path) {
+        site.is_still_narrowed = true
+    }
+    site.has_a_loop = true
+    site.written = written
+    site.line = line
+    state.context.note_a_loop_site(site)
+}
+
+func is_present(value: SpiteCompiler.Value): Boolean {
+    if not value.value_type.is_nullable {
+        return true
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        crash value.converted
+        return not value.converted.value_type.is_nullable
+    }
+    return false
+}
+
+func narrow_a_present_assignment(value: SpiteCompiler.Value, attribute: Model.AttributeModel, path: String) {
+    fallback attribute.attribute_type.is_nullable
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        crash value.converted
+        if not value.converted.value_type.is_nullable {
+            var present = attribute.attribute_type.present()
+            state.context.scope.narrow(path, present)
+        }
+    }
+}
+
+func set_through(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    object: SpiteCompiler.Value,
+    setter: Model.FunctionModel,
+) {
+    var statements = Statements(state)
+    state.context.need(setter)
+    var parameter = setter.parameters[0]
+    crash parameter
+    var value = state.values.fitted_value_of(statement.value, parameter.parameter_type)
+    var arguments = List<SpiteCompiler.Value>()
+    arguments.append(value)
+    var call = HighIntermediaryRepresentation.Values.Call(setter, object, arguments)
+    var made = HighIntermediaryRepresentation.Statements.Evaluate(call)
+    made.line = statement.line
+    statements.add(made)
+}
+
+func assign_a_bound_member(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+): Boolean {
+    var function = state.context.current_function
+    fallback function.bound_member_type
+    if not function.bound_shape.is_empty() {
+        return assign_through_the_shape(statement, target, function)
+    }
+    var read = state.values.bound_member_read(target)
+    if read.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        assign_the_bound_attribute(statement, read)
+        return true
+    }
+    return false
+}
+
+func assign_through_the_shape(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+    function: Model.FunctionModel,
+): Boolean {
+    var attributes = target.target
+    if attributes.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        assign_a_shape_member(statement, attributes, function)
+        return true
+    }
+    return false
+}
+
+func assign_a_shape_member(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    attributes: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    function: Model.FunctionModel,
+) {
+    var statements = Statements(state)
+    var object = state.values.value_of(attributes.target, null)
+    var shape = state.context.program.shape_keyed(function.bound_shape)
+    crash shape
+    crash function.bound_member_type
+    var value = state.values.fitted_value_of(statement.value, function.bound_member_type)
+    var made = HighIntermediaryRepresentation.Statements.Assign.ThroughShape(
+        object,
+        shape,
+        function.bound_member,
+        value,
+    )
+    made.line = statement.line
+    statements.add(made)
+}
+
+func assign_the_bound_attribute(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+) {
+    var statements = Statements(state)
+    crash read.object
+    var value = state.values.fitted_value_of(statement.value, read.attribute.attribute_type)
+    var made = HighIntermediaryRepresentation.Statements.Assign.Attribute(read.object, read.attribute, value)
+    made.line = statement.line
+    statements.add(made)
+}
+
+func assign_an_index(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    target: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+) {
+    var statements = Statements(state)
+    fallback not assign_a_bound_member(statement, target)
+    var object = state.values.value_of(target.target, null)
+    var folded_keys = Folded.Keys(state.context, state.values)
+    folded_keys.check_a_change(object)
+    var owner = state.values.present_class_of(object)
+    var function = owner.function_named("set_at")
+    if not function {
+        var shown = state.context.shown(object.value_type)
+        state.typing.refuse_not_indexed(state.context, shown, "assigning through an index on", "set_at(index, value)")
+    }
+    crash function
+    state.context.need(function)
+    var index_parameter = function.parameters[0]
+    var value_parameter = function.parameters[1]
+    crash index_parameter
+    crash value_parameter
+    var position = state.values.fitted_value_of(target.index, index_parameter.parameter_type)
+    var value = state.values.fitted_value_of(statement.value, value_parameter.parameter_type)
+    statements.forget_the_stored_items(target, value)
+    statements.stop_a_refilled_argument(target, object, position, statement.line)
+    var arguments = List<SpiteCompiler.Value>()
+    arguments.append(position)
+    arguments.append(value)
+    var call = HighIntermediaryRepresentation.Values.Call(function, object, arguments)
+    var made = HighIntermediaryRepresentation.Statements.Evaluate(call)
+    made.line = statement.line
+    statements.add(made)
+}
