@@ -1074,7 +1074,7 @@ loop. This is how each stage of the compiler runs its passes: its setup register
 
 ```spite
 type Step {
-    applied(Integer): Integer
+    applied: Spite.Function<Integer, Integer>
 }
 
 var steps = List<Step>()
