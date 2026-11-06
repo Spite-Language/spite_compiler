@@ -162,8 +162,9 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    `shared_copies` declares each marked copy from its original. Between `singleton_locks` and `no_thread_counts`,
    the proof `lone_atomic_attributes` records the attributes of a locked singleton that are atomic on their own
    (`HighProgram.lone_atomic_attributes`), which another class reads with no lock.
-11. `replaced_defaults`: the defaults a constructor replaces, trimmed for that constructor, and the slots it hands a
-   fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`, `fresh_by_constructor`).
+11. `replaced_defaults`: the defaults a constructor replaces and those only left-out defaults read, trimmed for that
+   constructor, and the slots it hands a fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`,
+   `fresh_by_constructor`).
 12. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
    (`HighProgram.taken_parameters`).
 13. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).

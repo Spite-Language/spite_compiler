@@ -1,0 +1,88 @@
+var used = Dictionary<String, Boolean>()
+var shape_members = Dictionary<String, Boolean>()
+var default_owner = ""
+var fixed_names = ["_buffer", "_length", "item_count", "handle", "address", "context", "_function", "_cell"]
+var interactive = false
+
+# ../../OPTIMIZATIONS.md#a-default-only-left-out-defaults-read-is-never-made
+func UnreadAttributes(high: HighIntermediaryRepresentation.HighProgram) {
+    crash high.context
+    var inspection = CommandLine.Inspection()
+    interactive = inspection.holds(high.context.build_flags)
+    high.built_functions.each(note_a_function)
+    var shapes = high.model.shapes.values()
+    shapes.each(note_a_shape)
+}
+
+func is_unread(attribute: Model.AttributeModel): Boolean {
+    fallback not interactive and not fixed_names.contains(attribute.name)
+    fallback not shape_members.contains(attribute.name)
+    fallback not keeps_its_declared_layout(attribute.owner)
+    return not used.contains("{attribute.owner}.{attribute.name}")
+}
+
+func keeps_its_declared_layout(class_key: String): Boolean {
+    return class_key == "Buffer" or class_key == "String" or class_key == "ForeignCallback" or class_key.starts_with("Spite.")
+}
+
+func note_a_shape(shape: Model.ShapeModel) {
+    shape.members.each(note_a_shape_member)
+}
+
+func note_a_shape_member(member: Model.FunctionModel) {
+    shape_members[member.name] = true
+}
+
+func note_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    default_owner = ""
+    if function.function.name == "_attribute_defaults" {
+        default_owner = function.function.owner
+    }
+    var rewriting = HighOptimizationPasses.Rewriting(this)
+    rewriting.rewrite_block(function.body)
+    note_the_writes_in(function.body)
+}
+
+func rewritten(value: SpiteCompiler.Value): SpiteCompiler.Value {
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        note_a_read(value)
+    }
+    return value
+}
+
+func note_a_read(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    fallback not is_its_own_default(read.object, read.attribute)
+    note_a_use(read.attribute)
+}
+
+func note_a_use(attribute: Model.AttributeModel) {
+    used["{attribute.owner}.{attribute.name}"] = true
+}
+
+func is_its_own_default(object: SpiteCompiler.Value?, attribute: Model.AttributeModel): Boolean {
+    var is_on_this = object.class == HighIntermediaryRepresentation.Values.ThisRead
+    return is_on_this and attribute.owner == default_owner
+}
+
+func note_the_writes_in(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(note_the_writes_of)
+}
+
+func note_the_writes_of(statement: SpiteCompiler.Statement) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        note_a_write(statement)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.If {
+        note_the_writes_in(statement.then_branch)
+        note_the_writes_in(statement.else_branch)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.While {
+        note_the_writes_in(statement.body)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        note_the_writes_in(statement)
+    }
+}
+
+func note_a_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    fallback not is_its_own_default(written.object, written.attribute)
+    note_a_use(written.attribute)
+}

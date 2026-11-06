@@ -232,6 +232,42 @@ make a `Customer` and a `List<Line>` makes neither
 The trimmed defaults are decided by the high pass `high_optimization_passes/replaced_defaults`, which records them
 for the lowering.
 
+## A default only left-out defaults read is never made
+
+```spite
+var no_program = Model.ProgramModel()
+var no_resolver = Resolver(no_program)
+var context = Context(no_program, no_resolver)
+
+func Fitting(starting_context: Context) {
+    context = starting_context
+}
+```
+
+The constructor replaces `context`, so [its default goes](#defaults-the-constructor-replaces-are-never-made), but it
+never assigns `no_program` or `no_resolver`, whose only reader was that default. Nothing can tell those two were made,
+so they go with it: `Fitting(context)` makes one object. The compiler split into concerns held this way (#301) made
+84,692 symbol tables to check `tests/enum_reflection`, one more set per concern it made; it now makes 283, and checks
+it in 12% less time than before the split, and builds it in 3% less.
+
+**When it applies:** to an attribute no built function reads or writes, other than the defaults of its own class
+reading it through `this`, whose default is quiet by the rules above and reads only what is left out with it, when
+every default that reads it is left out by that constructor. Its slot stays and holds null, which nothing reads and
+letting go of the object skips.
+
+**When it does not apply:**
+
+- any other read or write of it, a `copy()`, a walk over the class's attributes or a read through another object
+  included, or a default that stays reading it (for that constructor: another constructor may make it);
+- it is the name of a member of any shape, since a read through a shape or a struct handed to a foreign call does not
+  name the class;
+- a build that can be inspected or reloaded, which can read any attribute later;
+- the classes whose layout others rely on (`Buffer`, `String`, `ForeignCallback`, `Spite.*`) and the attributes the
+  lowering reads by name.
+
+**What a program can observe:** fewer allocations and time. A default that prints, writes through what it reads, can
+crash or holds a `drop()` is not quiet, so it stays and runs in order; a singleton it uses first is still used there.
+
 ## A deep copy is written per class, with a table only where a graph needs one
 
 The builder writes each class's `copy()` and `deep_copy()` (`high_intermediary_representation/building/copying.spite`)
