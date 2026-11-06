@@ -1,0 +1,386 @@
+var state = StatementsState()
+var _high_sum_modulus = 65521
+var _low_sum_multiplier = 131
+var _low_sum_modulus = 65519
+
+func Crashes(starting_state: StatementsState) {
+    state = starting_state
+}
+
+# ../../OPTIMIZATIONS.md#a-crashs-condition-lives-beside-the-executable
+func gather_the_parts(condition: SpiteCompiler.Expression?, parts: List<SpiteCompiler.Expression>) {
+    fallback condition
+    if condition.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression and condition.operator == 'and' {
+        gather_the_parts(condition.left, parts)
+        gather_the_parts(condition.right, parts)
+        return
+    }
+    parts.append(condition)
+}
+
+func build_each_part(
+    statement: AbstractSyntaxTree.Shapes.Statements.FallbackStatement,
+    parts: List<SpiteCompiler.Expression>,
+) {
+    var statements = Statements(state)
+    var build_reads_before = state.context.folded_build_reads
+    var every_part_holds = true
+    var index = 0
+    while index < parts.count() and not state.rest_is_folded_away {
+        var part = parts[index]
+        var guard = AbstractSyntaxTree.Shapes.Statements.FallbackStatement(part)
+        guard.line = statement.line
+        guard.column = statement.column
+        if part.line == statement.line {
+            guard.column = part.column
+        }
+        var holds = statements.build_a_guard(guard, false)
+        every_part_holds = every_part_holds and holds
+        index = index + 1
+    }
+    fallback every_part_holds and not state.rest_is_folded_away
+    var boolean = state.context.boolean()
+    var held = HighIntermediaryRepresentation.Values.WholeNumber(boolean, 1)
+    statements.note_a_check_that_always_holds(held, "fallback", statement.condition)
+    statements.note_a_decided_condition(held, "fallback", statement.condition, build_reads_before)
+}
+
+func operands_of(condition: SpiteCompiler.Expression?): String {
+    var reports = Reports(state)
+    var names = List<String>()
+    state.name_places = List<String>()
+    reports.gather_the_names(condition, names)
+    var described = List<String>()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var identifier = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression(name)
+        var read = state.values.value_of(identifier, null)
+        var shown = state.context.shown(read.value_type)
+        var place = state.name_places[index]
+        crash place
+        described.append("{name}:{shown}{place}")
+        index = index + 1
+    }
+    return described.join(" ")
+}
+
+func note_a_crash_site(
+    identity: String,
+    line: Integer,
+    column: Integer,
+    kind: String,
+    condition: SpiteCompiler.Expression?,
+    operands: String,
+) {
+    var source = ""
+    if condition {
+        var printer = Printers.Spite.ExpressionPrinter(condition)
+        source = printer.text()
+    }
+    var owner = state.context.current_function.owner
+    var shown_owner = last_part_of(owner)
+    var function_name = state.context.current_function.name
+    var written_path = state.context.path()
+    var path = written_path.replace("\\", "/")
+    var site = "{identity}\t{path}\t{line}\t{column}\t{shown_owner}\t{function_name}\t{kind}\t{source}\t{operands}"
+    state.context.crash_sites.append(site)
+}
+
+func noted_failure(statement: AbstractSyntaxTree.Shapes.Statements.FallbackStatement): SpiteCompiler.Statement? {
+    var symbols = state.context.resolver.state.symbols
+    var path = state.context.path()
+    fallback not symbols.is_library_path(path)
+    var ring = assert_ring()
+    fallback ring
+    var failing = ring.function_named("failed")
+    crash failing
+    state.values.need(failing)
+    var site = site_line(statement.condition, statement.line, "spite.fallback")
+    var answered = answered_by_a_fallback()
+    var site_text = state.values.described_text("{site}\treturned={answered}")
+    var streams = 0
+    var asked = state.context.build_flags["trace_fallbacks"]
+    if asked == "true" {
+        streams = 1
+    }
+    var boolean = state.context.boolean()
+    var streaming = HighIntermediaryRepresentation.Values.WholeNumber(boolean, streams)
+    var passed = List<SpiteCompiler.Value>()
+    passed.append(site_text)
+    passed.append(streaming)
+    var fetched = ring_object(ring)
+    var called = HighIntermediaryRepresentation.Values.Call(failing, fetched, passed)
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(called)
+    evaluated.line = statement.line
+    return evaluated
+}
+
+func answered_by_a_fallback(): String {
+    var answered = "nothing"
+    if state.context.current_function.answer {
+        answered = answered_by(state.context.current_function.answer)
+    }
+    return answered
+}
+
+func answered_by(answer: Model.Type): String {
+    var shown = state.context.shown(answer)
+    if not answer.is_nullable and is_a_collection(answer, shown) {
+        return "empty"
+    }
+    return "null"
+}
+
+func assert_ring(): Model.ClassModel? {
+    fallback state.context.resolver.state.symbols.program_asserts
+    var found = state.context.resolver.state.symbols.find("Spite.Asserts", "")
+    fallback found
+    var ring = state.context.resolver.monomorphiser.class_model_named("Spite.Asserts")
+    fallback ring
+    state.context.need_defaults(ring.key)
+    return ring
+}
+
+func ring_object(ring: Model.ClassModel): SpiteCompiler.Value {
+    var ring_type = ring.type_of_an_instance()
+    var no_arguments = List<SpiteCompiler.Value>()
+    return HighIntermediaryRepresentation.Values.MakeObject(ring_type, null, no_arguments)
+}
+
+func site_line(condition: SpiteCompiler.Expression?, line: Integer, kind: String): String {
+    var function_name = state.context.current_function.name
+    var identity = identity_of_a_site(condition, "")
+    state.last_site_identity = identity
+    var owner = state.context.current_function.owner
+    var asked = state.context.build_flags["optimized"]
+    if asked == "true" {
+        return "{kind}\t{identity}"
+    }
+    var shown_owner = last_part_of(owner)
+    return "{kind}\t{identity}\t{state.context.path()}:{line}\t{shown_owner}\t{function_name}"
+}
+
+func identity_of_a_site(condition: SpiteCompiler.Expression?, counted_as: String): String {
+    var owner = state.context.current_function.owner
+    var function_name = state.context.current_function.name
+    var source = ""
+    if condition {
+        var printer = Printers.Spite.ExpressionPrinter(condition)
+        source = printer.text()
+    }
+    var place_key = "{owner}.{function_name}{counted_as}"
+    var ordinal = 0
+    var known = state.context.site_ordinals[place_key]
+    if known {
+        ordinal = known
+    }
+    state.context.site_ordinals[place_key] = ordinal + 1
+    var hashed = "{owner}|{function_name}|{ordinal}|{source}"
+    if not counted_as.is_empty() {
+        hashed = "{counted_as}|{hashed}"
+    }
+    return site_identity(hashed)
+}
+
+func last_part_of(owner: String): String {
+    var parts = owner.split(".")
+    var last_index = parts.count() - 1
+    var last = parts[last_index]
+    crash last
+    return last
+}
+
+func site_identity(written: String): String {
+    var high = 0
+    var low = 0
+    var index = 0
+    while index < written.length() {
+        var code = written.byte_at(index)
+        var mixed_high = high * 31 + code
+        high = mixed_high % _high_sum_modulus
+        var mixed_low = low * _low_sum_multiplier + code
+        low = mixed_low % _low_sum_modulus
+        index = index + 1
+    }
+    var high_digits = four_hexadecimal_digits(high)
+    var low_digits = four_hexadecimal_digits(low)
+    return "{high_digits}{low_digits}"
+}
+
+func four_hexadecimal_digits(number: Integer): String {
+    var digits = "0123456789abcdef"
+    var shown = ""
+    var rest = number
+    var place = 0
+    while place < 4 {
+        var digit = rest % 16
+        var character = digits.slice(digit, digit + 1)
+        crash character
+        shown = "{character}{shown}"
+        rest = rest / 16
+        place = place + 1
+    }
+    return shown
+}
+
+func default_return(written_condition: SpiteCompiler.Expression?): SpiteCompiler.Statement {
+    if not state.context.current_function.answer {
+        return HighIntermediaryRepresentation.Statements.Return(null)
+    }
+    var answer: Model.Type = state.context.current_function.answer
+    if answer.is_nullable {
+        var nothing = HighIntermediaryRepresentation.Values.NullConstant(answer)
+        return HighIntermediaryRepresentation.Statements.Return(nothing)
+    }
+    var full_name = state.context.shown(answer)
+    var is_built_empty = is_built_with_no_arguments(answer)
+    if is_a_collection(answer, full_name) or is_built_empty {
+        var empty = state.values.default_of_a_type(answer)
+        return HighIntermediaryRepresentation.Statements.Return(empty)
+    }
+    var site = GuardSite("default", state.context)
+    site.condition = written_condition
+    state.context.note_a_guard_site(site)
+    return HighIntermediaryRepresentation.Statements.Return(null)
+}
+
+func is_built_with_no_arguments(answer: Model.Type): Boolean {
+    if answer.kind == 'scalar' {
+        return true
+    }
+    fallback answer.kind == 'object'
+    if answer.name == "String" {
+        return true
+    }
+    fallback state.context.has_a_class(answer)
+    var model = state.context.class_of(answer)
+    fallback not model.is_singleton
+    var index = 0
+    while index < model.declared_functions.count() {
+        var function = model.declared_functions[index]
+        fallback not function.is_constructor or function.parameters.count() <= 0
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_collection(answer: Model.Type, shown: String): Boolean {
+    fallback answer.kind == 'object'
+    var collections = ["List<", "Dictionary<", "Vector<", "Items<"]
+    var index = 0
+    while index < collections.count() {
+        var opening = collections[index]
+        if shown.starts_with(opening) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func build_crash(statement: AbstractSyntaxTree.Shapes.Statements.CrashStatement) {
+    var statements = Statements(state)
+    var reports = Reports(state)
+    var place = "spite: the program stopped at {state.context.path()}:{statement.line} in {state.context.current_function.owner}.{state.context.current_function.name}"
+    state.shown_parts = List<ShownPart>()
+    state.shown_texts = List<String>()
+    state.reads_before = false
+    if always_stops(statement.condition) {
+        var always = identity_of_a_site(null, "|crash")
+        var always_message = "{place}, site {always}"
+        note_a_crash_site(always, statement.line, statement.column, "crash", null, "")
+        var nothing_mentioned = List<String>()
+        var stopping = reports.report_of(always_message, null, nothing_mentioned, statement.line)
+        stopping.each(statements.add)
+        return
+    }
+    var constants = state.values.known_constants()
+    if constants.holds_for_certain(statement.condition) {
+        var always_true = state.values.boolean_constant(true)
+        statements.note_a_check_that_always_holds(always_true, "crash", statement.condition)
+        return
+    }
+    statements.note_a_proven_check(statement.condition)
+    statements.note_a_proven_read_check(statement.condition, "crash")
+    statements.note_a_check_of_a_plain_value(statement.condition, "crash")
+    statements.note_a_repeated_check(statement.condition, statement.line)
+    statements.note_a_proven_divisor(statement.condition, statement.line)
+    var build_fields = Validators.HighIntermediaryRepresentation.FoldedCrash.Validator()
+    var field_is_false = build_fields.is_a_false_build_field(state.context, statement.condition)
+    var identity = identity_of_a_site(statement.condition, "|crash")
+    var message = "{place}, site {identity}"
+    var written = statement.condition
+    crash written
+    state.context.line = statement.line
+    statements.flush_the_pending()
+    var first_held = state.built.count()
+    var held_before = state.reported_count
+    var rewritten = reports.held_for_the_report(written, 2, 0, true)
+    var mentioned = List<String>()
+    reports.gather_every_name(written, mentioned)
+    statement.condition = state.values.with_its_links(statement.condition)
+    var linked = statement.condition
+    var unheld: SpiteCompiler.Value? = null
+    if state.reported_count > held_before {
+        unheld = statements.folded_unheld_crash(statement)
+        linked = state.values.with_its_links(rewritten)
+    }
+    var condition = state.values.condition_of(linked)
+    statements.note_a_check_that_always_holds(condition, "crash", written)
+    statements.note_a_check_of_a_proven_value(written, condition, "crash")
+    statements.flush_the_pending()
+    var failed = HighIntermediaryRepresentation.Statements.Block()
+    failed.statements = reports.report_of(message, written, mentioned, statement.line)
+    var operands = state.report_types.join(" ")
+    note_a_crash_site(identity, statement.line, statement.column, "crash", written, operands)
+    var negated = HighIntermediaryRepresentation.Values.Negation(condition)
+    var made = HighIntermediaryRepresentation.Statements.If(negated, failed, null)
+    made.line = statement.line
+    var printer = Printers.Spite.ExpressionPrinter(statement.condition)
+    made.crashes_unless = printer.text()
+    made.decided_condition = unheld
+    if field_is_false {
+        var never_holds = state.values.boolean_constant(false)
+        made.decided_condition = HighIntermediaryRepresentation.Values.Negation(never_holds)
+    }
+    statements.add(made)
+    if state.reported_count > held_before {
+        reports.let_go_after_the_check(first_held, statement.line)
+    }
+    if always_halts(condition, unheld) {
+        var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+        stopped.line = statement.line
+        statements.add(stopped)
+        state.rest_is_folded_away = true
+        return
+    }
+    statements.read_facts(statement.condition)
+    statements.narrow_all(state.facts_paths, state.facts_types)
+    statements.note_the_checks("crash", statement.condition, statement.line)
+    var windows = Windows(state.context, state.values)
+    windows.note_a_guard(statement.condition)
+}
+
+# ../../PROOFS.md#a-crash-that-folds-false-is-a-compile-error
+func always_halts(condition: SpiteCompiler.Value, unheld: SpiteCompiler.Value?): Boolean {
+    if unheld.class == HighIntermediaryRepresentation.Values.Negation {
+        return is_decided_false(unheld.negated)
+    }
+    return is_decided_false(condition)
+}
+
+func is_decided_false(condition: SpiteCompiler.Value?): Boolean {
+    var statements = Statements(state)
+    fallback condition
+    var decided = statements.decided_number_of(condition)
+    fallback decided
+    return decided.number == 0
+}
+
+func always_stops(condition: SpiteCompiler.Expression?): Boolean {
+    if condition.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return condition.kind == 'keyword_false'
+    }
+    return not condition
+}
