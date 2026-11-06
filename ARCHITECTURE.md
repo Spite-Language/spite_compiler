@@ -209,10 +209,13 @@ and the last shaping of blocks, live values and copy coalescing.
 
 ## The folders
 
-One layout for each kind of folder, so opening one says where its entry is. This is what each kind holds today
-(#299 is open): no check enforces it yet (it waits for #320, the compile-time fold the reflection walk needs), and
-`spite_spec`'s `compiler_contracts_are_true` holds that every stage has its entry and a `contract.md` naming only files,
-folders and flags that exist. The size of every file is held by `validators/abstract_syntax_tree/file_content_budget`.
+One layout for each kind of folder, so opening one says where its entry is. `folder_layout/` walks the compiler's own
+namespaces with `crash`es decided while compiling, so a stage without its entry, a pass or proof folder without its
+class, a rule folder without `Validator`, a fix layer without `EveryFix` or a printer without `Printer` refuses the
+build, under `--check` too (D1885, `spite_spec`'s `compiler_folder_layout_broken`). A `Validator` holds a `check*` when it
+walks something, or a `refuse*` when the lexer or the parser found the mistake and only asks it for the words (`spelling`,
+`syntax`; D1886). `compiler_contracts_are_true` holds that every stage has a `contract.md` naming only files, folders and
+flags that exist. The size of every file is held by `validators/abstract_syntax_tree/file_content_budget`.
 
 | Folder kind | What it holds today |
 |---|---|
@@ -220,7 +223,7 @@ folders and flags that exist. The size of every file is held by `validators/abst
 | high pass | `high_optimization_passes/<pass>/pass.spite` (class `Pass`) and its helpers |
 | low pass | `low_optimization_passes/<pass>/pass.spite` (class `Pass`, the per-function work) and the entry `<pass>.spite` the stage registers; some folders hold several entries |
 | proof | `proofs/<proof>/proof.spite` (class `Proof`) and its helpers |
-| validator rule | `validators/<layer>/<rule>/validator.spite` (class `Validator` with a `check*`), and `every_rule.spite` in the layer |
+| validator rule | `validators/<layer>/<rule>/validator.spite` (class `Validator` with a `check*` or a `refuse*`), and `every_rule.spite` in the layer |
 | fix rule | `fixes/<layer>/<rule>/fix.spite` (class `Fix`), and `every_fix.spite` in the layer; `fixes/fixes.spite` writes |
 | printer | `printers/<printer>/printer.spite` (class `Printer`) |
 | emitter | `generators/<target>/instructions/<instruction>.spite` per instruction kind |
