@@ -1,0 +1,613 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+
+func Questions(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func bound_type_question(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    fallback callee.name == "has_function" and call.arguments.count() == 1
+    var target = callee.target
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return bound_has_function(target.name, call)
+    }
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return member_class_has_function(target, call)
+    }
+    return null
+}
+
+func member_class_has_function(
+    target: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): SpiteCompiler.Value? {
+    var function = context.current_function
+    fallback target.name == "class" and function.bound_member_type
+    var described = target.target
+    if described.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression and described.name == function.bound_parameter {
+        return has_function_answer(function.bound_member_type, call)
+    }
+    return null
+}
+
+func bound_has_function(
+    bound_name: String,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): SpiteCompiler.Value? {
+    fallback bound_name.starts_with("$")
+    var bound = context.current_class.bound_types[bound_name]
+    fallback bound
+    return has_function_answer(bound, call)
+}
+
+func has_function_answer(
+    bound: Model.Type,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): SpiteCompiler.Value? {
+    var asked = call.arguments[0]
+    var function_name = ""
+    if asked.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        function_name = values.constant_text_of(asked)
+    }
+    fallback not function_name.is_empty()
+    var answer = 0
+    if context.has_a_class(bound) {
+        var model = context.class_of(bound)
+        if model.function_named(function_name) {
+            answer = 1
+        }
+    }
+    var boolean = context.boolean()
+    return HighIntermediaryRepresentation.Values.WholeNumber(boolean, answer)
+}
+
+func folded_text_question(
+    receiver: SpiteCompiler.Value,
+    name: String,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value? {
+    var asks = name == "starts_with" or name == "ends_with"
+    fallback asks and written.count() == 1
+    var known = known_text_of(receiver)
+    fallback known
+    var argument = written[0]
+    var piece: String? = null
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        piece = values.plain_text_of(argument)
+    }
+    fallback piece
+    var holds = known.ends_with(piece)
+    if name == "starts_with" {
+        holds = known.starts_with(piece)
+    }
+    return values.boolean_constant(holds)
+}
+
+func known_text_of(value: SpiteCompiler.Value): String? {
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        return value.text
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return context.text_locals[value.name]
+    }
+    return null
+}
+
+func asks_a_question(template: Model.FunctionModel): Boolean {
+    var asking = List<String>()
+    asking.append("filter_")
+    asking.append("count_")
+    asking.append("any_")
+    asking.append("all_")
+    asking.append("remove_where_")
+    var index = 0
+    while index < asking.count() {
+        var prefix = asking[index]
+        if template.name.starts_with(prefix) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func holds_a_function_value(name: String): Boolean {
+    var held = context.current_class.attribute_named(name)
+    fallback held
+    return held.attribute_type.kind == 'function'
+}
+
+func value_call_of(invoked: SpiteCompiler.Value, written: List<SpiteCompiler.Expression>): SpiteCompiler.Value {
+    var fitting = Fitting(context, values)
+    var callee = invoked
+    if invoked.value_type.is_nullable {
+        values.note_a_maybe_null("held", invoked, "", invoked.value_type)
+        callee = values.as_present(invoked)
+    }
+    var called_type = callee.value_type
+    if written.count() != called_type.parameters.count() {
+        var shown_type = context.shown(called_type)
+        var wanted_count = called_type.parameters.count()
+        var given_count = written.count()
+        values.typing.refuse_argument_count(context, shown_type, wanted_count, given_count)
+    }
+    var arguments = List<SpiteCompiler.Value>()
+    var index = 0
+    while index < written.count() {
+        var argument = written[index]
+        var wanted = called_type.parameters[index]
+        crash wanted
+        var value = fitting.fitted_value_of(argument, wanted)
+        arguments.append(value)
+        index = index + 1
+    }
+    var made = HighIntermediaryRepresentation.Values.Function.ValueCall(callee, arguments)
+    if called_type.answer {
+        made.value_type = called_type.answer
+    }
+    return made
+}
+
+func vector_fit_question(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    fallback callee.name == "fits_vector" and call.arguments.is_empty()
+    var asked = known_class_asked(callee.target)
+    fallback asked
+    var is_plain = asked.kind == 'scalar' or asked.kind == 'enumeration'
+    var fits = is_plain or values.fits_a_vector(asked)
+    return values.boolean_constant(fits)
+}
+
+func any_attribute_fit_question(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    fallback callee.name == "any_attribute_fits_vector"
+    var asked = known_class_asked(callee.target)
+    fallback asked
+    var skipped = List<String>()
+    var index = 0
+    while index < call.arguments.count() {
+        var written = call.arguments[index]
+        var path = values.class_path_of(written)
+        var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+        var skipped_type = context.resolver.types.class_type_in(path, no_arguments, context.current_class, context.line)
+        skipped.append(skipped_type.name)
+        index = index + 1
+    }
+    var holds = any_attribute_fits(asked, skipped)
+    return values.boolean_constant(holds)
+}
+
+func any_attribute_fits(asked: Model.Type, skipped: List<String>): Boolean {
+    if asked.kind == 'shape' and not asked.is_nullable {
+        return any_member_fits(asked, skipped)
+    }
+    fallback context.has_a_class(asked) and not asked.is_nullable
+    var model = context.class_of(asked)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var held = attribute.attribute_type
+        var counts = not skipped.contains(held.name) and values.fits_a_vector(held)
+        if counts {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func any_member_fits(asked: Model.Type, skipped: List<String>): Boolean {
+    var shape = context.program.shape_keyed(asked.name)
+    crash shape
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.is_an_attribute and member.answer {
+            var counts = not skipped.contains(member.answer.name) and values.fits_a_vector(member.answer)
+            if counts {
+                return true
+            }
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func known_class_asked(asked: SpiteCompiler.Expression?): Model.Type? {
+    if asked.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        fallback asked.name.starts_with("$")
+        return context.current_class.bound_types[asked.name]
+    }
+    if asked.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walked_class_asked(asked)
+    }
+    return null
+}
+
+func walked_class_asked(asked: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Model.Type? {
+    var function = context.current_function
+    var described = asked.target
+    var names_the_walked = false
+    if described.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_the_walked = asked.name == "class" and described.name == function.bound_parameter
+    }
+    fallback names_the_walked
+    return function.bound_member_type
+}
+
+func pattern_argument_count(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    var function = context.current_function
+    fallback callee.name == "argument_count" and call.arguments.is_empty() and not function.bound_parameter.is_empty()
+    var asked = callee.target
+    var names_the_walked = false
+    if asked.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_the_walked = asked.name == function.bound_parameter
+    }
+    fallback names_the_walked
+    var walks_functions = function.binds_a_function_declaration and not function.bound_class.is_empty()
+    if not walks_functions or function.bound_function.is_empty() {
+        values.typing.refuse_an_argument_count_outside_a_walk(context, function.bound_parameter)
+    }
+    var walked_class = context.program.class_named(function.bound_class)
+    crash walked_class
+    var bound = walked_class.function_named(function.bound_function)
+    crash bound
+    var integer = context.scalar_type("Integer")
+    var counted = bound.parameters.count()
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, counted)
+}
+
+func reflection_question(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    var question = callee.name
+    var lists = question == "has_function" or question == "argument_count" or question == "function_waits"
+    fallback lists or question == "function_writes_parameter"
+    var described = constant_class_of(callee.target)
+    fallback described
+    var model = context.program.class_named(described)
+    fallback model
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var asked = printer.text()
+    var pattern = written_pattern_of(call)
+    if not pattern {
+        refuse_an_unwritten_question(asked, question)
+    }
+    crash pattern
+    var bound_pattern = pattern_of_the_walk(pattern)
+    var matching = values.matching_functions(model, bound_pattern)
+    var has_one = not matching.is_empty()
+    if question == "has_function" {
+        return values.boolean_constant(has_one)
+    } else if question == "argument_count" {
+        return counted_arguments(matching, asked, pattern)
+    } else if question == "function_waits" {
+        return waits_question(matching)
+    } else {
+        return writes_question(call, asked, matching)
+    }
+}
+
+func pattern_of_the_walk(pattern: String): String {
+    var function = context.current_function
+    if function.bound_function.is_empty() or function.bound_pattern.is_empty() {
+        return pattern
+    }
+    var opened = pattern.replace("<", "")
+    var unwrapped = opened.replace(">", "")
+    if unwrapped == function.bound_pattern {
+        return function.bound_function
+    }
+    return pattern
+}
+
+func refuse_an_unwritten_question(asked: String, question: String) {
+    if question == "function_writes_parameter" {
+        values.typing.refuse_an_unwritten_parameter(context, asked)
+    }
+    var example = "run_each"
+    if question != "has_function" {
+        example = "update_each"
+    }
+    values.typing.refuse_an_unwritten_question(context, asked, question, example)
+}
+
+func written_pattern_of(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): String? {
+    fallback not call.arguments.is_empty()
+    var written = call.arguments[0]
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        return values.plain_text_of(written)
+    }
+    return null
+}
+
+func folded_function_count(target: SpiteCompiler.Expression?): SpiteCompiler.Value? {
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return folded_filtered_count(target)
+    }
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return folded_listed_count(target, "", "")
+    }
+    return null
+}
+
+func folded_filtered_count(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): SpiteCompiler.Value? {
+    var callee = call.callee
+    if callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return folded_name_filter(call, callee)
+    }
+    return null
+}
+
+func folded_name_filter(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    var is_a_suffix = callee.name == "filter_name_ends_with"
+    var is_a_prefix = callee.name == "filter_name_starts_with"
+    fallback is_a_suffix or is_a_prefix
+    fallback call.arguments.count() == 1
+    var argument = call.arguments[0]
+    var text: String? = null
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        text = values.plain_text_of(argument)
+    }
+    fallback text
+    var listing = callee.target
+    if listing.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return folded_listing_by_a_name(listing, text, is_a_suffix)
+    }
+    return null
+}
+
+func folded_listing_by_a_name(
+    listing: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    text: String,
+    is_a_suffix: Boolean,
+): SpiteCompiler.Value? {
+    if is_a_suffix {
+        return folded_listed_count(listing, "", text)
+    }
+    return folded_listed_count(listing, text, "")
+}
+
+func folded_listed_count(
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    prefix: String,
+    suffix: String,
+): SpiteCompiler.Value? {
+    fallback member.name == "functions"
+    var key = constant_class_of(member.target)
+    fallback key
+    var model = context.program.class_named(key)
+    fallback model
+    var reflection = Reflection(context, values)
+    var count = 0
+    var index = 0
+    var has_a_stand_in = model.key != context.program.entry
+    while has_a_stand_in and index < model.declared_functions.count() {
+        var declared = model.declared_functions[index]
+        var is_named = declared.name.starts_with(prefix) and declared.name.ends_with(suffix)
+        if is_named and not declared.is_synthetic and reflection.declarations.is_listed(declared) {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    var integer = context.scalar_type("Integer")
+    var number: Long = count
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, number)
+}
+
+func constant_class_of(target: SpiteCompiler.Expression?): String? {
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return constant_class_named(target.name, target.generic_arguments)
+    }
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return constant_class_of_a_member(target)
+    }
+    return null
+}
+
+func constant_class_named(name: String, arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>): String? {
+    fallback not context.scope.internal_name_of(name)
+    var function = context.current_function
+    if function.binds_a_class and name == function.bound_parameter {
+        crash function.bound_member_type
+        return function.bound_member_type.name
+    }
+    if name.starts_with("$") {
+        return bound_class_named(name)
+    }
+    if name == "class" {
+        fallback not context.current_class.attribute_named("class")
+        return context.current_class.key
+    }
+    var path = List<String>()
+    path.append(name)
+    return class_key_of_path(path, arguments)
+}
+
+func bound_class_named(name: String): String? {
+    var bound = context.current_class.bound_types[name]
+    fallback bound
+    fallback not bound.is_nullable
+    fallback context.has_a_class(bound)
+    return bound.name
+}
+
+func constant_class_of_a_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): String? {
+    var function = context.current_function
+    var target = member.target
+    var names_the_walked = false
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_the_walked = target.name == function.bound_parameter and not function.bound_parameter.is_empty()
+    }
+    if names_the_walked and member.name == "class" {
+        fallback function.bound_member_type
+        var walked: Model.Type = function.bound_member_type
+        fallback context.has_a_class(walked) and not walked.is_nullable
+        return walked.name
+    }
+    var path = values.class_path_of(member)
+    return class_key_of_path(path, member.generic_arguments)
+}
+
+func class_key_of_path(path: List<String>, arguments: List<AbstractSyntaxTree.Shapes.Types.GenericArgument>): String? {
+    fallback not path.is_empty()
+    var written = path.join(".")
+    fallback not context.resolver.state.symbols.namespace_folder(written)
+    var found = context.resolver.state.symbols.find(written, context.current_class.file.namespace)
+    fallback found or values.scalars.is_a_scalar(written)
+    var described = context.resolver.types.class_type_in(path, arguments, context.current_class, context.line)
+    var is_a_class = described.kind == 'object' or described.kind == 'scalar'
+    fallback is_a_class and context.has_a_class(described)
+    return described.name
+}
+
+func counted_arguments(matching: List<Model.FunctionModel>, asked: String, pattern: String): SpiteCompiler.Value {
+    var integer = context.scalar_type("Integer")
+    var found = matching.first()
+    if not found {
+        values.typing.refuse_a_missing_counted_function(context, asked, pattern)
+    }
+    crash found
+    var counted = found.parameters.count()
+    refuse_disagreeing_counts(matching, counted, asked, pattern)
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, counted)
+}
+
+# ../../PROOFS.md#how-many-arguments-a-function-takes
+func refuse_disagreeing_counts(matching: List<Model.FunctionModel>, counted: Integer, asked: String, pattern: String) {
+    var listed = List<String>()
+    var agree = true
+    var index = 0
+    while index < matching.count() {
+        var function = matching[index]
+        var function_count = function.parameters.count()
+        if function_count != counted {
+            agree = false
+        }
+        listed.append("'{function.name}' {function_count}")
+        index = index + 1
+    }
+    fallback not agree
+    var found = matching.first()
+    crash found
+    var owner = values.typing.plain_class_name(found.owner)
+    var counts = listed.join(", ")
+    values.typing.refuse_disagreeing_counts(context, asked, pattern, owner, counts)
+}
+
+func waits_question(matching: List<Model.FunctionModel>): SpiteCompiler.Value {
+    var listing = Reflection(context, values)
+    var buildable = matching.filter(listing.declarations.can_be_built)
+    if buildable.is_empty() {
+        return values.boolean_constant(false)
+    }
+    return asked_fact("waits", buildable)
+}
+
+func writes_question(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    asked: String,
+    matching: List<Model.FunctionModel>,
+): SpiteCompiler.Value {
+    var place = parameter_place_of(call)
+    if place < 0 {
+        values.typing.refuse_an_unwritten_parameter(context, asked)
+    }
+    if matching.is_empty() {
+        return values.boolean_constant(false)
+    }
+    var listing = Reflection(context, values)
+    var cannot_tell = false
+    var index = 0
+    while index < matching.count() {
+        var function = matching[index]
+        var parameter_count = function.parameters.count()
+        if place >= parameter_count {
+            var owner_name = base_name_of(function.owner)
+            values.typing.refuse_a_missing_parameter(context, "{owner_name}.{function.name}", parameter_count, place)
+        }
+        if not listing.declarations.can_be_built(function) {
+            cannot_tell = true
+        }
+        index = index + 1
+    }
+    if cannot_tell {
+        return values.boolean_constant(true)
+    }
+    var made = asked_fact("writes", matching)
+    made.parameter_index = place
+    return made
+}
+
+func parameter_place_of(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): Integer {
+    if call.arguments.count() != 2 {
+        return -1
+    }
+    var written = call.arguments[1]
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return values.literal_place_of(written)
+    }
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walked_place_of(written)
+    }
+    return -1
+}
+
+func walked_place_of(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Integer {
+    var function = context.current_function
+    var asked = member.target
+    var names_the_walked = false
+    if asked.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_the_walked = asked.name == function.bound_parameter and member.name == "index"
+    }
+    if not names_the_walked or function.bound_member.is_empty() {
+        return -1
+    }
+    return function.bound_member_index
+}
+
+func asked_fact(
+    question: String,
+    functions: List<Model.FunctionModel>,
+): HighIntermediaryRepresentation.Values.Function.Fact {
+    var boolean = context.boolean()
+    var made = HighIntermediaryRepresentation.Values.Function.Fact(boolean, question, functions)
+    made.is_asked_in_code = true
+    made.asking_key = context.current_function.key()
+    made.path = context.path()
+    made.line = context.line
+    made.owner_shown = base_name_of(context.current_class.shown)
+    made.function_name = context.current_function.name
+    context.facts_asked.append(made)
+    functions.each(context.need)
+    return made
+}
+
+func base_name_of(shown: String): String {
+    var opening = shown.index_of("<")
+    if opening and opening > 0 {
+        var sliced = shown.slice(0, opening)
+        crash sliced
+        return sliced
+    }
+    return shown
+}
