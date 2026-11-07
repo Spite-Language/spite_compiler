@@ -1,0 +1,1198 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+
+func Fitting(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func refuse_another_signature(given: Model.Type, wanted: Model.Type) {
+    fallback not values.same_signature(given, wanted)
+    var shown_given = context.shown(given)
+    var shown_wanted = context.shown(wanted)
+    var wants_an_enum = wanted.kind == 'enumeration'
+    var conversion = conversion_name_of(wanted)
+    values.typing.refuse_text_given(context, shown_given, shown_wanted, wants_an_enum, conversion)
+    values.typing.refuse_mismatch(context, shown_given, shown_wanted)
+}
+
+func same_member_copy(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value? {
+    var given = value.value_type
+    fallback given.kind == 'union' and wanted.kind == 'union'
+    var given_present = given.present()
+    var wanted_present = wanted.present()
+    fallback values.is_the_same_type(given_present, wanted_present)
+    if given.is_nullable and not wanted.is_nullable {
+        values.note_a_maybe_null("fit", value, "", wanted)
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'proven', value)
+    }
+    if wanted.is_nullable and not given.is_nullable {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'nullable', value)
+    }
+    return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_union', value)
+}
+
+func fitted_value_of(expression: SpiteCompiler.Expression?, wanted: Model.Type): SpiteCompiler.Value {
+    var value = values.value_of(expression, wanted)
+    return fitted(value, wanted)
+}
+
+func fitted(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value {
+    var literals = Literals(context, values)
+    if value.value_type.kind == 'handle' and wanted.kind != 'handle' {
+        var debugged = handle_debugged(value, wanted)
+        if debugged {
+            return debugged
+        }
+        var result = values.result_of_handle(value)
+        return fitted(result, wanted)
+    }
+    var given = value.value_type
+    if given.kind == 'function' and wanted.kind == 'function' {
+        refuse_another_signature(given, wanted)
+    }
+    if given.is_the_same_as(wanted) {
+        return value
+    }
+    var copied = same_member_copy(value, wanted)
+    if copied {
+        return copied
+    }
+    var cast_to_text = literals.cast_text_of(value, wanted)
+    if cast_to_text {
+        return fitted(cast_to_text, wanted)
+    }
+    var same_base = given.kind == wanted.kind and given.name == wanted.name
+    if same_base and wanted.is_nullable {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'nullable', value)
+    }
+    if same_base and given.is_nullable {
+        values.note_a_maybe_null("fit", value, "", wanted)
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'proven', value)
+    }
+    if wanted.is_nullable and not given.is_nullable and wanted.kind == 'scalar' and given.kind == 'scalar' {
+        var present = wanted.present()
+        var fitted_present = fitted(value, present)
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'nullable', fitted_present)
+    }
+    if wanted.kind == 'union' and values.is_a_member_of(given, wanted) {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_union', value)
+    }
+    var unions = wanted.kind == 'union' and given.kind == 'union' and not given.is_nullable
+    if unions and is_a_part_of(given, wanted) {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_union', value)
+    }
+    if wanted.kind == 'shape' and given.kind == 'shape' and given.name != wanted.name {
+        refill_a_shape(given, wanted)
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
+    }
+    if wanted.kind == 'shape' and given.kind != 'shape' {
+        if given.is_nullable {
+            values.note_a_maybe_null("shape", value, "", wanted)
+        }
+        var present = given.present()
+        filled_shape(present, wanted)
+        if given.is_nullable {
+            var absent_type = absent_stand_in()
+            filled_shape(absent_type, wanted)
+        }
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'into_shape', value)
+    }
+    if is_wider(wanted, given) {
+        return widened_into(value, wanted)
+    }
+    if values.are_whole_numbers(wanted, given) {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'narrow', value)
+    }
+    if are_numbers(wanted, given) {
+        return decimal_conversion(given, wanted, value)
+    }
+    var wants_its_reflection = given.kind == 'function' and wanted.kind == 'object' and wanted.name == "Spite.Function"
+    if wants_its_reflection {
+        var described = values.described_function(value)
+        var receiver = receiver_of_a_function(value)
+        if described and receiver {
+            var reflection = Reflection(context, values)
+            var made = reflection.wrappers.function_object_in_place(described, receiver)
+            return fitted(made, wanted)
+        }
+    }
+    var wants_its_declaration = given.kind == 'function' and wanted.kind == 'object' and wanted.name == "Spite.FunctionDeclaration"
+    if wants_its_declaration {
+        var declared = values.described_function(value)
+        if declared {
+            var reflected = reflected_function(declared)
+            return fitted(reflected, wanted)
+        }
+    }
+    refuse_a_walked_name_passed_on(value, wanted)
+    var converted = converted_by_its_class(value, wanted)
+    if converted {
+        return converted
+    }
+    var shown_given = context.shown(given)
+    var shown_wanted = context.shown(wanted)
+    var wants_an_enum = wanted.kind == 'enumeration'
+    var conversion = conversion_name_of(wanted)
+    values.typing.refuse_text_given(context, shown_given, shown_wanted, wants_an_enum, conversion)
+    refuse_a_union_member_missing(value, wanted)
+    refuse_a_smaller_union_inside(given, wanted)
+    refuse_a_missing_conversion(value, wanted)
+    values.typing.refuse_mismatch(context, shown_given, shown_wanted)
+    return value
+}
+
+func can_be_converted(given: Model.Type, wanted: Model.Type): Boolean {
+    var given_kind = given.kind == 'object' or given.kind == 'scalar' or given.kind == 'enumeration'
+    var wanted_kind = wanted.kind == 'object' or wanted.kind == 'scalar' or wanted.kind == 'enumeration' or wanted.kind == 'union'
+    var shown_given = context.shown(given)
+    var shown_wanted = context.shown(wanted)
+    var is_generic = shown_given.contains("<") or shown_wanted.contains("<")
+    var is_internal = given.name.starts_with("Spite.") or wanted.name.starts_with("Spite.")
+    return given_kind and wanted_kind and not given.is_nullable and not is_generic and not is_internal
+}
+
+func conversion_name_of(wanted: Model.Type): String {
+    var segments = wanted.name.split(".")
+    var last = segments.last()
+    crash last
+    return "{last}(from: String)"
+}
+
+# ../../../spite_spec/specs/values_and_types.md#casting
+func converted_by_its_class(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value? {
+    var given = value.value_type
+    fallback can_be_converted(given, wanted)
+    var through_a_conversion = converted_by_a_conversion(value, wanted)
+    if through_a_conversion {
+        return through_a_conversion
+    }
+    var reads_text = given.kind == 'object' and given.name == "String"
+    var read_in_place = wanted.kind == 'scalar' or wanted.kind == 'enumeration'
+    var is_a_literal = is_a_written_literal(value)
+    fallback not reads_text or not read_in_place or wanted.is_nullable or is_a_literal
+    if reads_text and wanted.kind == 'enumeration' {
+        if is_a_literal {
+            return text_literal_read_into_an_enum(value, wanted)
+        }
+        return text_read_into_an_enum(value, wanted)
+    }
+    if given.kind == 'enumeration' and wanted.kind == 'scalar' and wanted.name == "Integer" {
+        var integer = context.scalar_type("Integer")
+        var widened = HighIntermediaryRepresentation.Values.Conversion(integer, 'widen', value)
+        return fitted(widened, wanted)
+    }
+    fallback given.kind != 'enumeration'
+    var owner = context.class_of(given)
+    var whole = ["Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong"]
+    if wanted.kind == 'enumeration' and whole.contains(owner.key) {
+        var present_enum = wanted.present()
+        if is_a_literal {
+            var named = number_literal_read_into_an_enum(value, present_enum)
+            return fitted(named, wanted)
+        }
+        var numbered = number_read_into_an_enum(value, present_enum)
+        return fitted(numbered, wanted)
+    }
+    return null
+}
+
+# ../../../spite_documentation/classes_and_files.md#constructors-conversions-and-presets
+func converted_by_a_conversion(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value? {
+    if wanted.kind == 'enumeration' or wanted.kind == 'union' {
+        return converted_by_its_owner(value, wanted)
+    }
+    fallback wanted.kind == 'object' or wanted.kind == 'scalar'
+    var target_type = wanted.present()
+    var target = context.class_of(target_type)
+    var conversion = target.conversion_from(value.value_type)
+    fallback conversion
+    var reads_text = value.value_type.kind == 'object' and value.value_type.name == "String"
+    var may_fail = conversion.answer and conversion.answer.is_nullable
+    var is_a_literal = is_a_written_literal(value)
+    fallback not reads_text or not may_fail or wanted.is_nullable or wanted.kind != 'scalar' or is_a_literal
+    context.need(conversion)
+    var receiver = values.unused_receiver_of(target_type)
+    var given = List<SpiteCompiler.Value>()
+    given.append(value)
+    var called_conversion = HighIntermediaryRepresentation.Values.Call(conversion, receiver, given)
+    note_a_literal_conversion(value, called_conversion, wanted)
+    return fitted(called_conversion, wanted)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#enums-in-full
+func converted_by_its_owner(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value? {
+    var literals = Literals(context, values)
+    var segments = wanted.name.split(".")
+    var last = segments.count() - 1
+    segments.remove_at(last)
+    var owner_key = segments.join(".")
+    var owner = context.program.class_named(owner_key)
+    fallback owner
+    var made_type = wanted.present()
+    var conversion = owner.conversion_into(made_type.name, value.value_type)
+    fallback conversion
+    context.need(conversion)
+    var receiver = literals.this_value()
+    if context.current_class.key != owner.key {
+        var owner_type = owner.type_of_an_instance()
+        receiver = values.unused_receiver_of(owner_type)
+    }
+    var given = List<SpiteCompiler.Value>()
+    given.append(value)
+    var called_conversion = HighIntermediaryRepresentation.Values.Call(conversion, receiver, given)
+    note_a_literal_conversion(value, called_conversion, wanted)
+    return fitted(called_conversion, wanted)
+}
+
+# ../../PROOFS.md#a-literal-that-converts-is-a-t
+func is_a_written_literal(value: SpiteCompiler.Value): Boolean {
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        return value.is_written
+    }
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value.is_written
+    }
+    if value.class == HighIntermediaryRepresentation.Values.DecimalNumber {
+        return value.is_written
+    }
+    if value.class == HighIntermediaryRepresentation.Values.MachineOperation {
+        return value.is_a_written_negative
+    }
+    return false
+}
+
+func shown_literal_of(value: SpiteCompiler.Value): String {
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        return "\"{value.text}\""
+    }
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value.number.to_string()
+    }
+    if value.class == HighIntermediaryRepresentation.Values.DecimalNumber {
+        return value.written
+    }
+    if value.class == HighIntermediaryRepresentation.Values.MachineOperation {
+        return value.written_negative
+    }
+    return ""
+}
+
+# ../../PROOFS.md#a-literal-that-converts-is-a-t
+func note_a_literal_conversion(
+    value: SpiteCompiler.Value,
+    conversion_call: HighIntermediaryRepresentation.Values.Call,
+    wanted: Model.Type,
+) {
+    fallback conversion_call.value_type.is_nullable and is_a_written_literal(value)
+    var literal = shown_literal_of(value)
+    var segments = wanted.name.split(".")
+    var made_name = segments.last()
+    crash made_name
+    var given_shown = context.shown(value.value_type)
+    var conversion = "{made_name}(from: {given_shown})"
+    var site = LiteralSite(context, conversion_call, literal, conversion)
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        site.written_decimal = value.text.trim()
+    }
+    context.note_a_literal_site(site)
+}
+
+# ../../PROOFS.md#a-literal-that-converts-is-a-t
+func text_literal_read_into_an_enum(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value {
+    var literals = Literals(context, values)
+    var enumeration = values.enum_model_of(wanted)
+    var literal = shown_literal_of(value)
+    var name = ""
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        name = value.text
+    }
+    var rule = Validators.HighIntermediaryRepresentation.LiteralConversion.Validator()
+    rule.check_an_enum_name(context, literal, name, enumeration)
+    var found = literals.enum_value(name, wanted)
+    return fitted(found, wanted)
+}
+
+# ../../PROOFS.md#a-literal-that-converts-is-a-t
+func number_literal_read_into_an_enum(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value {
+    var enumeration = values.enum_model_of(wanted)
+    var number: Long = 0
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        number = value.number
+    }
+    var literal = shown_literal_of(value)
+    var rule = Validators.HighIntermediaryRepresentation.LiteralConversion.Validator()
+    rule.check_an_enum_number(context, literal, number, enumeration)
+    return HighIntermediaryRepresentation.Values.WholeNumber(wanted, number)
+}
+
+func text_read_into_an_enum(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value {
+    var literals = Literals(context, values)
+    var enumeration = values.enum_model_of(wanted)
+    literals.need_text_constants()
+    var string_model = context.class_of(value.value_type)
+    var equals = string_model.function_named("equals")
+    crash equals
+    context.need(equals)
+    return HighIntermediaryRepresentation.Values.EnumFromText(wanted, enumeration, value)
+}
+
+func refuse_a_missing_conversion(value: SpiteCompiler.Value, wanted: Model.Type) {
+    var given = value.value_type
+    fallback can_be_converted(given, wanted)
+    var shown_given = context.shown(given)
+    var shown_wanted = context.shown(wanted)
+    values.typing.refuse_a_missing_conversion(context, shown_given, shown_wanted)
+}
+
+func refuse_a_walked_name_passed_on(value: SpiteCompiler.Value, wanted: Model.Type) {
+    var walking = context.current_function
+    fallback not walking.bound_parameter.is_empty()
+    fallback wanted.kind == 'object' and wanted.name.starts_with("Spite.")
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        values.typing.refuse_a_specialised_value(context, walking.bound_parameter)
+    }
+}
+
+func receiver_of_a_function(value: SpiteCompiler.Value): SpiteCompiler.Value? {
+    var literals = Literals(context, values)
+    if value.class == HighIntermediaryRepresentation.Values.Function.Value {
+        return value.receiver
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        var named = context.function_locals[value.name]
+        var held = context.function_receivers[value.name]
+        if named and held {
+            var held_type = context.scope.types[held]
+            crash held_type
+            return HighIntermediaryRepresentation.Values.LocalRead(held_type, held)
+        }
+        if named and named.owner == context.current_class.key {
+            return literals.this_value()
+        }
+    }
+    return null
+}
+
+func reflected_function(described: Model.FunctionModel): SpiteCompiler.Value {
+    var literals = Literals(context, values)
+    var reflection = Reflection(context, values)
+    var class_value = reflection.class_objects.class_object(described.owner)
+    var no_arguments = List<SpiteCompiler.Value>()
+    var functions = values.method_call(class_value, "get_functions", no_arguments)
+    var listing = values.present_class_of(functions)
+    var finder = listing.function_named("get_at")
+    crash finder
+    context.need(finder)
+    literals.need_text_constants()
+    var named = HighIntermediaryRepresentation.Values.TextConstant(described.name)
+    named.value_type = context.text()
+    var finder_arguments = List<SpiteCompiler.Value>()
+    finder_arguments.append(named)
+    var found = HighIntermediaryRepresentation.Values.Call(finder, functions, finder_arguments)
+    values.temporary_count = values.temporary_count + 1
+    var name = context.scope.declare("reflected_{values.temporary_count}", found.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, found.value_type, found)
+    declared.line = context.line
+    context.pending.append(declared)
+    var local = HighIntermediaryRepresentation.Values.LocalRead(found.value_type, name)
+    var there = HighIntermediaryRepresentation.Values.PresenceTest(local)
+    var missing = HighIntermediaryRepresentation.Values.Negation(there)
+    var file_path = context.path()
+    var function = context.current_function
+    var message = "spite: '{described.owner}.{described.name}' has no Spite.FunctionDeclaration to describe it, at {file_path}:{context.line} in {function.owner}.{function.name}"
+    var stopped = HighIntermediaryRepresentation.Statements.Stop(message)
+    stopped.line = context.line
+    var failed = HighIntermediaryRepresentation.Statements.Block()
+    failed.statements.append(stopped)
+    var checked = HighIntermediaryRepresentation.Statements.If(missing, failed, null)
+    checked.line = context.line
+    context.pending.append(checked)
+    var present_type = found.value_type.present()
+    return HighIntermediaryRepresentation.Values.Conversion(present_type, 'proven', local)
+}
+
+func refill_a_shape(given: Model.Type, wanted: Model.Type) {
+    var link = "{given.name}>{wanted.name}"
+    if not context.shape_links.contains(link) {
+        context.shape_links.append(link)
+    }
+    var fillers = context.program.fillers_of(given.name)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        filled_shape(filler, wanted)
+        index = index + 1
+    }
+}
+
+func filled_shape(given: Model.Type, wanted: Model.Type) {
+    if given.kind == 'union' {
+        fill_with_the_members(given, wanted)
+        return
+    }
+    var shape = context.program.shape_keyed(wanted.name)
+    crash shape
+    var shown = context.shown(given)
+    if given.kind == 'enumeration' or given.is_a_walked_name {
+        fits_as_an_enum(shape, shown)
+    } else {
+        fits_as_a_class(shape, given, shown)
+    }
+    refuse_a_filler_nothing_can_assign(shape, given, shown)
+    var fillers = context.program.fillers_of(shape.key)
+    var known = false
+    var index = 0
+    while index < fillers.count() {
+        var filling = fillers[index]
+        if filling.name == given.name and filling.is_a_walked_name == given.is_a_walked_name {
+            known = true
+        }
+        index = index + 1
+    }
+    if not known {
+        var present = given.present()
+        fillers.append(present)
+    }
+}
+
+func fill_with_the_members(given: Model.Type, wanted: Model.Type) {
+    var united = union_model_of(given)
+    var index = 0
+    while index < united.members.count() {
+        var member = united.members[index]
+        filled_shape(member, wanted)
+        index = index + 1
+    }
+}
+
+func fits_as_an_enum(shape: Model.ShapeModel, shown: String) {
+    var literals = Literals(context, values)
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.name == "_attribute_list" {
+            var reflection = Reflection(context, values)
+            reflection.member_lists.make_no_attributes()
+        } else if member.name != "to_string" and member.name != "to_debug" and not values.is_a_copy_name(member.name) {
+            values.typing.refuse_not_a_fit(context, shown, shape.name, member.name)
+        }
+        index = index + 1
+    }
+    literals.need_text_constants()
+    var text_type = context.text()
+    var text_model = context.class_of(text_type)
+    var joining = text_model.function_named("sum")
+    crash joining
+    context.need(joining)
+}
+
+func fits_as_a_class(shape: Model.ShapeModel, given: Model.Type, shown: String) {
+    if not context.has_a_class(given) {
+        var first = shape.members[0]
+        crash first
+        values.typing.refuse_not_a_fit(context, shown, shape.name, first.name)
+    }
+    var filler = context.class_of(given)
+    debugged_when_asked(filler, shape)
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.is_an_attribute {
+            var attribute = filler.attribute_named(member.name)
+            if not attribute {
+                values.typing.refuse_a_missing_attribute(context, shown, shape.name, member.name)
+            }
+            crash attribute
+            refuse_a_mistyped_attribute(attribute, member, given, shape, shown)
+        } else {
+            need_a_filling_function(filler, member, shown, shape)
+        }
+        index = index + 1
+    }
+}
+
+func debugged_when_asked(filler: Model.ClassModel, shape: Model.ShapeModel) {
+    fallback shape.member_named("to_debug")
+    fallback not filler.function_named("to_debug")
+    var held = filler.attribute_named("to_debug")
+    fallback not held or held.attribute_type.kind != 'function'
+    var debugging = Debugging(context, values)
+    debugging.make_to_debug_of(filler)
+}
+
+func need_a_filling_function(
+    filler: Model.ClassModel,
+    member: Model.FunctionModel,
+    shown: String,
+    shape: Model.ShapeModel,
+) {
+    if member.name == "_attribute_list" {
+        var reflection = Reflection(context, values)
+        reflection.member_lists.make_attribute_list_of(filler)
+    }
+    var function = filler.function_named(member.name)
+    var is_shared = filler.is_singleton or filler.key == "String" or values.scalars.is_a_scalar(filler.key)
+    fallback function or not values.is_a_copy_name(member.name) or not is_shared
+    if not function and values.is_a_copy_name(member.name) {
+        var given_count = 0
+        if member.name == "_deep_copy_in" {
+            given_count = 1
+        }
+        function = values.made_copy(filler, member.name, given_count)
+    }
+    var is_open = shape.key == "Anything"
+    if not function and is_open and member.name == "to_string" {
+        function = filler.function_named("to_debug")
+    }
+    if not function {
+        function = held_function_of(filler, member, shown, shape)
+    }
+    if not function {
+        values.typing.refuse_not_a_fit(context, shown, shape.name, member.name)
+    }
+    crash function
+    refuse_a_mistyped_function(function, member, filler, shape, shown)
+    context.need(function)
+}
+
+func held_function_of(
+    filler: Model.ClassModel,
+    member: Model.FunctionModel,
+    shown: String,
+    shape: Model.ShapeModel,
+): Model.FunctionModel? {
+    fallback member.is_a_function_member
+    var attribute = filler.attribute_named(member.name)
+    fallback attribute
+    var given = filler.type_of_an_instance()
+    var wanted = type_the_member_holds(member)
+    crash wanted
+    refuse_a_mistyped_holding(attribute, wanted, member, given, shape, shown)
+    if attribute.attribute_type.is_nullable {
+        var found_shown = shown_with_an_article(attribute.attribute_type)
+        values.typing.refuse_a_mistyped_fit(
+            context,
+            shown,
+            shape.name,
+            "attribute '{member.name}' is {found_shown}, which may hold no function, and the type needs one",
+        )
+    }
+    return calling_the_held_function(filler, attribute)
+}
+
+func calling_the_held_function(filler: Model.ClassModel, attribute: Model.AttributeModel): Model.FunctionModel {
+    var held = attribute.attribute_type
+    var made = Model.FunctionModel(attribute.name, filler.key)
+    made.is_synthetic = true
+    made.answer = held.answer
+    filler.declared_functions.append(made)
+    var passed = List<SpiteCompiler.Value>()
+    var index = 0
+    while index < held.parameters.count() {
+        var taken = held.parameters[index]
+        var name = "given_{index}"
+        var parameter = Model.ParameterModel(name, taken, false)
+        made.parameters.append(parameter)
+        var read = HighIntermediaryRepresentation.Values.LocalRead(taken, name)
+        passed.append(read)
+        index = index + 1
+    }
+    var own_type = filler.type_of_an_instance()
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var holding = HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
+    var through = HighIntermediaryRepresentation.Values.Function.ValueCall(holding, passed)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    if held.answer {
+        through.value_type = held.answer
+        var answered = HighIntermediaryRepresentation.Statements.Return(through)
+        body.statements.append(answered)
+    } else {
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(through)
+        body.statements.append(evaluated)
+    }
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    context.synthetic_functions.append(function)
+    return made
+}
+
+func type_the_member_holds(member: Model.FunctionModel): Model.Type? {
+    if not member.is_a_function_member {
+        return member.answer
+    }
+    var made = Model.Type('function', "Spite.Function")
+    made.parameters = member.parameters.map_parameter_types()
+    made.answer = member.answer
+    return made
+}
+
+func note_a_member_assigned(shape: Model.ShapeModel, member: Model.FunctionModel) {
+    fallback member.is_a_function_member
+    shape.assigned_members.append(member.name)
+    var fillers = context.program.fillers_of(shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        var filler_shown = context.shown(filler)
+        refuse_a_filler_nothing_can_assign(shape, filler, filler_shown)
+        index = index + 1
+    }
+}
+
+func refuse_a_filler_nothing_can_assign(shape: Model.ShapeModel, given: Model.Type, shown: String) {
+    var index = 0
+    while index < shape.assigned_members.count() {
+        var assigned = shape.assigned_members[index]
+        if not holds_the_assigned_member(given, assigned) {
+            values.typing.refuse_a_function_assigned_through_a_type(context, shown, shape.name, assigned)
+        }
+        index = index + 1
+    }
+}
+
+func holds_the_assigned_member(given: Model.Type, assigned: String): Boolean {
+    fallback context.has_a_class(given)
+    var filler = context.class_of(given)
+    if filler.attribute_named(assigned) {
+        return true
+    }
+    return false
+}
+
+# ../../PROOFS.md#a-value-fits-a-type
+func is_a_written_member(member: Model.FunctionModel, shape: Model.ShapeModel): Boolean {
+    var is_open = shape.key == "Anything"
+    fallback not is_open and not member.name.starts_with("_") and not values.is_a_copy_name(member.name)
+    return member.name != "to_debug"
+}
+
+func refuse_a_mistyped_attribute(
+    attribute: Model.AttributeModel,
+    member: Model.FunctionModel,
+    given: Model.Type,
+    shape: Model.ShapeModel,
+    shown: String,
+) {
+    fallback is_a_written_member(member, shape)
+    var wanted = type_the_member_holds(member)
+    fallback wanted
+    refuse_a_mistyped_holding(attribute, wanted, member, given, shape, shown)
+}
+
+func refuse_a_mistyped_holding(
+    attribute: Model.AttributeModel,
+    wanted: Model.Type,
+    member: Model.FunctionModel,
+    given: Model.Type,
+    shape: Model.ShapeModel,
+    shown: String,
+) {
+    var found = attribute.attribute_type
+    if not fits_the_member_type(found, wanted, given, shape) {
+        var found_shown = shown_with_an_article(found)
+        var wanted_in_the_shape = own_type_in_the_shape(wanted, given, shape)
+        var wanted_shown = shown_with_an_article(wanted_in_the_shape)
+        values.typing.refuse_a_mistyped_fit(
+            context,
+            shown,
+            shape.name,
+            "attribute '{member.name}' is {found_shown}, but the type needs {wanted_shown}",
+        )
+    }
+}
+
+func refuse_a_mistyped_function(
+    function: Model.FunctionModel,
+    member: Model.FunctionModel,
+    filler: Model.ClassModel,
+    shape: Model.ShapeModel,
+    shown: String,
+) {
+    fallback is_a_written_member(member, shape)
+    var given = Model.Type('object', filler.key)
+    var wanted_count = member.parameters.count()
+    var found_count = function.parameters.count()
+    if found_count != wanted_count {
+        values.typing.refuse_a_mistyped_fit(
+            context,
+            shown,
+            shape.name,
+            "its '{member.name}' takes {found_count} argument(s), but the type needs {wanted_count}",
+        )
+    }
+    var index = 0
+    while index < wanted_count {
+        var wanted_parameter = member.parameters[index]
+        var found_parameter = function.parameters[index]
+        crash found_parameter
+        var found_type = found_parameter.parameter_type
+        var wanted_type = wanted_parameter.parameter_type
+        if not fits_the_member_type(found_type, wanted_type, given, shape) {
+            var place = index + 1
+            var found_shown = shown_with_an_article(found_type)
+            var wanted_in_the_shape = own_type_in_the_shape(wanted_type, given, shape)
+            var wanted_shown = shown_with_an_article(wanted_in_the_shape)
+            values.typing.refuse_a_mistyped_fit(
+                context,
+                shown,
+                shape.name,
+                "argument {place} of its '{member.name}' is {found_shown}, but the type needs {wanted_shown}",
+            )
+        }
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    var wanted_answer = nothing
+    if member.answer {
+        wanted_answer = member.answer
+    }
+    var found_answer = nothing
+    if function.answer {
+        found_answer = function.answer
+    }
+    if not fits_the_member_type(found_answer, wanted_answer, given, shape) {
+        var returned = shown_with_an_article(found_answer)
+        var wanted_in_the_shape = own_type_in_the_shape(wanted_answer, given, shape)
+        var needed = shown_with_an_article(wanted_in_the_shape)
+        values.typing.refuse_a_mistyped_fit(
+            context,
+            shown,
+            shape.name,
+            "its '{member.name}' returns {returned}, but the type needs {needed}",
+        )
+    }
+}
+
+func own_type_in_the_shape(wanted: Model.Type, given: Model.Type, shape: Model.ShapeModel): Model.Type {
+    var own_shape = Model.Type('shape', shape.key)
+    var own_type = context.resolver.same_members.same_member_type(own_shape)
+    if wanted.kind == 'shape' and wanted.name == own_type.name {
+        if wanted.is_nullable {
+            return given.nullable()
+        }
+        return given.present()
+    }
+    return wanted
+}
+
+func fits_the_member_type(found: Model.Type, wanted: Model.Type, given: Model.Type, shape: Model.ShapeModel): Boolean {
+    var needed = own_type_in_the_shape(wanted, given, shape)
+    var is_open = needed.kind == 'shape' or needed.kind == 'union' or needed.kind == 'function'
+    if is_open or found.kind == 'shape' or found.kind == 'union' or found.kind == 'function' {
+        return fits_an_open_type(found, needed)
+    }
+    return found.is_the_same_as(needed)
+}
+
+# ../../PROOFS.md#a-value-fits-a-type
+func fits_an_open_type(found: Model.Type, needed: Model.Type): Boolean {
+    var found_present = found.present()
+    var needed_present = needed.present()
+    if values.is_the_same_type(found_present, needed_present) {
+        return needed.kind != 'function' or fits_a_function_type(found, needed)
+    }
+    switch needed.kind {
+        'union': return is_a_member_of_the_union(found, needed)
+        'shape': return has_the_shape_members(found, needed)
+        'nothing': return false
+        'scalar': return false
+        'object': return false
+        'enumeration': return false
+        'function': return false
+        'handle': return false
+        'namespace': return false
+        'parameters': return false
+        'pattern': return false
+    }
+}
+
+func fits_a_function_type(found: Model.Type, needed: Model.Type): Boolean {
+    fallback found.parameters.count() == needed.parameters.count()
+    var index = 0
+    while index < needed.parameters.count() {
+        var found_parameter = found.parameters[index]
+        var needed_parameter = needed.parameters[index]
+        crash found_parameter
+        fallback values.is_the_same_type(found_parameter, needed_parameter)
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    var found_answer = nothing
+    if found.answer {
+        found_answer = found.answer
+    }
+    var needed_answer = nothing
+    if needed.answer {
+        needed_answer = needed.answer
+    }
+    return values.is_the_same_type(found_answer, needed_answer)
+}
+
+func is_a_member_of_the_union(found: Model.Type, needed: Model.Type): Boolean {
+    fallback found.kind == 'object'
+    var united = union_model_of(needed)
+    var index = 0
+    while index < united.members.count() {
+        var member = united.members[index]
+        if member.name == found.name {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func has_the_shape_members(found: Model.Type, needed: Model.Type): Boolean {
+    if needed.name == "Anything" {
+        return true
+    }
+    var shape = context.program.shape_keyed(needed.name)
+    if not shape {
+        return true
+    }
+    if found.kind == 'union' {
+        var united = union_model_of(found)
+        var index = 0
+        while index < united.members.count() {
+            var member = united.members[index]
+            fallback has_the_members(member, shape)
+            index = index + 1
+        }
+        return true
+    }
+    return has_the_members(found, shape)
+}
+
+func has_the_members(found: Model.Type, shape: Model.ShapeModel): Boolean {
+    fallback found.kind == 'object' and context.has_a_class(found)
+    var model = context.class_of(found)
+    var pair = "{found.name}|{shape.key}"
+    if values.members_being_compared.contains(pair) {
+        return true
+    }
+    values.members_being_compared.append(pair)
+    var answer = has_each_member(found, model, shape)
+    crash values.members_being_compared.remove_last()
+    return answer
+}
+
+# ../../PROOFS.md#a-value-fits-a-type
+func has_each_member(found: Model.Type, model: Model.ClassModel, shape: Model.ShapeModel): Boolean {
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        fallback not is_a_written_member(member, shape) or has_the_member(found, model, member, shape)
+        index = index + 1
+    }
+    return true
+}
+
+func has_the_member(
+    found: Model.Type,
+    model: Model.ClassModel,
+    member: Model.FunctionModel,
+    shape: Model.ShapeModel,
+): Boolean {
+    var attribute = model.attribute_named(member.name)
+    if attribute and member.is_an_attribute {
+        if member.answer {
+            return fits_the_member_type(attribute.attribute_type, member.answer, found, shape)
+        }
+        return true
+    }
+    var function = model.function_named(member.name)
+    if function and not member.is_an_attribute {
+        return has_the_function_types(found, function, member, shape)
+    }
+    if attribute and member.is_a_function_member {
+        var wanted = type_the_member_holds(member)
+        crash wanted
+        return fits_the_member_type(attribute.attribute_type, wanted, found, shape)
+    }
+    if attribute or function {
+        return true
+    }
+    return false
+}
+
+func has_the_function_types(
+    found: Model.Type,
+    function: Model.FunctionModel,
+    member: Model.FunctionModel,
+    shape: Model.ShapeModel,
+): Boolean {
+    fallback function.parameters.count() == member.parameters.count()
+    var index = 0
+    while index < member.parameters.count() {
+        var wanted_parameter = member.parameters[index]
+        var found_parameter = function.parameters[index]
+        crash found_parameter
+        fallback fits_the_member_type(found_parameter.parameter_type, wanted_parameter.parameter_type, found, shape)
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    var wanted_answer = nothing
+    if member.answer {
+        wanted_answer = member.answer
+    }
+    var found_answer = nothing
+    if function.answer {
+        found_answer = function.answer
+    }
+    return fits_the_member_type(found_answer, wanted_answer, found, shape)
+}
+
+func shown_with_an_article(of_type: Model.Type): String {
+    if of_type.kind == 'nothing' {
+        return "Nothing"
+    }
+    var name = context.shown(of_type)
+    var first_letter = name.slice(0, 1)
+    crash first_letter
+    var vowels = ["A", "E", "I", "O", "U"]
+    if vowels.contains(first_letter) {
+        return "an {name}"
+    }
+    return "a {name}"
+}
+
+func is_a_part_of(given: Model.Type, wanted: Model.Type): Boolean {
+    var part = union_model_of(given)
+    var index = 0
+    while index < part.members.count() {
+        var member = part.members[index]
+        fallback values.is_a_member_of(member, wanted)
+        index = index + 1
+    }
+    return true
+}
+
+# ../../../spite_spec/specs/values_and_types.md#unions-in-full
+func refuse_a_union_member_missing(value: SpiteCompiler.Value, wanted: Model.Type) {
+    var given = value.value_type
+    fallback given.kind == 'union' and wanted.kind == 'union' and not given.is_nullable
+    var part = union_model_of(given)
+    var missing = List<String>()
+    var index = 0
+    while index < part.members.count() {
+        var member = part.members[index]
+        if not values.is_a_member_of(member, wanted) {
+            var shown_member = context.shown(member)
+            missing.append(shown_member)
+        }
+        index = index + 1
+    }
+    var shown_given = context.shown(given)
+    var shown_wanted = context.shown(wanted)
+    values.typing.refuse_a_union_member_missing(context, shown_given, shown_wanted, missing)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#unions-in-full
+func refuse_a_smaller_union_inside(given: Model.Type, wanted: Model.Type) {
+    fallback given.kind == 'object' and wanted.kind == 'object' and not given.is_nullable
+    var given_model = context.program.class_named(given.name)
+    var wanted_model = context.program.class_named(wanted.name)
+    fallback given_model and wanted_model
+    fallback given_model.file.path == wanted_model.file.path
+    var names = given_model.bound_types.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var inside = given_model.bound_types[name]
+        var wanted_inside = wanted_model.bound_types[name]
+        crash inside
+        crash wanted_inside
+        var both_unions = inside.kind == 'union' and wanted_inside.kind == 'union' and not inside.is_nullable
+        if both_unions and is_a_part_of(inside, wanted_inside) {
+            var shown_given = context.shown(given)
+            var shown_wanted = context.shown(wanted)
+            var shown_inside = context.shown(inside)
+            var shown_wanted_inside = context.shown(wanted_inside)
+            values.typing.refuse_a_smaller_union_inside(
+                context,
+                shown_given,
+                shown_wanted,
+                shown_inside,
+                shown_wanted_inside,
+            )
+        }
+        index = index + 1
+    }
+}
+
+func union_model_of(union_type: Model.Type): Model.UnionModel {
+    var parts = union_type.name.split(".")
+    var last = parts.count() - 1
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = context.program.class_named(owner_key)
+    crash owner
+    var owner_length = owner_key.length()
+    var name_length = union_type.name.length()
+    var simple = union_type.name.slice(owner_length + 1, name_length)
+    crash simple
+    var made = owner.union_named(simple)
+    crash made
+    return made
+}
+
+func widened_into(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value {
+    var given = value.value_type
+    if given.is_nullable and not wanted.is_nullable {
+        values.note_a_maybe_null("fit", value, "", wanted)
+        var present = values.as_present(value)
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'widen', present)
+    }
+    return HighIntermediaryRepresentation.Values.Conversion(wanted, 'widen', value)
+}
+
+func is_wider(wanted: Model.Type, given: Model.Type): Boolean {
+    var both_scalars = wanted.kind == 'scalar' and given.kind == 'scalar'
+    fallback both_scalars
+    var wanted_scalar = values.scalars.of(wanted.name)
+    var given_scalar = values.scalars.of(given.name)
+    crash wanted_scalar
+    crash given_scalar
+    var same_family = wanted_scalar.is_decimal == given_scalar.is_decimal
+    var keeps_the_sign = wanted_scalar.is_signed or not given_scalar.is_signed
+    var grows = wanted_scalar.size > given_scalar.size and not context.is_a_truth_value(given)
+    return same_family and grows and keeps_the_sign
+}
+
+func are_numbers(wanted: Model.Type, given: Model.Type): Boolean {
+    var both_scalars = wanted.kind == 'scalar' and given.kind == 'scalar'
+    var neither_nullable = not wanted.is_nullable and not given.is_nullable
+    fallback both_scalars and neither_nullable
+    return not context.is_a_truth_value(wanted) and not context.is_a_truth_value(given)
+}
+
+func decimal_conversion(given: Model.Type, wanted: Model.Type, value: SpiteCompiler.Value): SpiteCompiler.Value {
+    if values.is_a_whole_number(given) {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'to_decimal', value)
+    }
+    if values.is_a_whole_number(wanted) {
+        return HighIntermediaryRepresentation.Values.Conversion(wanted, 'to_whole', value)
+    }
+    return HighIntermediaryRepresentation.Values.Conversion(wanted, 'narrow_decimal', value)
+}
+
+func handle_debugged(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value? {
+    fallback wanted.kind == 'shape'
+    var shape = context.program.shape_keyed(wanted.name)
+    fallback shape
+    fallback shape.members.count() == 1
+    var member = shape.members[0]
+    fallback member.name == "to_debug"
+    var carrier_type = Model.Type('object', value.value_type.carrier)
+    var carrier = context.class_of(carrier_type)
+    values.need_the_work_text(carrier)
+    var carried = HighIntermediaryRepresentation.Values.Conversion(carrier_type, 'proven', value)
+    return fitted(carried, wanted)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#enums-in-full
+func number_read_into_an_enum(receiver: SpiteCompiler.Value, found: Model.Type): SpiteCompiler.Value {
+    var operators = Operators(context, values)
+    var literals = Literals(context, values)
+    var wanted = found.nullable()
+    var held = operators.held_operand(receiver)
+    var nothing = HighIntermediaryRepresentation.Values.NullConstant(wanted)
+    values.temporary_count = values.temporary_count + 1
+    var local_name = context.scope.declare("numbered_{values.temporary_count}", wanted)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(local_name, wanted, nothing)
+    declared.line = context.line
+    context.pending.append(declared)
+    var enumeration = values.enum_model_of(found)
+    var boolean = context.boolean()
+    var index = 0
+    while index < enumeration.values.count() {
+        var value_name = enumeration.values[index]
+        var number = enumeration.numbers[index]
+        crash number
+        var compared = HighIntermediaryRepresentation.Values.WholeNumber(held.value_type, number)
+        var tested = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', held, compared)
+        var value = literals.enum_value(value_name, found)
+        var fitted_value = fitted(value, wanted)
+        var assigned = HighIntermediaryRepresentation.Statements.Assign.Assign(local_name, fitted_value)
+        assigned.line = context.line
+        var branch = HighIntermediaryRepresentation.Statements.Block()
+        branch.statements.append(assigned)
+        var test = HighIntermediaryRepresentation.Statements.If(tested, branch, null)
+        test.line = context.line
+        context.pending.append(test)
+        index = index + 1
+    }
+    return HighIntermediaryRepresentation.Values.LocalRead(wanted, local_name)
+}
+
+func absent_stand_in(): Model.Type {
+    var literals = Literals(context, values)
+    var key = "Spite.Absent"
+    var made = Model.Type('object', key)
+    if context.program.has(key) {
+        return made
+    }
+    var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+    var absent = Model.ClassModel(key, key, no_file)
+    context.program.add(absent)
+    literals.need_text_constants()
+    answer_null(absent, "to_string")
+    answer_null(absent, "to_debug")
+    return made
+}
+
+func answer_null(absent: Model.ClassModel, name: String) {
+    var function = Model.FunctionModel(name, absent.key)
+    function.is_synthetic = true
+    var text = context.text()
+    function.answer = text
+    absent.declared_functions.append(function)
+    var null_text = HighIntermediaryRepresentation.Values.TextConstant("null")
+    null_text.value_type = text
+    var answered = HighIntermediaryRepresentation.Statements.Return(null_text)
+    var body = HighIntermediaryRepresentation.Statements.Block()
+    body.statements.append(answered)
+    var built = HighIntermediaryRepresentation.HighFunction(function, body)
+    context.synthetic_functions.append(built)
+}
+
+func fits_the_shape(bound: Model.Type, described: Model.Type): Boolean {
+    var shape = context.program.shape_keyed(described.name)
+    crash shape
+    fallback context.has_a_class(bound)
+    var filler = context.class_of(bound)
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        var filling_function = filler.function_named(member.name)
+        var filling_attribute = filler.attribute_named(member.name)
+        var is_filled = filling_function and not member.is_an_attribute
+        is_filled = is_filled or filling_attribute and member.is_an_attribute
+        is_filled = is_filled or filling_attribute and member.is_a_function_member
+        fallback is_filled
+        index = index + 1
+    }
+    return true
+}
+
+func fits_the_pattern(name: String, pattern: String): Boolean {
+    var opening = pattern.index_of("<")
+    var closing = pattern.index_of(">")
+    if not opening or not closing or closing < opening {
+        return name == pattern
+    }
+    var pattern_length = pattern.length()
+    var prefix = pattern.slice(0, opening)
+    crash prefix
+    var suffix = pattern.slice(closing + 1, pattern_length)
+    crash suffix
+    var prefix_length = prefix.length()
+    var suffix_length = suffix.length()
+    var name_length = name.length()
+    var long_enough = name_length > prefix_length + suffix_length
+    return long_enough and name.starts_with(prefix) and name.ends_with(suffix)
+}
