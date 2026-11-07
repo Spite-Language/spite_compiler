@@ -290,7 +290,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   refused: narrow the source itself. `if not copy { }` tests it whether or not its block leaves. A snapshot taken
   before its source changes is allowed
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
-  A local of a value that calls (a path through a call or through a getter) keeps a value, since writing the source again calls again.
+  A path holding a written call is never a copy's source, since writing it again calls again; a copy through a getter keeps a value when the getter may have an effect, or when a call or a write before the read may assign what it reads (`kept_copies.spite`: `getter_may_change_under`), and one through a getter that only reads is a copy like any other.
   A local whose source (an attribute, or one along its path) a call or a write through any object may change between the copy and a read of the local keeps a value, so it is not a copy: the builder records those reads as `NarrowedRead`s with their `copy_line`, and `proven_checks` asks the question `narrowings_kept_across_calls` asks.
 - **Buys**: one name per value.
 - **Falls back**: refused, "'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('fallback
@@ -299,7 +299,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `note_a_tested_copy`, `build_switch`).
 - **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions,
   conformance/copy_to_narrow_not_leaving; tests/narrowing_snapshot_copy, tests/copy_of_a_getter_with_an_effect_is_kept,
-  tests/copy_of_a_path_holding_a_call_is_kept.
+  tests/copy_of_a_path_holding_a_call_is_kept, tests/copy_of_a_getter_before_a_change_is_kept, conformance/namespace_nullable.
 
 ### A literal that converts is a `T`
 
