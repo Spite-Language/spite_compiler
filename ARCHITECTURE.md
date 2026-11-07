@@ -478,6 +478,18 @@ the compile will use is read, and before name resolution, which would otherwise 
 layer sees one file at a time, and the after-building layer comes after name resolution has already minted a type for
 every copy. What cannot move stays in `SymbolTable.repeated_declarations` for `validators/mapping/repeated_declaration`.
 
+### A fix rests on no narrowing a proof took back
+
+A fix of a check (`proven_check`, `decided_condition`, `known_if`) rests on what building narrowed, and a later proof
+may still take that narrowing back: `narrowings_kept_across_calls` (a call or a write between the check and a read,
+a loop's next pass) or a loop's narrowing (`loop_narrowing`, `refuse_undone_loop_proof`). So `fixed_a_check` marks
+each such fix (`rests_on_a_narrowing`), and a refusal of those proofs drops every marked fix before it stops
+(`a_narrowing_was_taken_back`): the compile fails with those lines as they were, and prints no `fixed:` line for
+them. Every other fix is still written by a failing compile, so an error in code a decided test removes goes with it.
+`copy_to_narrow` is not marked: it rests on nothing changing the source between the copy and its reads, which is
+what those proofs check themselves. A refusal that stops building before the proofs run cannot know, so a fix
+marked before it is still written.
+
 ## Validators
 
 `validators/<level>/<rule>/validator.spite` holds a class `Validator()` whose `check(...)` takes the data the rule
