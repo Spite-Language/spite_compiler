@@ -7,12 +7,12 @@ cheaper code**, or **refuses** code that would go wrong (D276). A proof emits no
 the check it leaves in place when it does not hold, and a proof that does not hold never fails silently (D244):
 the code is refused, saying what to write, or the run-time check stays.
 
-The rules are the language's, in `../SpiteLanguage/specs`; this page says, for each proof, what this compiler does
+The rules are the language's, taught in `../spite_documentation` and held by the programs of `../spite_spec`; this page says, for each proof, what this compiler does
 with it. Each section has the same parts:
 
 - **Status**: built, partly built (what is missing is its issue labelled `proof`), or
   missing.
-- **Rule**: what is proven and how, with a link to the specification that states it in full.
+- **Rule**: what is proven and how, with a link to the documentation page that teaches it.
 - **Buys**: the code accepted or refused, the check dropped, the cost saved.
 - **Falls back**: when it does not apply, what the compiler does and what the user writes.
 - **Lives in**: the pass or the file that makes it. A proof is a pass of its own (D1086), in `proofs/<name>/`; a
@@ -69,8 +69,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: only a call-free name or path narrows, for every fact a condition proves (presence, a class, a count, a bound): a path holding a call anywhere (`thing.pop().held`, `items[next()]`) narrows nothing, since writing it again calls again, except the list of a `[]` read (`crash Store<$item>().values[index]`), whose proven read still tests what it finds; `if` narrows its block and not its `else`; `fallback` and `crash`
   narrow the rest of the block; `while` narrows its body; a `switch` `T:` case narrows its case; one check narrows
   every link of the path before it. It tests presence, never the value
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule),
-  [control_flow.md](../SpiteLanguage/specs/control_flow.md#control-flow-in-full)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently),
+  [control_flow.md](../spite_documentation/control_flow.md)).
 - **Buys**: reads, calls and stores through a `T?` are accepted, and the narrowed read has no test.
 - **Falls back**: refused, "this value may be null (it is a ...), so '...' cannot be read from it yet: narrow it
   first with 'if value { }', 'fallback value' or 'crash value'". Put a call's result in a `var` and narrow that.
@@ -93,7 +93,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: each side of an `and` holds where the whole holds, and later sides see the earlier ones narrowed; the
   right side of an `or` sees the left side's opposite. This holds in every condition, `while` and a plain
   expression included, and a `while` body starts with every side of its `and` narrowed. No side of an `or` narrows
-  where the whole holds ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  where the whole holds ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: one line proves several reads (`if node and node.ready`).
 - **Falls back**: the sides are tested in order, so a later side is never read unproven.
 - **Lives in**: embedded, `statements.spite` (`read_a_binary_fact`), `loops.spite` (`read_a_present_side`),
@@ -114,8 +114,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   every case leaves, an `if`/`else` that both leave), the opposite of its condition holds: each `or`
   side written `not path` narrows that path, each side read with the sides before it narrowed (`if not holder or
   not holder.weapon { return }` proves both), and other sides turned around prove `[]` reads and divisors
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule),
-  [control_flow.md](../SpiteLanguage/specs/control_flow.md#switch-over-values)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently),
+  [control_flow.md](../spite_documentation/control_flow.md#switch-over-values)).
 - **Buys**: guards read as answers: `if not monster { return }` and the rest reads `monster`, and `if not found or
   found.count() == 0 { return }` proves `found[0]`.
 - **Falls back**: the rest stays unproven, and a read of it is refused.
@@ -137,7 +137,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   after that block, and no next pass reads it, when the block sits inside the loop that holds the assignment; every
   other path keeps it undone: a block that falls through, an `else` that falls through, a loop inside the leaving
   block that goes around
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: nothing stale is read: a narrowed read has no run-time test.
 - **Falls back**: refused, "assigning to '...' inside this loop undoes a narrowing made before the loop, and the
   next pass would read it unproven: narrow it inside the loop instead"; after the assignment, a read is refused
@@ -175,7 +175,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `Parallel`, and anything in one that does; a call through a function value reaches the functions taken as values
   with its signature, and a function that only calls its parameters reaches the functions each caller passes it; a
   `drop()` that may run is followed too. Inside a loop, a call anywhere in the body undoes a narrowing made before
-  the loop for the next pass ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  the loop for the next pass ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
   "Before the loop" is told by the scope the narrowing lives in (`NarrowedRead.proven_in_frame` against the loop's
   base, `statements.spite`: `extend_the_reads_over_the_loop`), not by the calls logged since, so a check right
   before the `while`, with nothing logged between, counts too; a copy made right before it the same way. A check
@@ -244,7 +244,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: built, by construction.
 - **Rule**: an address read out of an object counts as a use of that object, so the object is let go only after the
-  address's last use ([memory.md](../SpiteLanguage/specs/memory.md)).
+  address's last use ([memory.md](../spite_documentation/memory.md)).
 - **Buys**: no address outlives its object.
 - **Falls back**: nothing to fall back to: the library has no `Memory.Address`, and every object is let go at the
   end of its block or statement, never earlier. The rule comes back with addresses or with a release at last use.
@@ -260,7 +260,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   after `name != 0` or `name > 0`, `name > 0` after `name > 0`), a class test the type already answers, the same
   call-free condition on the very next statement of the same block, a `fallback`/`crash` that folds true, and a check
   of a value that cannot be null are refused, naming where it was proven
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
   Where the check is a line of its own or an `if`, in a program's own file, `fixes/after_building` rewrites it before the refusal.
   A check after a write or a call that undoes the proof is a new proof, not a repeat: the builder reads the attribute itself for it
   (`Values.note_a_rechecked_read`) and narrows again, and only the whole build answers which it is, by what `a call keeps a proof` answers (`KeptCopies.may_change_under`).
@@ -298,7 +298,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   the function, then narrowed (by `fallback`, `crash`, `if`, `while`, `switch`, `not` of it or an `and` side), is
   refused: narrow the source itself. `if not copy { }` tests it whether or not its block leaves. A snapshot taken
   before its source changes is allowed
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
   A path holding a written call is never a copy's source, since writing it again calls again; a copy through a getter keeps a value when the getter may have an effect, or when a call or a write before the read may assign what it reads (`kept_copies.spite`: `getter_may_change_under`), and one through a getter that only reads is a copy like any other.
   A local whose source (an attribute, or one along its path) a call or a write through any object may change between the copy and a read of the local keeps a value, so it is not a copy: the builder records those reads as `NarrowedRead`s with their `copy_line`, and `proven_checks` asks the question `narrowings_kept_across_calls` asks.
 - **Buys**: one name per value.
@@ -343,7 +343,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   assigning an attribute from the same attribute) and an `else` taken only when the name tested is null keep the
   proof. The proofs are run together until neither proves more, so a local holding a proven answer, or an answer
   returning a proven attribute, is proven too
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: `var shown: Monster? = Monster()`, never assigned null, reads `shown.name` with no narrowing; an
   `fallback`, `crash` or `if` on such a name is the "already narrowed" error: "'shown' is already narrowed by the
   proof that every value it can hold is present: remove this check".
@@ -370,7 +370,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built (D1746).
 - **Rule**: in a `--hot-reload` or `--repl` build only locals are proven present; an attribute is read as the
   `T?` it is declared, so a null an older version of the program left in a running object is still checked
-  ([repl.md](../SpiteLanguage/specs/repl.md)).
+  ([repl.md](../spite_documentation/repl.md)).
 - **Buys**: a reload or a REPL assignment can never break a proof the running objects were built under. Those builds
   are for iteration time, not for the checks a proof drops.
 - **Falls back**: the attribute keeps its narrowing: a check of it is written and is not the "already narrowed" error.
@@ -382,7 +382,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built, wider than the old rule.
 - **Rule**: `if value == Monster { }` narrows the block to `Monster`, on a name, a member path, or a side of an
   `and`; a null tests false; in a generic class a test that cannot hold folds to false; `!=`, the `else` and a
-  leaving `if` narrow nothing ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#unions-in-full)).
+  leaving `if` narrow nothing ([values_and_types.md](../spite_documentation/values_and_types.md#unions)).
 - **Buys**: a member's attributes and functions are read inside the block.
 - **Falls back**: a member read without the test is refused; use a `switch`.
 - **Lives in**: embedded, `statements.spite` (`read_a_binary_fact`), `operators.spite` (`class_test_value`, `same_class`).
@@ -394,7 +394,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built.
 - **Rule**: a path ends at a `return`, a bare `crash`, an `if`/`else` whose branches both end, a `switch` whose every
   case ends, or a folded condition whose taken branch ends; a function that answers something and
-  has a path that reaches its end is refused ([failure.md](../SpiteLanguage/specs/failure.md#fallback-is-control-flow)).
+  has a path that reaches its end is refused ([failure.md](../spite_documentation/failure.md#fallback-is-a-guard)).
 - **Buys**: no caller gets a value nobody wrote.
 - **Falls back**: refused, "'...' answers ..., but ... it reaches its end without a 'return' ...: end that path with
   'return <value>', or with 'crash' if it cannot happen".
@@ -410,7 +410,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   with no constructor or a constructor without parameters. It is refused where the answer type has no such value (an
   enum, a class whose constructor takes arguments, a singleton) and in a constructor; an `if` that only returns that
   value, or a last `if` with no `else` that only checks presence, is refused naming the `fallback`
-  ([failure.md](../SpiteLanguage/specs/failure.md#fallback-is-control-flow)).
+  ([failure.md](../spite_documentation/failure.md#fallback-is-a-guard)).
 - **Buys**: a guard written once, whose answer the answer type states.
 - **Falls back**: refused, "'fallback' returns what the answer type builds with no arguments, and a ... has none ...".
 - **Lives in**: `crashes.spite` (`default_return`, `is_built_with_no_arguments`), the proof `proofs/guard_asserts`,
@@ -428,8 +428,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: a switch over a union covers every member; over a `T?` of a class or a union it covers the class (or
   every member) and `Null`; over an enum or a `Boolean` every value. There is no `_:`, and a switch over a whole
   number or a text is refused; a repeated case is an error
-  ([control_flow.md](../SpiteLanguage/specs/control_flow.md#switch-over-values),
-  [values_and_types.md](../SpiteLanguage/specs/values_and_types.md#unions-in-full)).
+  ([control_flow.md](../spite_documentation/control_flow.md#switch-over-values),
+  [values_and_types.md](../spite_documentation/values_and_types.md#unions)).
 - **Buys**: a member, a value or a null added later cannot be forgotten.
 - **Falls back**: refused, "this switch over '...' has no case for ...: add the cases"; over a `T?`, "this switch
   over 'target' has no case for Null: 'target' is a Monster?, and a switch over a 'T?' covers its value and null, so
@@ -455,7 +455,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   index (`code - 32 < glyphs.count()` proves `glyphs[code - 32]`), `base + k < list.count()` for k from 1 to 63, and
   the count facts `== k`, `>= k`, `> k`, `!= 0` and `not is_empty()` (at most 64 indices) prove `list[...]`, in
   `fallback`, `crash`, `if`, `while`, the right of an `and`, and after an `if` that leaves
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: a proven read answers `T`, not `T?`.
 - **Bounds written with `<=`**: `crash p + k <= list.count()` (in a `fallback`, a `crash` or an `if`), and the `if
   p + k > list.count()` that leaves, prove `list[p]` to `list[p + k - 1]`, as `p + (k - 1) < list.count()` would.
@@ -480,7 +480,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built.
 - **Rule**: a read proven by a bound or a count keeps one never-taken test against the list's length, which halts
   naming the read: a bound proves only the top of an index, and the list may have changed
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: a wrong or stale proof halts, never reads out of bounds.
 - **Falls back**: "spite: '...' is outside its list: a bound proves only the top of an index, and this one is below 0
   or the list changed, at ...".
@@ -496,7 +496,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `float`, 8 for `long` and `double`) answers the number, not a `T?`, where `buffer[p + w - 1]` is proven: by a
   bound (`while p + 3 < bytes.count()`), a count, or a `<=` bound (`crash body + 10 <= header.count()` proves the
   reads at `body`, `body + 4` and `body + 8` up to a short). The position is a name, a name plus a literal, or a
-  literal ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  literal ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: a header or a record is read with one bound, and each read is a number.
 - **Falls back**: the read is a `T?` the program narrows. A proven read still answers null below 0 or past a
   changed buffer, and then halts: "spite: 'header.read_integer_little_endian_at(body)' is outside its list: a
@@ -512,7 +512,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   list.count()` that leaves), with `while row < rows` and inside it `while column < stride`, proves
   `list[row * stride + column]` in the inner loop: `row * stride + column` is below `rows * stride`. The four are
   names. Assigning `rows` or `stride`, or a call that shrinks the list, forgets the guard; assigning `row` or
-  `column` forgets the read ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  `column` forgets the read ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: the cells of an area are read with one guard, each a `T`.
 - **Missing**: the reads of a width (`read_<number>_at`) at a cell.
 - **Falls back**: the read is a `T?` and is narrowed, or refused where a `T` is needed. The guard proves only the top:
@@ -528,7 +528,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: the guard `base + width <= list.count()` (a `fallback` or a `crash`), or the `if base + width >
   list.count()` that leaves, with `while counter < width`, proves `list[base + counter]` inside the loop, base and
   width and counter being names. Assigning `base` or `width`, or a call that shrinks the list, forgets the guard
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: a slice of a list is read with one guard.
 - **Falls back**: the read is a `T?` and is narrowed. The guard proves only the top: a negative base or counter
   halts at the read, as every proven read does ("... is outside its list ...").
@@ -541,7 +541,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: partly built (done differently).
 - **Rule**: inside `while index < values.count()` with the counter stepped last, the count is read once and the
   items with no test; a second list indexed by the counter is tested once before the loop
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)). A window read
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)). A window read
   `values[at + k]` is proven by a test of `at + m` against the same count on the one way into it, `k <= m`, with
   `at` never negative and not written in between, so `while at + 2 < values.count()` proves `values[at]`,
   `values[at + 1]` and `values[at + 2]`; and a test of a compare's answer against zero (what `crash values[pick]`
@@ -582,7 +582,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: built (by ranges, wider than the old rule).
 - **Rule**: a divisor that is a non-zero constant, or whose range leaves out 0 (and -1 when the dividend may be the
-  smallest value), is divided with no test ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#numeric-types)).
+  smallest value), is divided with no test ([values_and_types.md](../spite_documentation/values_and_types.md#numeric-types-and-the-casting-rule)).
   A local tested `!= 0` (`crash parts != 0`, `if parts == 0 { return }`, the block of `if parts != 0 { }`) is not zero
   until it is assigned, which a range cannot say, so the ranges keep it as a fact beside the range (D1450); it is
   divided with no test when its range also leaves out -1 or the dividend's range leaves out the smallest value.
@@ -601,7 +601,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: built.
 - **Rule**: a whole-number `/` or `%` whose divisor is a constant expression equal to zero is refused
-  ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#numeric-types)).
+  ([values_and_types.md](../spite_documentation/values_and_types.md#numeric-types-and-the-casting-rule)).
 - **Buys**: a division that always halts never compiles.
 - **Falls back**: refused, "'...' divides by zero, which always halts the program ...".
 - **Lives in**: embedded, `operators.spite` (`binary_value`, `refuse_a_division_by_zero`).
@@ -613,7 +613,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: every whole-number `+`, `-`, `*`, unary `-`, the smallest value divided by -1 and a narrowing halts if
   it does not fit; the step of a counter under its bound carries no check, nor does constant arithmetic; constant
   arithmetic that does not fit is a compile error
-  ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#numeric-types)).
+  ([values_and_types.md](../spite_documentation/values_and_types.md#numeric-types-and-the-casting-rule)).
 - **Buys**: no wrapped number is ever read.
 - **Missing**: a `Long` counter whose bound has no range keeps its check. Interactive builds prove ranges like
   every build: a range is about a function's own locals, which nothing typed at the REPL and no reload writes. The constant overflow error is made for `Integer` arithmetic only, as the old compiler made it: other
@@ -632,7 +632,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   force (every side of an `and` that holds, every side of an `or` that does not, as after `if amount > 100 or
   amount < 0 { return 1 }`); `count()`, `length()`, `%`, `minimum`, `maximum` and `clamp` bound their answers; loops widen counters and
   count passes; a total holds at most `passes` terms
-  ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#a-range-proves-a-check-unneeded)).
+  ([values_and_types.md](../spite_documentation/proofs.md#a-range-proves-arithmetic-fits)).
 - **Buys**: an operation the ranges prove carries no overflow check.
 - **Missing**: loop locals other than counters; types wider than 4 bytes only where a value gives a range.
   `absolute` bounds its answer by its receiver's range, and a counter only stepped down by constants under `>` or
@@ -674,7 +674,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built.
 - **Rule**: in arithmetic, comparisons and bitwise functions, a right side with more bits (or a decimal beside a
   whole number) is refused, naming the turned-around form, unless it is a literal within the left type
-  ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#casting)).
+  ([values_and_types.md](../spite_documentation/values_and_types.md#numeric-types-and-the-casting-rule)).
 - **Buys**: nothing is cut to fit.
 - **Falls back**: refused, "'...' is added in Integer, since arithmetic takes the left side's type, and the right
   side is a Long, which would be cut to fit: write the Long first ...". A literal out of the left type's range gets
@@ -688,7 +688,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: built (wider than the old rule).
 - **Rule**: a maths member whose receiver and arguments are known is answered by the compiler, a not-a-number answer
-  excepted ([standard_library.md](../SpiteLanguage/specs/standard_library.md#maths)).
+  excepted ([standard_library.md](../spite_documentation/standard_library.md#maths)).
 - **Buys**: no call at run time.
 - **Falls back**: one call into the C library, or one instruction.
 - **Lives in**: the passes `low_optimization_passes/compile_time_evaluation` and `constant_folding`; see
@@ -719,7 +719,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: an `if` on a Build field, a codegen value, a type test, a walk's `attribute.class` or name test, a class
   test the value's type answers, or a compile-time question (and `not`, `and`, `or`, `==`, `!=` over them) keeps
   only its taken branch; only what survives is compiled
-  ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md)).
+  ([metaprogramming.md](../spite_documentation/metaprogramming.md)).
 - **Buys**: generic code compiles only the branch its class takes.
 - **Missing**: `function_waits` and `function_writes_parameter` are answered after every function is built, so both
   branches are built and checked (D673), and the high pass `answered_facts` then keeps only the taken one; a codegen number compared with a literal folds only when one side is a
@@ -761,8 +761,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: waiting spreads from `sleep`, console, file and socket reads and joins, through calls, function values
   (to every function taken as a value with the same signature) and `type` dispatch, to a fixed point; letting go of
   a `Concurrent` waits; where it cannot tell, the answer is true
-  ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks),
-  [concurrency.md](../SpiteLanguage/specs/concurrency.md)).
+  ([metaprogramming.md](../spite_documentation/metaprogramming.md#walking-a-programs-structure),
+  [concurrency.md](../spite_documentation/concurrency.md)).
 - **Buys**: `function_waits` and `is_resumable` fold.
 - **How**: a function that assigns a local again, assigns an attribute or clears a list, where what it replaces may
   hold a `Concurrent` (the handle itself, an object or a list holding one), lets one go, so it waits (D1134; the
@@ -786,7 +786,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built (D1442).
 - **Rule**: `$T.argument_count("<pattern>")` and a walk's `phase.argument_count()` fold to a whole number; every
   function a pattern matches must take the same number, and a pattern matching none is an error
-  ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks)).
+  ([metaprogramming.md](../spite_documentation/metaprogramming.md#walking-a-programs-structure)).
 - **Buys**: generic code chooses its call by the count.
 - **Falls back**: refused, "'...' has no function named '...', so 'argument_count' has nothing to count ...", or
   "... has no one answer: the functions of 'Painter' that fit it take different numbers of arguments ('update_each'
@@ -805,7 +805,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: every attribute is a number, a Boolean, a text, an enum, a symbol, a singleton or a `T?` of those; no
   `drop()`; no function uses `this` as a value; not a generic template. `fits_vector()`, `is_fixed_size` and
   `any_attribute_fits_vector` fold, and an `Items<T>` stores its items inline exactly when a `Vector<T>` could be
-  made ([collections.md](../SpiteLanguage/specs/collections.md)).
+  made ([collections.md](../spite_documentation/collections.md)).
 - **Buys**: items inline, lent rather than counted.
 - **Generic templates**: every generic class is made once per set of type arguments before anything asks, so no
   `fits_vector()` is ever asked of an unbound template and the old compiler's "not a generic template" test has
@@ -826,7 +826,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: `function_writes_parameter(...)` and `.is_mutated` fold: a write is an attribute or item set, a call
   that writes, passing it to a written parameter, or storing it where a later write could reach it; reassigning,
   copying plain values out and writing a singleton are not; where it cannot tell, true
-  ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks)).
+  ([metaprogramming.md](../spite_documentation/metaprogramming.md#walking-a-programs-structure)).
 - **Buys**: generic code skips a copy a callee never writes.
 - **Falls back**: true for an unknown function value, a member template or a function with a `Spite.*` parameter.
 - **Lives in**: the proof `proofs/compile_time_facts`, reading `building/facts.spite` (`writes`, `callee_writes`).
@@ -839,7 +839,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: `$T.is_stateful` folds to "some function other than the constructor and `drop()` writes its own object
   or a singleton, or a singleton it binds keeps state"; where it cannot tell (a function it cannot build, such as a
   member template or one taking a `Spite.*` parameter), true
-  ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md#walks)).
+  ([metaprogramming.md](../spite_documentation/metaprogramming.md#walking-a-programs-structure)).
 - **Buys**: generic code shares an object nothing changes.
 - **How**: the study (`building/facts.spite`) gives every singleton a slot of its own (`s:<class>`), reached by
   naming the singleton, by an attribute or a local holding it, and through every call that writes one; a program
@@ -857,7 +857,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built (wider than the old rule).
 - **Rule**: with the whole program known, an attribute read through a `type` is read at the offset every class that
   fills it shares, with no class test; off in interactive builds
-  ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#inline-types-and-duck-typing-in-full)).
+  ([values_and_types.md](../spite_documentation/values_and_types.md#inline-types-and-duck-typing)).
 - **Buys**: no class test on a read through a `type`.
 - **Falls back**: a test of the class id, for a member some filler answers with a function, a shape call with
   arguments, or an offset another union takes.
@@ -874,7 +874,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   the condition it runs under). A
   bare name is judged by the narrowing errors instead ("already narrowed", a plain value). A `fallback` or `crash`
   that folds true is "Proving what is proven is an error"; a `crash` that folds false is the next section
-  ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: no dead branch in the source.
 - **Falls back**: refused, "'if 2 > 1' is decided while compiling and is always true here, so it tells a reader
   nothing: remove the 'if' and keep the code it runs".
@@ -890,7 +890,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   refused when the program would stop there every time the function runs and the program reaches the function, naming
   the instance and each side of an `and`; a `fallback` that folds false answers its default and the rest of its block is
   not compiled, and so is the rest of a block after a `crash` that folds false
-  ([metaprogramming.md](../SpiteLanguage/specs/metaprogramming.md)).
+  ([metaprogramming.md](../spite_documentation/metaprogramming.md)).
 - **Decided**: a `Build` field, a `Fact`, a Boolean constant, a comparison of two written numbers, and every answer of
   the next section. The condition of an `if` on such a value decides which branch counts.
 - **Not refused**: a `crash` in a branch that never runs; one under an `if`, a `while` or a `switch` case not decided while compiling, or after a `return`, a
@@ -939,7 +939,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: partly built.
 - **Rule**: only what the entry reaches is kept, transitively: a function called, a member a dispatch may call, a
-  function taken as a value ([compiler.md](../SpiteLanguage/specs/compiler.md)).
+  function taken as a value ([compiler.md](../spite_documentation/compiler.md)).
 - **Buys**: a program carries none of what it does not use.
 - **Missing**: reach is decided only while the high representation is built: a function whose only callers were
   inlined, or that sits in a branch folded later, is still written; a function nobody calls is never built, so it
@@ -953,7 +953,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: missing (no reload: the compiler refuses `--hot-reload`, so no build can swap stale code in).
 - **Rule**: a `--hot-reload` build records every fact one class took from another; a reload replays them, compiles
   the changed classes, and falls back to a whole compile, saying why, when a fact differs
-  ([repl.md](../SpiteLanguage/specs/repl.md)).
+  ([repl.md](../spite_documentation/repl.md)).
 - **Lives in**: none (`HOT_RELOAD.md` is the design).
 - **Checked by**: none.
 
@@ -961,7 +961,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: missing (no reload: the compiler refuses `--hot-reload`, so no object can be left on an old layout).
 - **Rule**: every live object of a program class is reachable by the reload, which moves it to the new layout, and
-  a function that cannot be re-pointed refuses the reload by name ([repl.md](../SpiteLanguage/specs/repl.md)).
+  a function that cannot be re-pointed refuses the reload by name ([repl.md](../spite_documentation/repl.md)).
 - **Lives in**: none.
 - **Checked by**: none.
 
@@ -971,7 +971,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: missing (the library has no `Memory.Heap`).
 - **Rule**: a buffer allocated and freed in one block, used only through address primitives in between, lives in
-  the frame ([memory.md](../SpiteLanguage/specs/memory.md)).
+  the frame ([memory.md](../spite_documentation/memory.md)).
 - **Falls back**: a `Buffer` is a heap object.
 - **Lives in**: none.
 - **Checked by**: none.
@@ -981,7 +981,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: partly built (D801, D953).
 - **Rule**: a fresh object of a class that holds only numbers, Booleans, enums and singletons, that never leaves its
   function, lives in registers or the frame; a constructor-made local whose class holds text or lists too
-  ([memory.md](../SpiteLanguage/specs/memory.md)).
+  ([memory.md](../spite_documentation/memory.md)).
 - **Buys**: no allocation, no count.
 - **Missing**: the fresh result of a function that is not inlined goes to the heap; an object whose class lets go
   of attributes is placed only in registers, never in the frame, but a `Buffer`, which is placed in the frame and
@@ -1005,7 +1005,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: partly built (D991).
 - **Rule**: a local list made by a literal or `List<T>()` and filled at its own level, then only read, lives in the
   frame; a variadic list its callee only reads lives in the caller's frame
-  ([functions_and_operators.md](../SpiteLanguage/specs/functions_and_operators.md)).
+  ([functions_and_operators.md](../spite_documentation/functions_and_operators.md)).
 - **Buys**: no allocation.
 - **Missing**: variadic lists; lists of objects or texts; reads other than `count()` and `[]`; constant data.
 - **Falls back**: a heap list.
@@ -1020,7 +1020,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: partly built (only through inlining and known closures, D1043).
 - **Rule**: a function value passed to a function whose every mention of it is a call lives in the caller's frame,
-  uncounted ([functions_and_operators.md](../SpiteLanguage/specs/functions_and_operators.md)).
+  uncounted ([functions_and_operators.md](../spite_documentation/functions_and_operators.md)).
 - **Missing**: the "only calls it" proof over the callee, so a callee not inlined gets a counted heap value.
 - **Falls back**: a heap function value with a counted receiver.
 - **Lives in**: indirectly, `compile_time_evaluation/partial_evaluation.spite` (an optimisation, which calls a
@@ -1032,7 +1032,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: built (D1251).
 - **Rule**: a back reference (the attribute of a cycle the compiler picks to hold no count,
-  [memory.md](../SpiteLanguage/specs/memory.md)) answers `null` once its object is freed, and a read of it holds its
+  [memory.md](../spite_documentation/memory.md)) answers `null` once its object is freed, and a read of it holds its
   object for as long as the value read is used, so `child.parent.leave()` whose body lets the parent's owner go
   still runs on a live parent, and frees it when the call returns.
 - **How**: the read calls `_back_counted`, which answers `null` when the object's count is zero and otherwise
@@ -1055,7 +1055,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: partly built (D759, D1396).
 - **Rule**: an attribute `a: T?` of a class `C` holds no count when one function both sets `c.a = t` and stores `c`
-  into `t`'s attribute `f`, which holds a `C` ([memory.md](../SpiteLanguage/specs/memory.md)); never from the class
+  into `t`'s attribute `f`, which holds a `C` ([memory.md](../spite_documentation/memory.md)); never from the class
   graph alone, since taking an owning reference for a back one would free an object the program still holds.
 - **How**: each function of the program is read for the stores it makes: `x.a = y`, `x.f.append(y)` (and
   `insert`, `prepend`, `add`, `set_at`), `x.f[k] = y`, and a constructor that keeps its argument in an attribute. A
@@ -1085,7 +1085,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: partly built (D724, D1252, D1397).
 - **Rule**: a class whose attributes can reach itself, or a class that does, or reach a back reference, is copied
   through a table made for the call, so a cycle is copied once per object however the program reaches it
-  ([memory.md](../SpiteLanguage/specs/memory.md)).
+  ([memory.md](../spite_documentation/memory.md)).
 - **How**: a class reaches another through an object attribute, a bound type, or a union attribute (each member of
   the union); a union attribute inside a table copy is copied through its member's `_deep_copy_in`, dispatched on
   the class it holds, with the same table. A class that reaches a `type` attribute is copied through a table
@@ -1270,8 +1270,8 @@ refuses nothing (D1781).
 
 ## Threads and locks
 
-The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, for the counts,
-[memory.md](../SpiteLanguage/specs/memory.md#the-memory-model).
+The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, for the counts,
+[memory.md](../spite_documentation/memory.md).
 
 ### Calls that share nothing written
 
@@ -1352,7 +1352,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Rule**: while a `copy()` or `deep_copy()` kept in a `var` lives, nothing writes anything (no attribute, no list,
   no buffer's bytes, in its statements or in what they call), nothing of it outlives its block, and nothing in the
   program asks a copied class which object it is; the copied classes have no `drop()`, no back reference and no
-  cycle ([memory.md](https://github.com/Spite-Language/spite_spec/blob/master/specs/memory.md)).
+  cycle ([memory.md](https://github.com/Spite-Language/spite_documentation/blob/master/memory.md)).
 - **Buys**: the copy is the original, counted once more: no object is made and none let go
   ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-deep-copy-nothing-changes-is-the-original)).
 - **Falls back**: the copy, as written: a write anywhere while it lives, a call whose effects are not known, a copy
@@ -1485,7 +1485,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: built.
 - **Rule**: a write to a local only this function holds (a constructor's result, a copy, an always-new result),
-  never read after it, is refused ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  never read after it, is refused ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
   A write inside a branch of an `if` or a `switch` to a local an outer block made is judged the same way, when
   nothing after it in any block around it names the local and nothing from the declaration to the write (the
   conditions and the other branches included) can let the object go; a loop between them stops the search, since
@@ -1498,7 +1498,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: built.
 - **Rule**: a local read from a list item, then assigned as its last mention, is refused: the list still holds the
-  old item ([memory.md](../SpiteLanguage/specs/memory.md#assigning-a-name-read-from-a-list-changes-only-the-name)).
+  old item ([memory.md](../spite_documentation/memory.md#a-name-read-from-a-list-names-the-item-until-you-assign-it)).
 - **Lives in**: the proof `proofs/lost_writes` (`check_a_replaced_item`).
 - **Checked by**: conformance/replaced_items, conformance/memory_replaced_branch,
   conformance/memory_replaced_answered, conformance/memory_replaced_unwritten; tests/memory_replaced_allowed.
@@ -1517,7 +1517,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: in a loop that sleeps, a call with no arguments and no answer that can wait is started as a
   state machine of the compiler's own, unless either side writes back a value read before a wait
-  ([concurrency.md](../SpiteLanguage/specs/concurrency.md#a-wait-in-a-frame-does-not-hold-the-frame)).
+  ([concurrency.md](../spite_documentation/concurrency.md#a-wait-in-a-frame-does-not-hold-the-frame)).
 - **Falls back**: it waits where it is written, listed under "Waits that hold the frame".
 - **Lives in**: `high_intermediary_representation/building/frame_starts.spite`.
 - **Checked by**: tests/frame_waits, tests/frame_waits_kept.
@@ -1533,7 +1533,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: built.
 - **Rule**: a name, parameter or attribute only written and never read is refused
-  ([style.md](../SpiteLanguage/specs/style.md#unused-is-an-error)). An attribute is read when a built function
+  ([style.md](../spite_documentation/style.md#nothing-unused)). An attribute is read when a built function
   reads it, counted for the class that owns it (every `AttributeRead` of the high representation, whatever made
   it: the program's code, a template's walk, a writer of JSON or binary, `to_debug`), so another class's attribute
   of the same name never hides it. Code the builder does not build still counts from the syntax tree: a bare name
@@ -1551,7 +1551,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: built.
 - **Rule**: a construction written as a statement of its own is refused
-  ([classes_and_files.md](../SpiteLanguage/specs/classes_and_files.md#a-constructed-object-must-be-kept-and-used)).
+  ([classes_and_files.md](../spite_documentation/classes_and_files.md#a-constructed-object-is-kept-and-used)).
 - **Lives in**: `validators/abstract_syntax_tree/dropped_construction`.
 - **Checked by**: conformance/dropped_construction.
 
@@ -1559,7 +1559,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: built (D1444).
 - **Rule**: following every attribute of every singleton through the objects those attributes make, a path back to
-  the start is refused ([classes_and_files.md](../SpiteLanguage/specs/classes_and_files.md#singleton-rules)). An
+  the start is refused ([classes_and_files.md](../spite_documentation/classes_and_files.md#singletons)). An
   attribute whose default constructs its class links to it: "binds" for a singleton, "makes" for an ordinary
   object. A circle is refused when a singleton is on it, told from the last singleton on it, at that singleton's
   attribute that starts the rest: "singleton 'Metronome' makes 'Tick', which binds 'Metronome': singletons initialise
@@ -1574,7 +1574,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: built.
 - **Rule**: a flag's value has its field's type, an unknown flag is refused, and an `if` around a `load` is decided
-  from Build fields and literals ([programs.md](../SpiteLanguage/specs/programs.md#build-settings-build)).
+  from Build fields and literals ([programs.md](../spite_documentation/programs.md#compile-time-settings-build)).
 - **Lives in**: `validators/command_line/known_flag`, `validators/name_resolution/settings`,
   `validators/abstract_syntax_tree/load_statement`.
 - **Checked by**: conformance/flag_value, load_unknown_condition, unknown_compiler_flag, bare_flag_not_boolean,
@@ -1584,7 +1584,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: partly built.
 - **Rule**: a value fits a `type`, and a `$T` its constraint, on its attributes, its functions, their types and
-  not-null ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#inline-types-and-duck-typing-in-full)).
+  not-null ([values_and_types.md](../spite_documentation/values_and_types.md#inline-types-and-duck-typing)).
 - **How**: a class passed as a `type` must have each attribute with the type's type, and each function with as many
   parameters, the same parameter types and the same answer, the type's own name standing for the class that fits
   (D1136). A member whose type is a union is filled by the same union or by one of its classes; one whose type is a
@@ -1608,7 +1608,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: built (D1441, D1443).
 - **Rule**: the member a template names exists and has the right kind (a Boolean for `filter_`, a number for
   `sum_`), and a passed function takes the element
-  ([collections.md](../SpiteLanguage/specs/collections.md#standard-library-metaprogramming)).
+  ([collections.md](../spite_documentation/collections.md#member-templates-loops-you-do-not-write)).
 - **How**: on a library collection, `sum_` needs a number, `count_` a Boolean, `each_` a function, `map_` a member
   that answers something, `sort_by_` a number or a text, and `filter_`, `any_` and `all_` a Boolean, each refused at
   the call with its own text (D1142).
@@ -1627,7 +1627,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 
 - **Status**: built.
 - **Rule**: the `T` of a JSON or binary writer or reader holds no union, `type` or function value anywhere
-  ([json.md](../SpiteLanguage/specs/json.md)).
+  ([json.md](../spite_documentation/json.md)).
 - **Lives in**: `constraints.spite` (`check_the_written_form`, judged by `validators/high_intermediary_representation/generic_constraint`), `validators/high_intermediary_representation/serializer`.
 - **Checked by**: conformance/json_unwritable, binary_writer_union, binary_object_key.
 
@@ -1636,7 +1636,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: numbers, Booleans, enums, text, lists of numbers, number-only `type`s and function values cross into C;
   a callback's parameters and context are checked
-  ([foreign_libraries.md](../SpiteLanguage/specs/foreign_libraries.md#what-crosses)).
+  ([foreign_libraries.md](../spite_documentation/foreign_libraries.md#what-crosses)).
 - **Lives in**: `high_intermediary_representation/building/foreign_crossing.spite`.
 - **Checked by**: conformance/foreign_call_mistakes, foreign_call_through_parameter, foreign_callback_mistakes,
   foreign_callback_context_literal, foreign_callback_named_directly, foreign_callback_needs_singleton,
@@ -1648,7 +1648,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: a `while` a member template already says, a chain of `if`s that is a `switch`, the same call opening
   every branch, a switch that is a class test and a text that is one hole are refused, naming the short form
-  ([control_flow.md](../SpiteLanguage/specs/control_flow.md)).
+  ([control_flow.md](../spite_documentation/control_flow.md)).
 - **Lives in**: `high_intermediary_representation/building/template_walks.spite`,
   `validators/abstract_syntax_tree/switch_chain`, `repeated_branch_call`, `switch_cases`, `lone_hole` (run by
   `proofs/rules_after_building`, reading whether the builder built each declared hole as text:
@@ -1666,7 +1666,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   running program's manifest holds. No file changed, added or removed answers `unchanged` before anything is
   lowered; otherwise the classes the changed files declare are the reload's changed classes
   (`HighProgram.reload_changed_classes`), and a removed file counts as changed
-  ([repl.md](https://github.com/Spite-Language/spite_spec/blob/master/specs/repl.md#live-reload-in-detail)).
+  ([repl.md](https://github.com/Spite-Language/spite_documentation/blob/master/repl.md#how-it-works)).
 - **What it buys**: a save that changed nothing answers at once, and the generator swaps in only the functions whose
   machine code changed (their digests, [HOT_RELOAD.md](HOT_RELOAD.md#the-parts)), so an unchanged class's functions
   keep the code the program runs.
@@ -1688,8 +1688,8 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   the running objects of one would take the other's class.
 - **What it buys**: no reloaded function ever reads a live object through a layout it was not made with: the reload
   is refused instead, and the program keeps all of its code.
-- **When it does not apply**: a build without `--hot-reload` has no reload. Moving the objects to the new layout,
-  which the specification asks for, is to build.
+- **When it does not apply**: a build without `--hot-reload` has no reload. Moving the objects to the new layout
+  is to build.
 - **Lives in**: `proofs/reload_reaches_moved_objects`, registered after `lent_attributes` through
   `HighOptimizationPasses.Proving`.
 - **Checked by**: tests/hot_reload_refuses_new_attributes.

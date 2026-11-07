@@ -6,7 +6,7 @@ Read `README.md`, then `ARCHITECTURE.md`, then the [issues](https://github.com/S
 
 Port the old compiler (0.0.6) into this architecture: the same language, the same
 errors with the same words, the same optimisations, written so a small model can maintain it. The language
-is decided; [the specification](https://github.com/Spite-Language/spite_spec/blob/master/specs/README.md) is the rule when anything disagrees.
+is decided; the programs of [spite_spec](https://github.com/Spite-Language/spite_spec) (`tests/`, `conformance/`) are the rule when anything disagrees, and [spite_documentation](https://github.com/Spite-Language/spite_documentation) teaches it.
 
 ## Rules
 
@@ -31,8 +31,8 @@ is decided; [the specification](https://github.com/Spite-Language/spite_spec/blo
 - A fresh clone building from an old seed is not a goal. The latest compiler builds the next one, and no push adds a stepping stone to `STONES` (D1887).
 - Build once per batch of changes (about twelve minutes, on one core), then run [spite_spec](https://github.com/Spite-Language/spite_spec) (see `README.md`).
 - A change here or in [spite_standard_library](https://github.com/Spite-Language/spite_standard_library) that changes
-  what a program writes, what it answers or an error's words updates, in the same push, the specification page that
-  states it (`spite_spec/specs/`) and the docs page that teaches it ([spite_documentation](https://github.com/Spite-Language/spite_documentation),
+  what a program writes, what it answers or an error's words updates, in the same push, the program that
+  holds it (`spite_spec/tests/` or `conformance/`) and the docs page that teaches it ([spite_documentation](https://github.com/Spite-Language/spite_documentation),
   `skills/spite/reference.md` included), examples and their output too. Search both for the old name before pushing.
 - Every feature or fixed error gets a test in [spite_spec](https://github.com/Spite-Language/spite_spec): `tests/<name>` must pass, `conformance/<name>`
   must fail with the old compiler's exact error text.

@@ -383,7 +383,7 @@ walks up through the frame pointers; without the file it prints only the fault l
 The repositories sit side by side under one folder, as `gh repo clone` names them: this one as `spite_compiler`
 and [spite_standard_library](https://github.com/Spite-Language/spite_standard_library) beside it. The source is
 written to the language this compiler checks: its entry file loads `../spite_standard_library/windows`, and every
-rule of [the specification](https://github.com/Spite-Language/spite_spec/blob/master/specs/README.md) holds in it.
+rule the programs of [spite_spec](https://github.com/Spite-Language/spite_spec) check holds in it.
 Nothing else is needed: no link, no copied file, no older compiler. `bash scripts/bootstrap.sh --install` builds
 it from a fresh clone:
 
@@ -527,7 +527,7 @@ needs. The folder is named after the rule, and the validator holds every word of
   `validators/**/validator.spite` defines a `check`, and no file outside `validators/` and `proofs/` defines a
   `refuse...` or builds a `Diagnostics.Failure`. The files still waiting for a rule to move (the parser, the lexer
   and the `typing` refusals, after spite_compiler#25) are listed there, each with what it waits for.
-- A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_spec/blob/master/specs/style.md#the-file-content-budget))
+- A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_documentation/blob/master/style.md#the-file-content-budget))
   is told with the file's other refusals, by `validators/abstract_syntax_tree/file_content_budget`. No list or flag excuses a file.
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
   its line and function, made once. A message quotes code through `printers/spite`.

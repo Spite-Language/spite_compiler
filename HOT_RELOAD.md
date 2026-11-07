@@ -4,7 +4,7 @@ Save a file of a running program: the program compiles it again, writes the func
 into a block of new code, and swaps them in where it already pauses, at a loop's check point or at the REPL's
 prompt. Objects and singletons stay. What a reload may change is the language's rule, in
 [`repl.md`](https://github.com/Spite-Language/spite_documentation/blob/master/repl.md) ("What a reload can change"),
-and its rules are in [the specification](https://github.com/Spite-Language/spite_spec/blob/master/specs/repl.md#live-reload-in-detail).
+and how it works is in [How it works](https://github.com/Spite-Language/spite_documentation/blob/master/repl.md#how-it-works).
 
 A build without `--hot-reload` carries none of this: no slot, no manifest, no watcher, no reload code. The flag
 implies `--development`, an inspectable build.

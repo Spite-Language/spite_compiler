@@ -287,7 +287,7 @@ var lines = List<Line>()
 with no table, since nothing an `Order` holds leads back to an `Order`.
 
 **When it does not apply:** a class that declares its own `deep_copy()` is copied through it. **What a program can
-observe:** nothing but time and allocations: the copy is what [the rule](https://github.com/Spite-Language/spite_spec/blob/master/specs/memory.md) says.
+observe:** nothing but time and allocations: the copy is what [the rule](https://github.com/Spite-Language/spite_documentation/blob/master/memory.md) says.
 
 ## A deep copy nothing changes is the original
 
@@ -335,7 +335,7 @@ No round copies the orders: `copies` is `orders`.
 A `+`, `-` or `*` on whole numbers halts when its answer does not fit its type. Where the compiler proves while
 compiling that it always fits, the check is left out and the operation is one machine instruction. The proof is a
 range for each operand (the proof `proofs/ranges`), the rule of
-[`specs/values_and_types.md#a-range-proves-a-check-unneeded`](https://github.com/Spite-Language/spite_spec/blob/master/specs/values_and_types.md#a-range-proves-a-check-unneeded):
+[`proofs.md#a-range-proves-arithmetic-fits`](https://github.com/Spite-Language/spite_documentation/blob/master/proofs.md#a-range-proves-arithmetic-fits):
 
 - a literal is its own range; a local or a parameter of a whole-number type of at most four bytes has its type's
   range until a `var` or an assignment gives it its value's; a `Long` has no range until one is given to it;
@@ -1220,7 +1220,7 @@ so `spite.frame` lines name the guard's function and its callers as before.
 ## A reported call's answer is let go after its check
 
 A call in a `crash` condition is run once, into a hidden local the check and the report both read
-([failure.md](../spite_spec/specs/failure.md#what-a-crash-reports)). The hidden locals and the check are built as a
+([failure.md](../spite_documentation/failure.md#what-a-crash-reports)). The hidden locals and the check are built as a
 block of their own, so the answer is let go as soon as the check passes, not when the function ends:
 
 ```spite
@@ -3193,7 +3193,7 @@ func count_words(words: List<String>): Dictionary<String, Integer> {
 When it applies: every dictionary. When it does not: the work around it; a read written twice
 (`if counts[word] { total = total + counts[word] }`) still looks the key up twice. What a user can observe: the
 time, one more allocation for a dictionary's table once it holds a key, and `remove_at`, which takes time in
-proportion to the table, as the specification says. `keys()`, `values()` and `to_debug()` answer in insertion order
+proportion to the table, as the documentation says. `keys()`, `values()` and `to_debug()` answer in insertion order
 as before.
 
 ## A dictionary keyed by numbers hashes the numbers
