@@ -9,7 +9,7 @@ of its own.
 
 ## The files of one function
 
-The fields of a lowering live in one object, `LoweringState` (`lowering_state.spite`): the function being written, its
+The fields of a lowering live in one object, `FunctionLoweringState` (`function_lowering_state.spite`): the function being written, its
 blocks, the current block, the register count, the scopes and the owned values, the frame lists and the counts of the
 slots, and the singleton being locked. Every concern takes it, never the `FunctionLowering`, which would be a reference
 cycle. The concerns call each other both ways, so none holds another as an attribute: a function makes the ones it

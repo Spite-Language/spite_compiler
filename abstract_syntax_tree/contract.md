@@ -8,6 +8,7 @@ The step from a file's text to its tree, once per class file.
 - `parser`: the tokens as a tree.
 - `shapes`: the tree, data only (declarations, expressions, statements, types).
 - `walk`: the walks over a tree that rules and fixes share.
+- `default_guard`, `names`, `unused_names`, `switch_chain`: what a rule of `validators/abstract_syntax_tree` and its fix, or that rule alone, read in a tree; a rule's folder holds only the rule.
 
 The tree holds what was written and where; it decides no error (the rules of `validators/abstract_syntax_tree` do) and
 writes no text (`printers/spite` does).

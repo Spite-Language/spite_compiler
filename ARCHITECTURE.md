@@ -57,7 +57,8 @@ registered:
 | low_optimization_passes | `LowOptimizationPass` | `optimized(LowIntermediaryRepresentation.LoweredProgram)` |
 
 The entry class registers its passes in its own setup, in order, with `register(pass)`, each made there and never
-changed; `run` runs them in that order. Since the setup only makes passes and registers them, `proofs/setup_lists`
+changed; `run` runs them in that order. That setup is the stage's list: there is no `every_pass.spite` or
+`every_proof.spite` (D1924). Since the setup only makes passes and registers them, `proofs/setup_lists`
 knows the list and `high_optimization_passes/setup_list_calls` writes `run` as one direct call per pass, so a stage
 costs nothing over a hand-written sequence. `register` crashes once `run` has started. A high pass's entry is its folder's `pass.spite`
 (class `Pass`), which the stage registers; a low pass's entry class is named for the folder and is what the stage registers,
@@ -216,34 +217,38 @@ and the last shaping of blocks, live values and copy coalescing.
 
 One layout for each kind of folder, so opening one says where its entry is. `folder_layout/` walks the compiler's own
 namespaces with `crash`es decided while compiling, so a stage without its entry, a pass or proof folder without its
-class, a rule folder without `Validator`, a fix layer without `EveryFix` or a printer without `Printer` refuses the
-build, under `--check` too (D1885, `spite_spec`'s `compiler_folder_layout_broken`). A `Validator` holds a `check*` when it
+class, a low pass without the entry named for its folder (D1923), a rule folder without `Validator` or holding anything
+else, a fix layer without `EveryFix` or a printer without `Printer` refuses the build, under `--check` too (D1885,
+`spite_spec`'s `compiler_folder_layout_broken`). A `Validator` holds a `check*` when it
 walks something, or a `refuse*` when the lexer or the parser found the mistake and only asks it for the words (`spelling`,
-`syntax`; D1886). `compiler_contracts_are_true` holds that every stage has a `contract.md` naming only files, folders and
-flags that exist. The size of every file is held by `validators/abstract_syntax_tree/file_content_budget`.
+`syntax`; D1886). `compiler_contracts_are_true` holds that every stage has a `contract.md`, and that every `contract.md` names only files,
+folders and flags that exist. The size of every file is held by `validators/abstract_syntax_tree/file_content_budget`
+(D1854, D1925).
 
 | Folder kind | What it holds today |
 |---|---|
 | stage (`name_resolution/`, `outputs/`, ...) | `<stage>.spite` (the entry class `Stage.Stage`) and `contract.md` |
 | high pass | `high_optimization_passes/<pass>/pass.spite` (class `Pass`) and its helpers |
-| low pass | `low_optimization_passes/<pass>/pass.spite` (class `Pass`, the per-function work) and the entry `<pass>.spite` the stage registers; some folders hold several entries |
+| low pass | `low_optimization_passes/<pass>/<pass>.spite` (the entry the stage registers, named for the folder) and `pass.spite` (class `Pass`, the per-function work), with its helpers; some folders hold several entries (D1923) |
 | proof | `proofs/<proof>/proof.spite` (class `Proof`) and its helpers |
-| validator rule | `validators/<layer>/<rule>/validator.spite` (class `Validator` with a `check*` or a `refuse*`), and `every_rule.spite` in the layer |
+| validator rule | `validators/<layer>/<rule>/validator.spite` (class `Validator` with a `check*` or a `refuse*`) and nothing else, but `file_content_budget`'s waiting list until spite_compiler#311 closes; `every_rule.spite` in the layer |
 | fix rule | `fixes/<layer>/<rule>/fix.spite` (class `Fix`), and `every_fix.spite` in the layer; `fixes/fixes.spite` writes |
 | printer | `printers/<printer>/printer.spite` (class `Printer`) |
 | emitter | `generators/<target>/instructions/<instruction>.spite` per instruction kind |
-| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet, except `building/prompt` (`SourceState`, and `*_text.spite` for the texts it writes), `building/reflection.spite` (`ReflectionState`), `building/statements.spite` (`StatementsState`), `building/values.spite` (the `Values` its concerns take) and `low_optimization_passes/vector_loops` (`VectorLoopState`), which keep their fields in one state object every concern class takes, as the lowering does |
-| helper | next to what uses it; a helper several passes read lives in the stage folder (`high_optimization_passes/references.spite`), though a few low passes still read each other's `Pass` and `compile_time_evaluation`'s `Frame` and `Machine` |
+| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; a hub holding the exhaustive `switch`, and a `<hub>_state.spite` where the concerns share one state object: `lowering/function_lowering.spite` (`FunctionLoweringState`), `building/statements.spite` (`StatementsState`), `building/reflection.spite` (`ReflectionState`), `building/prompt/source.spite` (`SourceState`, and `*_text.spite` for the texts it writes); `building/values.spite` has no state file, since its concerns take the `Values`. `low_optimization_passes/vector_loops` (`VectorLoopState`) is a pass split the same way |
+| helper | next to what uses it: beside the one pass or proof that reads it; in the stage folder when several passes read it (`high_optimization_passes/references.spite`, `low_optimization_passes/machine.spite`); on the representation when proofs share it (`high_intermediary_representation/writes.spite`); in the tree's folder when rules and fixes share it (`abstract_syntax_tree/unused_names`). A pass may run another pass's `Pass` (`known_headers`, `partial_evaluation`), which is no helper (D1925) |
+| other | `diagnostics`, `model`, `folder_layout`, `generators/<target>`, what the stages share: no stage of their own, so no layout beyond the emitter's |
 
-The passes and proofs are registered in the constructor of their stage's entry class, in order; there is no
-`every_pass.spite` or `every_proof.spite` yet, since `proofs/setup_lists` reads that constructor.
+The passes and proofs are registered in the constructor of their stage's entry class, in order; that constructor takes
+the place of an `every_pass.spite` or `every_proof.spite`, since `proofs/setup_lists` reads a setup and the constructor is
+the list a pass folder is added to (D1924).
 
 ## The lowering of a function
 
 `low_intermediary_representation/lowering/function_lowering.spite` is the entry of the lowering of one function. It holds
 the exhaustive `switch`es over the values and statements (`lower_value`, `lower_a_statement`), the block and register
 primitives (`emit`, `new_register`, `new_block`, `switch_to`), the small questions every concern asks (`is_a_pointer`,
-`width_of`) and the setup of a function (`lowered`). Its fields live in one object, `LoweringState`, which every concern
+`width_of`) and the setup of a function (`lowered`). Its fields live in one object, `FunctionLoweringState`, which every concern
 takes (never the `FunctionLowering`, which would be a reference cycle). The concerns call each other both ways, since a
 statement lowers a value and a value lowers a call, so none holds another as an attribute: a function that needs the
 primitives, a switch or another concern makes one over the same state as a local (`var lowering = FunctionLowering(state)`).
@@ -514,7 +519,7 @@ a file and never changes its input.
   `Fixes.Fixes` writes what it prints ([Fixes](#fixes)); `--final-classes` writes its merged classes as
   `printers/final_class` prints them.
 - `printers/diagnostics`, `printers/high_intermediary_representation`, `printers/low_intermediary_representation`,
-  `printers/optimization_report`, `printers/machine_code`. `--high-ir` and `--low-ir` write the two
+  `printers/optimization_report`. `--high-ir` and `--low-ir` write the two
   representations next to the executable, as `<program>.high_ir.txt` and `<program>.low_ir.txt`.
 
 A text that is an identity (a type's key, an instance's name) is not printing: it belongs to the step that owns it.

@@ -47,7 +47,7 @@ like "is this call ever reached" or "may this value be null" has no answer on th
 - `ownership`: which parameters a function keeps and how a value is used, which the lowering counts with.
 - `layout.spite`, `waits.spite`, `assignments.spite`, `singleton_forms.spite`, `coarse_loops.spite`, `quiet_values.spite`,
   `list_gets.spite` and `setup_list_walk.spite`: what the high passes record on the program for the lowering.
-- `presence_facts.spite` and `narrowed_read.spite`: what is proven present and what is narrowed.
+- `presence_facts.spite` and `narrowed_read.spite`: what is proven present and what is narrowed; `writes.spite`: which write undoes a narrowed read, for the proofs that ask.
 
 ## What the builder does
 

@@ -26,7 +26,7 @@ no compiler setting against the `Build` the program declares (`validators/comman
   `.spite/build/<name>.high_ir.txt`.
 - `writes_low_ir`: from `--low-ir`, the same for the low representation, `.spite/build/<name>.low_ir.txt`.
 A reload reads the running program's manifest (`reload_host_reader.spite`) and hands each line, and what cannot be read, to
-`validators/hot_reload`; a program the system cannot start is decided by `validators/command_line/runnable_program`.
+`validators/command_line/hot_reload`; a program the system cannot start is decided by `validators/command_line/runnable_program`.
 A fix found after building restarts the compile on the fixed files: `fixes/fixes.spite` runs the compiler again with the
 flags it was given, in the same folder and environment, and ends this run with that run's exit code (D1833).
 `Build.program` is the full path of the folder built. The program it runs is given no flags: its settings come from
