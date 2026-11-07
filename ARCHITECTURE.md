@@ -581,3 +581,10 @@ answer, in an `if` that runs only when the left side did not decide. A `while` w
 answer the same way: a `Boolean` local starts true, and each round of the loop does the work, sets the local to the
 condition and runs the body in an `if` on it. The work is written once, so its temporaries live and die within a round
 and a fact a proof records on a value holds for every round that value is reached by.
+
+### A fold keeps the calls it was asked of
+
+A read worked out while compiling (`thing.pop().class` is `Thing`, `count().attributes` is empty) answers without
+the value it was asked of. When that value calls (`reads_without_a_call` is false), the builder keeps it as pending
+work (`Operators.run_what_a_fold_drops`), so the call runs once, where the condition reaches it, and the answer is
+still the folded one. A value that only reads folds with nothing kept.
