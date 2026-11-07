@@ -774,7 +774,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: the proof `proofs/vector_fit` refuses a `Vector` of a class that does not fit, judging every
   `Vector` the builder recorded making (`context.vector_sites`); the test itself, `constraints.spite`
   (`fits_a_vector`, with `uses_this_as_a_value`, and `is_kept_inline` for each attribute, which the proof asks
-  too, so its refusal and the answer an `Items<T>` folds never disagree), is still asked while building by `values.spite`
+  too, so its refusal and the answer an `Items<T>` folds never disagree), is still asked while building by `reads.spite`
   and `fills.spite` (`is_fixed_size`), which choose the form of what they build from it.
 - **Checked by**: tests/items_columns, tests/folded_checks, tests/folded_lends, tests/lent_list_elements,
   tests/reflection_objects; conformance/folded_crash.
