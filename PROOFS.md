@@ -76,7 +76,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   first with 'if value { }', 'fallback value' or 'crash value'". Put a call's result in a `var` and narrow that.
 - **Lives in**: the narrowing itself is building, since it decides the type of every read:
   `high_intermediary_representation/building/statements.spite` (`read_facts`, `read_a_fact`, `narrowed_block_of`),
-  `scope.spite` (`narrow`), `values.spite` (`narrowed`, `with_its_links`). The refusal of a value that may be null
+  `scope.spite` (`narrow`), `reads.spite` (`narrowed`), `operators.spite` (`with_its_links`). The refusal of a value that may be null
   where a value is needed is the proof `proofs/present_values`, which judges every `PresenceSite` the builder
   recorded (`values.spite`: `note_a_maybe_null`), a `Boolean?` condition among them.
 - **Checked by**: tests/path_narrowing, tests/present_zero, tests/nullable_narrowing, tests/narrowed_path_kept,
@@ -94,7 +94,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Buys**: one line proves several reads (`if node and node.ready`).
 - **Falls back**: the sides are tested in order, so a later side is never read unproven.
 - **Lives in**: embedded, `statements.spite` (`read_a_binary_fact`), `loops.spite` (`read_a_present_side`),
-  `values.spite` (`logic_value`, `right_condition_of`).
+  `operators.spite` (`logic_value`, `right_condition_of`).
 - **Checked by**: tests/and_narrowing, tests/and_return_narrowing, tests/while_and_narrows;
   conformance/while_or_proves_nothing, conformance/while_and_or_proves_nothing,
   conformance/while_and_inner_or_proves_nothing, conformance/while_and_not_proves_nothing,
@@ -164,7 +164,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   or one of another class than the narrowed one (not one to the same path, which the builder already follows, nor one to an object made in the same function and not handed on yet).
   A call or a write that may assign an earlier attribute of the path counts whatever it writes, since it changes which object is read.
   One in a block that always leaves does not reach a read after that block, nor a read before it in that block when the block sits inside the read's own loop (`NarrowedRead.is_left_behind`); a block that falls through, and a loop that goes around after it, still count.
-  A call in a condition counts: `fallback` and `crash` log theirs, and a fact of an `and` (or of the `or` of a guard that leaves) is proven before any call on a later side, while a fact on a later side is proven after it (`statements.spite`: `note_the_facts_before_a_call`, `log_a_condition_that_calls`; `values.spite`: `right_condition_of`, for what a later side reads).
+  A call in a condition counts: `fallback` and `crash` log theirs, and a fact of an `and` (or of the `or` of a guard that leaves) is proven before any call on a later side, while a fact on a later side is proven after it (`statements.spite`: `note_the_facts_before_a_call`, `log_a_condition_that_calls`; `operators.spite`: `right_condition_of`, for what a later side reads).
   A write of a value of the narrowed type leaves the proof true, whichever object it reached. What a call may assign is decided by the attribute's
   class and name: a constructor's writes to its own object and writes to an object made in the same function, before
   it is stored, copied, passed, called on, taken with a function or returned (for a local made before a loop, before
@@ -185,7 +185,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   message names the function that writes when it is not the one called.
 - **Lives in**: the pass `proofs/narrowings_kept_across_calls` (its own folder), run on the high representation
   once every function is built. The builder records each narrowed read
-  (`high_intermediary_representation/narrowed_read.spite`, `values.spite`: `note_a_narrowed_read`) with the calls
+  (`high_intermediary_representation/narrowed_read.spite`, `reads.spite`: `note_a_narrowed_read`) with the calls
   built since its check (`statements.spite`: `log_the_calls_of`); what a call may assign is
   `high_intermediary_representation/assignments.spite` read for narrowings (`read_for_narrowings`).
 - **Checked by**: tests/receiver_call_effects, tests/same_name_call_effects,
@@ -244,7 +244,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: the proof `proofs/proven_checks`, judging what `statements.spite` recorded
   (`note_a_proven_check`, `note_a_proven_condition`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`,
   `note_a_repeated_check`, `note_a_proven_divisor`, `note_a_check_that_always_holds`, `note_the_checks`,
-  `note_one_check`) and `values.spite` (`note_an_answered_class_test`).
+  `note_one_check`) and `operators.spite` (`note_an_answered_class_test`).
 - **Checked by**: conformance/check_proves_nothing, conformance/known_fact_checked, conformance/proven_element,
   conformance/proven_index_check, conformance/assert_on_plain_value, conformance/leaving_if_proves_nothing,
   conformance/crash_on_plain_local, conformance/known_fact_inside_its_if, conformance/known_fact_divisor,
@@ -344,8 +344,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   leaving `if` narrow nothing ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#unions-in-full)).
 - **Buys**: a member's attributes and functions are read inside the block.
 - **Falls back**: a member read without the test is refused; use a `switch`.
-- **Lives in**: embedded, `statements.spite` (`read_a_binary_fact`), `values.spite` (`class_test_value`,
-  `same_class`).
+- **Lives in**: embedded, `statements.spite` (`read_a_binary_fact`), `operators.spite` (`class_test_value`, `same_class`).
 - **Checked by**: tests/class_test, tests/generic_class_test, tests/codegen_class_test, tests/null_class_test_false,
   tests/tested_classes; conformance/class_test_not_member.
 
@@ -427,7 +426,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   '[ ]' answers a 'T?' ...: ..., or prove the count first, 'crash list.count() > 2'".
 - **Lives in**: the proving is building, since it decides whether a read is a `T`: `loops.spite`
   (`read_a_bound`, `read_a_counted_list`, `whole_index_of`), `statements.spite` (`read_a_counted_member`,
-  `read_a_turned_bound`, `note_a_counted_list`, `forget_after_a_shrinking_call`), `values.spite` (`index_value`, `proven_by_its_path`); the
+  `read_a_turned_bound`, `note_a_counted_list`, `forget_after_a_shrinking_call`), `collections.spite` (`index_value`, `proven_by_its_path`); the
   refusal of an unproven read where a `T` is needed is the proof `proofs/present_values`.
 - **Checked by**: tests/count_bound_proofs, tests/bound_proofs, tests/count_in_name_proves, tests/structural_index,
   tests/proof_again_in_loop, tests/compared_count_proves_read, tests/while_bound_facts; conformance/index_reads,
@@ -564,7 +563,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   ([values_and_types.md](../SpiteLanguage/specs/values_and_types.md#numeric-types)).
 - **Buys**: a division that always halts never compiles.
 - **Falls back**: refused, "'...' divides by zero, which always halts the program ...".
-- **Lives in**: embedded, `values.spite` (`binary_value`, `refuse_a_division_by_zero`).
+- **Lives in**: embedded, `operators.spite` (`binary_value`, `refuse_a_division_by_zero`).
 - **Checked by**: conformance/division_by_constant_zero, conformance/remainder_by_folded_zero.
 
 ### Arithmetic that does not fit halts
@@ -639,7 +638,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Falls back**: refused, "'...' is added in Integer, since arithmetic takes the left side's type, and the right
   side is a Long, which would be cut to fit: write the Long first ...". A literal out of the left type's range gets
   the literal-fit error instead; inside a template's number copy the cut halts at run time.
-- **Lives in**: embedded, `values.spite` (`binary_value`, `refuse_a_cut`, `refuse_a_wider_bitwise_operand`).
+- **Lives in**: embedded, `operators.spite` (`binary_value`, `refuse_a_cut`), `calls.spite` (`refuse_a_wider_bitwise_operand`).
 - **Checked by**: conformance/wider_right_operand, conformance/wider_comparison, conformance/wider_bitwise_operand,
   conformance/wider_decimal_right, conformance/wider_multiplication_order, conformance/wider_subtraction;
   tests/signedness_not_wider.
@@ -688,8 +687,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   that only reads names, attributes and tests is left out (D1143), and one that calls something is run on its own,
   once, before the statement, and its answer dropped (D1513).
 - **Falls back**: a run-time test of a constant, removed later by constant folding; both branches must compile.
-- **Lives in**: the builder, `statements.spite` (`build_a_decided_if`), `values.spite` (`condition_of`,
-  `folded_logic`, `decided_comparison`, `reflection_question`): deciding a condition is choosing what to build, and
+- **Lives in**: the builder, `statements.spite` (`build_a_decided_if`), `operators.spite` (`condition_of`, `folded_logic`, `decided_comparison`), `questions.spite` (`reflection_question`): deciding a condition is choosing what to build, and
   the branch not taken is never built, so nothing is left for a proof to judge (D1110).
 - **Checked by**: tests/codegen_member_fold, tests/walked_class_fold, tests/private_walk, tests/codegen_short_circuit,
   tests/codegen_kind_tests, tests/codegen_class_test, tests/build_settings, tests/folded_helpers,
@@ -755,8 +753,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   asked of a walk that is not over functions, "'argument.argument_count()' is how many arguments the function a walk
   over functions stands for takes, so it is asked with no name in a template over functions, such as
   'run_phase_each(phase: Spite.FunctionDeclaration)'".
-- **Lives in**: embedded, `values.spite` (`counted_arguments`, `refuse_disagreeing_counts`,
-  `pattern_argument_count`).
+- **Lives in**: embedded, `questions.spite` (`counted_arguments`, `refuse_disagreeing_counts`, `pattern_argument_count`).
 - **Checked by**: tests/folded_argument_count, tests/system_phases, tests/streamed_rows; conformance/argument_count,
   conformance/argument_count_missing, conformance/passed_argument_count, conformance/argument_count_disagrees,
   conformance/argument_count_outside_walk.
@@ -841,7 +838,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Falls back**: refused, "'if 2 > 1' is decided while compiling and is always true here, so it tells a reader
   nothing: remove the 'if' and keep the code it runs".
 - **Lives in**: `statements.spite` (`note_a_decided_condition`, from `build_if`, `build_while` and `build_assert`),
-  judged by `proofs/proven_checks`; `values.spite` counts each `Build` read it folds (`folded_build_read`).
+  judged by `proofs/proven_checks`; `reads.spite` counts each `Build` read it folds (`folded_build_read`).
 - **Checked by**: conformance/decided_if_true, conformance/decided_if_false, conformance/decided_while,
   conformance/decided_assert_false; tests/decided_conditions_kept.
 
@@ -1560,7 +1557,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
   '...'", "... attribute 'size' is a String, but the type needs an Integer", "... its 'render' returns an Integer,
   but the type needs a String", "... argument 1 of its 'scaled' is a String, but the type needs an Integer", "... its
   'scaled' takes 2 argument(s), but the type needs 1".
-- **Lives in**: embedded, `values.spite` (`filled_shape`, `fits_as_a_class`), `constraints.spite`.
+- **Lives in**: embedded, `fitting.spite` (`filled_shape`, `fits_as_a_class`), `constraints.spite`.
 - **Checked by**: conformance/shape_mismatch, shape_function_mismatch, shape_attribute_type_mismatch,
   shape_return_type_mismatch, shape_parameter_type_mismatch, generic_constraints, generic_constraint_nullable,
   generic_constraint_not_a_type, shape_operator_without_function, generic_constraint_mistyped.
@@ -1580,7 +1577,7 @@ The rules are in [concurrency.md](../SpiteLanguage/specs/concurrency.md) and, fo
 - **`each` given a value**: "'each' takes a function to call with each element, such as 'each(say_hello)' or
   'each(greeter.say_hello)', and 'engine' is not one".
 - **Falls back**: refused with its own text.
-- **Lives in**: embedded, `values.spite` (`specialized_over_a_class`), `validators/high_intermediary_representation/typing`.
+- **Lives in**: embedded, `templates.spite` (`specialized_over_a_class`), `validators/high_intermediary_representation/typing`.
 - **Checked by**: conformance/member_template_mistakes, member_template_map_nothing, member_template_sort_boolean,
   member_template_filter_text, member_template_any_number, own_member_template_mistakes, each_of_a_value,
   conformance/passed_functions.

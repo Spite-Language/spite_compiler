@@ -29,6 +29,17 @@ like "is this call ever reached" or "may this value be null" has no answer on th
   `building/loops.spite` the `while`, the renewal of lists and the loop checks; `building/switches.spite` the `switch`;
   `building/crashes.spite` the `crash` and the site it is recorded under; `building/reports.spite` the programs that
   print a crash's and a fallback's report.
+  `building/values.spite` is the entry of the values builder: `Values(context)` keeps `value_of` (the exhaustive `switch`
+  over the written expressions) and the helpers several concerns use. Its concerns take the `Context` and the `Values`
+  and never hold the parent; one that needs another makes it as a local (`var fitting = Fitting(context, values)`).
+  `building/operators.spite` holds the binary and unary values, logic, comparisons and class tests;
+  `building/literals.spite` the literal, default, text, enum and `this` values; `building/fitting.spite` `fitted`, the
+  conversions, unions, shapes and signatures; `building/collections.spite` the list, dictionary and object literals, the
+  index and the foreign call; `building/reads.spite` names, members, getters, attributes and build settings;
+  `building/walked_lists.spite` the walks over what a class declares; `building/arguments.spite` the arguments of a call
+  and their spreading; `building/calls.spite` calls, constructions, member calls, presets and function values;
+  `building/templates.spite` specialising, pattern matching and the template match; `building/naming.spite` plurals and
+  inflection; `building/questions.spite` value calls, reflection questions, waits and writes questions and folded counts.
 - `building/folded/constants.spite` and `building/folded/known_copies.spite`: what a question on a class or namespace known while
   compiling answers, and the copy of a function that knows it.
 - `statements` and `values`: the representation itself, data only, one file per kind; the unions of both are

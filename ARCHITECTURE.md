@@ -232,7 +232,7 @@ flags that exist. The size of every file is held by `validators/abstract_syntax_
 | fix rule | `fixes/<layer>/<rule>/fix.spite` (class `Fix`), and `every_fix.spite` in the layer; `fixes/fixes.spite` writes |
 | printer | `printers/<printer>/printer.spite` (class `Printer`) |
 | emitter | `generators/<target>/instructions/<instruction>.spite` per instruction kind |
-| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet, except `building/prompt` (`SourceState`, and `*_text.spite` for the texts it writes), `building/reflection.spite` (`ReflectionState`), `building/statements.spite` (`StatementsState`) and `low_optimization_passes/vector_loops` (`VectorLoopState`), which keep their fields in one state object every concern class takes, as the lowering does |
+| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; no hub or state file layout yet, except `building/prompt` (`SourceState`, and `*_text.spite` for the texts it writes), `building/reflection.spite` (`ReflectionState`), `building/statements.spite` (`StatementsState`), `building/values.spite` (the `Values` its concerns take) and `low_optimization_passes/vector_loops` (`VectorLoopState`), which keep their fields in one state object every concern class takes, as the lowering does |
 | helper | next to what uses it; a helper several passes read lives in the stage folder (`high_optimization_passes/references.spite`), though a few low passes still read each other's `Pass` and `compile_time_evaluation`'s `Frame` and `Machine` |
 
 The passes and proofs are registered in the constructor of their stage's entry class, in order; there is no
@@ -288,6 +288,23 @@ or a bound; `switches` builds the `switch`, checks its cover and its case kinds 
 builds the `crash`, the guard's failure, and the site and identity a crash is recorded under; `reports` writes the
 program that prints a crash's report and the parts of the failed condition it shows. A caller outside names the entry:
 `statements.function_body_of`.
+
+The values builder (`high_intermediary_representation/building/values.spite`) builds the value of every expression.
+Its concerns take the `Context` and the `Values` and do not hold their parent, as `declared_walks.spite` does, so
+`Values(context)` and every caller that holds a `Values` stay as they are; the fields they share (`temporary_count`,
+`spread_into`, `typing`) stay on the `Values`. A concern that needs another makes one as a local
+(`var fitting = Fitting(context, values)`). The order of the fits, of the calls and of the operators is written as plain
+functions in each file, never as a list of rules, since the order is the meaning. `values` keeps `value_of` (the
+exhaustive `switch` over the written expressions), `known_constants` and the helpers more than one concern uses;
+`operators` builds the binary and unary values, logic, comparisons and class tests; `literals` the literal, default,
+text, enum and `this` values; `fitting` the fit of a value to a type (`fitted`), its conversions, unions, shapes and
+signatures; `collections` the list, dictionary and object literals, the index and the foreign call; `reads` the
+names, members, getters, attributes and what a build setting reads; `walked_lists` the walks over the classes, values
+and attributes a class declares; `arguments` the arguments of a call, their spreading and the refusals of a value passed;
+`calls` the calls, constructions, member calls, presets and function values; `templates` the specialising of a member
+template, pattern matching and the template match; `naming` plurals and inflection; `questions` the value calls,
+the reflection questions, the waits and writes questions and the folded counts. A caller outside names the concern:
+`operators.condition_of`, `fitting.fitted`.
 
 ## The targets
 
@@ -478,10 +495,10 @@ needs. The folder is named after the rule, and the validator holds every word of
   `refuse...` or builds a `Diagnostics.Failure`. The files still waiting for a rule to move (the parser, the lexer
   and the `typing` refusals, after spite_compiler#25) are listed there, each with what it waits for.
 - A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_spec/blob/master/specs/style.md#the-file-content-budget))
-  stops the compile first, in `validators/abstract_syntax_tree/file_content_budget`. The files still over it wait in
+  stops the compile first, in `validators/abstract_syntax_tree/file_content_budget`. A file still over it would wait in
   that folder's `waiting_list.spite`, a literal of program folder plus path, with no flag, setting or file that adds to
   it. `tests/compiler_file_content_budget` of spite_spec holds the same list, so it can only shrink, and a listed file
-  back within the budget is an error until it leaves both. Both go when spite_compiler#311 closes.
+  back within the budget is an error until it leaves both. Both lists are empty now, and both go when spite_compiler#311 closes.
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
   its line and function, made once. A message quotes code through `printers/spite`.
 - A rule that needs the whole program runs once the program is complete; a rule about one class runs per class,
