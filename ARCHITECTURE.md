@@ -490,6 +490,14 @@ them. Every other fix is still written by a failing compile, so an error in code
 what those proofs check themselves. A refusal that stops building before the proofs run cannot know, so a fix
 marked before it is still written.
 
+## A refusal names what the program wrote
+
+A crash report holds each call's answer in a hidden local (`___reported_1`, `reports.spite`: `held_answer_of`), so
+the condition it builds names that local. `Context.reported_texts` keeps what each one holds as the program wrote it,
+and a refusal that prints a part of that condition prints it with `Context.written_text_of`, which shows the call
+instead of the local (`crash thing.pop().class == Thing`: "'thing.pop()' is a Thing here, ..."). Paths and keys
+still print the hidden name, since a second `thing.pop()` is another call.
+
 ## Validators
 
 `validators/<level>/<rule>/validator.spite` holds a class `Validator()` whose `check(...)` takes the data the rule
