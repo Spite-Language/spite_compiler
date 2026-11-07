@@ -1,0 +1,1290 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+
+func Templates(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func passed_on_template(
+    function: Model.FunctionModel,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): SpiteCompiler.Value? {
+    var literals = Literals(context, values)
+    var calls = Calls(context, values)
+    var current = context.current_function
+    var is_walked = not current.bound_pattern.is_empty() or function.reflected_answer_index >= 0
+    var is_bound = not current.bound_parameter.is_empty() and is_walked
+    fallback is_bound and function.template_index < 0
+    var symbol_index = passed_symbol_index(function, call)
+    fallback symbol_index >= 0
+    var specialised_name = "{function.name}_for_{current.bound_function}"
+    var made = context.current_class.function_named(specialised_name)
+    if not made {
+        made = specialised_for_the_pattern(function, symbol_index, specialised_name)
+    }
+    crash made
+    var passed = List<SpiteCompiler.Expression>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if index != symbol_index {
+            passed.append(argument)
+        }
+        index = index + 1
+    }
+    var own = literals.this_value()
+    return calls.called(made, own, passed)
+}
+
+func passed_symbol_index(
+    function: Model.FunctionModel,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): Integer {
+    if not function.declaration {
+        return -1
+    }
+    var found = -1
+    var index = 0
+    while index < function.declaration.parameters.count() {
+        var parameter = function.declaration.parameters[index]
+        var argument = call.arguments[index]
+        if passes_the_symbol(parameter, argument) {
+            found = index
+        }
+        index = index + 1
+    }
+    return found
+}
+
+func passes_the_symbol(
+    parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter,
+    argument: SpiteCompiler.Expression?,
+): Boolean {
+    fallback argument
+    fallback context.resolver.types.is_a_declaration_type(parameter.declared_type)
+    return names_the_member(argument, context.current_function.bound_parameter)
+}
+
+func specialised_for_the_pattern(
+    function: Model.FunctionModel,
+    symbol_index: Integer,
+    specialised_name: String,
+): Model.FunctionModel {
+    var current = context.current_function
+    crash current.bound_member_type
+    var member_type: Model.Type = current.bound_member_type
+    var template = Model.FunctionModel(function.name, function.owner)
+    template.declaration = function.declaration
+    template.template_index = symbol_index
+    var made = context.resolver.reading.specialized(
+        template,
+        specialised_name,
+        current.bound_member,
+        member_type,
+        current.bound_member_is_a_function,
+        context.current_class,
+    )
+    made.bound_member_index = current.bound_member_index
+    made.bound_pattern = current.bound_pattern
+    made.bound_function = current.bound_function
+    made.bound_class = current.bound_class
+    made.binds_a_function_declaration = current.binds_a_function_declaration
+    context.current_class.declared_functions.append(made)
+    return made
+}
+
+func rebound_template_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+): SpiteCompiler.Value? {
+    var literals = Literals(context, values)
+    var calls = Calls(context, values)
+    var parameter = context.current_function.bound_parameter
+    fallback not parameter.is_empty()
+    var words = name.split("_")
+    fallback words.contains(parameter)
+    var passed = List<SpiteCompiler.Expression>()
+    var found = false
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        if names_the_member(argument, parameter) {
+            found = true
+        } else {
+            passed.append(argument)
+        }
+        index = index + 1
+    }
+    fallback found
+    var renamed = List<String>()
+    var word_index = 0
+    while word_index < words.count() {
+        var word = words[word_index]
+        if word == parameter {
+            renamed.append(context.current_function.bound_member)
+        } else {
+            renamed.append(word)
+        }
+        word_index = word_index + 1
+    }
+    var called_name = renamed.join("_")
+    var function = member_template_of(context.current_class, called_name)
+    fallback function
+    var own = literals.this_value()
+    return calls.called(function, own, passed)
+}
+
+func names_the_member(argument: SpiteCompiler.Expression, name: String): Boolean {
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return argument.name == name
+    }
+    return false
+}
+
+func specialised_for_a_constant(
+    function: Model.FunctionModel,
+    receiver: SpiteCompiler.Value,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value? {
+    var calls = Calls(context, values)
+    fallback function.declaration and function.template_index < 0 and function.bound_member.is_empty()
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    var place = -1
+    var index = 0
+    while index < declaration.parameters.count() and index < written.count() {
+        var parameter = declaration.parameters[index]
+        var argument = written[index]
+        if takes_an_attribute(parameter) and not constant_attribute_name(argument).is_empty() {
+            place = index
+        }
+        index = index + 1
+    }
+    fallback place >= 0
+    var picked = written[place]
+    var attribute_name = constant_attribute_name(picked)
+    var described = constant_attribute_owner(picked)
+    var described_model = context.program.class_named(described)
+    crash described_model
+    var attribute = described_model.attribute_named(attribute_name)
+    crash attribute
+    var owner = context.program.class_named(function.owner)
+    crash owner
+    var specialised_name = "{function.name}_for_{attribute_name}"
+    var made = owner.function_named(specialised_name)
+    if not made {
+        made = specialised_for_an_attribute(function, owner, place, specialised_name, described_model, attribute)
+    }
+    crash made
+    var passed = List<SpiteCompiler.Expression>()
+    var passed_index = 0
+    while passed_index < written.count() {
+        var argument = written[passed_index]
+        if passed_index != place {
+            passed.append(argument)
+        }
+        passed_index = passed_index + 1
+    }
+    return calls.called(made, receiver, passed)
+}
+
+func specialised_for_an_attribute(
+    function: Model.FunctionModel,
+    owner: Model.ClassModel,
+    place: Integer,
+    specialised_name: String,
+    described_model: Model.ClassModel,
+    attribute: Model.AttributeModel,
+): Model.FunctionModel {
+    var template = Model.FunctionModel(function.name, function.owner)
+    template.declaration = function.declaration
+    template.template_index = place
+    var made = context.resolver.reading.specialized(
+        template,
+        specialised_name,
+        attribute.name,
+        attribute.attribute_type,
+        false,
+        owner,
+    )
+    made.bound_member_index = attribute_place_of(described_model, attribute.name)
+    owner.declared_functions.append(made)
+    return made
+}
+
+func attribute_place_of(model: Model.ClassModel, name: String): Integer {
+    var index = 0
+    var found_place = -1
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if attribute.name == name {
+            found_place = index
+        }
+        index = index + 1
+    }
+    crash found_place >= 0
+    return found_place
+}
+
+func takes_an_attribute(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter): Boolean {
+    var written = parameter.declared_type
+    if written.class == AbstractSyntaxTree.Shapes.Types.NamedType {
+        var path = written.path.join(".")
+        return path == "Spite.AttributeDeclaration" and written.arguments.is_empty()
+    }
+    return false
+}
+
+func constant_attribute_name(written: SpiteCompiler.Expression?): String {
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return constant_index_name(written)
+    }
+    return ""
+}
+
+func constant_index_name(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): String {
+    var listed = index.target
+    var named = index.index
+    var lists_attributes = false
+    if listed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        lists_attributes = listed.name == "attributes" and not constant_attribute_owner_of(listed.target).is_empty()
+    }
+    fallback lists_attributes
+    var key = values.key_name_of(named)
+    if key {
+        return key
+    }
+    return ""
+}
+
+func constant_attribute_owner(written: SpiteCompiler.Expression?): String {
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return constant_listed_owner(written.target)
+    }
+    return ""
+}
+
+func constant_listed_owner(listed: SpiteCompiler.Expression?): String {
+    if listed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return constant_attribute_owner_of(listed.target)
+    }
+    return ""
+}
+
+func constant_attribute_owner_of(target: SpiteCompiler.Expression?): String {
+    var path = values.class_path_of(target)
+    fallback not path.is_empty()
+    var described = values.constant_class_of(target)
+    fallback described
+    var model = context.program.class_named(described)
+    fallback model
+    return model.key
+}
+
+func member_template_of(owner: Model.ClassModel, name: String): Model.FunctionModel? {
+    var index = 0
+    while index < owner.declared_functions.count() {
+        var template = owner.declared_functions[index]
+        if template.is_a_member_template {
+            var made = specialized_for(owner, template, name)
+            if made {
+                return made
+            }
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func dictionary_template(
+    receiver: SpiteCompiler.Value,
+    owner: Model.ClassModel,
+    name: String,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value? {
+    var calls = Calls(context, values)
+    fallback owner.bound_types["$value_type"]
+    var values_function = owner.function_named("values")
+    fallback values_function
+    var no_written = List<SpiteCompiler.Expression>()
+    var listed = calls.called(values_function, receiver, no_written)
+    var list_model = values.present_class_of(listed)
+    var template = member_template_of(list_model, name)
+    fallback template
+    return calls.called(template, listed, written)
+}
+
+func specialized_for(owner: Model.ClassModel, template: Model.FunctionModel, name: String): Model.FunctionModel? {
+    var match = template_match(template, name)
+    fallback match
+    var member_owner = values.owner_of_a_template(template, owner, name)
+    fallback member_owner
+    var written_owner: Model.Type = member_owner
+    var owner_type = bound_parameters(template, written_owner)
+    var is_rebound = owner_type.name != written_owner.name
+    var known_name = name
+    if is_rebound and owner_type.kind == 'parameters' {
+        known_name = "{name}_in_{context.current_function.bound_function}"
+    }
+    var known = owner.function_named(known_name)
+    if known and is_rebound {
+        return known
+    }
+    var made = specialized_by_kind(owner, template, owner_type, name, match)
+    if made and is_rebound and owner_type.kind == 'parameters' {
+        made.name = known_name
+        made.bound_pattern = context.current_function.bound_pattern
+        made.bound_function = context.current_function.bound_function
+    }
+    return made
+}
+
+func bound_parameters(template: Model.FunctionModel, owner_type: Model.Type): Model.Type {
+    if owner_type.kind != 'parameters' {
+        return owner_type
+    }
+    var parts = owner_type.name.split("|")
+    var class_key = parts[0]
+    var function_part = parts[1]
+    crash class_key
+    crash function_part
+    var word = values.walked_word(template)
+    var words = function_part.split("_")
+    if words.contains(word) {
+        return Model.Type('pattern', owner_type.name)
+    }
+    var function = context.current_function
+    var is_bound = function.bound_pattern == function_part and not function.bound_function.is_empty()
+    if is_bound {
+        return Model.Type('parameters', "{class_key}|{function.bound_function}")
+    }
+    return owner_type
+}
+
+func replaced_word(text: String, word: String, replacement: String): String {
+    var words = text.split("_")
+    var renamed = List<String>()
+    var index = 0
+    while index < words.count() {
+        var each_word = words[index]
+        if each_word == word {
+            renamed.append(replacement)
+        } else {
+            renamed.append(each_word)
+        }
+        index = index + 1
+    }
+    return renamed.join("_")
+}
+
+func pattern_names(template: Model.FunctionModel, pattern: Model.Type): List<String> {
+    var names = List<String>()
+    var parts = pattern.name.split("|")
+    var class_key = parts[0]
+    var function_part = parts[1]
+    crash class_key
+    crash function_part
+    var word = values.walked_word(template)
+    var walked_class = context.program.class_named(class_key)
+    crash walked_class
+    var index = 0
+    while index < walked_class.declared_functions.count() {
+        var function = walked_class.declared_functions[index]
+        var hole = hole_of(function, function_part, word)
+        if not hole.is_empty() and not names.contains(hole) {
+            names.append(hole)
+        }
+        index = index + 1
+    }
+    return names
+}
+
+func hole_of(function: Model.FunctionModel, function_part: String, word: String): String {
+    var is_written = function.declaration and function.bound_member.is_empty() and not function.is_a_member_template
+    fallback is_written and not function.is_synthetic and not function.is_a_walk_copy
+    return hole_in(function.name, function_part, word)
+}
+
+func hole_in(name: String, function_part: String, word: String): String {
+    var words = function_part.split("_")
+    var place = words.index_of(word)
+    fallback place
+    var before = List<String>()
+    var after = List<String>()
+    var word_index = 0
+    while word_index < words.count() {
+        var each_word = words[word_index]
+        if word_index < place {
+            before.append(each_word)
+        }
+        if word_index > place {
+            after.append(each_word)
+        }
+        word_index = word_index + 1
+    }
+    var prefix = before.join("_")
+    if not prefix.is_empty() {
+        prefix = "{prefix}_"
+    }
+    var suffix = after.join("_")
+    if not suffix.is_empty() {
+        suffix = "_{suffix}"
+    }
+    var fixed_length = prefix.length() + suffix.length()
+    var fits = name.starts_with(prefix) and name.ends_with(suffix) and name.length() > fixed_length
+    fallback fits
+    var prefix_length = prefix.length()
+    var middle_end = name.length() - suffix.length()
+    var sliced = name.slice(prefix_length, middle_end)
+    crash sliced
+    return sliced
+}
+
+func specialized_over_a_pattern(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    pattern: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var match_parts = match.split("|")
+    var written = match_parts[0]
+    crash written
+    var parts = pattern.name.split("|")
+    var class_key = parts[0]
+    var function_part = parts[1]
+    crash class_key
+    crash function_part
+    var word = values.walked_word(template)
+    var holes = pattern_names(template, pattern)
+    var place = holes.index_of(written)
+    var bound_function = replaced_word(function_part, word, written)
+    var walked_class = context.program.class_named(class_key)
+    crash walked_class
+    fallback place or not walks_by_the_name(template, name)
+    var fitting = fitting_names(word, function_part, holes)
+    var rule = Validators.NameResolution.TemplateRange.Validator()
+    rule.check_a_matched_hole(
+        place,
+        fitting,
+        function_part,
+        context.current_class.file.path,
+        context.line,
+        context.current_class.shown,
+        context.current_function.name,
+        name,
+        template.name,
+        written,
+        word,
+        walked_class.shown,
+        bound_function,
+    )
+    crash place
+    var symbol = context.resolver.types.walked_name_type()
+    var made = context.resolver.reading.specialized(template, name, written, symbol, false, owner)
+    made.bound_member_index = place
+    made.bound_pattern = function_part
+    made.bound_function = bound_function
+    made.bound_class = class_key
+    made.binds_a_function_declaration = true
+    owner.declared_functions.append(made)
+    return made
+}
+
+func fitting_names(word: String, function_part: String, holes: List<String>): List<String> {
+    var fitting = List<String>()
+    var index = 0
+    while index < holes.count() {
+        var hole = holes[index]
+        var fitted_name = replaced_word(function_part, word, hole)
+        fitting.append("'{fitted_name}'")
+        index = index + 1
+    }
+    return fitting
+}
+
+func specialized_over_a_handle(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var asks_if_finished = match == "finished" or match == "is_finished"
+    fallback asks_if_finished
+    var boolean = context.boolean()
+    var made = context.resolver.reading.specialized(template, name, "finished", boolean, false, owner)
+    owner.declared_functions.append(made)
+    return made
+}
+
+func specialized_by_kind(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    switch owner_type.kind {
+        'pattern': return specialized_over_a_pattern(owner, template, owner_type, name, match)
+        'handle': return specialized_over_a_handle(owner, template, name, match)
+        'shape': return specialized_over_a_shape(owner, template, owner_type, name, match)
+        'namespace': return specialized_over_a_namespace(owner, template, name, match)
+        'parameters': return specialized_over_parameters(owner, template, owner_type, name, match)
+        'union': return specialized_over_a_union(owner, template, owner_type, name, match)
+        'enumeration': return specialized_over_values(owner, template, owner_type, name, match)
+        'nothing': return specialized_over_a_class(owner, template, owner_type, name, match)
+        'scalar': return specialized_over_a_class(owner, template, owner_type, name, match)
+        'object': return specialized_over_a_class(owner, template, owner_type, name, match)
+        'function': return specialized_over_a_class(owner, template, owner_type, name, match)
+    }
+}
+
+func specialized_over_a_class(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var reads = Reads(context, values)
+    fallback context.has_a_class(owner_type) and not owner_type.is_nullable
+    var element_class = context.class_of(owner_type)
+    var match_parts = match.split("|")
+    var written = match_parts[0]
+    crash written
+    var is_plural = match_parts.count() > 1
+    if is_plural {
+        refuse_a_test_to_collect(template, element_class, name, written)
+        refuse_a_singular(element_class, name, written)
+    }
+    var member = reads.member_of(element_class, written, is_plural)
+    if member.is_empty() {
+        member = reads.member_of(element_class, "is_{written}", is_plural)
+    }
+    if member.is_empty() and not is_plural {
+        var chained = specialized_through_a_function(owner, template, element_class, name, written)
+        if chained {
+            return chained
+        }
+    }
+    if member.is_empty() and values.asks_a_question(template) {
+        return specialized_over_an_enum_value(owner, template, element_class, name, written)
+    }
+    if member.is_empty() and owner.bound_types["$element_type"] {
+        refuse_a_caller_function(element_class, name, written)
+    }
+    fallback not member.is_empty()
+    if values.asks_a_question(template) and owner.bound_types["$element_type"] {
+        refuse_a_member_and_a_value(element_class, name, member)
+    }
+    var attribute = element_class.attribute_named(member)
+    var member_type = context.boolean()
+    var is_a_function = true
+    var member_index = 0
+    if attribute {
+        member_type = attribute.attribute_type
+        is_a_function = false
+        member_index = attribute_index_of(element_class, member)
+    } else {
+        var function = element_class.function_named(member)
+        crash function
+        member_type = values.answer_or_nothing(function)
+    }
+    var library = Mapping.LibraryFile()
+    if library.holds(owner.file.path) or owner.bound_types["$element_type"] {
+        var member_shown = context.shown(member_type)
+        values.typing.check_member_fit(context, name, member, element_class.shown, member_shown, is_a_function)
+    }
+    var made = context.resolver.reading.specialized(template, name, member, member_type, is_a_function, owner)
+    made.bound_member_index = member_index
+    owner.declared_functions.append(made)
+    return made
+}
+
+func refuse_a_test_to_collect(
+    template: Model.FunctionModel,
+    element_class: Model.ClassModel,
+    name: String,
+    written: String,
+) {
+    fallback template.name.starts_with("map_")
+    var singular = values.member_named(element_class, written)
+    fallback not singular.is_empty()
+    var member_type = member_type_named(element_class, singular)
+    fallback context.is_boolean(member_type)
+    values.typing.refuse_a_test_to_collect(context, name, written, element_class.shown)
+}
+
+func refuse_a_caller_function(element_class: Model.ClassModel, name: String, written: String) {
+    var function = context.current_class.function_named(written)
+    fallback function
+    fallback function.parameters.count() == 1
+    values.typing.refuse_a_caller_function(context, element_class.shown, written, name)
+}
+
+func refuse_a_member_and_a_value(element_class: Model.ClassModel, name: String, member: String) {
+    var candidates = enum_members_of(element_class)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var enum_type = enum_type_of_member(element_class, candidate)
+        var enumeration = values.enum_model_of(enum_type)
+        if enumeration.values.contains(member) {
+            values.typing.refuse_a_member_and_a_value(context, name, member, element_class.shown, candidate)
+        }
+        index = index + 1
+    }
+}
+
+func member_type_named(element_class: Model.ClassModel, member: String): Model.Type {
+    var attribute = element_class.attribute_named(member)
+    if attribute {
+        return attribute.attribute_type
+    }
+    var function = element_class.function_named(member)
+    crash function
+    return values.answer_or_nothing(function)
+}
+
+func enum_members_of(element_class: Model.ClassModel): List<String> {
+    var names = List<String>()
+    var index = 0
+    while index < element_class.declared_attributes.count() {
+        var attribute = element_class.declared_attributes[index]
+        var held = attribute.attribute_type
+        if held.kind == 'enumeration' and not held.is_nullable {
+            names.append(attribute.name)
+        }
+        index = index + 1
+    }
+    var function_index = 0
+    while function_index < element_class.declared_functions.count() {
+        var function = element_class.declared_functions[function_index]
+        var answer = values.answer_or_nothing(function)
+        var answers_an_enum = answer.kind == 'enumeration' and not answer.is_nullable
+        var is_plain = function.parameters.is_empty() and not function.is_a_member_template
+        if answers_an_enum and is_plain {
+            names.append(function.name)
+        }
+        function_index = function_index + 1
+    }
+    return names
+}
+
+func enum_type_of_member(element_class: Model.ClassModel, member: String): Model.Type {
+    var attribute = element_class.attribute_named(member)
+    if attribute {
+        return attribute.attribute_type
+    }
+    var function = element_class.function_named(member)
+    crash function
+    return values.answer_or_nothing(function)
+}
+
+func specialized_over_an_enum_value(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    element_class: Model.ClassModel,
+    name: String,
+    written: String,
+): Model.FunctionModel? {
+    var candidates = enum_members_of(element_class)
+    var chosen = ""
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var enum_type = enum_type_of_member(element_class, candidate)
+        var enumeration = values.enum_model_of(enum_type)
+        if enumeration.values.contains(written) {
+            if not chosen.is_empty() {
+                values.typing.refuse_two_enum_members(context, name, chosen, candidate, written, element_class.shown)
+            }
+            chosen = candidate
+        }
+        index = index + 1
+    }
+    if chosen.is_empty() and owner.bound_types["$element_type"] {
+        values.typing.refuse_no_member_for_a_template(context, element_class.shown, written, name)
+    }
+    fallback not chosen.is_empty()
+    var chosen_type = enum_type_of_member(element_class, chosen)
+    var is_a_function = not element_class.attribute_named(chosen)
+    var boolean = context.boolean()
+    var made = context.resolver.reading.specialized(template, name, chosen, boolean, is_a_function, owner)
+    made.bound_member_index = member_index_of(element_class, chosen)
+    compare_with_the_value(made, chosen_type, written)
+    owner.declared_functions.append(made)
+    return made
+}
+
+func compare_with_the_value(made: Model.FunctionModel, enum_type: Model.Type, written: String) {
+    var enumeration = values.enum_model_of(enum_type)
+    var place = enumeration.values.index_of(written)
+    crash place
+    var number = enumeration.numbers[place]
+    crash number
+    made.compared_value = enum_type
+    made.compared_number = number
+}
+
+func specialized_over_a_shape(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var shape = context.program.shape_keyed(owner_type.name)
+    crash shape
+    var parts = match.split("|")
+    var written = parts[0]
+    crash written
+    var is_plural = parts.count() > 1
+    var candidates = values.singular_candidates(written, is_plural)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var member = shape.member_named(candidate)
+        if member {
+            var member_type = values.answer_or_nothing(member)
+            var made = context.resolver.reading.specialized(template, name, candidate, member_type, false, owner)
+            made.bound_shape = shape.key
+            made.bound_member_index = shape_member_index(shape, candidate)
+            owner.declared_functions.append(made)
+            return made
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func shape_member_index(shape: Model.ShapeModel, name: String): Integer {
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.name == name {
+            return index
+        }
+        index = index + 1
+    }
+    return 0
+}
+
+func specialized_over_a_union(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var parts = match.split("|")
+    var written = parts[0]
+    crash written
+    var is_plural = parts.count() > 1
+    var candidates = values.singular_candidates(written, is_plural)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var answered = union_member_name(owner_type, candidate)
+        if not answered.is_empty() {
+            var shape = values.union_shape_of(owner_type, answered)
+            var member = shape.members[0]
+            crash member
+            var member_type = values.answer_or_nothing(member)
+            var made = context.resolver.reading.specialized(template, name, answered, member_type, false, owner)
+            made.bound_shape = shape.key
+            owner.declared_functions.append(made)
+            return made
+        }
+        index = index + 1
+    }
+    fallback not is_plural
+    var chained = union_through_a_function(owner, template, owner_type, name, written)
+    if chained {
+        return chained
+    }
+    fallback values.asks_a_question(template)
+    return union_enum_value(owner, template, owner_type, name, written)
+}
+
+func split_words(written: String, start: Integer, end: Integer): String {
+    var words = written.split("_")
+    var kept = List<String>()
+    var index = start
+    while index < end {
+        var word = words[index]
+        crash word
+        kept.append(word)
+        index = index + 1
+    }
+    return kept.join("_")
+}
+
+func specialized_through_a_function(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    element_class: Model.ClassModel,
+    name: String,
+    written: String,
+): Model.FunctionModel? {
+    var word_count = written.split("_").count()
+    var split = 1
+    while split < word_count {
+        var member_name = split_words(written, 0, split)
+        var function_name = split_words(written, split, word_count)
+        var member = values.member_named(element_class, member_name)
+        if not member.is_empty() {
+            var member_type = enum_type_of_member(element_class, member)
+            var chained = chained_specialization(owner, template, member_type, member, function_name, name)
+            if chained {
+                chained.bound_member_is_a_function = not element_class.attribute_named(member)
+                chained.bound_member_index = member_index_of(element_class, member)
+                return chained
+            }
+        }
+        split = split + 1
+    }
+    return null
+}
+
+func union_through_a_function(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    written: String,
+): Model.FunctionModel? {
+    var word_count = written.split("_").count()
+    var split = 1
+    while split < word_count {
+        var member_name = split_words(written, 0, split)
+        var function_name = split_words(written, split, word_count)
+        var answered = union_member_name(owner_type, member_name)
+        if not answered.is_empty() {
+            var shape = values.union_shape_of(owner_type, answered)
+            var member = shape.members[0]
+            crash member
+            var member_type = values.answer_or_nothing(member)
+            var chained = chained_specialization(owner, template, member_type, answered, function_name, name)
+            if chained {
+                chained.bound_shape = shape.key
+                return chained
+            }
+        }
+        split = split + 1
+    }
+    return null
+}
+
+func chained_specialization(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    member_type: Model.Type,
+    member: String,
+    function_name: String,
+    name: String,
+): Model.FunctionModel? {
+    fallback context.has_a_class(member_type) and not member_type.is_nullable
+    var through_class = context.class_of(member_type)
+    var function = through_class.function_named(function_name)
+    fallback function
+    var answer = values.answer_or_nothing(function)
+    var made = context.resolver.reading.specialized(template, name, member, answer, false, owner)
+    made.chained_function = function_name
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var chained = Model.ParameterModel("_chained_{parameter.name}", parameter.parameter_type, false)
+        made.parameters.append(chained)
+        index = index + 1
+    }
+    owner.declared_functions.append(made)
+    return made
+}
+
+func union_enum_value(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    written: String,
+): Model.FunctionModel? {
+    var fitting = Fitting(context, values)
+    var united = fitting.union_model_of(owner_type)
+    var first_member = united.members[0]
+    fallback first_member
+    fallback context.has_a_class(first_member)
+    var first_class = context.class_of(first_member)
+    var candidates = enum_members_of(first_class)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var enum_type = enum_type_of_member(first_class, candidate)
+        var enumeration = values.enum_model_of(enum_type)
+        var read_name = candidate
+        if read_name.starts_with("get_") {
+            var length = read_name.length()
+            var sliced_read_name = read_name.slice(4, length)
+            crash sliced_read_name
+            read_name = sliced_read_name
+        }
+        var answered = union_member_name(owner_type, read_name)
+        var fits = enumeration.values.contains(written) and not answered.is_empty()
+        if fits {
+            var shape = values.union_shape_of(owner_type, answered)
+            var boolean = context.boolean()
+            var made = context.resolver.reading.specialized(template, name, answered, boolean, false, owner)
+            made.bound_shape = shape.key
+            compare_with_the_value(made, enum_type, written)
+            owner.declared_functions.append(made)
+            return made
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func union_member_name(union_type: Model.Type, wanted: String): String {
+    var fitting = Fitting(context, values)
+    var united = fitting.union_model_of(union_type)
+    if every_member_has(united, wanted) {
+        return wanted
+    }
+    var getter = "get_{wanted}"
+    if every_member_has(united, getter) {
+        return getter
+    }
+    return ""
+}
+
+func every_member_has(united: Model.UnionModel, wanted: String): Boolean {
+    var index = 0
+    while index < united.members.count() {
+        var held = united.members[index]
+        fallback context.has_a_class(held)
+        var model = context.class_of(held)
+        var has_it = model.attribute_named(wanted) or model.function_named(wanted)
+        var getter_name = "get_{wanted}"
+        has_it = has_it or model.function_named(getter_name)
+        fallback has_it
+        index = index + 1
+    }
+    return true
+}
+
+func specialized_over_a_namespace(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var parts = match.split("|")
+    var written = parts[0]
+    crash written
+    var model = context.resolver.monomorphiser.class_model_named(written)
+    fallback model
+    var member_type = Model.Type('object', model.key)
+    var made = context.resolver.reading.specialized(template, name, model.shown, member_type, false, owner)
+    owner.declared_functions.append(made)
+    return made
+}
+
+func specialized_over_values(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var parts = match.split("|")
+    var written = parts[0]
+    crash written
+    var enumeration = values.enum_model_of(owner_type)
+    var index = enumeration.values.index_of(written)
+    fallback index
+    var made = context.resolver.reading.specialized(template, name, written, owner_type, false, owner)
+    made.bound_member_index = index
+    owner.declared_functions.append(made)
+    return made
+}
+
+func specialized_over_parameters(
+    owner: Model.ClassModel,
+    template: Model.FunctionModel,
+    owner_type: Model.Type,
+    name: String,
+    match: String,
+): Model.FunctionModel? {
+    var parts = match.split("|")
+    var written = parts[0]
+    crash written
+    var walked = context.resolver.owners.function_of_parameters(owner_type)
+    fallback walked
+    var index = 0
+    while index < walked.parameters.count() {
+        var parameter = walked.parameters[index]
+        if parameter.name == written {
+            var made = context.resolver.reading.specialized(
+                template,
+                name,
+                written,
+                parameter.parameter_type,
+                false,
+                owner,
+            )
+            made.bound_member_index = index
+            owner.declared_functions.append(made)
+            return made
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func template_match(template: Model.FunctionModel, name: String): String? {
+    crash template.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = template.declaration
+    var parameter = declaration.parameters[template.template_index]
+    crash parameter
+    var words = template.name.split("_")
+    var place = words.index_of(parameter.name)
+    var is_plural = false
+    if not place {
+        place = words.index_of("{parameter.name}s")
+        is_plural = true
+    }
+    crash place
+    var before = List<String>()
+    var after = List<String>()
+    var word_index = 0
+    while word_index < words.count() {
+        var word = words[word_index]
+        if word_index < place {
+            before.append(word)
+        }
+        if word_index > place {
+            after.append(word)
+        }
+        word_index = word_index + 1
+    }
+    var prefix = before.join("_")
+    if not prefix.is_empty() {
+        prefix = "{prefix}_"
+    }
+    var suffix = after.join("_")
+    if not suffix.is_empty() {
+        suffix = "_{suffix}"
+    }
+    var fits = name.starts_with(prefix) and name.ends_with(suffix)
+    var fixed_length = prefix.length() + suffix.length()
+    fallback fits and name.length() > fixed_length
+    var prefix_length = prefix.length()
+    var middle_end = name.length() - suffix.length()
+    var written = name.slice(prefix_length, middle_end)
+    crash written
+    if is_plural {
+        return "{written}|plural"
+    }
+    return written
+}
+
+func walk_of(owner: Model.ClassModel, name: String, written: List<SpiteCompiler.Expression>): SpiteCompiler.Value? {
+    var literals = Literals(context, values)
+    var own = literals.this_value()
+    return walk_on(owner, own, name, written)
+}
+
+func walk_on(
+    owner: Model.ClassModel,
+    receiver: SpiteCompiler.Value,
+    name: String,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value? {
+    var operators = Operators(context, values)
+    var index = 0
+    while index < owner.declared_functions.count() {
+        var template = owner.declared_functions[index]
+        var is_singular = template.is_a_member_template and not values.template_takes_a_plural(template)
+        if is_singular and walks_by_the_name(template, name) {
+            var held = receiver
+            var is_its_own = receiver.class == HighIntermediaryRepresentation.Values.ThisRead
+            if not is_its_own {
+                held = operators.held_once(receiver)
+            }
+            return walked_over(owner, held, template, written)
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func walks_by_the_name(template: Model.FunctionModel, name: String): Boolean {
+    if "{template.name}s" == name {
+        return true
+    }
+    var word = values.walked_word(template)
+    var plurals = List<String>()
+    plurals.append("{word}s")
+    plurals.append("{word}es")
+    if word.ends_with("y") {
+        var length = word.length()
+        var stem = word.slice(0, length - 1)
+        crash stem
+        plurals.append("{stem}ies")
+    }
+    var index = 0
+    while index < plurals.count() {
+        var plural = plurals[index]
+        var walked_name = replaced_word(template.name, word, plural)
+        if walked_name == name {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func walked_over(
+    owner: Model.ClassModel,
+    receiver: SpiteCompiler.Value,
+    template: Model.FunctionModel,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value {
+    var calls = Calls(context, values)
+    var plural_name = "{template.name}s"
+    var written_owner = values.owner_of_a_template(template, owner, plural_name)
+    crash written_owner
+    var member_owner = bound_parameters(template, written_owner)
+    var names = walked_names(member_owner)
+    if member_owner.kind == 'pattern' {
+        names = pattern_names(template, member_owner)
+    }
+    if not template.narrowed_names.is_empty() {
+        names = template.narrowed_names
+    }
+    var index = 0
+    while index < names.count() {
+        var member = names[index]
+        var word = values.walked_word(template)
+        var called_name = replaced_word(template.name, word, member)
+        var clash = Validators.HighIntermediaryRepresentation.TemplateClash.Validator()
+        clash.check(context, owner, template.name, called_name, member, member_owner)
+        var function = member_template_of(owner, called_name)
+        crash function
+        var made = calls.called(function, receiver, written)
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(made)
+        evaluated.line = context.line
+        context.pending.append(evaluated)
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func walked_names(member_owner: Model.Type): List<String> {
+    var names = List<String>()
+    if member_owner.kind == 'namespace' {
+        return values.classes_of_a_namespace(member_owner.name)
+    }
+    if member_owner.kind == 'parameters' {
+        return parameters_of(member_owner)
+    }
+    if member_owner.kind == 'enumeration' {
+        var enumeration = values.enum_model_of(member_owner)
+        return enumeration.values
+    }
+    var is_walked = member_owner.kind == 'object' or member_owner.kind == 'shape'
+    if member_owner.is_nullable or not is_walked {
+        return names
+    }
+    if member_owner.kind == 'shape' {
+        var shape = context.program.shape_keyed(member_owner.name)
+        crash shape
+        var shape_index = 0
+        while shape_index < shape.members.count() {
+            var member = shape.members[shape_index]
+            if member.is_an_attribute {
+                names.append(member.name)
+            }
+            shape_index = shape_index + 1
+        }
+        return names
+    }
+    var model = context.class_of(member_owner)
+    if model.bound_types["$element_type"] or model.bound_types["$value_type"] {
+        return names
+    }
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        names.append(attribute.name)
+        index = index + 1
+    }
+    return names
+}
+
+func parameters_of(owner: Model.Type): List<String> {
+    var walked = context.resolver.owners.function_of_parameters(owner)
+    crash walked
+    return walked.parameters.map_names()
+}
+
+func member_index_of(model: Model.ClassModel, name: String): Integer {
+    if model.attribute_named(name) {
+        return attribute_index_of(model, name)
+    }
+    return 0
+}
+
+func attribute_index_of(model: Model.ClassModel, name: String): Integer {
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if attribute.name == name {
+            return index
+        }
+        index = index + 1
+    }
+    crash
+}
+
+func refuse_a_singular(element_class: Model.ClassModel, name: String, written: String) {
+    var inflected = values.member_by_plural(element_class, written)
+    var singular_member = values.member_named(element_class, written)
+    refuse_a_mapped_test(element_class, name, inflected)
+    refuse_a_mapped_test(element_class, name, singular_member)
+    refuse_a_shared_plural(name, written, inflected, singular_member)
+    fallback inflected.is_empty()
+    var singular = values.member_named(element_class, written)
+    fallback not singular.is_empty()
+    var plural = values.plural_of(written)
+    fallback plural != written and not written.ends_with("s")
+    var called_plural = name.replace(written, plural)
+    values.typing.refuse_singular_template(context, name, written, called_plural)
+}
+
+func refuse_a_mapped_test(element_class: Model.ClassModel, name: String, member: String) {
+    fallback name.starts_with("map_") and not member.is_empty()
+    var member_type = enum_type_of_member(element_class, member)
+    fallback context.is_boolean(member_type)
+    var shown_member = member
+    if member.starts_with("get_") {
+        var length = member.length()
+        var sliced_shown_member = member.slice(4, length)
+        crash sliced_shown_member
+        shown_member = sliced_shown_member
+    }
+    var parts = element_class.shown.split(".")
+    var element_name = parts.last()
+    crash element_name
+    values.typing.refuse_a_mapped_test(context, name, shown_member, element_name)
+}
+
+func refuse_a_shared_plural(name: String, written: String, inflected: String, singular_member: String) {
+    fallback not inflected.is_empty() and not singular_member.is_empty() and inflected != singular_member
+    values.typing.refuse_a_shared_plural(context, name, inflected, singular_member, written)
+}
