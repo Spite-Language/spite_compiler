@@ -233,7 +233,7 @@ folders and flags that exist. The size of every file is held by `validators/abst
 | high pass | `high_optimization_passes/<pass>/pass.spite` (class `Pass`) and its helpers |
 | low pass | `low_optimization_passes/<pass>/<pass>.spite` (the entry the stage registers, named for the folder) and `pass.spite` (class `Pass`, the per-function work), with its helpers; some folders hold several entries (D1923) |
 | proof | `proofs/<proof>/proof.spite` (class `Proof`) and its helpers |
-| validator rule | `validators/<layer>/<rule>/validator.spite` (class `Validator` with a `check*` or a `refuse*`) and nothing else, but `file_content_budget`'s waiting list until spite_compiler#311 closes; `every_rule.spite` in the layer |
+| validator rule | `validators/<layer>/<rule>/validator.spite` (class `Validator` with a `check*` or a `refuse*`) and nothing else; `every_rule.spite` in the layer |
 | fix rule | `fixes/<layer>/<rule>/fix.spite` (class `Fix`), and `every_fix.spite` in the layer; `fixes/fixes.spite` writes |
 | printer | `printers/<printer>/printer.spite` (class `Printer`) |
 | emitter | `generators/<target>/instructions/<instruction>.spite` per instruction kind |
