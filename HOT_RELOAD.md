@@ -24,8 +24,14 @@ Target: a changed function reloads in well under 0.1 s of swapping, after the co
    the counts, the scheduler's state) its name and address; every system function the executable imports with the
    address of its entry; the digest of the shared routines (allocating, freeing, stopping); every class's id and
    layout; every enum's values; and a digest of each of the program's files. A reload compiles against it.
-3. **The reloader**, `Spite.HotReload`, Spite the compiler adds to the build (`.spite/build/spite/hot_reload.spite`)
-   with `Spite.ReloadPoint`, which the start of the program makes: it watches the program's folders with
+3. **The reloader**, `Spite.HotReload`, library Spite (`spite_standard_library/common/spite/hot_reload.spite`, and
+   `windows/spite/hot_reload.spite` for the room, the compiler's run and the swap), which the start of the program
+   starts through `Spite.ReloadPoint`. That class is the one part the compiler writes for the build
+   (`.spite/build/spite/reload_point.spite`), since it is what varies: the program's folder, the compiler's path, the
+   build's flags and the folders to watch, as plain values handed to `start`. The prompt's reload commands (`reload`,
+   `eval`, `run`, the breakpoints) are still text the compiler adds to the class (`symbols/machinery_text.spite`) until
+   #296 removes them. A suite test builds the library's class without the flag
+   (`tests/hot_reload_library_is_built_without_the_flag`). It watches the program's folders with
    `FileSystemWatcher`, and a check point asks it whether a saved file waits, waiting for a file still being
    written to settle (`settled_changes`). A check point is one load of a flag a helper thread raises every 25 ms; it
    ends every loop of the program's own code, sits just before and after each call from it into a library function
