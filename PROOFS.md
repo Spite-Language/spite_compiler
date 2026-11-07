@@ -66,7 +66,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 ### Narrowing a `T?`
 
 - **Status**: built.
-- **Rule**: only a call-free name or path narrows; `if` narrows its block and not its `else`; `fallback` and `crash`
+- **Rule**: only a call-free name or path narrows, for every fact a condition proves (presence, a class, a count, a bound): a path holding a call anywhere (`thing.pop().held`, `items[next()]`) narrows nothing, since writing it again calls again, except the list of a `[]` read (`crash Store<$item>().values[index]`), whose proven read still tests what it finds; `if` narrows its block and not its `else`; `fallback` and `crash`
   narrow the rest of the block; `while` narrows its body; a `switch` `T:` case narrows its case; one check narrows
   every link of the path before it. It tests presence, never the value
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule),
@@ -74,6 +74,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Buys**: reads, calls and stores through a `T?` are accepted, and the narrowed read has no test.
 - **Falls back**: refused, "this value may be null (it is a ...), so '...' cannot be read from it yet: narrow it
   first with 'if value { }', 'fallback value' or 'crash value'". Put a call's result in a `var` and narrow that.
+  A path through a getter narrows like an attribute while the getter only reads ([A getter narrows while it only reads](#a-getter-narrows-while-it-only-reads)).
 - **Lives in**: the narrowing itself is building, since it decides the type of every read:
   `high_intermediary_representation/building/statements.spite` (`read_facts`, `read_a_fact`, `narrowed_block_of`),
   `scope.spite` (`narrow`), `reads.spite` (`narrowed`), `operators.spite` (`with_its_links`). The refusal of a value that may be null
@@ -82,7 +83,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: tests/path_narrowing, tests/present_zero, tests/nullable_narrowing, tests/narrowed_path_kept,
   tests/narrowed_read_local, tests/while_narrows, tests/nullable_switch_null_case; conformance/store_through_nullable,
   conformance/path_narrow_else, conformance/sibling_path_unnarrowed, conformance/maybe_boolean_conditions,
-  conformance/null_comparison.
+  conformance/null_comparison, conformance/call_path_after_if_does_not_narrow,
+  conformance/call_path_after_while_does_not_narrow, conformance/call_path_after_crash_does_not_narrow,
+  conformance/call_path_after_fallback_does_not_narrow.
 
 ### Every side of an `and` narrows
 
@@ -201,6 +204,33 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   conformance/narrowed_past_a_write_to_an_earlier_attribute,
   conformance/narrowed_past_a_write_to_an_object_handed_on, tests/narrowed_past_filling_a_new_object.
 
+### A getter narrows while it only reads
+
+- **Status**: built (spite_compiler#370).
+- **Rule**: a path read through a getter (`thing.reading` running `get_reading()`) is narrowed by a check like an
+  attribute, and each read runs the getter again. A getter that reaches a write of any attribute, or a foreign call,
+  may change what it answers, so a read of it after the check is refused. One that only reads keeps the proof
+  until a call or a write between the check and the read may assign an attribute it reads, followed as in
+  [A call keeps a proof it cannot change](#a-call-keeps-a-proof-it-cannot-change). `if`, `while`, `crash`, `fallback`
+  and `switch` agree, since all narrow the same path.
+- **Buys**: a getter that only reads needs no copy to be read twice; one with an effect is never trusted on its
+  second answer.
+- **Falls back**: refused, "'thing.reading' calls 'get_reading' again here, and 'get_reading' may change what it
+  answers, so the check before proves nothing about this read: hold it once with 'var held = thing.reading' and
+  narrow 'held'"; past a change, "'thing.plain' was proven before line 8, where 'clear(...)' may assign 'store',
+  which 'get_plain' reads, so this read would call it again unproven: prove 'thing.plain' again after that line"
+  (a write: "this write"; in a loop, at the change, "... inside this loop may assign 'store', which 'get_plain'
+  reads, ..."). A read the proof could not see change still tests what the getter answers, and halts, "'thing.plain'
+  was proven present, but reading it again answered nothing, since what it reads changed after the check".
+- **Lives in**: `reads.spite` (`note_a_getter_read`), the pass `proofs/narrowings_kept_across_calls`
+  (`check_a_getter_read`), `assignments.spite` (`may_have_an_effect`, `attributes_read_by`), and
+  `low_intermediary_representation/lowering/conversions.spite` (`missing_words_of`).
+- **Checked by**: tests/getter_that_only_reads_keeps_narrowing, tests/copy_of_a_getter_with_an_effect_is_kept;
+  conformance/getter_with_an_effect_after_if, conformance/getter_with_an_effect_after_while,
+  conformance/getter_with_an_effect_after_crash, conformance/getter_with_an_effect_after_fallback,
+  conformance/getter_with_an_effect_after_switch, conformance/getter_read_after_a_call_that_changes_it,
+  conformance/getter_read_after_a_write_that_changes_it.
+
 ### An address keeps its owner alive
 
 - **Status**: built, by construction.
@@ -260,6 +290,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   refused: narrow the source itself. `if not copy { }` tests it whether or not its block leaves. A snapshot taken
   before its source changes is allowed
   ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  A local of a value that calls (a path through a call or through a getter) keeps a value, since writing the source again calls again.
   A local whose source (an attribute, or one along its path) a call or a write through any object may change between the copy and a read of the local keeps a value, so it is not a copy: the builder records those reads as `NarrowedRead`s with their `copy_line`, and `proven_checks` asks the question `narrowings_kept_across_calls` asks.
 - **Buys**: one name per value.
 - **Falls back**: refused, "'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('fallback
@@ -267,7 +298,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: the proof `proofs/proven_checks`, judging each copy `statements.spite` recorded when the copy is
   narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `note_a_tested_copy`, `build_switch`).
 - **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions,
-  conformance/copy_to_narrow_not_leaving; tests/narrowing_snapshot_copy.
+  conformance/copy_to_narrow_not_leaving; tests/narrowing_snapshot_copy, tests/copy_of_a_getter_with_an_effect_is_kept,
+  tests/copy_of_a_path_holding_a_call_is_kept.
 
 ### A literal that converts is a `T`
 
