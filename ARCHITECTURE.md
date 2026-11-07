@@ -91,7 +91,7 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    - `lost_writes`: a write to an object only this function holds is read, and a name read from a list is not
      assigned as its last mention;
    - `literal_conversions`: a literal's conversion did not answer `null`.
-   A refusal the builder still makes asks this walk first, so the earliest error is the one told.
+   A refusal the builder still makes asks this walk first, for all but `present_values`.
 2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program (the call
    inside a call, unused names, and the lone hole, which reads whether each hole the builder built is text), and the
    reopening that changes an attribute's type (`validators/mapping/reopened_type`, comparing the resolved types).
@@ -374,12 +374,37 @@ it would apply to its own source, or a library it would not recognise) is built 
 both forms, and that change publishes a new seed: its fixed point as a new `seed-<date>` release, named in
 `SEED_TAG` in the same commit.
 
-## The first error stops the run
+## A failure stops its own check
 
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
-file), it hands it to the validator of that rule at once. The validator lets it pass, or reports the problem
-and ends the compile through `Diagnostics.Failure`. Nothing runs after the first error. A mistake with one fix
-never reaches its validator: the layer's fix rule changes the tree first (below).
+file), it hands it to the validator of that rule at once. The validator lets it pass, or refuses it through
+`Diagnostics.Failure`. A mistake with one fix never reaches its validator: the layer's fix rule changes the tree
+first (below).
+
+A refusal stops the check it happened in, and the compile goes on to the other checks. `Diagnostics.Gathering`
+(a singleton) holds what was found, and what happens next depends on the check:
+
+| The check | What a refusal does | Why |
+|---|---|---|
+| a rule of `validators/abstract_syntax_tree` on a read file, a proof | `Failure` keeps the problem and returns, and the rule walks on (`gathering.goes_on`) | they only read a whole tree or program |
+| reading a file (its lexer and parser), building a function or a class's defaults | a new round: `Diagnostics.Rounds` runs the compiler again, and that run skips the failed check | a step cannot be left half way, and nothing in the language unwinds it. A fresh run has no half-built state, so it cannot echo |
+| anything else (the command line, the mapping, name resolution, the steps after the proofs) | everything found so far is told and the compile ends | nothing can go on without it |
+
+The first run drives the rounds, so at most two compilers are in memory: each later round writes what it found to
+`.spite/failed_checks.txt` (`Diagnostics.Ledger`) and answers `goes_on_answer`, and the last one tells everything.
+A round costs one compile up to the next failure, the same as fixing that error and compiling again. Rounds stop at
+25 errors in the program or after `most_rounds`; the list then ends `and possibly more in the program`. A fix
+written in a round restarts the compile from nothing, since the lines it found may have moved.
+
+A stage does not run on a broken input. Once every file is read, any refusal so far ends the compile before name
+resolution (`tell_if_reading_broke`); once every reached function is built, any refusal ends it before the proofs
+(`Builder.build`), since a proof reads the whole build and would call a proven line unproven. The proofs all run,
+and any refusal ends the compile after them. A refusal the builder makes first asks the proofs about what is recorded
+so far, since a check of a plain value is a fix or a proof's error before it is a type error; only what does not need
+the whole build answers then, so `present_values` waits, and the builder's own refusal is dropped when that found an
+error in its function, as it may be an echo of it. So an entry file that does not parse, or one error
+in a stage's input, hides what later stages would say; that is a missing error, never a false one, and `Gathering.add`
+keeps only the first error of a line for the same reason. `Diagnostics.Listing` cuts the list to its limits.
 
 ## Fixes
 
