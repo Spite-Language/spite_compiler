@@ -176,6 +176,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   with its signature, and a function that only calls its parameters reaches the functions each caller passes it; a
   `drop()` that may run is followed too. Inside a loop, a call anywhere in the body undoes a narrowing made before
   the loop for the next pass ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
+  "Before the loop" is told by the scope the narrowing lives in (`NarrowedRead.proven_in_frame` against the loop's
+  base, `statements.spite`: `extend_the_reads_over_the_loop`), not by the calls logged since, so a check right
+  before the `while`, with nothing logged between, counts too; a copy made right before it the same way.
 - **Buys**: no re-check after a harmless call; a call that may null what was proven is never read past.
   A read proven by a `[]` or count proof (`NarrowedRead.watched_lists`) is refused past a call that may shrink its list, whatever the call's answer is used for: `Assignments.note_a_shrink` writes a key for each shrinking call in the program's own code, by the attribute that holds the list, or by the list's class when a parameter or another list's item reaches it. A `fallback`, `crash` or `if` on the same read after a call tests the list again and proves it anew. A local made in the function and not handed on is not counted, and neither is what the library does inside its own functions, since a call of a library function that shrinks is itself the shrinking call.
 - **Missing**: a shrink through a local alias of an attribute's list in the same function, and a count kept in a `var` before a call that shrinks (a read they keep halts, "is outside its list", when the list changed); a
@@ -192,7 +195,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   built since its check (`statements.spite`: `log_the_calls_of`); what a call may assign is
   `high_intermediary_representation/assignments.spite` read for narrowings (`read_for_narrowings`).
 - **Checked by**: tests/receiver_call_effects, tests/same_name_call_effects,
-  tests/narrowing_kept_across_harmless_call; conformance/condition_call_after_the_if_fact,
+  tests/narrowing_kept_across_harmless_call, tests/copy_right_before_a_loop_is_kept;
+  conformance/call_in_loop_right_after_the_check_undoes_narrowing,
+  conformance/own_call_in_loop_right_after_the_check_undoes_narrowing,
+  conformance/getter_read_in_a_loop_right_after_the_check; conformance/condition_call_after_the_if_fact,
   conformance/condition_call_after_the_while_fact, conformance/condition_call_before_a_later_side,
   conformance/condition_call_before_a_later_while_side, conformance/condition_call_in_a_leaving_or,
   conformance/condition_call_before_the_right_of_an_or, conformance/condition_call_in_a_plain_value,
