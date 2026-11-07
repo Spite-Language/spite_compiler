@@ -1,0 +1,232 @@
+# ../../OPTIMIZATIONS.md#a-reflection-field-nothing-reads-has-no-slot
+
+var no_program = Model.ProgramModel()
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
+var described_by_the_compiler = [
+    "Spite.Argument"
+    "Spite.Attribute"
+    "Spite.AttributeDeclaration"
+    "Spite.Call"
+    "Spite.Class"
+    "Spite.Enum"
+    "Spite.EnumValue"
+    "Spite.Function"
+    "Spite.FunctionDeclaration"
+    "Spite.Namespace"
+    "Spite.Type"
+    "Spite.Union"
+]
+var read = Dictionary<String, Boolean>()
+var shape_members = Dictionary<String, Boolean>()
+var unread = Dictionary<String, Boolean>()
+var made_with = Dictionary<String, List<List<SpiteCompiler.Value>>>()
+var names_read = List<String>()
+var rewriting_a_constructor = false
+
+func optimized(high: HighIntermediaryRepresentation.HighProgram) {
+    fallback high.will_be_lowered()
+    crash high.context
+    var inspection = CommandLine.Inspection()
+    fallback not inspection.holds(high.context.build_flags)
+    program = high
+    var shapes = high.model.shapes.values()
+    shapes.each(note_a_shape)
+    high.built_functions.each(note_a_function)
+    described_by_the_compiler.each(leave_out_what_is_unread)
+    fallback not unread.is_empty()
+    high.built_functions.each(take_out_the_writes)
+    high.built_functions.each(take_out_the_parameters)
+}
+
+func note_a_shape(shape: Model.ShapeModel) {
+    shape.members.each(note_a_shape_member)
+}
+
+func note_a_shape_member(member: Model.FunctionModel) {
+    shape_members[member.name] = true
+}
+
+func note_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    var rewriting = HighOptimizationPasses.Rewriting(this)
+    rewriting.rewrite_block(function.body)
+}
+
+func rewritten(value: SpiteCompiler.Value): SpiteCompiler.Value {
+    if rewriting_a_constructor {
+        note_a_name_read(value)
+        return value
+    }
+    note_a_read(value)
+    note_a_making(value)
+    return value
+}
+
+func note_a_read(value: SpiteCompiler.Value) {
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        read["{value.attribute.owner}.{value.attribute.name}"] = true
+    }
+}
+
+func note_a_making(value: SpiteCompiler.Value) {
+    if value.class == HighIntermediaryRepresentation.Values.MakeObject and value.constructor {
+        note_the_arguments(value.constructor, value.arguments)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Call and value.function.is_constructor {
+        note_the_arguments(value.function, value.arguments)
+    }
+}
+
+func note_the_arguments(constructor: Model.FunctionModel, arguments: List<SpiteCompiler.Value>) {
+    fallback described_by_the_compiler.contains(constructor.owner)
+    var key = constructor.key()
+    var known = made_with[key]
+    if known {
+        known.append(arguments)
+    } else {
+        var first = List<List<SpiteCompiler.Value>>()
+        first.append(arguments)
+        made_with[key] = first
+    }
+}
+
+func leave_out_what_is_unread(class_key: String) {
+    var model = program.model.class_named(class_key)
+    fallback model
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        leave_out_when_unread(attribute)
+        index = index + 1
+    }
+}
+
+func leave_out_when_unread(attribute: Model.AttributeModel) {
+    var key = "{attribute.owner}.{attribute.name}"
+    fallback not read.contains(key) and not shape_members.contains(attribute.name)
+    unread[key] = true
+    program.absent_attributes.append(key)
+}
+
+func take_out_the_writes(function: HighIntermediaryRepresentation.HighFunction) {
+    fallback function.function.name != "_attribute_defaults"
+    take_out_of_a_block(function.body)
+}
+
+func take_out_of_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(take_out_of_a_statement)
+    var kept = List<SpiteCompiler.Statement>()
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        if not is_an_unread_write(statement) {
+            kept.append(statement)
+        }
+        index = index + 1
+    }
+    block.statements = kept
+}
+
+func take_out_of_a_statement(statement: SpiteCompiler.Statement) {
+    if statement.class == HighIntermediaryRepresentation.Statements.If {
+        take_out_of_a_block(statement.then_branch)
+        take_out_of_a_block(statement.else_branch)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.While {
+        take_out_of_a_block(statement.body)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        take_out_of_a_block(statement)
+    }
+}
+
+func is_an_unread_write(statement: SpiteCompiler.Statement): Boolean {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        return unread.contains("{statement.attribute.owner}.{statement.attribute.name}")
+    }
+    return false
+}
+
+func note_a_name_read(value: SpiteCompiler.Value) {
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        names_read.append(value.name)
+    }
+}
+
+func take_out_the_parameters(function: HighIntermediaryRepresentation.HighFunction) {
+    fallback function.function.is_constructor
+    fallback described_by_the_compiler.contains(function.function.owner)
+    names_read = List<String>()
+    rewriting_a_constructor = true
+    var rewriting = HighOptimizationPasses.Rewriting(this)
+    rewriting.rewrite_block(function.body)
+    rewriting_a_constructor = false
+    var declared = function.function
+    var sites = made_with[declared.key()]
+    var index = declared.parameters.count() - 1
+    while index >= 0 {
+        var parameter = declared.parameters[index]
+        crash parameter
+        if not names_read.contains(parameter.name) and every_site_is_quiet(sites, index) {
+            take_out_a_parameter(declared, sites, index)
+        }
+        index = index - 1
+    }
+}
+
+func every_site_is_quiet(sites: List<List<SpiteCompiler.Value>>?, position: Integer): Boolean {
+    if not sites {
+        return true
+    }
+    var index = 0
+    while index < sites.count() {
+        var arguments = sites[index]
+        var argument = arguments[position]
+        crash argument
+        fallback is_quiet(argument)
+        index = index + 1
+    }
+    return true
+}
+
+func take_out_a_parameter(declared: Model.FunctionModel, sites: List<List<SpiteCompiler.Value>>?, position: Integer) {
+    var taken = declared.parameters.count()
+    declared.parameters.remove_at(position)
+    fallback sites
+    var index = 0
+    while index < sites.count() {
+        var arguments = sites[index]
+        if arguments.count() == taken {
+            arguments.remove_at(position)
+        }
+        index = index + 1
+    }
+}
+
+func is_quiet(value: SpiteCompiler.Value?): Boolean {
+    fallback value
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return true
+        HighIntermediaryRepresentation.Values.DecimalNumber: return true
+        HighIntermediaryRepresentation.Values.TextConstant: return true
+        HighIntermediaryRepresentation.Values.NullConstant: return true
+        HighIntermediaryRepresentation.Values.LocalRead: return true
+        HighIntermediaryRepresentation.Values.ThisRead: return true
+        HighIntermediaryRepresentation.Values.Class.Object: return true
+        HighIntermediaryRepresentation.Values.Function.Fact: return true
+        HighIntermediaryRepresentation.Values.Function.Value: return is_quiet(value.receiver)
+        HighIntermediaryRepresentation.Values.Conversion: return is_quiet(value.converted)
+        HighIntermediaryRepresentation.Values.AttributeRead: return is_quiet(value.object)
+        HighIntermediaryRepresentation.Values.MakeObject: return value.arguments.is_empty()
+        HighIntermediaryRepresentation.Values.Call: return false
+        HighIntermediaryRepresentation.Values.ShapeCall: return false
+        HighIntermediaryRepresentation.Values.Function.ValueCall: return false
+        HighIntermediaryRepresentation.Values.ForeignCall: return false
+        HighIntermediaryRepresentation.Values.Class.OfValue: return false
+        HighIntermediaryRepresentation.Values.Class.Membership: return false
+        HighIntermediaryRepresentation.Values.EnumFromText: return false
+        HighIntermediaryRepresentation.Values.EnumText: return false
+        HighIntermediaryRepresentation.Values.MachineOperation: return false
+        HighIntermediaryRepresentation.Values.NumberRoom: return false
+        HighIntermediaryRepresentation.Values.Negation: return false
+        HighIntermediaryRepresentation.Values.PresenceTest: return false
+    }
+}

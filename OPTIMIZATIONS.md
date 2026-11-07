@@ -926,6 +926,22 @@ added later may read any of them; only `String` is shrunk there too (see the sec
 Every layout is decided by the high pass `high_optimization_passes/layouts_by_use`, which records it as
 `HighProgram.layout` for the passes after it and the lowering.
 
+## A reflection field nothing reads has no slot
+
+The reflection classes of `spite_standard_library/common/spite/` take every field in their constructors, and the
+compiler makes them through those constructors. A field whose reader the program never reaches costs nothing: no slot
+in the object, no default, no write in the constructor and no argument at the call. `high_optimization_passes/unread_fields`
+looks at the whole program: an attribute of a reflection class that no built function reads is absent, its writes go,
+and a constructor parameter nothing reads then goes with its arguments, unless an argument could do something (a call).
+What such a field would have held is not worked out either: the builder asks whether its reader is queued
+(`building/features.spite`), and makes the wrappers, stand-ins and facts only then, or a program reading one name would
+build every function of the class. The default of a field read and replaced by the constructor is left out as any other
+([below](#defaults-the-constructor-replaces-are-never-made)); `_not_made`, the default of a function field, only names
+itself, so it does not stop that.
+
+A program that reads no reflection makes none of these classes, so it is unchanged. Builds that keep everything
+(`CommandLine.Inspection`) keep the slots too.
+
 ## Untouched attributes have no slot
 
 An attribute that no built function reads or writes, whose default is pure, takes no slot in its object, its

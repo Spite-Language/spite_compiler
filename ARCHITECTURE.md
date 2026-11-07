@@ -144,6 +144,8 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    `overlapped_work` starts every heavy marked call of a run but the last on the pool and joins each where its name
    is first read.
 4. `folded_dictionaries`: a local dictionary written out and only read by keys written out is its entries.
+   Right before the next, `unread_fields`: a field of a reflection class nothing reads has no slot, no write and no
+   constructor argument.
 5. `unreached_functions`: a function only the calls those passes replaced reached is dropped.
 6. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
    they are read.
