@@ -1258,8 +1258,8 @@ with the text inside, and an executable moved without its `.crashes` file still 
 ## The fault handler is in every program
 
 A native fault (a null read inside a foreign library, a stack overflow) can happen in any program, and a silent end
-is a bug, so every program installs the handler `Spite.Fault` at its start, from the compiler's own source
-(`symbols/machinery_text.spite`), whatever else it uses. Nothing of it runs until a fault: it is fixed code, not a
+is a bug, so every program installs the handler `Spite.Fault` at its start, from the library
+(`spite_standard_library/common/spite/fault.spite`), whatever else it uses. Nothing of it runs until a fault: it is fixed code, not a
 runtime. The names of the functions it reports are not in the executable either: they are in
 `<program>.functions` beside it ([ARCHITECTURE.md](ARCHITECTURE.md#what-the-compiler-writes-itself)), which the
 report reads when the fault happens. What a user can observe: a fault prints a report instead of nothing, and every

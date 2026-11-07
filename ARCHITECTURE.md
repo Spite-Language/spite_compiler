@@ -359,12 +359,17 @@ have no body (`is_written_by_the_compiler`), so a call to one is an ordinary cal
 the stand-in for a null in a shape (`Spite.Absent`) are high functions the builder writes. A program that makes no
 handle writes none of it, and a program that never starts calls in a row has no table.
 
-The rest is Spite code the compiler holds as text (`symbols/machinery_text.spite`: the fault and crash reports
-`Spite.Fault`, the fallback ring `Spite.Fallbacks`, the deep copy table `Spite.CopyTable`; and, only in a `--repl` build,
-`high_intermediary_representation/building/prompt/text.spite`: `Spite.Prompt` and `Spite.PromptPath`). The first
-time a program names one, the symbol table adds it as a generated class under the program's
-`.spite/build/spite/`, with the library's rights; a program that never needs one reads none of it. No folder holds
-them, so nothing can load them, and a program that names one of them, or any `Spite.Internal` name, is refused.
+The rest is Spite code. What does not vary with the program is library code: the fault and crash reports
+`Spite.Fault`, the program's settings check `Spite.Settings`, the fallback ring `Spite.Asserts` and the deep copy
+table `Spite.CopyTable` (`spite_standard_library/common/spite/`, so a program that loads `common/` alone has them
+too), read like any library class the first time a program needs one, so a program that never needs one reads none of it. These four, with the
+prompt's two, are `Symbols.MachineryNames`: a program that names one, reopens one from a `spite/` folder of
+its own, or names any `Spite.Internal` name is refused, and a crash inside one names no values. The reloader
+`Spite.HotReload` is library code too (HOT_RELOAD.md). What the compiler writes as text, as a generated class under
+the program's `.spite/build/spite/` with the library's rights, is what varies, or what the prompt's command language
+removes with #296: `Spite.ReloadPoint` (the build's values for the reloader), the reload commands and
+`Spite.Breakpoint` (`symbols/machinery_text.spite`), and, only in a `--repl` build, `Spite.Prompt`,
+`Spite.PromptPath` (`high_intermediary_representation/building/prompt/*_text.spite`) and `ReadEvaluatePrintLoop`.
 
 Beside every executable the compiler writes `<name>.functions`: one line per function of the code, its start and
 end as offsets from the start of the code section and its key (`# spite functions 1`, then `start\tend\tkey` in
