@@ -364,7 +364,8 @@ The rest is Spite code. What does not vary with the program is library code: the
 table `Spite.CopyTable` (`spite_standard_library/common/spite/`, so a program that loads `common/` alone has them
 too), read like any library class the first time a program needs one, so a program that never needs one reads none of it. These four, with the
 prompt's two, are `Symbols.MachineryNames`: a program that names one, reopens one from a `spite/` folder of
-its own, or names any `Spite.Internal` name is refused, and a crash inside one names no values. The reloader
+its own, or names any `Spite.Internal` name is refused, a crash inside one names no values, and the `Spite`
+namespace's reflected `classes` leave them out. The reloader
 `Spite.HotReload` is library code too (HOT_RELOAD.md). What the compiler writes as text, as a generated class under
 the program's `.spite/build/spite/` with the library's rights, is what varies, or what the prompt's command language
 removes with #296: `Spite.ReloadPoint` (the build's values for the reloader), the reload commands and
