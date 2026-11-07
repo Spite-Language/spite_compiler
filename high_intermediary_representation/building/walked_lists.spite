@@ -1,0 +1,336 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+
+func WalkedLists(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func walked_classes_or_values(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    var literals = Literals(context, values)
+    fallback callee.name == "each" and call.arguments.count() == 1
+    var listed = callee.target
+    var argument = call.arguments[0]
+    fallback listed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var own = literals.this_value()
+        return walked_listing(listed, context.current_class, argument.name, own)
+    }
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walked_listing_by(listed, argument)
+    }
+    return null
+}
+
+# ../../../spite_documentation/metaprogramming.md#walking-a-folder-or-an-enum
+func walked_listing_by(
+    listed: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    walker_written: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    var operators = Operators(context, values)
+    var lists_values = listed.name == "values" or listed.name == "classes"
+    fallback lists_values
+    var path = values.tested_class_path_of(listed.target)
+    fallback not path.is_empty()
+    var holder_path = values.class_path_of(walker_written.target)
+    fallback holder_path.is_empty()
+    var holder = values.value_of(walker_written.target, null)
+    var holder_type = holder.value_type
+    fallback holder_type.kind == 'object' and not holder_type.is_nullable and context.has_a_class(holder_type)
+    var holder_model = context.class_of(holder_type)
+    var walker = holder_model.function_named(walker_written.name)
+    fallback walker
+    var held = operators.held_once(holder)
+    return walked_listing(listed, holder_model, walker_written.name, held)
+}
+
+func walked_listing(
+    listed: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    owner: Model.ClassModel,
+    walker_name: String,
+    receiver: SpiteCompiler.Value,
+): SpiteCompiler.Value? {
+    var lists_values = listed.name == "values" or listed.name == "classes"
+    fallback lists_values
+    var walker = owner.function_named(walker_name)
+    fallback walker
+    fallback walker.template_index < 0 and walker.parameters.count() == 1
+    var path = values.tested_class_path_of(listed.target)
+    fallback not path.is_empty()
+    if listed.name == "values" {
+        return walked_values(walker, path, receiver)
+    }
+    return walked_classes(walker, path, owner, receiver)
+}
+
+func walked_values(
+    walker: Model.FunctionModel,
+    path: List<String>,
+    receiver: SpiteCompiler.Value,
+): SpiteCompiler.Value? {
+    var literals = Literals(context, values)
+    var declared = values.declared_enum_of(path)
+    fallback declared
+    fallback declared.kind == 'enumeration'
+    var parameter = walker.parameters[0]
+    crash parameter
+    var taken = parameter.parameter_type
+    fallback taken.kind == 'enumeration' and taken.name == declared.name and not taken.is_nullable
+    var enumeration = values.enum_model_of(declared)
+    context.need(walker)
+    var index = 0
+    while index < enumeration.values.count() {
+        var value_name = enumeration.values[index]
+        var value = literals.enum_value(value_name, declared)
+        var arguments = List<SpiteCompiler.Value>()
+        arguments.append(value)
+        var walk_call = HighIntermediaryRepresentation.Values.Call(walker, receiver, arguments)
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(walk_call)
+        evaluated.line = context.line
+        context.pending.append(evaluated)
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func walked_classes(
+    walker: Model.FunctionModel,
+    path: List<String>,
+    owner: Model.ClassModel,
+    receiver: SpiteCompiler.Value,
+): SpiteCompiler.Value? {
+    var namespace = path.join(".")
+    var folder = context.resolver.state.symbols.namespace_folder(namespace)
+    fallback folder
+    var parameter = walker.parameters[0]
+    crash parameter
+    fallback parameter.parameter_type.name == "Spite.Class"
+    var names = values.classes_of_a_namespace(namespace)
+    var index = 0
+    while index < names.count() {
+        var shown = names[index]
+        var made = class_walk_copy(walker, shown, index, owner)
+        context.need(made)
+        var arguments = List<SpiteCompiler.Value>()
+        var walk_call = HighIntermediaryRepresentation.Values.Call(made, receiver, arguments)
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(walk_call)
+        evaluated.line = context.line
+        context.pending.append(evaluated)
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func class_walk_copy(
+    walker: Model.FunctionModel,
+    shown: String,
+    index: Integer,
+    owner: Model.ClassModel,
+): Model.FunctionModel {
+    var owner_name = shown.replace(".", "_")
+    var called_name = "{walker.name}_over_{owner_name}"
+    var known = owner.function_named(called_name)
+    if known {
+        return known
+    }
+    var model = context.resolver.monomorphiser.class_model_named(shown)
+    crash model
+    var member_type = Model.Type('object', model.key)
+    var described_names = DescribedNames()
+    var simple = described_names.simple_name_of(model.shown)
+    walker.template_index = 0
+    var made = context.resolver.reading.specialized(walker, called_name, simple, member_type, false, owner)
+    walker.template_index = -1
+    made.is_a_walk_copy = true
+    made.bound_member_index = index
+    made.binds_a_class = true
+    owner.declared_functions.append(made)
+    return made
+}
+
+func walked_attributes(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    fallback callee.name == "each" and call.arguments.count() == 1
+    var listed = callee.target
+    if listed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return walked_attributes_of(call, listed)
+    }
+    return null
+}
+
+func walked_attributes_of(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    listed: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    fallback listed.name == "attributes"
+    var argument = call.arguments[0]
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return walked_by(listed, argument.name)
+    }
+    return null
+}
+
+func walked_by(listed: AbstractSyntaxTree.Shapes.Expressions.MemberExpression, name: String): SpiteCompiler.Value? {
+    var operators = Operators(context, values)
+    var walker = context.current_class.function_named(name)
+    fallback walker
+    fallback walker.parameters.count() == 1 and walker.template_index < 0
+    var parameter = walker.parameters[0]
+    var described = parameter.parameter_type
+    var is_described = described.name == "Spite.Attribute" or described.name == "Spite.AttributeDeclaration"
+    fallback is_described and described.kind == 'object' and not described.is_nullable
+    var class_path = values.tested_class_path_of(listed.target)
+    if not class_path.is_empty() {
+        var type_arguments = values.type_arguments_of(listed.target)
+        var described_class = context.resolver.types.class_type_in(
+            class_path,
+            type_arguments,
+            context.current_class,
+            context.line,
+        )
+        if described.name == "Spite.Attribute" {
+            refuse_a_walked_kind(walker, described_class, true)
+        }
+        refuse_a_walk_over_a_type(class_path, described_class)
+        return walked_over_the_attributes(walker, described_class, null)
+    }
+    if described.name != "Spite.Attribute" {
+        refuse_an_instance_walk(walker, listed.target)
+        return null
+    }
+    var object = values.value_of(listed.target, null)
+    fallback object.value_type.kind == 'object' and not object.value_type.is_nullable
+    var model = context.class_of(object.value_type)
+    fallback not model.attribute_named("attributes")
+    var held = operators.held_once(object)
+    return walked_over_the_attributes(walker, object.value_type, held)
+}
+
+func refuse_an_instance_walk(walker: Model.FunctionModel, target: SpiteCompiler.Expression?) {
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        refuse_a_named_walk(walker, target)
+    }
+}
+
+func refuse_a_named_walk(
+    walker: Model.FunctionModel,
+    target: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+) {
+    var is_a_value = not target.is_a_class_name and not target.name.starts_with("$")
+    fallback is_a_value
+    var object = values.value_of(target, null)
+    var is_an_instance = object.value_type.kind == 'object' and not object.value_type.is_nullable
+    fallback is_an_instance and object.value_type.name != "Spite.Class"
+    var model = context.class_of(object.value_type)
+    fallback not model.attribute_named("attributes")
+    refuse_a_walked_kind(walker, object.value_type, false)
+}
+
+func refuse_a_walked_kind(walker: Model.FunctionModel, described_class: Model.Type, walks_declarations: Boolean) {
+    var model = context.class_of(described_class)
+    var first = model.declared_attributes[0]
+    fallback first
+    var shown = context.shown(described_class)
+    values.typing.refuse_walked_kind(context, walker.name, first.name, shown, walks_declarations)
+}
+
+# ../../../spite_spec/specs/metaprogramming.md#walks
+func refuse_a_list_over_a_type(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    fallback member.name == "attributes"
+    var class_path = values.tested_class_path_of(member.target)
+    fallback not class_path.is_empty()
+    var written = class_path.join(".")
+    var found = context.resolver.state.symbols.find(written, context.current_class.file.namespace)
+    fallback written.starts_with("$") or found
+    var type_arguments = values.type_arguments_of(member.target)
+    var described_class = context.resolver.types.class_type_in(
+        class_path,
+        type_arguments,
+        context.current_class,
+        context.line,
+    )
+    refuse_a_walk_over_a_type(class_path, described_class)
+}
+
+# ../../../spite_spec/specs/metaprogramming.md#walks
+func refuse_a_walk_over_a_type(class_path: List<String>, described_class: Model.Type) {
+    fallback described_class.kind == 'shape'
+    var written = class_path.join(".")
+    var shown = context.shown(described_class)
+    values.typing.refuse_a_walk_over_a_type(context, written, shown)
+}
+
+func walked_over_the_attributes(
+    walker: Model.FunctionModel,
+    described_class: Model.Type,
+    object: SpiteCompiler.Value?,
+): SpiteCompiler.Value {
+    var literals = Literals(context, values)
+    var model = context.class_of(described_class)
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var made = walk_specialized(walker, attribute, index, described_class, object)
+        context.need(made)
+        var arguments = List<SpiteCompiler.Value>()
+        if object {
+            arguments.append(object)
+        }
+        var own = literals.this_value()
+        var walk_call = HighIntermediaryRepresentation.Values.Call(made, own, arguments)
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(walk_call)
+        evaluated.line = context.line
+        context.pending.append(evaluated)
+        index = index + 1
+    }
+    var nothing = Model.Type('nothing', "")
+    return HighIntermediaryRepresentation.Values.NullConstant(nothing)
+}
+
+func walk_specialized(
+    walker: Model.FunctionModel,
+    attribute: Model.AttributeModel,
+    index: Integer,
+    described_class: Model.Type,
+    object: SpiteCompiler.Value?,
+): Model.FunctionModel {
+    var owner_name = described_class.name.replace(".", "_")
+    var called_name = "{walker.name}_over_{owner_name}_{attribute.name}"
+    var known = context.current_class.function_named(called_name)
+    if known {
+        return known
+    }
+    walker.template_index = 0
+    var made = context.resolver.reading.specialized(
+        walker,
+        called_name,
+        attribute.name,
+        attribute.attribute_type,
+        false,
+        context.current_class,
+    )
+    walker.template_index = -1
+    made.is_a_walk_copy = true
+    made.bound_member_index = index
+    if not object {
+        made.walked_declarations_of = described_class.name
+    }
+    if object {
+        made.walked_object = described_class
+        var hidden = Model.ParameterModel("_walked", described_class, false)
+        made.parameters.append(hidden)
+    }
+    context.current_class.declared_functions.append(made)
+    return made
+}
