@@ -1,0 +1,1746 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+
+func Calls(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+# ../../../spite_spec/specs/values_and_types.md#enums-in-full
+func enum_named_by_its_path(snake: String): Model.Type? {
+    var words = snake.split("_")
+    var owner_words = List<String>()
+    var last_owner_word = words.count() - 1
+    var index = 0
+    while index < last_owner_word {
+        var word = words[index]
+        owner_words.append(word)
+        var enum_words = List<String>()
+        var rest = index + 1
+        while rest < words.count() {
+            var enum_word = words[rest]
+            enum_words.append(enum_word)
+            rest = rest + 1
+        }
+        var owner_snake = owner_words.join("_")
+        var enum_snake = enum_words.join("_")
+        var owner_name = values.pascal_case_of(owner_snake)
+        var enum_name = values.pascal_case_of(enum_snake)
+        var path = [owner_name, enum_name]
+        var found = context.resolver.types.declared_type_in(path, context.current_class)
+        if found and found.kind == 'enumeration' {
+            return found
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func refuse_a_written_conversion(wanted: Model.Type) {
+    var shown = context.shown(wanted)
+    values.typing.refuse_a_written_conversion(context, shown)
+}
+
+func preset_called(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): SpiteCompiler.Value? {
+    var callee = call.callee
+    if callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return preset_of(call, callee)
+    }
+    return null
+}
+
+func preset_of(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    fallback call.arguments.is_empty()
+    var first = member.name.slice(0, 1)
+    crash first
+    fallback first != first.lower_case()
+    var class_path = values.class_path_of(member.target)
+    fallback not class_path.is_empty()
+    var written = class_path.join(".")
+    var namespace = context.current_class.file.namespace
+    var made_class = context.resolver.state.symbols.find("{written}.{member.name}", namespace)
+    fallback not made_class
+    var found = context.resolver.state.symbols.find(written, namespace)
+    fallback found or values.scalars.is_a_scalar(written)
+    var type_arguments = values.type_arguments_of(member.target)
+    values.refuse_arguments_on_a_plain_name(class_path, type_arguments)
+    var described = context.resolver.types.class_type_in(
+        class_path,
+        type_arguments,
+        context.current_class,
+        context.line,
+    )
+    fallback described.kind == 'object' or described.kind == 'scalar'
+    var model = context.class_of(described)
+    var preset = model.preset_named(member.name)
+    if not preset and described.kind == 'scalar' {
+        var constants = values.constants_of(model)
+        values.typing.refuse_an_unknown_number_constant(context, written, member.name, constants)
+    }
+    fallback preset
+    context.need(preset)
+    var receiver = values.unused_receiver_of(described)
+    var no_arguments = List<SpiteCompiler.Value>()
+    return HighIntermediaryRepresentation.Values.Call(preset, receiver, no_arguments)
+}
+
+func bound_class_made(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    var literals = Literals(context, values)
+    var function = context.current_function
+    fallback callee.name == "class" and call.arguments.is_empty() and function.bound_member_type
+    var target = callee.target
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression and target.name == function.bound_parameter {
+        return literals.default_of_a_type(function.bound_member_type)
+    }
+    return null
+}
+
+func enum_value_by_name(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    var fitting = Fitting(context, values)
+    fallback callee.name == "find_by_name" and call.arguments.count() == 1
+    var listed = callee.target
+    var lists_the_values = false
+    if listed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        lists_the_values = listed.name == "values"
+    }
+    fallback lists_the_values
+    var path = values.enum_path_of(listed)
+    fallback not path.is_empty()
+    var declared = context.resolver.types.declared_type_in(path, context.current_class)
+    fallback declared
+    fallback declared.kind == 'enumeration'
+    var argument = call.arguments[0]
+    var maybe = declared.nullable()
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression and argument.kind == 'symbol_literal' {
+        var named = fitting.fitted_value_of(argument, declared)
+        return HighIntermediaryRepresentation.Values.Conversion(maybe, 'nullable', named)
+    }
+    var text = context.text()
+    var written = fitting.fitted_value_of(argument, text)
+    return fitting.fitted(written, maybe)
+}
+
+func refuse_a_call_on_a_number_class(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    receiver: SpiteCompiler.Value,
+) {
+    var class_path = values.class_path_of(callee.target)
+    var written = class_path.join(".")
+    fallback values.scalars.is_a_scalar(written)
+    var reflection_model = context.class_of(receiver.value_type)
+    fallback not reflection_model.function_named(callee.name)
+    var number = values.number_class_of(class_path)
+    var constants = values.constants_of(number)
+    var spelled = values.pascal_case_of(callee.name)
+    if number.preset_named(spelled) {
+        values.typing.refuse_a_called_constant(context, "{written}.{callee.name}", "{written}.{spelled}()")
+    }
+    var function = number.function_named(callee.name)
+    if function {
+        values.typing.refuse_a_value_function_on_a_class(context, written, callee.name, constants)
+    }
+    values.typing.refuse_an_unknown_number_constant(context, written, callee.name, constants)
+}
+
+func reflected_receiver(target: SpiteCompiler.Expression?): SpiteCompiler.Value? {
+    return values.reflected_object_of(target)
+}
+
+func called_on_a_class(
+    receiver: SpiteCompiler.Value,
+    name: String,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value {
+    var owner = context.class_of(receiver.value_type)
+    var function = owner.function_named(name)
+    if not function {
+        function = values.member_template_of(owner, name)
+    }
+    if not function {
+        refuse_a_call_on_a_class_object(receiver, name)
+    }
+    if not function {
+        var shown = context.shown(receiver.value_type)
+        values.typing.refuse_unknown_member(context, shown, name)
+    }
+    crash function
+    return called(function, receiver, written)
+}
+
+func refuse_a_call_on_a_class_object(receiver: SpiteCompiler.Value, name: String) {
+    if receiver.class == HighIntermediaryRepresentation.Values.Class.Object {
+        refuse_a_class_object_call(receiver, name)
+    }
+}
+
+func refuse_a_class_object_call(object: HighIntermediaryRepresentation.Values.Class.Object, name: String) {
+    var described = context.program.class_named(object.described)
+    fallback described
+    fallback described.function_named(name) or described.attribute_named(name)
+    var plain = values.typing.plain_class_name(described.shown)
+    if values.scalars.is_a_scalar(described.key) {
+        refuse_a_value_function_on_a_number_class(described, plain, name)
+    }
+    values.typing.refuse_a_class_as_a_value(context, plain)
+}
+
+func refuse_a_value_function_on_a_number_class(described: Model.ClassModel, plain: String, name: String) {
+    var listed = values.constants_of(described)
+    values.typing.refuse_a_value_function_on_a_number_class(context, plain, name, listed)
+}
+
+func call_value(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    expected: Model.Type?,
+): SpiteCompiler.Value {
+    var maker = call.callee
+    if maker.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression and maker.name.starts_with("$") {
+        return made_from_a_bound_type(call, maker.name)
+    }
+    var preset = preset_called(call)
+    if preset {
+        return preset
+    }
+    var class_path = values.class_path_of(call.callee)
+    if not class_path.is_empty() {
+        return constructed(call, class_path, expected)
+    }
+    var callee = call.callee
+    if callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return own_call(call, callee.name)
+    }
+    if callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return member_call(call, callee)
+    }
+    if callee.class == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        return indexed_function_call(call, callee)
+    }
+    return values.unbuilt()
+}
+
+# ../../../spite_spec/specs/values_and_types.md#casting
+func refuse_a_conversion_by_name(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    made_type: Model.Type,
+    expected: Model.Type?,
+) {
+    fallback call.arguments.count() == 1 and may_be_converted(made_type)
+    var argument = call.arguments[0]
+    var given = values.value_of(argument, null)
+    var shown = conversion_answer_shown(made_type, given.value_type)
+    fallback not shown.is_empty()
+    var printer = Printers.Spite.ExpressionPrinter(call)
+    var call_text = printer.text()
+    var argument_printer = Printers.Spite.ExpressionPrinter(argument)
+    var argument_text = argument_printer.text()
+    if expected {
+        var wanted = expected.present()
+        if values.is_the_same_type(wanted, made_type) {
+            values.typing.refuse_a_cast_the_place_makes(context, call_text, argument_text)
+        }
+    }
+    values.typing.refuse_a_conversion_by_name(context, call_text, argument_text, shown)
+}
+
+func conversion_answer_shown(made_type: Model.Type, given_type: Model.Type): String {
+    var shown = context.shown(made_type)
+    var from_text = given_type.kind == 'object' and given_type.name == "String"
+    if made_type.kind == 'enumeration' {
+        return "{shown}?"
+    }
+    if made_type.kind == 'scalar' {
+        if from_text {
+            return "{shown}?"
+        }
+        return shown
+    }
+    var made = context.class_of(made_type)
+    var conversion = made.conversion_from(given_type)
+    fallback conversion
+    if conversion.answer and conversion.answer.is_nullable {
+        return "{shown}?"
+    }
+    return shown
+}
+
+func may_be_converted(made_type: Model.Type): Boolean {
+    if made_type.kind == 'enumeration' or made_type.kind == 'scalar' {
+        return true
+    }
+    fallback made_type.kind == 'object'
+    var made = context.class_of(made_type)
+    var constructor = values.constructor_of(made)
+    fallback not constructor or constructor.parameters.count() != 1
+    var conversion = made.read_conversion()
+    fallback conversion
+    return true
+}
+
+func indexed_function_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.IndexExpression,
+): SpiteCompiler.Value {
+    var held = values.value_of(callee, null)
+    if held.value_type.is_nullable {
+        var wanted = held.value_type.present()
+        values.note_a_maybe_null("fit", held, "", wanted)
+        held = values.as_present(held)
+    }
+    var held_type = held.value_type
+    if held_type.kind != 'function' {
+        var printer = Printers.Spite.ExpressionPrinter(callee)
+        var written = printer.text()
+        var shown = context.shown(held_type)
+        values.typing.refuse_not_callable(context, written, shown)
+    }
+    return call_through_a_value(held, held_type, call)
+}
+
+func made_from_a_bound_type(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+): SpiteCompiler.Value {
+    var literals = Literals(context, values)
+    var passing_arguments = Arguments(context, values)
+    var bound = context.current_class.bound_types[name]
+    if not bound {
+        values.typing.refuse_unknown_name(context, name)
+    }
+    crash bound
+    var made_type = bound.present()
+    if made_type.is_nothing() and call.arguments.is_empty() {
+        return HighIntermediaryRepresentation.Values.NullConstant(made_type)
+    }
+    var is_a_value = made_type.kind == 'shape' or made_type.kind == 'enumeration'
+    var is_plain = made_type.kind == 'scalar' or made_type.name == "String" or is_a_value
+    if is_plain and call.arguments.is_empty() {
+        var plain = literals.default_of_a_type(made_type)
+        crash plain
+        return plain
+    }
+    refuse_making_what_makes_nothing(made_type)
+    var made = context.class_of(made_type)
+    context.need_defaults(made.key)
+    var constructor = values.constructor_of(made)
+    if constructor and call.arguments.is_empty() and reads_into_defaults(constructor) {
+        var no_arguments = List<SpiteCompiler.Value>()
+        return HighIntermediaryRepresentation.Values.MakeObject(made_type, null, no_arguments)
+    }
+    var arguments = List<SpiteCompiler.Value>()
+    if constructor {
+        context.need(constructor)
+        arguments = passing_arguments.fitted_arguments(constructor, call.arguments)
+    }
+    return HighIntermediaryRepresentation.Values.MakeObject(made_type, constructor, arguments)
+}
+
+func reads_into_defaults(constructor: Model.FunctionModel): Boolean {
+    fallback not constructor.parameters.is_empty()
+    var library = Mapping.LibraryFile()
+    var path = context.current_class.file.path.replace("\\", "/")
+    fallback library.holds(path) and context.current_function.name == "_placeholder"
+    return path.ends_with("/json_reader.spite")
+}
+
+func work_call(handle: SpiteCompiler.Value, name: String): SpiteCompiler.Value {
+    var work_type = Model.Type('object', handle.value_type.carrier)
+    var work_model = context.class_of(work_type)
+    var function = work_model.function_named(name)
+    crash function
+    if name == "to_debug" {
+        values.need_the_work_text(work_model)
+    }
+    var no_values = List<SpiteCompiler.Value>()
+    return HighIntermediaryRepresentation.Values.Call(function, handle, no_values)
+}
+
+func refuse_a_cast_by_name(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var class_path = values.class_path_of(callee.target)
+    var written = class_path.join(".")
+    fallback values.scalars.is_a_scalar(written)
+    values.typing.refuse_cast_by_name(context, written, callee.name)
+}
+
+func refuse_an_unknown_generic_class(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    class_path: List<String>,
+) {
+    var written = class_path.join(".")
+    var initial = written.slice(0, 1)
+    crash initial
+    var is_a_class_name = initial != initial.lower_case() and not values.scalars.is_a_scalar(written)
+    var built_in = ["Spite.Function", "Symbol", "Parallel", "Concurrent"]
+    var is_generic = not call.generic_arguments.is_empty() and not built_in.contains(written)
+    fallback is_generic and is_a_class_name
+    var found = context.resolver.state.symbols.find(written, context.current_class.file.namespace)
+    fallback not found
+    values.typing.refuse_an_unknown_generic_class(context, written)
+}
+
+func constructed(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    class_path: List<String>,
+    expected: Model.Type?,
+): SpiteCompiler.Value {
+    refuse_an_unknown_generic_class(call, class_path)
+    var inferred = inferred_type_of(call, class_path)
+    var made_type = inferred
+    if not made_type {
+        made_type = context.resolver.types.class_type_in(
+            class_path,
+            call.generic_arguments,
+            context.current_class,
+            context.line,
+        )
+    }
+    crash made_type
+    return constructed_as(call, made_type, class_path, expected)
+}
+
+func refuse_making_what_makes_nothing(made_type: Model.Type) {
+    var segments = made_type.name.split(".")
+    var shown = segments.last()
+    crash shown
+    if made_type.kind == 'shape' {
+        values.typing.refuse_a_made_type(context, shown)
+    }
+    if made_type.kind == 'union' {
+        values.typing.refuse_a_made_union(context, shown)
+    }
+}
+
+func constructed_as(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    made_type: Model.Type,
+    class_path: List<String>,
+    expected: Model.Type?,
+): SpiteCompiler.Value {
+    var passing_arguments = Arguments(context, values)
+    refuse_making_what_makes_nothing(made_type)
+    refuse_a_conversion_by_name(call, made_type, expected)
+    var made = context.class_of(made_type)
+    var constraints = Constraints(context, values)
+    constraints.check(made)
+    check_a_serialized_class(class_path, made)
+    context.need_defaults(made.key)
+    var handed_over = ""
+    if made.key == "ForeignCallback" {
+        var crossing = ForeignCrossing(context, values)
+        handed_over = crossing.handover_place(call)
+    }
+    var constructor = values.constructor_of(made)
+    var arguments = List<SpiteCompiler.Value>()
+    if constructor and not handed_over.is_empty() {
+        context.need(constructor)
+        var handing = ForeignCrossing(context, values)
+        arguments = handing.handover_arguments(call, constructor)
+    } else if constructor {
+        context.need(constructor)
+        arguments = passing_arguments.fitted_arguments(constructor, call.arguments)
+    } else {
+        var no_parameters = List<Model.ParameterModel>()
+        arguments = passing_arguments.arguments_for(made.shown, no_parameters, call.arguments, false)
+    }
+    var making = HighIntermediaryRepresentation.Values.MakeObject(made_type, constructor, arguments)
+    making.foreign_place = handed_over
+    if made.is_singleton {
+        context.note_a_singleton_made(made.key, arguments)
+    }
+    return making
+}
+
+func check_a_serialized_class(class_path: List<String>, made: Model.ClassModel) {
+    var last = class_path.last()
+    crash last
+    if class_path.count() == 1 {
+        var serializer = Validators.HighIntermediaryRepresentation.Serializer.Validator(context)
+        serializer.check(last, made)
+    }
+}
+
+func inferred_type_of(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    class_path: List<String>,
+): Model.Type? {
+    fallback call.generic_arguments.is_empty()
+    var written = class_path.join(".")
+    var found = context.resolver.state.symbols.find(written, context.current_class.file.namespace)
+    fallback found
+    var file = context.resolver.state.symbols.file_for(found.path)
+    fallback file
+    fallback context.resolver.monomorphiser.is_a_template(file)
+    var argument_types = List<Model.Type>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var argument_type = inferred_argument_type(argument)
+        argument_types.append(argument_type)
+        index = index + 1
+    }
+    return context.resolver.monomorphiser.inferred_instance(
+        class_path,
+        context.current_class,
+        context.line,
+        argument_types,
+    )
+}
+
+func inferred_argument_type(argument: SpiteCompiler.Expression?): Model.Type {
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression and argument.kind == 'keyword_null' {
+        return Model.Type('nothing', "")
+    }
+    var value = values.value_of(argument, null)
+    return value.value_type
+}
+
+func enum_read_from(
+    receiver: SpiteCompiler.Value,
+    name: String,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value? {
+    var given = receiver.value_type
+    var reads_text = given.kind == 'object' and given.name == "String" and not given.is_nullable
+    fallback reads_text and written.is_empty() and name.starts_with("to_")
+    var length = name.length()
+    var enum_words = name.slice(3, length)
+    crash enum_words
+    var enum_type = enum_named_by_its_path(enum_words)
+    fallback enum_type
+    refuse_a_written_conversion(enum_type)
+    return null
+}
+
+func class_form_call(
+    receiver: SpiteCompiler.Value,
+    owner: Model.ClassModel,
+    name: String,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value? {
+    var element = owner.bound_types["$element_type"]
+    fallback element and written.is_empty()
+    fallback element.kind == 'union' and not element.is_nullable
+    var forms = ["filter", "count", "any", "all", "remove_where"]
+    var index = 0
+    while index < forms.count() {
+        var form = forms[index]
+        var prefix = "{form}_"
+        if name.starts_with(prefix) {
+            var prefix_length = prefix.length()
+            var name_length = name.length()
+            var written_class = name.slice(prefix_length, name_length)
+            crash written_class
+            var member = union_member_class(element, written_class)
+            if member {
+                var making = PassedForms(context, values)
+                var made = making.class_form(owner, form, member)
+                crash made
+                var no_values = List<SpiteCompiler.Value>()
+                return HighIntermediaryRepresentation.Values.Call(made, receiver, no_values)
+            }
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func union_member_class(element: Model.Type, written: String): Model.Type? {
+    var fitting = Fitting(context, values)
+    var candidates = values.singular_candidates(written, true)
+    var united = fitting.union_model_of(element)
+    var index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        var pascal = values.pascal_case_of(candidate)
+        var member_index = 0
+        while member_index < united.members.count() {
+            var held = united.members[member_index]
+            var parts = held.name.split(".")
+            var last = parts.count() - 1
+            var simple = parts[last]
+            if simple == pascal {
+                return held
+            }
+            member_index = member_index + 1
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func passed_form(
+    receiver: SpiteCompiler.Value,
+    owner: Model.ClassModel,
+    name: String,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value? {
+    var is_a_form = name == "count" or name == "sum"
+    fallback is_a_form and written.count() == 1 and owner.bound_types["$element_type"]
+    if name == "count" {
+        var counting = owner.function_named("count_where")
+        crash counting
+        return called(counting, receiver, written)
+    }
+    var measure = values.value_of(written[0], null)
+    fallback measure.value_type.kind == 'function'
+    fallback measure.value_type.answer
+    fallback measure.value_type.answer.name != "Integer"
+    var forms = PassedForms(context, values)
+    var summing = forms.sum_for(owner, measure.value_type)
+    fallback summing
+    var arguments = List<SpiteCompiler.Value>()
+    arguments.append(measure)
+    return HighIntermediaryRepresentation.Values.Call(summing, receiver, arguments)
+}
+
+func own_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, name: String): SpiteCompiler.Value {
+    var literals = Literals(context, values)
+    var internal_name = context.scope.internal_name_of(name)
+    if internal_name {
+        return function_value_call(call, name)
+    }
+    var walked_class = made_from_the_walked_class(call, name)
+    if walked_class {
+        return walked_class
+    }
+    var rebound = values.rebound_template_call(call, name)
+    if rebound {
+        return rebound
+    }
+    var function = context.current_class.function_named(name)
+    if not function and values.holds_a_function_value(name) {
+        var held_value = values.value_of(call.callee, null)
+        return values.value_call_of(held_value, call.arguments)
+    }
+    var calls_a_held_class = holds_a_class_object(name) and call.arguments.is_empty()
+    if not function and calls_a_held_class {
+        var described_value = values.value_of(call.callee, null)
+        return made_from_a_held_class(described_value)
+    }
+    if not function {
+        function = values.member_template_of(context.current_class, name)
+    }
+    if not function {
+        var walked = values.walk_of(context.current_class, name, call.arguments)
+        if walked {
+            return walked
+        }
+    }
+    if not function and name == "_deep_copied" and call.arguments.count() == 1 {
+        var copied_value = values.value_of(call.arguments[0], null)
+        var copying = Copying(context, values)
+        return copying.deep_copied(copied_value)
+    }
+    if not function {
+        values.typing.refuse_unknown_function(context, name)
+    }
+    crash function
+    var walking = KnownWalks(context, values)
+    var known_answer = walking.call_with_a_known(function, call)
+    if known_answer {
+        return known_answer
+    }
+    var passed_on = values.passed_on_template(function, call)
+    if passed_on {
+        return passed_on
+    }
+    refuse_a_bare_operator_call(call, function)
+    var own = literals.this_value()
+    var made = called(function, own, call.arguments)
+    refuse_a_bare_accessor_call(call, function)
+    return made
+}
+
+# ../../../spite_documentation/reflection.md#known-while-compiling
+func made_from_the_walked_class(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+): SpiteCompiler.Value? {
+    var walking = context.current_function
+    fallback walking.binds_a_class and name == walking.bound_parameter
+    crash walking.bound_member_type
+    var walked_type: Model.Type = walking.bound_member_type
+    var class_path = walked_type.name.split(".")
+    return constructed_as(call, walked_type, class_path, null)
+}
+
+func function_value_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+): SpiteCompiler.Value {
+    var internal_name = context.scope.internal_name_of(name)
+    crash internal_name
+    var local_type = context.scope.type_of(internal_name)
+    crash local_type
+    if is_a_class_object(local_type) and call.arguments.is_empty() {
+        var described = HighIntermediaryRepresentation.Values.LocalRead(local_type, internal_name)
+        return made_from_a_held_class(described)
+    }
+    if local_type.kind != 'function' {
+        var shown = context.shown(local_type)
+        values.typing.refuse_not_callable(context, name, shown)
+    }
+    var called_value = HighIntermediaryRepresentation.Values.LocalRead(local_type, internal_name)
+    return call_through_a_value(called_value, local_type, call)
+}
+
+# ../../../spite_spec/specs/metaprogramming.md#calls-built-before-they-run
+func made_from_a_held_class(described: SpiteCompiler.Value): SpiteCompiler.Value {
+    var held = described
+    if held.value_type.is_nullable {
+        values.note_a_maybe_null("held", held, "", held.value_type)
+        held = values.as_present(held)
+    }
+    var reflection = Reflection(context, values)
+    var making = reflection.making.made_anew()
+    var no_arguments = List<SpiteCompiler.Value>()
+    return HighIntermediaryRepresentation.Values.Call(making, held, no_arguments)
+}
+
+func is_a_class_object(value_type: Model.Type): Boolean {
+    return value_type.kind == 'object' and value_type.name == "Spite.Class"
+}
+
+func holds_a_class_object(name: String): Boolean {
+    var held = context.current_class.attribute_named(name)
+    fallback held
+    return is_a_class_object(held.attribute_type)
+}
+
+func made_from_a_member_class(
+    receiver: SpiteCompiler.Value,
+    owner: Model.ClassModel,
+    name: String,
+): SpiteCompiler.Value? {
+    var getter = owner.function_named("get_{name}")
+    if getter and getter.parameters.is_empty() and getter.answer {
+        var answer_type: Model.Type = getter.answer
+        fallback is_a_class_object(answer_type)
+        var no_arguments = List<SpiteCompiler.Expression>()
+        var got = called(getter, receiver, no_arguments)
+        return made_from_a_held_class(got)
+    }
+    var attribute = owner.attribute_named(name)
+    fallback attribute
+    fallback is_a_class_object(attribute.attribute_type)
+    var attribute_read = HighIntermediaryRepresentation.Values.AttributeRead(receiver, attribute)
+    return made_from_a_held_class(attribute_read)
+}
+
+func attribute_function_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    attribute: Model.AttributeModel,
+): SpiteCompiler.Value {
+    var literals = Literals(context, values)
+    var reads = Reads(context, values)
+    var own = literals.this_value()
+    var read = HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
+    var held = reads.narrowed(read, attribute.name)
+    if held.value_type.is_nullable {
+        values.note_a_maybe_null("held", held, "", held.value_type)
+        held = values.as_present(held)
+    }
+    var held_type = held.value_type
+    return call_through_a_value(held, held_type, call)
+}
+
+func call_through_a_value(
+    called_value: SpiteCompiler.Value,
+    local_type: Model.Type,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+): SpiteCompiler.Value {
+    var fitting = Fitting(context, values)
+    var collections = Collections(context, values)
+    refuse_a_value_call_of_another_count(local_type, call)
+    var arguments = List<SpiteCompiler.Value>()
+    var fixed_count = call.arguments.count()
+    if local_type.is_variadic {
+        fixed_count = local_type.parameters.count() - 1
+    }
+    var index = 0
+    while index < fixed_count {
+        var argument = call.arguments[index]
+        var wanted = local_type.parameters[index]
+        crash wanted
+        var value = fitting.fitted_value_of(argument, wanted)
+        arguments.append(value)
+        index = index + 1
+    }
+    if local_type.is_variadic {
+        var listed_type = local_type.parameters.last()
+        crash listed_type
+        var gathered = collections.gathered_list(listed_type, call.arguments, fixed_count)
+        arguments.append(gathered)
+    }
+    var made = HighIntermediaryRepresentation.Values.Function.ValueCall(called_value, arguments)
+    if local_type.answer {
+        made.value_type = local_type.answer
+    }
+    return made
+}
+
+func refuse_a_value_call_of_another_count(
+    local_type: Model.Type,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var wanted_count = local_type.parameters.count()
+    var given_count = call.arguments.count()
+    var is_wrong = given_count != wanted_count
+    if local_type.is_variadic {
+        is_wrong = given_count < wanted_count - 1
+    }
+    fallback is_wrong
+    var printer = Printers.Spite.ExpressionPrinter(call.callee)
+    var shown = printer.text()
+    values.typing.refuse_argument_count(context, shown, wanted_count, given_count)
+}
+
+func member_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value {
+    var collections = Collections(context, values)
+    var walked_lists = WalkedLists(context, values)
+    var known = KnownCalls(context, values)
+    var known_run = known.ran_by(call, callee)
+    if known_run {
+        return known_run
+    }
+    var walked = walked_lists.walked_attributes(call, callee)
+    if walked {
+        return walked
+    }
+    var known_walks = KnownWalks(context, values)
+    var unrolled = known_walks.unrolled(call, callee)
+    if unrolled {
+        return unrolled
+    }
+    var listing_walk = walked_lists.walked_classes_or_values(call, callee)
+    if listing_walk {
+        return listing_walk
+    }
+    var walks_known = values.known_constants()
+    var known_list_walk = walks_known.walked(call, callee)
+    if known_list_walk {
+        return known_list_walk
+    }
+    var declared_walks = DeclaredWalks(context, values)
+    var declared_walk = declared_walks.unrolled(call, callee)
+    if declared_walk {
+        return declared_walk
+    }
+    var named_value = enum_value_by_name(call, callee)
+    if named_value {
+        return named_value
+    }
+    var question = values.reflection_question(call, callee)
+    if question {
+        return question
+    }
+    var counted = values.pattern_argument_count(call, callee)
+    if counted {
+        return counted
+    }
+    var fitting = values.vector_fit_question(call, callee)
+    if fitting {
+        return fitting
+    }
+    var any_fitting = values.any_attribute_fit_question(call, callee)
+    if any_fitting {
+        return any_fitting
+    }
+    var asked = values.bound_type_question(call, callee)
+    if asked {
+        return asked
+    }
+    var made_default = bound_class_made(call, callee)
+    if made_default {
+        return made_default
+    }
+    if callee.name == "count" and call.arguments.is_empty() {
+        var folded_count = values.folded_function_count(callee.target)
+        if folded_count {
+            return folded_count
+        }
+    }
+    if callee.name.starts_with("from_") {
+        refuse_a_cast_by_name(callee)
+    }
+    if callee.name.starts_with("remove_where") {
+        refuse_a_removal_from_a_chain(callee)
+    }
+    var class_receiver = reflected_receiver(callee.target)
+    if class_receiver {
+        refuse_a_call_on_a_number_class(callee, class_receiver)
+        return called_on_a_class(class_receiver, callee.name, call.arguments)
+    }
+    var written_receiver = values.value_of(callee.target, null)
+    if written_receiver.value_type.kind == 'handle' and callee.name == "finished_value" {
+        return work_call(written_receiver, "finished_value")
+    }
+    var receiver = values.result_of_handle(written_receiver)
+    var remakes_its_class = callee.name == "class" and call.arguments.is_empty()
+    if remakes_its_class and not values.has_its_own_class(receiver) {
+        var reflection = Reflection(context, values)
+        var class_read = reflection.making.class_of_value(receiver)
+        return made_from_a_held_class(class_read)
+    }
+    var answered_text = values.folded_text_question(receiver, callee.name, call.arguments)
+    if answered_text {
+        return answered_text
+    }
+    if receiver.value_type.kind == 'function' and callee.name == "call_function" {
+        return values.value_call_of(receiver, call.arguments)
+    }
+    if receiver.value_type.kind == 'shape' {
+        var typed = context.program.shape_keyed(receiver.value_type.name)
+        crash typed
+        refuse_an_operator_call_through_a_shape(callee, call, typed)
+        values.refuse_a_private_member_of_a_type(receiver.value_type, callee.name)
+        return shape_call(receiver, callee.name, call.arguments)
+    }
+    if receiver.value_type.kind == 'union' {
+        var through = values.union_shape_of(receiver.value_type, callee.name)
+        refuse_an_operator_call_through_a_shape(callee, call, through)
+        var as_shape = Model.Type('shape', through.key)
+        var shaped = HighIntermediaryRepresentation.Values.Conversion(as_shape, 'proven', receiver)
+        values.refuse_a_private_member_of_a_type(shaped.value_type, callee.name)
+        return shape_call(shaped, callee.name, call.arguments)
+    }
+    var is_an_enum = receiver.value_type.kind == 'enumeration' and not receiver.value_type.is_nullable
+    if is_an_enum and callee.name == "to_string" and call.arguments.is_empty() {
+        return values.enum_text(receiver)
+    }
+    if is_an_enum and callee.name == "to_debug" and call.arguments.is_empty() {
+        var debugging = Debugging(context, values)
+        return debugging.debug_text_of(receiver)
+    }
+    if is_an_enum and callee.name == "to_integer" and call.arguments.is_empty() {
+        var integer = context.scalar_type("Integer")
+        return HighIntermediaryRepresentation.Values.Conversion(integer, 'widen', receiver)
+    }
+    var read_enum = enum_read_from(receiver, callee.name, call.arguments)
+    if read_enum {
+        return read_enum
+    }
+    if receiver.value_type.is_nullable {
+        values.note_a_maybe_null("call", receiver, callee.name, receiver.value_type)
+        receiver = values.as_present(receiver)
+    }
+    var owner = values.present_class_of(receiver)
+    var renewing = context.renews_the_lists and callee.name == "clear" and call.arguments.count() == 1
+    if renewing {
+        context.renews_the_lists = false
+        var forms = HeldOnceForms(context, values)
+        var renewer = forms.renew_lists_of(owner)
+        return called(renewer, receiver, call.arguments)
+    }
+    values.refuse_a_private_name(owner, callee.name)
+    refuse_a_written_attribute_call(callee, call)
+    var found_value = enum_value_found(owner, callee, call.arguments)
+    if found_value {
+        return found_value
+    }
+    var passed = passed_form(receiver, owner, callee.name, call.arguments)
+    if passed {
+        return passed
+    }
+    var filtered_by_class = class_form_call(receiver, owner, callee.name, call.arguments)
+    if filtered_by_class {
+        return filtered_by_class
+    }
+    var function = owner.function_named(callee.name)
+    var stands_for = context.current_function.bound_function
+    var names_the_pattern = callee.name == context.current_function.bound_pattern and not stands_for.is_empty()
+    if not function and names_the_pattern {
+        function = owner.function_named(stands_for)
+    }
+    if function and callee.name == "deep_copy" and call.arguments.is_empty() {
+        var sharing = Copying(context, values)
+        var shared = sharing.shared_table_copy_of(owner)
+        if shared {
+            function = shared
+        }
+    }
+    if not function {
+        function = values.member_template_of(owner, callee.name)
+    }
+    if not function {
+        var through_values = values.dictionary_template(receiver, owner, callee.name, call.arguments)
+        if through_values {
+            return through_values
+        }
+    }
+    if not function and callee.name == "to_debug" {
+        var debugging = Debugging(context, values)
+        function = debugging.to_debug_of(owner)
+    }
+    var written_count = call.arguments.count()
+    if not function {
+        function = values.made_copy(owner, callee.name, written_count)
+    }
+    if not function and owner.key == "DynamicLibrary" {
+        return collections.foreign_call(receiver, callee.name, call.arguments, call.answer_is_dropped)
+    }
+    if not function and callee.name.starts_with("from_") {
+        refuse_a_cast_by_name(callee)
+    }
+    if not function {
+        var walked_on = values.walk_on(owner, receiver, callee.name, call.arguments)
+        if walked_on {
+            return walked_on
+        }
+    }
+    if not function {
+        var read_as_an_enum = text_read_as_an_enum(receiver, owner, callee.name, written_count)
+        if read_as_an_enum {
+            return read_as_an_enum
+        }
+    }
+    if not function {
+        var numbered_enum = number_read_as_an_enum(receiver, owner, callee.name, written_count)
+        if numbered_enum {
+            return numbered_enum
+        }
+    }
+    if not function and call.arguments.is_empty() {
+        var made_of_a_class = made_from_a_member_class(receiver, owner, callee.name)
+        if made_of_a_class {
+            return made_of_a_class
+        }
+    }
+    if not function {
+        var shown = context.shown(receiver.value_type)
+        values.typing.refuse_unknown_member(context, shown, callee.name)
+    }
+    crash function
+    var folded_keys = Folded.Keys(context, values)
+    folded_keys.check_a_changing_call(receiver, callee.name)
+    refuse_a_comparison_of_objects(receiver, owner, callee.name)
+    refuse_a_drop_by_name(owner, function)
+    var dropping = DroppingWalks(context)
+    dropping.check_a_walk(call, owner, function)
+    refuse_an_operator_call(callee, call, function, receiver)
+    var specialised = values.specialised_for_a_constant(function, receiver, call.arguments)
+    if specialised {
+        return specialised
+    }
+    refuse_an_accessor_call(callee, call, function)
+    var made = called(function, receiver, call.arguments)
+    refuse_a_wider_bitwise_operand(callee, call, made)
+    var width_reads = WidthReads(context)
+    return width_reads.proven(made, owner, call, callee)
+}
+
+func refuse_a_drop_by_name(owner: Model.ClassModel, function: Model.FunctionModel) {
+    fallback function.name == "drop" and function.parameters.is_empty() and not function.answer
+    var shown = plain_name_of(owner.shown)
+    values.typing.refuse_a_drop_by_name(context, shown)
+}
+
+func refuse_a_comparison_of_objects(receiver: SpiteCompiler.Value, owner: Model.ClassModel, name: String) {
+    fallback name == "contains" or name == "index_of"
+    var shown = context.shown(receiver.value_type)
+    fallback shown.starts_with("List<")
+    var element_type = owner.bound_types["$element_type"]
+    crash element_type
+    var is_an_object = element_type.kind == 'object' and element_type.name != "String"
+    fallback is_an_object or element_type.kind == 'union'
+    var element_shown = context.shown(element_type)
+    var element_name = plain_name_of(element_shown)
+    values.typing.refuse_a_comparison_of_objects(context, name, element_name)
+}
+
+func plain_name_of(shown: String): String {
+    if shown.contains("<") {
+        return shown
+    }
+    var parts = shown.split(".")
+    var last = parts.last()
+    crash last
+    return last
+}
+
+func refuse_an_accessor_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    function: Model.FunctionModel,
+) {
+    var is_a_setter = callee.name.starts_with("set_") and call.arguments.count() == 1
+    var is_a_getter = callee.name.starts_with("get_") and call.arguments.is_empty() and function.answer
+    var is_an_accessor = is_a_setter or is_a_getter
+    fallback is_an_accessor and function.declaration
+    var length = callee.name.length()
+    var attribute_name = callee.name.slice(4, length)
+    crash attribute_name
+    fallback function.parameters.count() == call.arguments.count()
+    var library = Mapping.LibraryFile()
+    var path = context.path()
+    fallback not library.holds(path)
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    var written = "{receiver_text}.{attribute_name}"
+    if attribute_name == "this" {
+        written = receiver_text
+    }
+    if is_a_setter {
+        var assigned = call.arguments[0]
+        crash assigned
+        var assigned_printer = Printers.Spite.ExpressionPrinter(assigned)
+        var assigned_text = assigned_printer.text()
+        values.typing.refuse_an_accessor_call(
+            context,
+            callee.name,
+            "writing",
+            attribute_name,
+            "{written} = {assigned_text}",
+        )
+    }
+    values.typing.refuse_an_accessor_call(context, callee.name, "reading", attribute_name, written)
+}
+
+func refuse_a_written_attribute_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var is_a_read = callee.name == "get_attribute" and call.arguments.count() == 1
+    var is_a_write = callee.name == "set_attribute" and call.arguments.count() == 2
+    fallback is_a_read or is_a_write
+    var named = call.arguments[0]
+    if named.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        refuse_a_named_attribute_call(callee, call, named)
+    }
+}
+
+func refuse_a_named_attribute_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    named: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression,
+) {
+    fallback named.kind == 'symbol_literal'
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    var written = "{receiver_text}.{named.text}"
+    if callee.name == "set_attribute" {
+        var assigned = call.arguments[1]
+        crash assigned
+        var assigned_printer = Printers.Spite.ExpressionPrinter(assigned)
+        var assigned_text = assigned_printer.text()
+        values.typing.refuse_an_accessor_call(
+            context,
+            callee.name,
+            "writing",
+            named.text,
+            "{written} = {assigned_text}",
+        )
+    }
+    values.typing.refuse_an_accessor_call(context, callee.name, "reading", named.text, written)
+}
+
+func refuse_an_operator_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    function: Model.FunctionModel,
+    receiver: SpiteCompiler.Value,
+) {
+    var receiver_kind = receiver.value_type.kind
+    fallback receiver_kind == 'object' or receiver_kind == 'scalar'
+    var owner = values.present_class_of(receiver)
+    var is_its_own = owner.key == context.current_class.key and context.current_function.name == callee.name
+    fallback not is_its_own
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    refuse_an_operator_by_name(call, callee.name, function, receiver_text, receiver_kind == 'scalar')
+}
+
+func refuse_an_operator_call_through_a_shape(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    shape: Model.ShapeModel,
+) {
+    var member = shape.member_named(callee.name)
+    fallback member and context.current_function.name != callee.name
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    refuse_an_operator_by_name(call, callee.name, member, receiver_text, false)
+}
+
+func refuse_a_bare_operator_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    function: Model.FunctionModel,
+) {
+    var indexes = function.name == "get_at" or function.name == "set_at"
+    fallback context.current_function.name != function.name and not indexes
+    var is_a_number = values.scalars.is_a_scalar(context.current_class.key)
+    refuse_an_operator_by_name(call, function.name, function, "this", is_a_number)
+}
+
+func refuse_a_bare_accessor_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    function: Model.FunctionModel,
+) {
+    var is_a_setter = function.name.starts_with("set_") and call.arguments.count() == 1
+    var is_a_getter = function.name.starts_with("get_") and call.arguments.is_empty() and function.answer
+    var is_an_accessor = is_a_setter or is_a_getter
+    fallback is_an_accessor and function.declaration and context.current_function.name != function.name
+    var path = context.path()
+    var library = Mapping.LibraryFile()
+    fallback not context.resolver.state.symbols.generated_texts[path] and not library.holds(path)
+    var length = function.name.length()
+    var attribute_name = function.name.slice(4, length)
+    crash attribute_name
+    fallback attribute_name != "this"
+    fallback not context.current_class.attribute_named(attribute_name)
+    var local = context.scope.internal_name_of(attribute_name)
+    fallback not local
+    if is_a_setter {
+        var assigned = call.arguments[0]
+        crash assigned
+        var assigned_printer = Printers.Spite.ExpressionPrinter(assigned)
+        var assigned_text = assigned_printer.text()
+        values.typing.refuse_an_accessor_call(
+            context,
+            function.name,
+            "writing",
+            attribute_name,
+            "{attribute_name} = {assigned_text}",
+        )
+    }
+    values.typing.refuse_an_accessor_call(context, function.name, "reading", attribute_name, attribute_name)
+}
+
+func refuse_an_operator_by_name(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+    function: Model.FunctionModel,
+    receiver_text: String,
+    is_on_a_number: Boolean,
+) {
+    var path = context.path()
+    fallback not context.resolver.state.symbols.generated_texts[path]
+    var written_count = call.arguments.count()
+    fallback function.name == name and function.parameters.count() == written_count
+    var operator = operator_written(name, written_count)
+    fallback not operator.is_empty()
+    var first_parameter = function.parameters.first()
+    if first_parameter {
+        var parameter_kind = first_parameter.parameter_type.kind
+        fallback parameter_kind != 'function'
+        fallback name != "equals" or parameter_kind == 'object' or is_on_a_number
+    }
+    var written_arguments = List<String>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var argument_printer = Printers.Spite.ExpressionPrinter(argument)
+        var argument_text = argument_printer.text()
+        written_arguments.append(argument_text)
+        index = index + 1
+    }
+    values.typing.refuse_an_operator_call(context, name, operator, receiver_text, written_arguments)
+}
+
+func operator_written(name: String, written_count: Integer): String {
+    var binary = ["sum", "subtract", "multiply", "divide", "remainder", "equals", "less_than", "greater_than"]
+    var operators = ["+", "-", "*", "/", "%", "==", "<", ">"]
+    var position = binary.index_of(name)
+    if position and written_count == 1 {
+        var found = operators[position]
+        crash found
+        return found
+    }
+    var is_a_negation = name == "negate" and written_count == 0
+    if is_a_negation {
+        return "-"
+    }
+    var is_a_read = name == "get_at" and written_count == 1
+    if is_a_read {
+        return "[]"
+    }
+    var is_a_write = name == "set_at" and written_count == 2
+    if is_a_write {
+        return "[] ="
+    }
+    return ""
+}
+
+func refuse_a_removal_from_a_chain(callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var chain = callee.target
+    if chain.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        refuse_a_removal_from_a_step(callee, chain)
+    }
+}
+
+func refuse_a_removal_from_a_step(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    chain: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+) {
+    var step = chain.callee
+    if step.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var copies = ["copy", "deep_copy", "keys", "values", "reversed"]
+        var name = step.name
+        var makes_a_new_one = name.starts_with("filter") or name.starts_with("map") or name.starts_with("sort")
+        fallback makes_a_new_one or copies.contains(name)
+        var printer = Printers.Spite.ExpressionPrinter(chain)
+        var shown = printer.text()
+        values.typing.refuse_a_removal_from_a_chain(context, callee.name, shown)
+    }
+}
+
+func refuse_a_wider_bitwise_operand(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    made: SpiteCompiler.Value,
+) {
+    var bitwise = ["bits_and", "bits_or", "bits_exclusive_or"]
+    var library = Mapping.LibraryFile()
+    var path = context.path()
+    fallback bitwise.contains(callee.name) and call.arguments.count() == 1 and not library.holds(path)
+    if made.class == HighIntermediaryRepresentation.Values.Call {
+        refuse_a_wider_bitwise_call(callee, call, made)
+    }
+}
+
+func refuse_a_wider_bitwise_call(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    made: HighIntermediaryRepresentation.Values.Call,
+) {
+    var operand = made.arguments[0]
+    fallback made.receiver and operand
+    fallback made.receiver.value_type.kind == 'scalar'
+    if operand.class == HighIntermediaryRepresentation.Values.Conversion {
+        refuse_a_cut_bitwise_operand(callee, call, made.receiver, operand)
+    }
+}
+
+func refuse_a_cut_bitwise_operand(
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    receiver: SpiteCompiler.Value,
+    operand: HighIntermediaryRepresentation.Values.Conversion,
+) {
+    var cuts = operand.kind == 'narrow' or operand.kind == 'narrow_decimal' or operand.kind == 'to_whole'
+    var written = call.arguments[0]
+    fallback cuts and operand.converted and callee.target and written
+    var receiver_scalar = values.scalars.of(receiver.value_type.name)
+    var given_scalar = values.scalars.of(operand.converted.value_type.name)
+    fallback receiver_scalar and given_scalar
+    fallback given_scalar.size > receiver_scalar.size or given_scalar.is_decimal
+    var call_printer = Printers.Spite.ExpressionPrinter(call)
+    var shown = call_printer.text()
+    var receiver_printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = receiver_printer.text()
+    var operand_printer = Printers.Spite.ExpressionPrinter(written)
+    var operand_text = operand_printer.text()
+    var receiver_name = receiver.value_type.name
+    var given_name = operand.converted.value_type.name
+    values.typing.refuse_a_wider_bitwise_operand(context, shown, receiver_text, receiver_name, operand_text, given_name)
+}
+
+func text_read_as_an_enum(
+    _receiver: SpiteCompiler.Value,
+    owner: Model.ClassModel,
+    name: String,
+    written_count: Integer,
+): SpiteCompiler.Value? {
+    fallback owner.key == "String" and name.starts_with("to_") and written_count == 0
+    var name_length = name.length()
+    var snake = name.slice(3, name_length)
+    crash snake
+    var found = enum_named_by_its_path(snake)
+    fallback found
+    refuse_a_written_conversion(found)
+    return null
+}
+
+# ../../../spite_spec/specs/values_and_types.md#enums-in-full
+func number_read_as_an_enum(
+    _receiver: SpiteCompiler.Value,
+    owner: Model.ClassModel,
+    name: String,
+    written_count: Integer,
+): SpiteCompiler.Value? {
+    var whole = ["Tiny", "Byte", "Short", "UnsignedShort", "Integer", "UnsignedInteger", "Long", "UnsignedLong"]
+    fallback whole.contains(owner.key) and name.starts_with("to_") and written_count == 0
+    var name_length = name.length()
+    var snake = name.slice(3, name_length)
+    crash snake
+    var found = enum_named_by_its_path(snake)
+    fallback found
+    refuse_a_written_conversion(found)
+    return null
+}
+
+func enum_value_found(
+    owner: Model.ClassModel,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value? {
+    var literals = Literals(context, values)
+    fallback callee.name == "find_by_name" and written.count() == 1
+    var listed = callee.target
+    var lists_every_value = false
+    if listed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var path = values.class_path_of(listed.target)
+        lists_every_value = listed.name == "values" and not path.is_empty()
+    }
+    fallback lists_every_value
+    var element = owner.bound_types["$element_type"]
+    fallback element
+    fallback element.kind == 'enumeration' and not element.is_nullable
+    var asked = written[0]
+    var symbol: String? = null
+    if asked.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        symbol = literals.symbol_literal_text(asked)
+    }
+    fallback symbol
+    var maybe = element.nullable()
+    var enumeration = values.enum_model_of(element)
+    if not enumeration.values.contains(symbol) {
+        return HighIntermediaryRepresentation.Values.NullConstant(maybe)
+    }
+    var found = literals.enum_value(symbol, element)
+    return HighIntermediaryRepresentation.Values.Conversion(maybe, 'nullable', found)
+}
+
+func chained_call(read: SpiteCompiler.Value, function: Model.FunctionModel): SpiteCompiler.Value {
+    var through = values.present_class_of(read)
+    var called_function = through.function_named(function.chained_function)
+    crash called_function
+    context.need(called_function)
+    var arguments = List<SpiteCompiler.Value>()
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if parameter.name.starts_with("_chained_") {
+            var internal_name = context.scope.internal_name_of(parameter.name)
+            crash internal_name
+            var passed = HighIntermediaryRepresentation.Values.LocalRead(parameter.parameter_type, internal_name)
+            arguments.append(passed)
+        }
+        index = index + 1
+    }
+    return HighIntermediaryRepresentation.Values.Call(called_function, read, arguments)
+}
+
+func copy_member_of(shape: Model.ShapeModel, answer: Model.Type, name: String): Model.FunctionModel {
+    var known = shape.member_named(name)
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel(name, shape.key)
+    made.answer = answer
+    if name == "_deep_copy_in" {
+        var copies = Copying(context, values)
+        var table_model = copies.copy_table()
+        var table_type = table_model.type_of_an_instance()
+        var parameter = Model.ParameterModel("table", table_type, false)
+        made.parameters.append(parameter)
+    }
+    shape.members.append(made)
+    var fillers = context.program.fillers_of(shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        values.need_a_copy(filler, name, shape)
+        index = index + 1
+    }
+    return made
+}
+
+func union_method_call(
+    receiver: SpiteCompiler.Value,
+    name: String,
+    arguments: List<SpiteCompiler.Value>,
+): SpiteCompiler.Value {
+    var through = values.union_shape_of(receiver.value_type, name)
+    var as_shape = Model.Type('shape', through.key)
+    var shaped = HighIntermediaryRepresentation.Values.Conversion(as_shape, 'proven', receiver)
+    return shape_method_call(shaped, name, arguments)
+}
+
+func shape_call(
+    receiver: SpiteCompiler.Value,
+    name: String,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value {
+    var passing_arguments = Arguments(context, values)
+    var shown = context.shown(receiver.value_type)
+    if receiver.value_type.is_nullable {
+        values.note_a_maybe_null_type(receiver.value_type)
+    }
+    var shape = context.program.shape_keyed(receiver.value_type.name)
+    crash shape
+    var member = shape.member_named(name)
+    if not member and values.is_a_copy_name(name) and written.is_empty() {
+        var own_type = receiver.value_type.present()
+        member = copy_member_of(shape, own_type, name)
+    }
+    if not member {
+        values.typing.refuse_unknown_member(context, shown, name)
+    }
+    crash member
+    var arguments = passing_arguments.arguments_for(shown, member.parameters, written, false)
+    return HighIntermediaryRepresentation.Values.ShapeCall(shape, member, receiver, arguments)
+}
+
+func called(
+    function: Model.FunctionModel,
+    receiver: SpiteCompiler.Value,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value {
+    var passing_arguments = Arguments(context, values)
+    var schema = schema_of(function)
+    if schema {
+        return schema
+    }
+    if function.reflected_answer_index >= 0 and function.bound_parameter.is_empty() {
+        values.typing.refuse_a_run_time_reflection_for_a_type(context, function.name)
+    }
+    var arguments = passing_arguments.fitted_arguments(function, written)
+    var with_known_functions = with_the_functions_passed(function, arguments)
+    context.need(with_known_functions)
+    copy_an_inline_item(with_known_functions, arguments)
+    return HighIntermediaryRepresentation.Values.Call(with_known_functions, receiver, arguments)
+}
+
+func with_the_functions_passed(
+    function: Model.FunctionModel,
+    arguments: List<SpiteCompiler.Value>,
+): Model.FunctionModel {
+    if not function.declaration or function.known_parameter_functions.count() > 0 {
+        return function
+    }
+    var described_names = described_function_parameters(function)
+    if described_names.is_empty() {
+        return function
+    }
+    var known = Dictionary<String, Model.FunctionModel>()
+    var pieces = List<String>()
+    var index = 0
+    while index < function.parameters.count() and index < arguments.count() {
+        var parameter = function.parameters[index]
+        var argument = arguments[index]
+        var described = described_argument_function(argument)
+        if described and described_names.contains(parameter.name) {
+            known[parameter.name] = described
+            var owner_name = described.owner.replace(".", "_")
+            pieces.append("{owner_name}_{described.name}")
+        }
+        index = index + 1
+    }
+    if pieces.is_empty() {
+        return function
+    }
+    var joined = pieces.join("_and_")
+    var copy_name = "{function.name}_for_{joined}"
+    var copy_key = "{function.owner}.{copy_name}"
+    var made = context.known_function_copies[copy_key]
+    if made {
+        return made
+    }
+    var copied = Model.FunctionModel(copy_name, function.owner)
+    copied.declaration = function.declaration
+    copied.parameters = function.parameters
+    copied.answer = function.answer
+    copied.known_parameter_functions = known
+    context.known_function_copies[copy_key] = copied
+    return copied
+}
+
+func described_argument_function(argument: SpiteCompiler.Value?): Model.FunctionModel? {
+    fallback argument
+    return values.described_function(argument)
+}
+
+func described_function_parameters(function: Model.FunctionModel): List<String> {
+    var function_key = function.key()
+    var known_names = context.described_parameters[function_key]
+    if known_names {
+        return known_names
+    }
+    var found_names = read_described_parameters(function)
+    context.described_parameters[function_key] = found_names
+    return found_names
+}
+
+func read_described_parameters(function: Model.FunctionModel): List<String> {
+    var described_names = List<String>()
+    crash function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    if not declaration.body {
+        return described_names
+    }
+    var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    walk.read_function(declaration)
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var described_name = described_parameter_of(found.expression, function)
+        if not described_name.is_empty() and not described_names.contains(described_name) {
+            described_names.append(described_name)
+        }
+        index = index + 1
+    }
+    return described_names
+}
+
+func described_parameter_of(expression: SpiteCompiler.Expression?, function: Model.FunctionModel): String {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return described_target_of(expression.target, expression.name, function)
+    }
+    return ""
+}
+
+func described_target_of(
+    target: SpiteCompiler.Expression?,
+    member_name: String,
+    function: Model.FunctionModel,
+): String {
+    var asks = member_name == "name" or member_name == "arguments"
+    fallback asks
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return function_parameter_named(target.name, function)
+    }
+    return ""
+}
+
+func function_parameter_named(name: String, function: Model.FunctionModel): String {
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if parameter.name == name and parameter.parameter_type.kind == 'function' {
+            return name
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func copy_an_inline_item(function: Model.FunctionModel, arguments: List<SpiteCompiler.Value>) {
+    fallback function.name == "_write_value" and arguments.count() == 2
+    var owner = context.program.class_named(function.owner)
+    fallback owner
+    var holds_inline = owner.key.starts_with("Vector_of_") or owner.key.starts_with("Items_of_")
+    fallback holds_inline
+    var element = owner.bound_types["$element_type"]
+    fallback element
+    var is_an_object = element.kind == 'object' and element.name != "String" and not element.is_nullable
+    fallback is_an_object
+    var by_reference = owner.key.starts_with("Items_of_") and not values.fits_a_vector(element)
+    fallback not by_reference
+    var model = context.class_of(element)
+    fallback not model.is_singleton
+    var copying = model.function_named("copy")
+    if not copying {
+        copying = values.made_copy(model, "copy", 0)
+    }
+    crash copying
+    context.need(copying)
+    var item = arguments[1]
+    var no_arguments = List<SpiteCompiler.Value>()
+    var copied = HighIntermediaryRepresentation.Values.Call(copying, item, no_arguments)
+    arguments[1] = copied
+}
+
+func schema_of(function: Model.FunctionModel): SpiteCompiler.Value? {
+    fallback function.name == "schema" and not function.has_a_body()
+    var owner = context.program.class_named(function.owner)
+    fallback owner
+    var is_binary = owner.key.starts_with("BinaryWriter_of_") or owner.key.starts_with("BinaryReader_of_")
+    fallback is_binary
+    var described = owner.bound_types["$value_type"]
+    fallback described
+    var schema = Schema(context)
+    var hashed = schema.hash_of(described)
+    var long = context.scalar_type("Long")
+    return HighIntermediaryRepresentation.Values.WholeNumber(long, hashed)
+}
+
+func method_call(
+    receiver: SpiteCompiler.Value,
+    name: String,
+    arguments: List<SpiteCompiler.Value>,
+): SpiteCompiler.Value {
+    var fitting = Fitting(context, values)
+    if receiver.value_type.kind == 'shape' {
+        return shape_method_call(receiver, name, arguments)
+    }
+    if receiver.value_type.kind == 'union' and not receiver.value_type.is_nullable {
+        return union_method_call(receiver, name, arguments)
+    }
+    var owner = values.present_class_of(receiver)
+    var function = owner.function_named(name)
+    if not function {
+        function = values.member_template_of(owner, name)
+    }
+    if not function and name == "to_debug" {
+        var debugging = Debugging(context, values)
+        function = debugging.to_debug_of(owner)
+    }
+    var given_count = arguments.count()
+    if not function {
+        function = values.made_copy(owner, name, given_count)
+    }
+    if not function {
+        var shown = context.shown(receiver.value_type)
+        values.typing.refuse_unknown_member(context, shown, name)
+    }
+    crash function
+    if given_count != function.parameters.count() {
+        var called_name = "{owner.shown}.{name}"
+        var wanted_count = function.parameters.count()
+        values.typing.refuse_argument_count(context, called_name, wanted_count, given_count)
+    }
+    context.need(function)
+    var given = List<SpiteCompiler.Value>()
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        var parameter = function.parameters[index]
+        crash parameter
+        var fitted_argument = fitting.fitted(argument, parameter.parameter_type)
+        given.append(fitted_argument)
+        index = index + 1
+    }
+    return HighIntermediaryRepresentation.Values.Call(function, receiver, given)
+}
+
+func shape_method_call(
+    receiver: SpiteCompiler.Value,
+    name: String,
+    arguments: List<SpiteCompiler.Value>,
+): SpiteCompiler.Value {
+    var shape = context.program.shape_keyed(receiver.value_type.name)
+    crash shape
+    var shown = context.shown(receiver.value_type)
+    var member = shape.member_named(name)
+    var is_copied_in = name == "_deep_copy_in" and arguments.count() == 1
+    if not member and values.is_a_copy_name(name) and (arguments.is_empty() or is_copied_in) {
+        var own_type = receiver.value_type.present()
+        member = copy_member_of(shape, own_type, name)
+    }
+    if not member {
+        values.typing.refuse_unknown_member(context, shown, name)
+    }
+    crash member
+    return HighIntermediaryRepresentation.Values.ShapeCall(shape, member, receiver, arguments)
+}
