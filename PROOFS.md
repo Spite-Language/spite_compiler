@@ -178,7 +178,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   the loop for the next pass ([failure.md](../SpiteLanguage/specs/failure.md#nothing-fails-silently-the-rule)).
   "Before the loop" is told by the scope the narrowing lives in (`NarrowedRead.proven_in_frame` against the loop's
   base, `statements.spite`: `extend_the_reads_over_the_loop`), not by the calls logged since, so a check right
-  before the `while`, with nothing logged between, counts too; a copy made right before it the same way.
+  before the `while`, with nothing logged between, counts too; a copy made right before it the same way. A check
+  of the same path still in force at the end of the body proves it for the next pass, so only what comes after that
+  check counts there (`NarrowedRead.next_pass_start`, `statements.spite`: `note_what_the_next_pass_starts_proven`):
+  `while target.name != "dragon" { forget_target() crash target }` stands.
 - **Buys**: no re-check after a harmless call; a call that may null what was proven is never read past.
   A read proven by a `[]` or count proof (`NarrowedRead.watched_lists`) is refused past a call that may shrink its list, whatever the call's answer is used for: `Assignments.note_a_shrink` writes a key for each shrinking call in the program's own code, by the attribute that holds the list, or by the list's class when a parameter or another list's item reaches it. A `fallback`, `crash` or `if` on the same read after a call tests the list again and proves it anew. A local made in the function and not handed on is not counted, and neither is what the library does inside its own functions, since a call of a library function that shrinks is itself the shrinking call.
 - **Missing**: a shrink through a local alias of an attribute's list in the same function, and a count kept in a `var` before a call that shrinks (a read they keep halts, "is outside its list", when the list changed); a
