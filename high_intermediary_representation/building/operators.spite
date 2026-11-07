@@ -1,0 +1,1615 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+var _largest_integer: Long = 2147483647
+
+func Operators(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+func binary_value_expecting(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    expected: Model.Type?,
+): SpiteCompiler.Value {
+    if not is_a_decimal_constant(binary) {
+        return binary_value(binary)
+    }
+    var computed = double_constant(binary)
+    var wants_a_double = false
+    if expected {
+        wants_a_double = expected.name == "Double"
+    }
+    if wants_a_double {
+        return computed
+    }
+    var float_type = context.scalar_type("Float")
+    return HighIntermediaryRepresentation.Values.Conversion(float_type, 'narrow_decimal', computed)
+}
+
+func is_a_decimal_constant(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
+    var arithmetic = is_decimal_arithmetic(binary.operator)
+    return arithmetic and is_a_literal_tree(binary.left) and is_a_literal_tree(binary.right) and holds_a_decimal(binary)
+}
+
+func is_decimal_arithmetic(kind: AbstractSyntaxTree.Tokens.Token.Kind): Boolean {
+    return kind == 'plus' or kind == 'minus' or kind == 'star' or kind == 'slash'
+}
+
+func is_a_literal_tree(expression: SpiteCompiler.Expression?): Boolean {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        return is_a_decimal_constant(expression)
+    }
+    return values.is_a_number_literal(expression)
+}
+
+func holds_a_decimal(expression: SpiteCompiler.Expression?): Boolean {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return expression.kind == 'decimal_literal'
+    }
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression {
+        return holds_a_decimal(expression.operand)
+    }
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        return holds_either_decimal(expression)
+    }
+    return false
+}
+
+func holds_either_decimal(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
+    return holds_a_decimal(binary.left) or holds_a_decimal(binary.right)
+}
+
+func double_constant(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value {
+    var double_type = context.scalar_type("Double")
+    var left = constant_operand(binary.left, double_type)
+    var right = constant_operand(binary.right, double_type)
+    var operator = operator_of(binary.operator)
+    var made = HighIntermediaryRepresentation.Values.MachineOperation(double_type, operator, left, right)
+    var printer = Printers.Spite.ExpressionPrinter(binary)
+    made.shown = printer.text()
+    return made
+}
+
+func constant_operand(expression: SpiteCompiler.Expression?, double_type: Model.Type): SpiteCompiler.Value {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        return double_constant(expression)
+    }
+    return values.value_of(expression, double_type)
+}
+
+func refuse_an_operator_on_a_shape(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+    left: SpiteCompiler.Value,
+) {
+    fallback left.value_type.kind == 'shape' and not left.value_type.is_nullable
+    var shape = context.program.shape_keyed(left.value_type.name)
+    crash shape
+    var name = operator_function_name(operator)
+    fallback not shape.member_named(name)
+    var printer = Printers.Spite.ExpressionPrinter(binary)
+    var symbol = printer.operator_text(binary.operator)
+    values.typing.refuse_an_operator_on_a_shape(context, symbol, shape.name)
+}
+
+func comparison_through_a_maybe(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value? {
+    var asks_equality = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    fallback asks_equality
+    var link = maybe_link_of(binary.left)
+    if not link {
+        link = maybe_link_of(binary.right)
+    }
+    fallback link
+    crash binary.left
+    crash binary.right
+    var equal = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(binary.left, 'equal_equal', binary.right)
+    var guarded = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(link, 'and', equal)
+    if binary.operator == 'equal_equal' {
+        return values.value_of(guarded, null)
+    }
+    var negated = AbstractSyntaxTree.Shapes.Expressions.UnaryExpression('not', guarded)
+    return values.value_of(negated, null)
+}
+
+func maybe_link_of(expression: SpiteCompiler.Expression?): SpiteCompiler.Expression? {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return maybe_target_of(expression)
+    }
+    return null
+}
+
+func maybe_target_of(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): SpiteCompiler.Expression? {
+    fallback not member.is_a_class_name and is_a_value_path(member.target)
+    crash member.target
+    var target_value = values.value_of(member.target, null)
+    fallback target_value.value_type.is_nullable
+    return member.target
+}
+
+func is_a_value_path(expression: SpiteCompiler.Expression?): Boolean {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var is_known = context.scope.internal_name_of(expression.name)
+        var is_an_attribute = context.current_class.attribute_named(expression.name)
+        return is_known or is_an_attribute
+    }
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return not expression.is_a_class_name and is_a_value_path(expression.target)
+    }
+    return false
+}
+
+func binary_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value {
+    if binary.operator == 'and' or binary.operator == 'or' {
+        return logic_value(binary)
+    }
+    var folded = codegen_test(binary)
+    if folded {
+        return folded
+    }
+    if is_a_class_test(binary) {
+        return class_test_value(binary)
+    }
+    var linked = comparison_through_a_maybe(binary)
+    if linked {
+        return linked
+    }
+    var operands = operands_of(binary)
+    var left = operands[0]
+    var right = operands[1]
+    crash left
+    crash right
+    var operator = operator_of(binary.operator)
+    var asks_if_equal = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    if asks_if_equal and compares_a_maybe(left, right) {
+        var equal_maybe = maybe_equal(left, right)
+        if binary.operator == 'not_equal' {
+            return HighIntermediaryRepresentation.Values.Negation(equal_maybe)
+        }
+        return equal_maybe
+    }
+    var compares_a_shape = left.value_type.kind == 'shape' and right.value_type.kind != 'shape'
+    var asks_equality = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    if compares_a_shape and asks_equality {
+        var same = shape_equal(left, right)
+        if binary.operator == 'not_equal' {
+            return HighIntermediaryRepresentation.Values.Negation(same)
+        }
+        return same
+    }
+    if is_a_maybe_operand(binary, left) {
+        var symbol = operator_symbol_of(binary)
+        values.note_a_maybe_null("operand", left, symbol, left.value_type)
+        left = values.as_present(left)
+    }
+    if is_machine_comparable(left.value_type) {
+        var fitted_right = values.fitted(right, left.value_type)
+        refuse_a_cut(binary, fitted_right, left.value_type, right.value_type)
+        refuse_a_division_by_zero(binary, operator, left, fitted_right)
+        var decided = decided_comparison(binary, operator, left, fitted_right)
+        if decided {
+            return decided
+        }
+        var answer = answer_type_of(operator, left.value_type)
+        var made = HighIntermediaryRepresentation.Values.MachineOperation(answer, operator, left, fitted_right)
+        var printer = Printers.Spite.ExpressionPrinter(binary)
+        made.shown = printer.text()
+        var left_printer = Printers.Spite.ExpressionPrinter(binary.left)
+        made.shown_left = left_printer.text()
+        var right_printer = Printers.Spite.ExpressionPrinter(binary.right)
+        made.shown_right = right_printer.text()
+        refuse_a_constant_overflow(made)
+        return made
+    }
+    refuse_an_operator_on_a_shape(binary, operator, left)
+    var answered = operator_call(operator, left, right)
+    var printed = Printers.Spite.ExpressionPrinter(binary)
+    var shown = printed.text()
+    show_the_operation(answered, shown)
+    return answered
+}
+
+func decided_comparison(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+    left: SpiteCompiler.Value,
+    right: SpiteCompiler.Value,
+): SpiteCompiler.Value? {
+    var asks_left = binary.left.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    var asks_right = binary.right.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    fallback asks_left or asks_right
+    if left.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return decided_with_a_left(operator, left, right)
+    }
+    return null
+}
+
+func decided_with_a_left(
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+    left: HighIntermediaryRepresentation.Values.WholeNumber,
+    right: SpiteCompiler.Value,
+): SpiteCompiler.Value? {
+    if right.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return compared_numbers(operator, left.number, right.number)
+    }
+    return null
+}
+
+func compared_numbers(
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+    left_number: Long,
+    right_number: Long,
+): SpiteCompiler.Value? {
+    switch operator {
+        'equal': return values.boolean_constant(left_number == right_number)
+        'not_equal': return values.boolean_constant(left_number != right_number)
+        'less': return values.boolean_constant(left_number < right_number)
+        'less_or_equal': return values.boolean_constant(left_number <= right_number)
+        'greater': return values.boolean_constant(left_number > right_number)
+        'greater_or_equal': return values.boolean_constant(left_number >= right_number)
+        'add': return null
+        'subtract': return null
+        'multiply': return null
+        'divide': return null
+        'remainder': return null
+        'and': return null
+        'or': return null
+    }
+}
+
+func show_the_operation(answered: SpiteCompiler.Value, shown: String) {
+    if answered.class == HighIntermediaryRepresentation.Values.ShapeCall {
+        answered.shown = shown
+    }
+    if answered.class == HighIntermediaryRepresentation.Values.Negation {
+        crash answered.negated
+        show_the_operation(answered.negated, shown)
+    }
+}
+
+func refuse_a_division_by_zero(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+    left: SpiteCompiler.Value,
+    right: SpiteCompiler.Value,
+) {
+    fallback operator == 'divide' or operator == 'remainder'
+    fallback not values.is_a_decimal_type(left.value_type)
+    var folded = folded_whole(right)
+    fallback folded
+    refuse_a_zero(binary, folded)
+}
+
+func folded_whole(value: SpiteCompiler.Value?): Long? {
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value.number
+    }
+    if value.class == HighIntermediaryRepresentation.Values.MachineOperation {
+        return folded_operation(value)
+    }
+    return null
+}
+
+func folded_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation): Long? {
+    var left = folded_whole(operation.left)
+    var right = folded_whole(operation.right)
+    fallback left
+    fallback right
+    switch operation.operator {
+        'add': return left + right
+        'subtract': return left - right
+        'multiply': return left * right
+        'divide': return null
+        'remainder': return null
+        'equal': return null
+        'not_equal': return null
+        'less': return null
+        'less_or_equal': return null
+        'greater': return null
+        'greater_or_equal': return null
+        'and': return null
+        'or': return null
+    }
+}
+
+func refuse_a_constant_overflow(made: HighIntermediaryRepresentation.Values.MachineOperation) {
+    var is_an_integer = made.value_type.kind == 'scalar' and made.value_type.name == "Integer"
+    fallback is_an_integer and not made.value_type.is_nullable
+    var folded = folded_operation(made)
+    fallback folded
+    var smallest: Long = -2147483648
+    var largest: Long = _largest_integer
+    fallback folded < smallest or folded > largest
+    values.typing.refuse_a_constant_overflow(context, made.shown, folded)
+}
+
+func refuse_a_zero(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression, number: Long) {
+    fallback number == 0
+    var printer = Printers.Spite.ExpressionPrinter(binary)
+    var shown = printer.text()
+    values.typing.refuse_division_by_zero(context, shown)
+}
+
+func codegen_test(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value? {
+    var left = binary.left
+    if left.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return codegen_test_of(binary, left)
+    }
+    if left.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var codegen_path = codegen_path_of(left)
+        if not codegen_path.is_empty() {
+            return codegen_member_test(binary, codegen_path)
+        }
+        return bound_class_test(binary, left)
+    }
+    return null
+}
+
+func codegen_path_of(expression: SpiteCompiler.Expression?): List<String> {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var started = List<String>()
+        if expression.name.starts_with("$") {
+            started.append(expression.name)
+        }
+        return started
+    }
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var path = codegen_path_of(expression.target)
+        if not path.is_empty() {
+            path.append(expression.name)
+        }
+        return path
+    }
+    return List<String>()
+}
+
+func codegen_member_test(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    codegen_path: List<String>,
+): SpiteCompiler.Value? {
+    var compares = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    fallback compares
+    var first = codegen_path[0]
+    crash first
+    var found = context.current_class.bound_types[first]
+    fallback found
+    var bound: Model.Type = found
+    var index = 1
+    while index < codegen_path.count() {
+        var member = codegen_path[index]
+        bound = codegen_member_of(bound, member)
+        index = index + 1
+    }
+    var path = values.class_path_of(binary.right)
+    fallback not path.is_empty()
+    var written = path.join(".")
+    var answer = bound_is(bound, written)
+    if binary.operator == 'not_equal' {
+        answer = not answer
+    }
+    var number = 0
+    if answer {
+        number = 1
+    }
+    var boolean = context.boolean()
+    return HighIntermediaryRepresentation.Values.WholeNumber(boolean, number)
+}
+
+func codegen_member_of(bound: Model.Type, member: String): Model.Type {
+    if member == "value_type" and bound.is_nullable {
+        return bound.present()
+    }
+    var shown = context.shown(bound)
+    var inner: Model.Type? = null
+    if context.has_a_class(bound) and not bound.is_nullable {
+        var model = context.class_of(bound)
+        inner = model.bound_types["${member}"]
+    }
+    var member_rule = Validators.NameResolution.TypeMember.Validator()
+    var path = context.path()
+    member_rule.check(
+        inner,
+        path,
+        context.line,
+        context.current_class.shown,
+        context.current_function.name,
+        shown,
+        member,
+    )
+    crash inner
+    return inner
+}
+
+func bound_class_test(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    left: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+): SpiteCompiler.Value? {
+    var function = context.current_function
+    var compares = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    fallback compares and left.name == "class" and function.bound_member_type
+    var target = left.target
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression and target.name == function.bound_parameter {
+        return decided_class_test(binary, function.bound_member_type)
+    }
+    return null
+}
+
+func decided_class_test(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    bound: Model.Type,
+): SpiteCompiler.Value? {
+    var path = values.tested_class_path_of(binary.right)
+    fallback not path.is_empty()
+    var written = path.join(".")
+    var answer = bound_is(bound, written)
+    if binary.operator == 'not_equal' {
+        answer = not answer
+    }
+    var number = 0
+    if answer {
+        number = 1
+    }
+    var boolean = context.boolean()
+    return HighIntermediaryRepresentation.Values.WholeNumber(boolean, number)
+}
+
+func codegen_test_of(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    left: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+): SpiteCompiler.Value? {
+    fallback left.name.starts_with("$")
+    var compares = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    fallback compares
+    var bound = context.current_class.bound_types[left.name]
+    fallback bound
+    var path = values.class_path_of(binary.right)
+    fallback not path.is_empty()
+    var written = path.join(".")
+    var answer = bound_is(bound, written)
+    if binary.operator == 'not_equal' {
+        answer = not answer
+    }
+    var number = 0
+    if answer {
+        number = 1
+    }
+    var boolean = context.boolean()
+    return HighIntermediaryRepresentation.Values.WholeNumber(boolean, number)
+}
+
+func bound_is(bound: Model.Type, written: String): Boolean {
+    if written == "Null" {
+        return bound.is_nullable
+    } else if written == "List" {
+        return bound.name.starts_with("List_of_") and not bound.is_nullable
+    } else if written == "Dictionary" {
+        return bound.name.starts_with("Dictionary_of_") and not bound.is_nullable
+    } else if written == "Enum" {
+        return bound.kind == 'enumeration' and not bound.is_nullable
+    } else if written == "Nothing" {
+        return bound.kind == 'nothing'
+    } else {
+        return is_the_class(bound, written)
+    }
+}
+
+func is_the_class(bound: Model.Type, written: String): Boolean {
+    fallback not bound.is_nullable and not bound.is_a_walked_name
+    var path = written.split(".")
+    var no_arguments = List<AbstractSyntaxTree.Shapes.Types.GenericArgument>()
+    var described = context.resolver.types.class_type_in(path, no_arguments, context.current_class, context.line)
+    if described.kind == 'union' and bound.kind != 'union' {
+        return values.is_a_member_of(bound, described)
+    }
+    if described.kind == 'shape' and bound.kind != 'shape' {
+        return values.fits_the_shape(bound, described)
+    }
+    return described.name == bound.name and described.kind == bound.kind
+}
+
+func compares_a_maybe(left: SpiteCompiler.Value, right: SpiteCompiler.Value): Boolean {
+    var left_type = left.value_type
+    var right_type = right.value_type
+    fallback left_type.kind != 'shape' and right_type.kind != 'shape'
+    fallback left_type.kind != 'nothing' and right_type.kind != 'nothing'
+    return left_type.is_nullable or right_type.is_nullable
+}
+
+func maybe_equal(left: SpiteCompiler.Value, right: SpiteCompiler.Value): SpiteCompiler.Value {
+    if not left.value_type.is_nullable {
+        return maybe_equal(right, left)
+    }
+    var boolean = context.boolean()
+    var held_left = held_once(left)
+    var present_type = left.value_type.present()
+    var present_left = HighIntermediaryRepresentation.Values.Conversion(present_type, 'present', held_left)
+    var left_is_there = HighIntermediaryRepresentation.Values.PresenceTest(held_left)
+    if not right.value_type.is_nullable {
+        var fitted_right = values.fitted(right, present_type)
+        var equal = present_equal(present_left, fitted_right)
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', left_is_there, equal)
+    }
+    var held_right = held_once(right)
+    var right_present_type = right.value_type.present()
+    var present_right = HighIntermediaryRepresentation.Values.Conversion(right_present_type, 'present', held_right)
+    var right_is_there = HighIntermediaryRepresentation.Values.PresenceTest(held_right)
+    var fitted_present_right = values.fitted(present_right, present_type)
+    var both_equal = present_equal(present_left, fitted_present_right)
+    var both_there = HighIntermediaryRepresentation.Values.MachineOperation(
+        boolean,
+        'and',
+        left_is_there,
+        right_is_there,
+    )
+    var there_and_equal = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', both_there, both_equal)
+    var left_missing = HighIntermediaryRepresentation.Values.Negation(left_is_there)
+    var right_missing = HighIntermediaryRepresentation.Values.Negation(right_is_there)
+    var both_missing = HighIntermediaryRepresentation.Values.MachineOperation(
+        boolean,
+        'and',
+        left_missing,
+        right_missing,
+    )
+    return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'or', both_missing, there_and_equal)
+}
+
+func held_once(value: SpiteCompiler.Value): SpiteCompiler.Value {
+    var is_a_plain_read = value.class == HighIntermediaryRepresentation.Values.LocalRead
+    is_a_plain_read = is_a_plain_read or value.class == HighIntermediaryRepresentation.Values.AttributeRead
+    if is_a_plain_read {
+        return value
+    }
+    values.temporary_count = values.temporary_count + 1
+    var name = context.scope.declare("compared_{values.temporary_count}", value.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, value.value_type, value)
+    declared.line = context.line
+    context.pending.append(declared)
+    return HighIntermediaryRepresentation.Values.LocalRead(value.value_type, name)
+}
+
+func present_equal(left: SpiteCompiler.Value, right: SpiteCompiler.Value): SpiteCompiler.Value {
+    var boolean = context.boolean()
+    if is_machine_comparable(left.value_type) or compares_identity(left) {
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', left, right)
+    }
+    var arguments = List<SpiteCompiler.Value>()
+    arguments.append(right)
+    return values.method_call(left, "equals", arguments)
+}
+
+func shape_equal(left: SpiteCompiler.Value, right: SpiteCompiler.Value): SpiteCompiler.Value {
+    var boolean = context.boolean()
+    var right_type = right.value_type.present()
+    if right_type.kind == 'object' and right_type.name == "Spite.Class" {
+        var reflection = Reflection(context, values)
+        var class_of_left = reflection.making.class_of_value(left)
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', class_of_left, right)
+    }
+    if not values.is_held_in_a_box(right_type) {
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', left, right)
+    }
+    var tested = HighIntermediaryRepresentation.Values.Class.Membership(left, right_type)
+    var unboxed = HighIntermediaryRepresentation.Values.Conversion(right_type, 'unbox', left)
+    var equal = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', unboxed, right)
+    return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', tested, equal)
+}
+
+func operands_of(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): List<SpiteCompiler.Value> {
+    var operands = List<SpiteCompiler.Value>()
+    if is_a_literal_tree(binary.left) and not is_a_literal_tree(binary.right) {
+        var right_value = values.value_of(binary.right, null)
+        var right_first = values.result_of_handle(right_value)
+        var left_after = values.value_of(binary.left, right_first.value_type)
+        operands.append(left_after)
+        operands.append(right_first)
+        return operands
+    }
+    var left_value = values.value_of(binary.left, null)
+    var left = values.result_of_handle(left_value)
+    var right_value = values.value_of(binary.right, left.value_type)
+    var right = values.result_of_handle(right_value)
+    operands.append(left)
+    operands.append(right)
+    return operands
+}
+
+func refuse_a_cut(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    fitted_right: SpiteCompiler.Value,
+    left_type: Model.Type,
+    right_type: Model.Type,
+) {
+    fallback left_type.name != "Float" or not is_a_literal_tree(binary.right)
+    if fitted_right.class == HighIntermediaryRepresentation.Values.Conversion {
+        refuse_a_cut_conversion(binary, fitted_right, left_type, right_type)
+    }
+}
+
+func refuse_a_cut_conversion(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    conversion: HighIntermediaryRepresentation.Values.Conversion,
+    left_type: Model.Type,
+    right_type: Model.Type,
+) {
+    var cuts = conversion.kind == 'narrow' or conversion.kind == 'narrow_decimal' or conversion.kind == 'to_whole'
+    fallback cuts
+    fallback not changes_only_its_sign(left_type, right_type)
+    var printer = Printers.Spite.ExpressionPrinter(binary)
+    var shown = printer.text()
+    crash binary.left
+    crash binary.right
+    var left_printer = Printers.Spite.ExpressionPrinter(binary.left)
+    var left_text = left_printer.text()
+    var turned_operator = turned_around(binary.operator)
+    var turned = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(binary.right, turned_operator, binary.left)
+    var turned_printer = Printers.Spite.ExpressionPrinter(turned)
+    var turned_text = turned_printer.text()
+    if is_a_comparison(binary.operator) {
+        values.typing.refuse_cut_comparison(context, shown, left_type.name, right_type.name, turned_text)
+    }
+    var operation = operation_name_of(binary.operator)
+    var order_free = binary.operator == 'plus' or binary.operator == 'star'
+    values.typing.refuse_cut_operand(
+        context,
+        shown,
+        operation,
+        left_type.name,
+        right_type.name,
+        left_text,
+        turned_text,
+        order_free,
+    )
+}
+
+func is_a_maybe_operand(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    operand: SpiteCompiler.Value,
+): Boolean {
+    var operand_type = operand.value_type
+    var asks_if_equal = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    var reads_an_index = binary.left.class == AbstractSyntaxTree.Shapes.Expressions.IndexExpression
+    return operand_type.is_nullable and operand_type.kind == 'scalar' and not asks_if_equal and not reads_an_index
+}
+
+func operator_symbol_of(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): String {
+    var printer = Printers.Spite.ExpressionPrinter(binary)
+    return printer.operator_text(binary.operator)
+}
+
+func changes_only_its_sign(left_type: Model.Type, right_type: Model.Type): Boolean {
+    fallback values.are_whole_numbers(left_type, right_type)
+    var left_scalar = values.scalars.of(left_type.name)
+    var right_scalar = values.scalars.of(right_type.name)
+    crash left_scalar
+    crash right_scalar
+    return left_scalar.size == right_scalar.size
+}
+
+func is_a_comparison(operator: AbstractSyntaxTree.Tokens.Token.Kind): Boolean {
+    switch operator {
+        'plus': return false
+        'minus': return false
+        'star': return false
+        'slash': return false
+        'percent': return false
+        'end_of_file': return true
+        'name': return true
+        'class_name': return true
+        'generic_name': return true
+        'integer_literal': return true
+        'decimal_literal': return true
+        'text_literal': return true
+        'symbol_literal': return true
+        'open_brace': return true
+        'close_brace': return true
+        'open_parenthesis': return true
+        'close_parenthesis': return true
+        'open_bracket': return true
+        'close_bracket': return true
+        'comma': return true
+        'dot': return true
+        'dots': return true
+        'colon': return true
+        'question': return true
+        'equals': return true
+        'equal_equal': return true
+        'not_equal': return true
+        'less': return true
+        'greater': return true
+        'less_or_equal': return true
+        'greater_or_equal': return true
+        'and': return true
+        'or': return true
+        'not': return true
+        'keyword_function': return true
+        'keyword_variable': return true
+        'keyword_enum': return true
+        'keyword_union': return true
+        'keyword_type': return true
+        'keyword_return': return true
+        'keyword_if': return true
+        'keyword_else': return true
+        'keyword_while': return true
+        'keyword_switch': return true
+        'keyword_fallback': return true
+        'keyword_crash': return true
+        'keyword_load': return true
+        'keyword_this': return true
+        'keyword_null': return true
+        'keyword_true': return true
+        'keyword_false': return true
+        'keyword_generic': return true
+        'keyword_singleton': return true
+    }
+}
+
+func turned_around(operator: AbstractSyntaxTree.Tokens.Token.Kind): AbstractSyntaxTree.Tokens.Token.Kind {
+    switch operator {
+        'less': return 'greater'
+        'greater': return 'less'
+        'less_or_equal': return 'greater_or_equal'
+        'greater_or_equal': return 'less_or_equal'
+        'end_of_file': return operator
+        'name': return operator
+        'class_name': return operator
+        'generic_name': return operator
+        'integer_literal': return operator
+        'decimal_literal': return operator
+        'text_literal': return operator
+        'symbol_literal': return operator
+        'open_brace': return operator
+        'close_brace': return operator
+        'open_parenthesis': return operator
+        'close_parenthesis': return operator
+        'open_bracket': return operator
+        'close_bracket': return operator
+        'comma': return operator
+        'dot': return operator
+        'dots': return operator
+        'colon': return operator
+        'question': return operator
+        'equals': return operator
+        'plus': return operator
+        'minus': return operator
+        'star': return operator
+        'slash': return operator
+        'percent': return operator
+        'equal_equal': return operator
+        'not_equal': return operator
+        'and': return operator
+        'or': return operator
+        'not': return operator
+        'keyword_function': return operator
+        'keyword_variable': return operator
+        'keyword_enum': return operator
+        'keyword_union': return operator
+        'keyword_type': return operator
+        'keyword_return': return operator
+        'keyword_if': return operator
+        'keyword_else': return operator
+        'keyword_while': return operator
+        'keyword_switch': return operator
+        'keyword_fallback': return operator
+        'keyword_crash': return operator
+        'keyword_load': return operator
+        'keyword_this': return operator
+        'keyword_null': return operator
+        'keyword_true': return operator
+        'keyword_false': return operator
+        'keyword_generic': return operator
+        'keyword_singleton': return operator
+    }
+}
+
+func operation_name_of(kind: AbstractSyntaxTree.Tokens.Token.Kind): String {
+    switch kind {
+        'plus': return "an addition"
+        'minus': return "a subtraction"
+        'star': return "a multiplication"
+        'slash': return "a division"
+        'percent': return "a remainder"
+        'end_of_file': return "a comparison"
+        'name': return "a comparison"
+        'class_name': return "a comparison"
+        'generic_name': return "a comparison"
+        'integer_literal': return "a comparison"
+        'decimal_literal': return "a comparison"
+        'text_literal': return "a comparison"
+        'symbol_literal': return "a comparison"
+        'open_brace': return "a comparison"
+        'close_brace': return "a comparison"
+        'open_parenthesis': return "a comparison"
+        'close_parenthesis': return "a comparison"
+        'open_bracket': return "a comparison"
+        'close_bracket': return "a comparison"
+        'comma': return "a comparison"
+        'dot': return "a comparison"
+        'dots': return "a comparison"
+        'colon': return "a comparison"
+        'question': return "a comparison"
+        'equals': return "a comparison"
+        'equal_equal': return "a comparison"
+        'not_equal': return "a comparison"
+        'less': return "a comparison"
+        'greater': return "a comparison"
+        'less_or_equal': return "a comparison"
+        'greater_or_equal': return "a comparison"
+        'and': return "a comparison"
+        'or': return "a comparison"
+        'not': return "a comparison"
+        'keyword_function': return "a comparison"
+        'keyword_variable': return "a comparison"
+        'keyword_enum': return "a comparison"
+        'keyword_union': return "a comparison"
+        'keyword_type': return "a comparison"
+        'keyword_return': return "a comparison"
+        'keyword_if': return "a comparison"
+        'keyword_else': return "a comparison"
+        'keyword_while': return "a comparison"
+        'keyword_switch': return "a comparison"
+        'keyword_fallback': return "a comparison"
+        'keyword_crash': return "a comparison"
+        'keyword_load': return "a comparison"
+        'keyword_this': return "a comparison"
+        'keyword_null': return "a comparison"
+        'keyword_true': return "a comparison"
+        'keyword_false': return "a comparison"
+        'keyword_generic': return "a comparison"
+        'keyword_singleton': return "a comparison"
+    }
+}
+
+func is_machine_comparable(left_type: Model.Type): Boolean {
+    var is_a_scalar = left_type.kind == 'scalar' and not left_type.is_nullable
+    var is_an_enum = left_type.kind == 'enumeration' and not left_type.is_nullable
+    return is_a_scalar or is_an_enum
+}
+
+func answer_type_of(
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+    left_type: Model.Type,
+): Model.Type {
+    switch operator {
+        'add': return left_type
+        'subtract': return left_type
+        'multiply': return left_type
+        'divide': return left_type
+        'remainder': return left_type
+        'equal': return context.boolean()
+        'not_equal': return context.boolean()
+        'less': return context.boolean()
+        'less_or_equal': return context.boolean()
+        'greater': return context.boolean()
+        'greater_or_equal': return context.boolean()
+        'and': return context.boolean()
+        'or': return context.boolean()
+    }
+}
+
+func operator_of(
+    kind: AbstractSyntaxTree.Tokens.Token.Kind,
+): HighIntermediaryRepresentation.Values.MachineOperation.Operator {
+    switch kind {
+        'plus': return 'add'
+        'minus': return 'subtract'
+        'star': return 'multiply'
+        'slash': return 'divide'
+        'percent': return 'remainder'
+        'equal_equal': return 'equal'
+        'not_equal': return 'not_equal'
+        'less': return 'less'
+        'less_or_equal': return 'less_or_equal'
+        'greater': return 'greater'
+        'greater_or_equal': return 'greater_or_equal'
+        'and': return 'and'
+        'end_of_file': return 'or'
+        'name': return 'or'
+        'class_name': return 'or'
+        'generic_name': return 'or'
+        'integer_literal': return 'or'
+        'decimal_literal': return 'or'
+        'text_literal': return 'or'
+        'symbol_literal': return 'or'
+        'open_brace': return 'or'
+        'close_brace': return 'or'
+        'open_parenthesis': return 'or'
+        'close_parenthesis': return 'or'
+        'open_bracket': return 'or'
+        'close_bracket': return 'or'
+        'comma': return 'or'
+        'dot': return 'or'
+        'dots': return 'or'
+        'colon': return 'or'
+        'question': return 'or'
+        'equals': return 'or'
+        'or': return 'or'
+        'not': return 'or'
+        'keyword_function': return 'or'
+        'keyword_variable': return 'or'
+        'keyword_enum': return 'or'
+        'keyword_union': return 'or'
+        'keyword_type': return 'or'
+        'keyword_return': return 'or'
+        'keyword_if': return 'or'
+        'keyword_else': return 'or'
+        'keyword_while': return 'or'
+        'keyword_switch': return 'or'
+        'keyword_fallback': return 'or'
+        'keyword_crash': return 'or'
+        'keyword_load': return 'or'
+        'keyword_this': return 'or'
+        'keyword_null': return 'or'
+        'keyword_true': return 'or'
+        'keyword_false': return 'or'
+        'keyword_generic': return 'or'
+        'keyword_singleton': return 'or'
+    }
+}
+
+func held_operand(value: SpiteCompiler.Value): SpiteCompiler.Value {
+    var is_plain = value.class == HighIntermediaryRepresentation.Values.LocalRead or value.class == HighIntermediaryRepresentation.Values.WholeNumber
+    if is_plain or value.class == HighIntermediaryRepresentation.Values.DecimalNumber {
+        return value
+    }
+    values.temporary_count = values.temporary_count + 1
+    var name = context.scope.declare("operand_{values.temporary_count}", value.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, value.value_type, value)
+    declared.line = context.line
+    context.pending.append(declared)
+    return HighIntermediaryRepresentation.Values.LocalRead(value.value_type, name)
+}
+
+func operator_call(
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+    left: SpiteCompiler.Value,
+    right: SpiteCompiler.Value,
+): SpiteCompiler.Value {
+    var asks_equality = operator == 'equal' or operator == 'not_equal'
+    if asks_equality and compares_identity(left) {
+        var boolean = context.boolean()
+        var same = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', left, right)
+        if operator == 'not_equal' {
+            return HighIntermediaryRepresentation.Values.Negation(same)
+        }
+        return same
+    }
+    var name = operator_function_name(operator)
+    refuse_a_missing_operator(left, name, "this operator", "{name}(other)")
+    refuse_an_operator_of_another_count(left, name, "this operator", "{name}(other)", 1)
+    if asks_equality {
+        refuse_a_comparison_across_classes(left, right)
+    }
+    var arguments = List<SpiteCompiler.Value>()
+    arguments.append(right)
+    var answered = values.method_call(left, name, arguments)
+    var negated = operator == 'not_equal' or operator == 'less_or_equal' or operator == 'greater_or_equal'
+    if negated {
+        return HighIntermediaryRepresentation.Values.Negation(answered)
+    }
+    return answered
+}
+
+func refuse_a_missing_operator(operand: SpiteCompiler.Value, name: String, operator_text: String, needed: String) {
+    var operand_type = operand.value_type
+    var is_a_class = operand_type.kind == 'object' and not operand_type.is_nullable
+    fallback is_a_class and context.has_a_class(operand_type)
+    var owner = context.class_of(operand_type)
+    fallback not owner.function_named(name)
+    fallback not values.member_template_of(owner, name)
+    var shown = context.shown(operand_type)
+    values.typing.refuse_a_missing_operator(context, operator_text, shown, needed)
+}
+
+func refuse_an_operator_of_another_count(
+    operand: SpiteCompiler.Value,
+    name: String,
+    operator_text: String,
+    needed: String,
+    wanted_count: Integer,
+) {
+    var operand_type = operand.value_type
+    var is_a_class = operand_type.kind == 'object' and not operand_type.is_nullable
+    fallback is_a_class and context.has_a_class(operand_type)
+    var owner = context.class_of(operand_type)
+    var function = owner.function_named(name)
+    fallback function
+    var given_count = function.parameters.count()
+    fallback given_count != wanted_count
+    var shown = context.shown(operand_type)
+    values.typing.refuse_an_operator_of_another_count(context, operator_text, shown, needed, name, given_count)
+}
+
+func compares_identity(left: SpiteCompiler.Value): Boolean {
+    var left_type = left.value_type
+    if left_type.kind == 'union' and not left_type.is_nullable {
+        return union_compares_identity(left_type)
+    }
+    fallback left_type.kind == 'object' and not left_type.is_nullable
+    return class_compares_identity(left_type)
+}
+
+func union_compares_identity(union_type: Model.Type): Boolean {
+    var united = values.union_model_of(union_type)
+    var index = 0
+    while index < united.members.count() {
+        var held = united.members[index]
+        var is_a_reference = held.kind == 'object' and held.name != "String" and not held.is_nullable
+        fallback is_a_reference
+        fallback class_compares_identity(held)
+        index = index + 1
+    }
+    return true
+}
+
+func class_compares_identity(left_type: Model.Type): Boolean {
+    var model = context.class_of(left_type)
+    var equals = model.function_named("equals")
+    if not equals {
+        return true
+    }
+    var parameter = equals.parameters[0]
+    if not parameter {
+        return true
+    }
+    return parameter.parameter_type.kind != 'object'
+}
+
+func refuse_a_comparison_across_classes(left: SpiteCompiler.Value, right: SpiteCompiler.Value) {
+    var left_type = left.value_type
+    var right_type = right.value_type
+    var both_kinds = left_type.kind == 'object' and right_type.kind == 'object'
+    var both_classes = both_kinds and context.has_a_class(left_type) and context.has_a_class(right_type)
+    var either_nullable = left_type.is_nullable or right_type.is_nullable
+    var across = both_classes and not either_nullable and left_type.name != right_type.name
+    if across and equals_takes_its_own_class(left_type) {
+        var given = context.shown(left_type)
+        var wanted = context.shown(right_type)
+        values.typing.refuse_mismatch(context, given, wanted)
+    }
+}
+
+func equals_takes_its_own_class(left_type: Model.Type): Boolean {
+    var owner = context.class_of(left_type)
+    var equals = owner.function_named("equals")
+    crash equals
+    var parameter = equals.parameters[0]
+    crash parameter
+    return parameter.parameter_type.name == left_type.name
+}
+
+func operator_function_name(operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator): String {
+    switch operator {
+        'add': return "sum"
+        'subtract': return "subtract"
+        'multiply': return "multiply"
+        'divide': return "divide"
+        'remainder': return "remainder"
+        'equal': return "equals"
+        'not_equal': return "equals"
+        'less': return "less_than"
+        'greater': return "greater_than"
+        'less_or_equal': return "greater_than"
+        'greater_or_equal': return "less_than"
+        'and': return ""
+        'or': return ""
+    }
+}
+
+func is_a_class_test(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
+    var compares = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
+    var right = values.tested_class_path_of(binary.right)
+    return compares and not right.is_empty()
+}
+
+func class_test_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value {
+    var tested = class_tested_value(binary)
+    var path = values.tested_class_path_of(binary.right)
+    var type_arguments = values.type_arguments_of(binary.right)
+    var member = context.resolver.types.class_type_in(path, type_arguments, context.current_class, context.line)
+    if tested.value_type.name == "Spite.Class" {
+        return same_class(binary, tested, member)
+    }
+    refuse_a_test_for_no_member(binary, tested, member)
+    note_an_answered_class_test(binary, tested, member)
+    var test = HighIntermediaryRepresentation.Values.Class.Membership(tested, member)
+    if binary.operator == 'not_equal' {
+        return HighIntermediaryRepresentation.Values.Negation(test)
+    }
+    return test
+}
+
+# ../../PROOFS.md#proving-what-is-proven-is-an-error
+func note_an_answered_class_test(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    tested: SpiteCompiler.Value,
+    member: Model.Type,
+) {
+    var tested_type = tested.value_type
+    var is_one_class = tested_type.kind == 'object' and not tested_type.is_nullable and context.has_a_class(tested_type)
+    fallback binary.operator == 'equal_equal' and is_one_class
+    var function = context.current_function
+    var is_a_walk = not function.bound_parameter.is_empty() or not function.bound_member.is_empty()
+    var is_generic = not context.current_class.bound_types.is_empty()
+    var path = context.path()
+    var library = Mapping.LibraryFile()
+    var is_generated = path.contains("/.spite/") or library.holds(path)
+    fallback not is_a_walk and not is_generic and not is_generated
+    var tested_written = binary.left
+    var asked = class_tested_of_a_test(binary)
+    if asked {
+        tested_written = asked
+    }
+    crash tested_written
+    var printer = Printers.Spite.ExpressionPrinter(tested_written)
+    var written = printer.text()
+    var fact_path = written
+    if tested_written.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var internal_name = context.scope.internal_name_of(tested_written.name)
+        fact_path = "this.{tested_written.name}"
+        if internal_name {
+            fact_path = internal_name
+        }
+    }
+    var site = HighIntermediaryRepresentation.Building.CheckSite("answered class test", context)
+    site.written = written
+    site.checked_type = tested_type
+    site.check = context.scope.check_of(fact_path)
+    site.source = context.shown(member)
+    var whole = Printers.Spite.ExpressionPrinter(binary)
+    site.whole_test = whole.text()
+    var last_read = context.narrowed_reads.last()
+    if last_read and last_read.shown == fact_path and last_read.watched_lists.is_empty() {
+        site.kept_read = last_read
+    }
+    context.note_a_check_site(site)
+}
+
+func refuse_a_test_for_no_member(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    tested: SpiteCompiler.Value,
+    member: Model.Type,
+) {
+    fallback tested.value_type.kind == 'union'
+    var names_a_codegen_value = false
+    var right = binary.right
+    if right.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        names_a_codegen_value = right.name.starts_with("$")
+    }
+    var bound = context.current_class.bound_types.keys()
+    fallback not names_a_codegen_value and bound.is_empty()
+    var united = values.union_model_of(tested.value_type)
+    var held_names = united.members.map_names()
+    fallback not held_names.contains(member.name)
+    var names = List<String>()
+    var index = 0
+    while index < united.members.count() {
+        var held = united.members[index]
+        var shown = context.shown(held)
+        names.append(shown)
+        index = index + 1
+    }
+    var listed = names.join(", ")
+    var printer = Printers.Spite.ExpressionPrinter(binary.left)
+    var tested_text = printer.text()
+    var member_shown = context.shown(member)
+    values.typing.refuse_a_test_for_no_member(context, tested_text, member_shown, united.name, listed)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#unions-in-full
+func refuse_a_class_test_on_a_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
+    var left_printer = Printers.Spite.ExpressionPrinter(binary.left)
+    var left = left_printer.text()
+    var right_printer = Printers.Spite.ExpressionPrinter(binary.right)
+    var right = right_printer.text()
+    values.typing.refuse_a_class_test_on_a_value(context, left, right)
+}
+
+# ../../../spite_spec/specs/values_and_types.md#unions-in-full
+func class_asked_of(left: SpiteCompiler.Expression?): SpiteCompiler.Value? {
+    fallback left.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression and left.name == "class"
+    fallback is_a_value_path(left.target)
+    var target = values.value_of(left.target, null)
+    fallback not declares_its_class(target.value_type)
+    return target
+}
+
+# ../../../spite_spec/specs/values_and_types.md#unions-in-full
+func class_tested_of_a_test(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Expression? {
+    fallback is_a_class_test(binary)
+    var left = binary.left
+    fallback left.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression and left.name == "class"
+    var asked = class_asked_of(left)
+    fallback asked
+    return left.target
+}
+
+func class_tested_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value {
+    var asked = class_asked_of(binary.left)
+    if asked {
+        return asked
+    }
+    var tested = values.value_of(binary.left, null)
+    if tested.value_type.name != "Spite.Class" {
+        refuse_a_class_test_on_a_value(binary)
+    }
+    return tested
+}
+
+func declares_its_class(of_type: Model.Type): Boolean {
+    var present = of_type.present()
+    fallback context.has_a_class(present)
+    var model = context.class_of(present)
+    var getter = model.function_named("get_class")
+    var attribute = model.attribute_named("class")
+    return getter or attribute
+}
+
+func same_class(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    tested: SpiteCompiler.Value,
+    member: Model.Type,
+): SpiteCompiler.Value {
+    var reflection = Reflection(context, values)
+    var described = member.name
+    if member.kind == 'nothing' {
+        described = "Nothing"
+    }
+    var object = reflection.class_objects.class_object(described)
+    var boolean = context.boolean()
+    var compared = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'equal', tested, object)
+    if binary.operator == 'not_equal' {
+        return HighIntermediaryRepresentation.Values.Negation(compared)
+    }
+    return compared
+}
+
+func logic_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value {
+    var boolean = context.boolean()
+    var left = condition_of(binary.left)
+    if left.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        var decides_an_and = binary.operator == 'and' and left.number == 0
+        var decides_an_or = binary.operator == 'or' and left.number != 0
+        if decides_an_and or decides_an_or {
+            context.note_a_folded_branch()
+            return left
+        }
+    }
+    var outer_pending = context.pending
+    context.pending = List<SpiteCompiler.Statement>()
+    var right = right_condition_of(binary, left)
+    var right_work = context.pending
+    context.pending = outer_pending
+    if not right_work.is_empty() {
+        return logic_in_order(binary, left, right, right_work)
+    }
+    var operator = operator_of(binary.operator)
+    var folded = folded_logic(left, right, operator)
+    if folded {
+        return folded
+    }
+    return HighIntermediaryRepresentation.Values.MachineOperation(boolean, operator, left, right)
+}
+
+# ../../ARCHITECTURE.md#work-a-condition-needs-runs-where-the-condition-reaches-it
+func logic_in_order(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    left: SpiteCompiler.Value,
+    right: SpiteCompiler.Value,
+    right_work: List<SpiteCompiler.Statement>,
+): SpiteCompiler.Value {
+    var boolean = context.boolean()
+    values.temporary_count = values.temporary_count + 1
+    var name = context.scope.declare("logic_{values.temporary_count}", boolean)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, boolean, left)
+    declared.line = context.line
+    context.pending.append(declared)
+    var deciding = HighIntermediaryRepresentation.Statements.Block()
+    var index = 0
+    while index < right_work.count() {
+        var work = right_work[index]
+        deciding.statements.append(work)
+        index = index + 1
+    }
+    var decided = HighIntermediaryRepresentation.Statements.Assign.Assign(name, right)
+    decided.line = context.line
+    deciding.statements.append(decided)
+    var held = HighIntermediaryRepresentation.Values.LocalRead(boolean, name)
+    var tested: SpiteCompiler.Value = held
+    if binary.operator == 'or' {
+        tested = HighIntermediaryRepresentation.Values.Negation(held)
+    }
+    var branch = HighIntermediaryRepresentation.Statements.If(tested, deciding, null)
+    branch.line = context.line
+    context.pending.append(branch)
+    return HighIntermediaryRepresentation.Values.LocalRead(boolean, name)
+}
+
+func right_condition_of(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    left: SpiteCompiler.Value,
+): SpiteCompiler.Value {
+    var facts_state = StatementsState()
+    facts_state.start_from(context)
+    var facts = Statements(facts_state)
+    if binary.operator == 'and' {
+        facts.read_facts(binary.left)
+    } else {
+        facts.state.facts_paths = List<String>()
+        facts.state.facts_types = List<Model.Type>()
+        facts.read_a_negated_fact(binary.left)
+    }
+    context.scope.enter()
+    facts.state.condition_start = context.logged_calls.count()
+    facts.log_a_condition_that_calls(binary.left, left, context.line)
+    facts.narrow_all(facts.state.facts_paths, facts.state.facts_types)
+    facts.stamp_the_facts_before_a_call()
+    var right = condition_of(binary.right)
+    context.scope.leave()
+    return right
+}
+
+func folded_logic(
+    left: SpiteCompiler.Value,
+    right: SpiteCompiler.Value,
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+): SpiteCompiler.Value? {
+    if left.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return folded_with_a_left(left, right, operator)
+    }
+    if right.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return folded_with_a_right(left, right, operator)
+    }
+    return null
+}
+
+# ../../PROOFS.md#conditions-decided-while-compiling
+func folded_with_a_right(
+    left: SpiteCompiler.Value,
+    right: HighIntermediaryRepresentation.Values.WholeNumber,
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+): SpiteCompiler.Value? {
+    var right_holds = right.number != 0
+    var decides = operator == 'and' and not right_holds or operator == 'or' and right_holds
+    fallback decides
+    if not is_a_quiet_condition(left) {
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(left)
+        evaluated.line = context.line
+        context.pending.append(evaluated)
+    }
+    return right
+}
+
+func is_a_quiet_condition(value: SpiteCompiler.Value?): Boolean {
+    if not value {
+        return true
+    }
+    switch value {
+        HighIntermediaryRepresentation.Values.WholeNumber: return true
+        HighIntermediaryRepresentation.Values.LocalRead: return true
+        HighIntermediaryRepresentation.Values.ThisRead: return true
+        HighIntermediaryRepresentation.Values.AttributeRead: return is_a_quiet_condition(value.object)
+        HighIntermediaryRepresentation.Values.PresenceTest: return is_a_quiet_condition(value.tested)
+        HighIntermediaryRepresentation.Values.Negation: return is_a_quiet_condition(value.negated)
+        HighIntermediaryRepresentation.Values.MachineOperation: return is_a_quiet_test(value)
+        HighIntermediaryRepresentation.Values.DecimalNumber: return false
+        HighIntermediaryRepresentation.Values.TextConstant: return false
+        HighIntermediaryRepresentation.Values.NullConstant: return false
+        HighIntermediaryRepresentation.Values.Call: return false
+        HighIntermediaryRepresentation.Values.MakeObject: return false
+        HighIntermediaryRepresentation.Values.ForeignCall: return false
+        HighIntermediaryRepresentation.Values.Class.Membership: return false
+        HighIntermediaryRepresentation.Values.Conversion: return false
+        HighIntermediaryRepresentation.Values.Function.Value: return false
+        HighIntermediaryRepresentation.Values.Function.ValueCall: return false
+        HighIntermediaryRepresentation.Values.NumberRoom: return false
+        HighIntermediaryRepresentation.Values.ShapeCall: return false
+        HighIntermediaryRepresentation.Values.EnumText: return false
+        HighIntermediaryRepresentation.Values.EnumFromText: return false
+        HighIntermediaryRepresentation.Values.Class.Object: return false
+        HighIntermediaryRepresentation.Values.Class.OfValue: return false
+        HighIntermediaryRepresentation.Values.Function.Fact: return false
+    }
+}
+
+func is_a_quiet_test(test: HighIntermediaryRepresentation.Values.MachineOperation): Boolean {
+    var answers = test.value_type
+    var is_a_test = answers.kind == 'scalar' and answers.name == "Boolean"
+    return is_a_test and are_quiet_conditions(test.left, test.right)
+}
+
+func are_quiet_conditions(left: SpiteCompiler.Value?, right: SpiteCompiler.Value?): Boolean {
+    return is_a_quiet_condition(left) and is_a_quiet_condition(right)
+}
+
+func folded_with_a_left(
+    left: HighIntermediaryRepresentation.Values.WholeNumber,
+    right: SpiteCompiler.Value,
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+): SpiteCompiler.Value? {
+    var left_holds = left.number != 0
+    if operator == 'and' and not left_holds {
+        return left
+    }
+    if operator == 'or' and left_holds {
+        return left
+    }
+    return right
+}
+
+func reads_the_bound_member(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression): Boolean {
+    fallback context.current_function.bound_member_type
+    var listed = index.target
+    if listed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return listed.name == "attributes"
+    }
+    if listed.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return listed.name == "attributes"
+    }
+    return false
+}
+
+func with_its_links(condition: SpiteCompiler.Expression?): SpiteCompiler.Expression? {
+    if condition.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return linked_member(condition.target, condition)
+    }
+    if condition.class == AbstractSyntaxTree.Shapes.Expressions.IndexExpression {
+        if reads_the_bound_member(condition) {
+            return condition
+        }
+        return linked_member(condition.target, condition)
+    }
+    return condition
+}
+
+func linked_member(target: SpiteCompiler.Expression?, member: SpiteCompiler.Expression): SpiteCompiler.Expression {
+    var prefixes = List<SpiteCompiler.Expression>()
+    var rooted = collect_prefixes(target, prefixes)
+    if not rooted {
+        return member
+    }
+    var outer_pending = context.pending
+    context.pending = List<SpiteCompiler.Statement>()
+    context.scope.enter()
+    var chosen = List<SpiteCompiler.Expression>()
+    var index = 0
+    while index < prefixes.count() {
+        var prefix = prefixes[index]
+        var probed = values.value_of(prefix, null)
+        if probed.value_type.is_nullable {
+            chosen.append(prefix)
+            var printer = Printers.Spite.ExpressionPrinter(prefix)
+            var path = printer.text()
+            var present = probed.value_type.present()
+            context.scope.narrow(path, present)
+        }
+        index = index + 1
+    }
+    context.scope.leave()
+    context.pending = outer_pending
+    if chosen.is_empty() {
+        return member
+    }
+    var joined = chosen[0]
+    var joined_index = 1
+    while joined_index < chosen.count() {
+        var next = chosen[joined_index]
+        joined = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(joined, 'and', next)
+        joined_index = joined_index + 1
+    }
+    return AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(joined, 'and', member)
+}
+
+func collect_prefixes(expression: SpiteCompiler.Expression?, into: List<SpiteCompiler.Expression>): Boolean {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var rooted = collect_prefixes(expression.target, into)
+        into.append(expression)
+        return rooted
+    }
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        fallback not expression.is_a_class_name and not expression.name.starts_with("$")
+        into.append(expression)
+        return true
+    }
+    return false
+}
+
+func condition_of(expression: SpiteCompiler.Expression?): SpiteCompiler.Value {
+    var written_value = values.value_of(expression, null)
+    var is_a_maybe_handle = written_value.value_type.kind == 'handle' and written_value.value_type.is_nullable
+    if is_a_maybe_handle {
+        return HighIntermediaryRepresentation.Values.PresenceTest(written_value)
+    }
+    var value = values.result_of_handle(written_value)
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead and context.null_locals.contains(value.name) {
+        return values.boolean_constant(false)
+    }
+    var present_type = value.value_type.present()
+    if value.value_type.is_nullable and context.is_boolean(present_type) {
+        var held = held_once(value)
+        var there = HighIntermediaryRepresentation.Values.PresenceTest(held)
+        var flag = HighIntermediaryRepresentation.Values.Conversion(present_type, 'present', held)
+        var boolean = context.boolean()
+        return HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'and', there, flag)
+    }
+    if value.value_type.is_nullable {
+        return HighIntermediaryRepresentation.Values.PresenceTest(value)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        var checked = proven_check_of(value)
+        if checked {
+            return checked
+        }
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead and context.proven_locals.contains(value.name) {
+        var boolean = context.boolean()
+        return HighIntermediaryRepresentation.Values.WholeNumber(boolean, 1)
+    }
+    if not context.is_boolean(value.value_type) {
+        var shown = context.shown(value.value_type)
+        values.typing.refuse_not_a_condition(context, shown)
+    }
+    return value
+}
+
+func proven_check_of(conversion: HighIntermediaryRepresentation.Values.Conversion): SpiteCompiler.Value? {
+    fallback conversion.kind == 'proven' and not context.is_boolean(conversion.value_type)
+    crash conversion.converted
+    return HighIntermediaryRepresentation.Values.PresenceTest(conversion.converted)
+}
+
+func unary_value(
+    unary: AbstractSyntaxTree.Shapes.Expressions.UnaryExpression,
+    expected: Model.Type?,
+): SpiteCompiler.Value {
+    if unary.operator == 'not' {
+        var negated = condition_of(unary.operand)
+        if negated.class == HighIntermediaryRepresentation.Values.WholeNumber {
+            var flipped = 1
+            if negated.number != 0 {
+                flipped = 0
+            }
+            var boolean = context.boolean()
+            return HighIntermediaryRepresentation.Values.WholeNumber(boolean, flipped)
+        }
+        return HighIntermediaryRepresentation.Values.Negation(negated)
+    }
+    var operand = values.value_of(unary.operand, expected)
+    if operand.value_type.kind == 'object' {
+        refuse_a_missing_operator(operand, "negate", "'-'", "negate()")
+        refuse_an_operator_of_another_count(operand, "negate", "'-'", "negate()", 0)
+        var no_arguments = List<SpiteCompiler.Value>()
+        return values.method_call(operand, "negate", no_arguments)
+    }
+    if operand.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        var zero: Long = 0
+        var negative = HighIntermediaryRepresentation.Values.WholeNumber(operand.value_type, zero - operand.number)
+        negative.is_written = operand.is_written
+        return negative
+    }
+    if operand.value_type.is_nullable and not values.is_a_number_literal(unary.operand) {
+        values.note_a_maybe_null("operand", operand, "-", operand.value_type)
+        operand = values.as_present(operand)
+    }
+    var zero_value: SpiteCompiler.Value = HighIntermediaryRepresentation.Values.WholeNumber(operand.value_type, 0)
+    if values.is_a_decimal_type(operand.value_type) {
+        zero_value = HighIntermediaryRepresentation.Values.DecimalNumber(operand.value_type, "-0.0")
+    }
+    var made = HighIntermediaryRepresentation.Values.MachineOperation(
+        operand.value_type,
+        'subtract',
+        zero_value,
+        operand,
+    )
+    crash unary.operand
+    var printer = Printers.Spite.ExpressionPrinter(unary.operand)
+    var negated = printer.text()
+    made.shown = "0 - {negated}"
+    if operand.class == HighIntermediaryRepresentation.Values.DecimalNumber and operand.is_written {
+        made.is_a_written_negative = true
+        made.written_negative = "-{operand.written}"
+    }
+    return made
+}
