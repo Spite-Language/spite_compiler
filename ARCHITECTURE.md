@@ -495,10 +495,7 @@ needs. The folder is named after the rule, and the validator holds every word of
   `refuse...` or builds a `Diagnostics.Failure`. The files still waiting for a rule to move (the parser, the lexer
   and the `typing` refusals, after spite_compiler#25) are listed there, each with what it waits for.
 - A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_spec/blob/master/specs/style.md#the-file-content-budget))
-  stops the compile first, in `validators/abstract_syntax_tree/file_content_budget`. A file still over it would wait in
-  that folder's `waiting_list.spite`, a literal of program folder plus path, with no flag, setting or file that adds to
-  it. `tests/compiler_file_content_budget` of spite_spec holds the same list, so it can only shrink, and a listed file
-  back within the budget is an error until it leaves both. Both lists are empty now, and both go when spite_compiler#311 closes.
+  is told with the file's other refusals, by `validators/abstract_syntax_tree/file_content_budget`. No list or flag excuses a file.
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
   its line and function, made once. A message quotes code through `printers/spite`.
 - A rule that needs the whole program runs once the program is complete; a rule about one class runs per class,
