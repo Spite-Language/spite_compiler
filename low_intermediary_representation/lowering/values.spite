@@ -182,10 +182,10 @@ func store_the_part_inside(object: Integer, attribute: Model.AttributeModel, val
     crash model
     var id_number = state.layout.class_id_of(held)
     var class_id = lowering.constant(id_number)
-    var stored_id = LowIntermediaryRepresentation.Instructions.Store(part.value, 0, class_id, 'bits_64')
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(part.value, 0, class_id, 'bits_64', "", false)
     lowering.emit(stored_id)
     var count = lowering.constant(state.layout.immortal_count)
-    var stored_count = LowIntermediaryRepresentation.Instructions.Store(part.value, 8, count, 'bits_64')
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(part.value, 8, count, 'bits_64', "", false)
     lowering.emit(stored_count)
     var index = 0
     while index < model.declared_attributes.count() {
@@ -207,8 +207,7 @@ func copy_a_number(from: Integer, into: Integer, copied: Model.AttributeModel) {
     loaded.is_signed = lowering.is_signed(copied.attribute_type)
     loaded.region = region
     lowering.emit(loaded)
-    var stored = LowIntermediaryRepresentation.Instructions.Store(into, offset, number, width)
-    stored.region = region
+    var stored = LowIntermediaryRepresentation.Instructions.Store(into, offset, number, width, region, false)
     lowering.emit(stored)
 }
 
@@ -336,20 +335,25 @@ func make_object_with(class_key: String, defaults_key: String): Integer {
     var size = state.layout.made_size_of(class_key)
     var size_register = lowering.constant(size)
     var object = lowering.new_register()
-    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(object, size_register)
     var class_id = state.layout.class_id_of(class_key)
-    allocated.class_id = class_id
-    allocated.zeroed_bytes = state.layout.size_of(class_key)
+    var allocated_class_id = class_id
+    var zeroed_bytes = state.layout.size_of(class_key)
+    var allocated = LowIntermediaryRepresentation.Instructions.Allocate(
+        object,
+        size_register,
+        allocated_class_id,
+        zeroed_bytes,
+    )
     lowering.emit(allocated)
     var id_register = lowering.constant(class_id)
-    var stored_id = LowIntermediaryRepresentation.Instructions.Store(object, 0, id_register, 'bits_64')
+    var stored_id = LowIntermediaryRepresentation.Instructions.Store(object, 0, id_register, 'bits_64', "", false)
     lowering.emit(stored_id)
     var one = lowering.constant(1)
-    var stored_count = LowIntermediaryRepresentation.Instructions.Store(object, 8, one, 'bits_64')
+    var stored_count = LowIntermediaryRepresentation.Instructions.Store(object, 8, one, 'bits_64', "", false)
     lowering.emit(stored_count)
     if state.layout.is_back_held(class_key) {
         var back_slot = state.layout.back_offset_of(class_key)
-        var stored_back = LowIntermediaryRepresentation.Instructions.Store(object, back_slot, one, 'bits_64')
+        var stored_back = LowIntermediaryRepresentation.Instructions.Store(object, back_slot, one, 'bits_64', "", false)
         lowering.emit(stored_back)
     }
     if not defaults_key.is_empty() {
@@ -406,8 +410,14 @@ func lower_operation(operation: HighIntermediaryRepresentation.Values.MachineOpe
         return decimal_operation(operation, operand_type, left.value, right.value, target)
     }
     if comparison {
-        var compared = LowIntermediaryRepresentation.Instructions.Compare(target, comparison, left.value, right.value)
-        compared.is_signed = lowering.is_signed(operand_type)
+        var is_signed = lowering.is_signed(operand_type)
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(
+            target,
+            comparison,
+            left.value,
+            right.value,
+            is_signed,
+        )
         lowering.emit(compared)
         counting.discard(left, operand_type)
         crash operation.right
@@ -447,8 +457,13 @@ func decimal_operation(
     var is_double = operand_type.name == "Double"
     var comparison = comparison_of(operation.operator)
     if comparison {
-        var compared = LowIntermediaryRepresentation.Instructions.Decimal.Compare(target, comparison, left, right)
-        compared.is_double = is_double
+        var compared = LowIntermediaryRepresentation.Instructions.Decimal.Compare(
+            target,
+            comparison,
+            left,
+            right,
+            is_double,
+        )
         lowering.emit(compared)
         return lowering.single(target)
     }
@@ -461,8 +476,8 @@ func decimal_operation(
         arithmetic_operator,
         left,
         right,
+        is_double,
     )
-    computed.is_double = is_double
     lowering.emit(computed)
     return lowering.single(target)
 }
@@ -574,7 +589,7 @@ func lower_negation(negation: HighIntermediaryRepresentation.Values.Negation): L
     var negated = lowering.lower_value(negation.negated)
     var zero = lowering.constant(0)
     var target = lowering.new_register()
-    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'equal', negated.value, zero)
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'equal', negated.value, zero, true)
     lowering.emit(compared)
     return lowering.single(target)
 }
@@ -588,7 +603,13 @@ func lower_class_test(test: HighIntermediaryRepresentation.Values.Class.Membersh
     var target = lowering.new_register()
     var zero = lowering.constant(0)
     var present = lowering.new_register()
-    var compared_present = LowIntermediaryRepresentation.Instructions.Compare(present, 'not_equal', tested.value, zero)
+    var compared_present = LowIntermediaryRepresentation.Instructions.Compare(
+        present,
+        'not_equal',
+        tested.value,
+        zero,
+        true,
+    )
     lowering.emit(compared_present)
     var reading = lowering.new_block()
     var after = lowering.new_block()
@@ -605,7 +626,13 @@ func lower_class_test(test: HighIntermediaryRepresentation.Values.Class.Membersh
     } else {
         var wanted = state.layout.class_id_of(test.member.name)
         var wanted_register = lowering.constant(wanted)
-        var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'equal', class_id, wanted_register)
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(
+            target,
+            'equal',
+            class_id,
+            wanted_register,
+            true,
+        )
         lowering.emit(compared)
     }
     lowering.jump_to(after)
@@ -631,6 +658,7 @@ func test_the_fillers(shape: Model.Type, class_id: Integer, target: Integer) {
                 'equal',
                 class_id,
                 wanted_register,
+                true,
             )
             lowering.emit(compared)
             var joined = LowIntermediaryRepresentation.Instructions.Arithmetic(target, 'bits_or', target, matched)
@@ -657,7 +685,7 @@ func lower_presence_test(test: HighIntermediaryRepresentation.Values.PresenceTes
     }
     var zero = lowering.constant(0)
     var target = lowering.new_register()
-    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'not_equal', tested.value, zero)
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(target, 'not_equal', tested.value, zero, true)
     lowering.emit(compared)
     return lowering.single(target)
 }
@@ -670,7 +698,7 @@ func lower_number_room(room: HighIntermediaryRepresentation.Values.NumberRoom): 
     var storage = lowering.storage_of(made.value)
     crash room.number
     var width = lowering.width_of(room.number.value_type)
-    var stored = LowIntermediaryRepresentation.Instructions.Store(storage, 0, number.value, width)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(storage, 0, number.value, width, "", false)
     lowering.emit(stored)
     var buffer_model = state.layout.program.class_named("Buffer")
     crash buffer_model
@@ -678,7 +706,14 @@ func lower_number_room(room: HighIntermediaryRepresentation.Values.NumberRoom): 
     crash count_attribute
     var count_offset = state.layout.offset_of(count_attribute)
     var counted = lowering.constant(room.width)
-    var count_stored = LowIntermediaryRepresentation.Instructions.Store(made.value, count_offset, counted, 'bits_32')
+    var count_stored = LowIntermediaryRepresentation.Instructions.Store(
+        made.value,
+        count_offset,
+        counted,
+        'bits_32',
+        "",
+        false,
+    )
     lowering.emit(count_stored)
     return counting.owned(made.value)
 }
@@ -698,7 +733,7 @@ func lower_class_object(object: HighIntermediaryRepresentation.Values.Class.Obje
     lowering.emit(loaded_state)
     var filled = lowering.constant(2)
     var is_filled = lowering.new_register()
-    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_filled, 'equal', slot_state, filled)
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_filled, 'equal', slot_state, filled, true)
     lowering.emit(compared)
     var making = lowering.new_block()
     var ready = lowering.new_block()
@@ -722,10 +757,18 @@ func lower_class_object(object: HighIntermediaryRepresentation.Values.Class.Obje
     var never_made = lowering.constant(0)
     var being_made = lowering.constant(1)
     var before = lowering.new_register()
-    var claimed = LowIntermediaryRepresentation.Instructions.CompareExchange(before, slot, 16, never_made, being_made)
+    var claimed = LowIntermediaryRepresentation.Instructions.CompareExchange(
+        before,
+        slot,
+        16,
+        never_made,
+        being_made,
+        'bits_64',
+        true,
+    )
     lowering.emit(claimed)
     var won = lowering.new_register()
-    var compared_claim = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, never_made)
+    var compared_claim = LowIntermediaryRepresentation.Instructions.Compare(won, 'equal', before, never_made, true)
     lowering.emit(compared_claim)
     var building = lowering.new_block()
     var someone_else = lowering.new_block()
@@ -734,17 +777,17 @@ func lower_class_object(object: HighIntermediaryRepresentation.Values.Class.Obje
     lowering.switch_to(someone_else)
     singletons.wait_for_the_filling(slot, thread, made, after)
     lowering.switch_to(building)
-    var kept_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 32, thread, 'bits_64')
+    var kept_thread = LowIntermediaryRepresentation.Instructions.Store(slot, 32, thread, 'bits_64', "", false)
     lowering.emit(kept_thread)
     var fresh = reflection_object_of(kind)
-    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 0, fresh, 'bits_64')
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slot, 0, fresh, 'bits_64', "", false)
     lowering.emit(stored)
     singletons.record_with(slot, "_let_go_of_reflected_{kind}")
     var fill_arguments = List<Integer>()
     fill_arguments.append(fresh)
     var filling = LowIntermediaryRepresentation.Instructions.Call(-1, "{kind}._fill_{object.described}", fill_arguments)
     lowering.emit(filling)
-    var marked = LowIntermediaryRepresentation.Instructions.Store(slot, 16, filled, 'bits_64')
+    var marked = LowIntermediaryRepresentation.Instructions.Store(slot, 16, filled, 'bits_64', "", false)
     lowering.emit(marked)
     var copied = LowIntermediaryRepresentation.Instructions.Copy(made, fresh)
     lowering.emit(copied)
@@ -784,7 +827,13 @@ func lower_class_of_value(made: HighIntermediaryRepresentation.Values.Class.OfVa
         var wanted = state.layout.class_id_of(candidate)
         var wanted_register = lowering.constant(wanted)
         var matches = lowering.new_register()
-        var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', class_id, wanted_register)
+        var compared = LowIntermediaryRepresentation.Instructions.Compare(
+            matches,
+            'equal',
+            class_id,
+            wanted_register,
+            true,
+        )
         lowering.emit(compared)
         var answering = lowering.new_block()
         var next = lowering.new_block()
