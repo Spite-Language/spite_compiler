@@ -153,7 +153,12 @@ func assign_through_a_shape(
     var wanted = fitting.type_the_member_holds(member)
     crash wanted
     var value = fitting.fitted_value_of(statement.value, wanted)
-    var made = HighIntermediaryRepresentation.Statements.Assign.ThroughShape(object, shape, name, value, statement.line)
+    var target = object
+    if needs_the_value_first(statement, object) {
+        value = held_value(statement, value)
+        target = object_after_the_value(statement, object)
+    }
+    var made = HighIntermediaryRepresentation.Statements.Assign.ThroughShape(target, shape, name, value, statement.line)
     statements.add(made)
 }
 
@@ -272,7 +277,14 @@ func assign_an_attribute(
     var target = object
     if fills_a_table {
         value = folded_keys.copied(value, attribute)
-        target = held_for_the_table(object)
+    }
+    var assigned = value
+    if needs_the_value_first(statement, object) {
+        assigned = held_value(statement, value)
+        target = object_after_the_value(statement, object)
+    }
+    if fills_a_table {
+        target = held_for_the_table(target)
     }
     var was_narrowed = state.context.scope.narrowed_type_of(path)
     if was_narrowed and may_be_null(value) {
@@ -281,18 +293,18 @@ func assign_an_attribute(
     state.context.scope.forget(path)
     forget_the_printed_path(path)
     var rooms = RoomForms(state.context, state.values)
-    if rooms.holds_room(attribute) and not rooms.needs_no_room(value) {
+    if rooms.holds_room(attribute) and not rooms.needs_no_room(assigned) {
         target = held_for_the_room(target)
-        value = counted_for_the_room(value)
+        assigned = counted_for_the_room(assigned)
         var object_again = rooms.again(target)
         crash object_again
-        var count_again = rooms.again(value)
+        var count_again = rooms.again(assigned)
         crash count_again
         var growing = rooms.room_for(object_again, attribute, count_again)
         growing.line = statement.line
         statements.add(growing)
     }
-    var made = HighIntermediaryRepresentation.Statements.Assign.Attribute(target, attribute, value, statement.line)
+    var made = HighIntermediaryRepresentation.Statements.Assign.Attribute(target, attribute, assigned, statement.line)
     statements.add(made)
     if fills_a_table {
         add_the_table(target, attribute)
@@ -417,9 +429,14 @@ func set_through(
     var parameter = setter.parameters[0]
     crash parameter
     var value = fitting.fitted_value_of(statement.value, parameter.parameter_type)
+    var target = object
+    if needs_the_value_first(statement, object) {
+        value = held_value(statement, value)
+        target = object_after_the_value(statement, object)
+    }
     var arguments = List<SpiteCompiler.Value>()
     arguments.append(value)
-    var call = HighIntermediaryRepresentation.Values.Call(setter, object, arguments)
+    var call = HighIntermediaryRepresentation.Values.Call(setter, target, arguments)
     var made = HighIntermediaryRepresentation.Statements.Evaluate(call, statement.line)
     statements.add(made)
 }
@@ -467,6 +484,10 @@ func assign_a_shape_member(
     crash shape
     crash function.bound_member_type
     var value = fitting.fitted_value_of(statement.value, function.bound_member_type)
+    if needs_the_value_first(statement, object) {
+        value = held_value(statement, value)
+        object = state.values.value_of(attributes.target, null)
+    }
     var made = HighIntermediaryRepresentation.Statements.Assign.ThroughShape(
         object,
         shape,
@@ -485,6 +506,9 @@ func assign_the_bound_attribute(
     var statements = Statements(state)
     crash read.object
     var value = fitting.fitted_value_of(statement.value, read.attribute.attribute_type)
+    if needs_the_value_first(statement, read.object) {
+        value = held_value(statement, value)
+    }
     var made = HighIntermediaryRepresentation.Statements.Assign.Attribute(
         read.object,
         read.attribute,
@@ -525,11 +549,99 @@ func assign_an_index(
     var position = fitting.fitted_value_of(target.index, index_parameter.parameter_type)
     var value = fitting.fitted_value_of(statement.value, value_parameter.parameter_type)
     statements.forget_the_stored_items(target, value)
+    var assigned = value
+    if needs_the_value_first(statement, object) or needs_the_value_first(statement, position) {
+        assigned = held_value(statement, value)
+        object = state.values.value_of(target.target, null)
+        position = fitting.fitted_value_of(target.index, index_parameter.parameter_type)
+    }
     statements.stop_a_refilled_argument(target, object, position, statement.line)
     var arguments = List<SpiteCompiler.Value>()
     arguments.append(position)
-    arguments.append(value)
+    arguments.append(assigned)
     var call = HighIntermediaryRepresentation.Values.Call(function, object, arguments)
     var made = HighIntermediaryRepresentation.Statements.Evaluate(call, statement.line)
     statements.add(made)
+}
+
+# ../../../spite_documentation/control_flow.md#an-assignment-works-out-its-value-first
+func needs_the_value_first(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    part: SpiteCompiler.Value,
+): Boolean {
+    if is_steady(part) {
+        return false
+    }
+    return runs_code(statement.value)
+}
+
+# ../../../spite_documentation/control_flow.md#an-assignment-works-out-its-value-first
+func held_value(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    value: SpiteCompiler.Value,
+): SpiteCompiler.Value {
+    var statements = Statements(state)
+    state.values.temporary_count = state.values.temporary_count + 1
+    var name = state.context.scope.declare("assigned_{state.values.temporary_count}", value.value_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(name, value.value_type, value, statement.line, "")
+    statements.add(declared)
+    statements.forget_what_the_call_writes(statement.value)
+    statements.forget_what_a_receiver_call_shrinks(value)
+    return HighIntermediaryRepresentation.Values.LocalRead(value.value_type, name)
+}
+
+func object_after_the_value(
+    statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    object: SpiteCompiler.Value,
+): SpiteCompiler.Value {
+    var written = statement.target
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return state.values.value_of(written.target, null)
+    }
+    return object
+}
+
+func is_steady(part: SpiteCompiler.Value): Boolean {
+    if part.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return true
+    }
+    if part.class == HighIntermediaryRepresentation.Values.ThisRead {
+        return true
+    }
+    if part.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return true
+    }
+    return part.class == HighIntermediaryRepresentation.Values.TextConstant
+}
+
+func runs_code(written: SpiteCompiler.Expression?): Boolean {
+    fallback written
+    return expression_runs_code(written)
+}
+
+func expression_runs_code(written: SpiteCompiler.Expression): Boolean {
+    switch written {
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return true
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return runs_code(written.target)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return either_runs_code(written.target, written.index)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return runs_code(written.operand)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return either_runs_code(written.left, written.right)
+        AbstractSyntaxTree.Shapes.Expressions.EntryLiteral: return either_runs_code(written.key, written.value)
+        AbstractSyntaxTree.Shapes.Expressions.ListLiteral: return written.entries.any(expression_runs_code)
+        AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: return written.pairs.any(expression_runs_code)
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: return written.pieces.any(hole_runs_code)
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return false
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return false
+    }
+}
+
+func either_runs_code(first: SpiteCompiler.Expression?, second: SpiteCompiler.Expression?): Boolean {
+    if runs_code(first) {
+        return true
+    }
+    return runs_code(second)
+}
+
+func hole_runs_code(piece: AbstractSyntaxTree.Shapes.Expressions.TextPiece): Boolean {
+    return runs_code(piece.hole)
 }
