@@ -1505,7 +1505,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   conditions and the other branches included) can let the object go; a loop between them stops the search, since
   its next pass may read the write.
 - **Falls back**: not refused where the always-new answer comes from another class.
-- **Lives in**: the proof `proofs/lost_writes`, judging every assignment the builder recorded (a `StatementSite`).
+- **Lives in**: the proof `proofs/lost_writes`, judging every assignment the builder recorded (a `StatementSite`),
+  and `validators/high_intermediary_representation/lost_write`, handed whether anything lets the object go.
 - **Checked by**: conformance/lost_writes, conformance/lost_write_in_a_branch.
 
 ### A name read from a list, assigned and never read, is an error
@@ -1513,7 +1514,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: a local read from a list item, then assigned as its last mention, is refused: the list still holds the
   old item ([memory.md](../spite_documentation/memory.md#a-name-read-from-a-list-names-the-item-until-you-assign-it)).
-- **Lives in**: the proof `proofs/lost_writes` (`check_a_replaced_item`).
+- **Lives in**: the proof `proofs/lost_writes` (`check_a_replaced_item`), and
+  `validators/high_intermediary_representation/lost_write`, handed whether the local still holds the item.
 - **Checked by**: conformance/replaced_items, conformance/memory_replaced_branch,
   conformance/memory_replaced_answered, conformance/memory_replaced_unwritten; tests/memory_replaced_allowed.
 
