@@ -79,7 +79,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `high_intermediary_representation/building/statements.spite` (`read_facts`, `read_a_fact`, `narrowed_block_of`),
   `scope.spite` (`narrow`), `reads.spite` (`narrowed`), `operators.spite` (`with_its_links`). The refusal of a value that may be null
   where a value is needed is the proof `proofs/present_values`, which judges every `PresenceSite` the builder
-  recorded (`values.spite`: `note_a_maybe_null`), a `Boolean?` condition among them.
+  recorded (`values.spite`: `note_a_maybe_null`), a `Boolean?` condition among them: it proves what is present and
+  hands the site to `validators/high_intermediary_representation/present_value`, which decides by its kind.
 - **Checked by**: tests/path_narrowing, tests/present_zero, tests/nullable_narrowing, tests/narrowed_path_kept,
   tests/narrowed_read_local, tests/while_narrows, tests/nullable_switch_null_case; conformance/store_through_nullable,
   conformance/path_narrow_else, conformance/sibling_path_unnarrowed, conformance/maybe_boolean_conditions,
