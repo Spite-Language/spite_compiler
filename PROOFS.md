@@ -988,7 +988,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: partly built (D801, D953).
 - **Rule**: a fresh object of a class that holds only numbers, Booleans, enums and singletons, that never leaves its
   function, lives in registers or the frame; a constructor-made local whose class holds text or lists too
-  ([memory.md](../spite_documentation/memory.md)).
+  ([memory.md](../spite_documentation/memory.md)). Comparing it with `==` or `!=` does not make it leave: its room
+  in the frame is an address no other object has while it lives, so the comparison answers as it would on the heap,
+  and an object compared is placed only in the frame, never in registers, where it would have no address.
 - **Buys**: no allocation, no count.
 - **Missing**: the fresh result of a function that is not inlined goes to the heap; an object whose class lets go
   of attributes is placed only in registers, never in the frame, but a `Buffer`, which is placed in the frame and
@@ -1005,7 +1007,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   that loads it (or reads through an address made from it, or copies its bytes). It runs once more right after the
   first cleaning, for an object stored only into one placed then. The pass `low_optimization_passes/object_placement`
   right after it only writes what was recorded, and an object in the frame whose count nothing reads gets no count.
-- **Checked by**: tests/generic_vectors, tests/written_codegen_in_frame, tests/owned_objects (output only).
+- **Checked by**: tests/generic_vectors, tests/written_codegen_in_frame, tests/owned_objects (output only),
+  tests/compared_object_in_the_frame (counts with `--debug-memory`).
 
 ### Local and variadic lists in the frame
 

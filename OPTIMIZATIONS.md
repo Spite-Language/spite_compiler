@@ -1436,8 +1436,8 @@ After inlining, each function's objects are followed from where they are made: e
 one an allocation writes forms a group. A group **leaves its function** when one of its registers is a parameter, is
 written by anything but an allocation or a copy, is stored into memory, is passed to a call (other than its own
 release, or a call that [keeps nothing of it](#what-a-call-keeps-nothing-of)), is answered with a presence, waited
-on, or used in any other way; reading and writing its attributes at fixed offsets, retaining it and releasing it do
-not make it leave. A group that does not leave is placed in one of three ways, the first that fits:
+on, or used in any other way; reading and writing its attributes at fixed offsets, retaining it, releasing it and
+[comparing it](#an-object-compared-for-sameness-lives-in-the-frame) do not make it leave. A group that does not leave is placed in one of three ways, the first that fits:
 
 1. **One object at a time, in registers.** When no register of the group still holds an earlier object whenever
    the group makes a new one (a loop that makes one row, one copy or one buffer each pass and lets it go before the
@@ -1493,6 +1493,15 @@ func simulate(steps: Integer): Offset {
 
 `scaled` and `+` are inlined, `moved` and every `position` but the answer live in registers, and the one object
 made is the answer, at the `return`.
+
+### An object compared for sameness lives in the frame
+
+`==` and `!=` between objects without `equals` compare addresses. A group compared that way does not leave its
+function, but it is placed only in the frame (the third placement), never in registers, where it would have no
+address: its room is an address no other object has while it lives, and the group holds one object at a time
+there, so the comparison answers what it would on the heap. A loop that makes an object each pass and compares it
+with one made before the loop made one object per pass before (`compared_object_in_the_frame`: 1022 allocations
+for 1000 passes before, 21 after). An ordering comparison of an address still makes the object leave.
 
 ### A row's count is followed while compiling
 
