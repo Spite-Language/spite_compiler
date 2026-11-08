@@ -21,7 +21,8 @@ no compiler setting against the `Build` the program declares (`validators/comman
   A field of the program's own `Build` with no flag is read from its variable (`PLAYER_COUNT`), then from the
   `.env` file of the folder built (`SettingsFile`, which build conditions read too).
   A compiler setting that is on while `_flags` holds nothing and its variable is unset stops the run: that
-  compiler was built by one that does not fill `_flags`, and would otherwise ignore every flag.
+  compiler was built by one that does not fill `_flags`, and would otherwise ignore every flag
+  (`validators/command_line/handed_flags`, handed each setting, whether it was given, the flag count and its variable).
 - `CommandLine.runs_the_program()`: neither `--check` nor `--build` was given, so the program is run once it is built.
 - `writes_high_ir`: from `--high-ir`, a Boolean; the whole program's high representation is written to
   `.spite/build/<name>.high_ir.txt`.
