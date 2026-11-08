@@ -1,0 +1,123 @@
+var scalars = Model.Scalars()
+
+func check(
+    context: HighIntermediaryRepresentation.Building.Context,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    function: Model.FunctionModel,
+    receiver_type: Model.Type,
+    owner: Model.ClassModel,
+) {
+    var receiver_kind = receiver_type.kind
+    fallback receiver_kind == 'object' or receiver_kind == 'scalar'
+    var is_its_own = owner.key == context.current_class.key and context.current_function.name == callee.name
+    fallback not is_its_own
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    check_a_name(context, call, callee.name, function, receiver_text, receiver_kind == 'scalar')
+}
+
+func check_through_a_shape(
+    context: HighIntermediaryRepresentation.Building.Context,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    shape: Model.ShapeModel,
+) {
+    var member = shape.member_named(callee.name)
+    fallback member and context.current_function.name != callee.name
+    crash callee.target
+    var printer = Printers.Spite.ExpressionPrinter(callee.target)
+    var receiver_text = printer.text()
+    check_a_name(context, call, callee.name, member, receiver_text, false)
+}
+
+func check_a_bare_call(
+    context: HighIntermediaryRepresentation.Building.Context,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    function: Model.FunctionModel,
+) {
+    var indexes = function.name == "get_at" or function.name == "set_at"
+    fallback context.current_function.name != function.name and not indexes
+    var is_a_number = scalars.is_a_scalar(context.current_class.key)
+    check_a_name(context, call, function.name, function, "this", is_a_number)
+}
+
+func check_a_name(
+    context: HighIntermediaryRepresentation.Building.Context,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    name: String,
+    function: Model.FunctionModel,
+    receiver_text: String,
+    is_on_a_number: Boolean,
+) {
+    var path = context.path()
+    fallback not context.resolver.state.symbols.generated_texts[path]
+    var written_count = call.arguments.count()
+    fallback function.name == name and function.parameters.count() == written_count
+    var operator = operator_written(name, written_count)
+    fallback not operator.is_empty()
+    var first_parameter = function.parameters.first()
+    if first_parameter {
+        var parameter_kind = first_parameter.parameter_type.kind
+        fallback parameter_kind != 'function'
+        fallback name != "equals" or parameter_kind == 'object' or is_on_a_number
+    }
+    var written_arguments = List<String>()
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var argument_printer = Printers.Spite.ExpressionPrinter(argument)
+        var argument_text = argument_printer.text()
+        written_arguments.append(argument_text)
+        index = index + 1
+    }
+    var written = operator_call_written(name, operator, receiver_text, written_arguments)
+    var text = "'{name}' is what '{operator}' calls: write '{written}'"
+    var first = written_arguments.first()
+    if name == "equals" and first {
+        text = "{text}, or '{receiver_text} != {first}' for 'not {receiver_text}.equals({first})'"
+    }
+    var rules = Validators.HighIntermediaryRepresentation.EveryRule()
+    rules.stop(context, text)
+}
+
+func operator_written(name: String, written_count: Integer): String {
+    var binary = ["sum", "subtract", "multiply", "divide", "remainder", "equals", "less_than", "greater_than"]
+    var operators = ["+", "-", "*", "/", "%", "==", "<", ">"]
+    var position = binary.index_of(name)
+    if position and written_count == 1 {
+        var found = operators[position]
+        crash found
+        return found
+    }
+    var is_a_negation = name == "negate" and written_count == 0
+    if is_a_negation {
+        return "-"
+    }
+    var is_a_read = name == "get_at" and written_count == 1
+    if is_a_read {
+        return "[]"
+    }
+    var is_a_write = name == "set_at" and written_count == 2
+    if is_a_write {
+        return "[] ="
+    }
+    return ""
+}
+
+func operator_call_written(name: String, operator: String, receiver: String, arguments: List<String>): String {
+    var first = arguments.first()
+    if not first {
+        return "{operator}{receiver}"
+    }
+    if name == "get_at" {
+        return "{receiver}[{first}]"
+    }
+    if name == "set_at" {
+        var second = arguments.last()
+        crash second
+        return "{receiver}[{first}] = {second}"
+    }
+    return "{receiver} {operator} {first}"
+}
