@@ -136,7 +136,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   it unnarrowed (a check later in the same pass keeps it). An assignment in a block that always leaves undoes nothing
   after that block, and no next pass reads it, when the block sits inside the loop that holds the assignment; every
   other path keeps it undone: a block that falls through, an `else` that falls through, a loop inside the leaving
-  block that goes around
+  block that goes around. An `else` starts from what was proven before its `then`, and after the `if` a path stays
+  narrowed only where every branch that falls through kept it (`Scope.start_the_other_branch`, `join_the_branches`)
   ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
 - **Buys**: nothing stale is read: a narrowed read has no run-time test.
 - **Falls back**: refused, "assigning to '...' inside this loop undoes a narrowing made before the loop, and the
