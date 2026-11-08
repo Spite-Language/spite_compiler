@@ -59,7 +59,7 @@ Target: a changed function reloads in well under 0.1 s of swapping, after the co
 
 One line a fact, tab-separated: `generation`, `text` (the address of the code), `routines` (the digest of the
 shared routines), `function <key> <start> <slot> <digest> <class>`, `state <name> <address>`, `import <name>
-<address>` and `library <name> <address>` (the C runtime's), `class <key> <id> <layout>`, `enum <key> <values>`,
+<address>` and `library <name> <address>` (the C runtime's), `class <key> <id> <layout>`, `enum <key> <values>` (each `name=number`),
 `file <path> <digest>`. A reload writes the next one beside it as `<program>.reload_pending`; the program renames it
 over `reload_host` once the code is swapped in, so the manifest always describes the code the program runs.
 
@@ -73,7 +73,8 @@ The program keeps all of its code, and the answer says why:
 
 - the program does not compile, with the compiler's error;
 - a class the program holds objects of has other attributes or other places for them (its objects would be read
-  through a layout they do not have), or an enum's values change other than by adding new ones last;
+  through a layout they do not have), or an enum's values change other than by adding new ones last (a value's
+  number included: the answer names both numbers);
 - the shared routines are compiled differently (the program starts using threads, say);
 - changed code calls a system function the program never imported, or reaches state that has no name;
 - the room kept for new code is full or cannot be reserved;
