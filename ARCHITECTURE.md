@@ -319,7 +319,7 @@ program that prints a crash's report and the parts of the failed condition it sh
 The values builder (`high_intermediary_representation/building/values.spite`) builds the value of every expression.
 Its concerns take the `Context` and the `Values` and do not hold their parent, as `declared_walks.spite` does, so
 `Values(context)` and every caller that holds a `Values` stay as they are; the fields they share (`temporary_count`,
-`spread_into`, `typing`) stay on the `Values`. A concern that needs another makes one as a local
+`spread_into`) stay on the `Values`. A concern that needs another makes one as a local
 (`var fitting = Fitting(context, values)`). The order of the fits, of the calls and of the operators is written as plain
 functions in each file, never as a list of rules, since the order is the meaning. `values` keeps `value_of` (the
 exhaustive `switch` over the written expressions), `known_constants` and the helpers more than one concern uses;
@@ -534,14 +534,16 @@ needs. The folder is named after the rule, and the validator holds every word of
   `check` once the program's `Build` settles
   the settings (`take_the_build`), and the mapping's `check` once every mapped class is read (the end of
   `Symbols.run`). The high entry also holds `stop`, which judges the sites the
-  proofs have not judged yet before it ends the compile, so the earliest error is the one told. A check still
+  proofs have not judged yet before it ends the compile, so the earliest error is the one told; only a rule calls it,
+  with its own words, and the wording helpers the rules share (`article_of`, `is_a_number`, `plain_class_name`,
+  `shown_function_name`) sit beside it. A check still
   written inside a step moves behind its layer's entry (spite_compiler#243).
 - A rule is a `check` or `check_...` that receives the data it is about (what the resolver found, the built value,
   the site a proof recorded) and decides: a step never tests the condition and then asks a validator to word it.
   Name resolution hands its rules a `NameResolution.Place`, which finds the function a message names only when one
   is told.
 - A proof decides what it proves and hands what breaks it to a validator of its own
-  (`validators/high_intermediary_representation/<rule>`), never to the shared `typing`.
+  (`validators/high_intermediary_representation/<rule>`), never to a shared one.
 - A check no program can reach, a fault of the compiler itself, is a `crash` on a condition named for the fault
   (`expects_its_slots_fresh`, `hands_the_count_it_keeps` and `writes_what_nothing_else_holds` in the lowering,
   `low_intermediary_representation/written_functions`), not a rule with a message.
