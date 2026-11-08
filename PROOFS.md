@@ -1652,7 +1652,7 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Rule**: a `while` a member template already says, a chain of `if`s that is a `switch`, the same call opening
   every branch, a switch that is a class test and a text that is one hole are refused, naming the short form
   ([control_flow.md](../spite_documentation/control_flow.md)).
-- **Lives in**: `high_intermediary_representation/building/template_walks.spite`,
+- **Lives in**: `validators/high_intermediary_representation/template_walk` (called from `loops.spite`),
   `validators/abstract_syntax_tree/switch_chain`, `repeated_branch_call`, `switch_cases`, `lone_hole` (run by
   `proofs/rules_after_building`, reading whether the builder built each declared hole as text:
   `statements.spite`, `note_a_lone_hole`, so `'var shown = label'` is named for any text, an attribute or a call
