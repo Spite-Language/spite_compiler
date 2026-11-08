@@ -1,0 +1,162 @@
+enum Reach {
+    'names_it'
+    'passes_by'
+    'blocks'
+}
+
+var writer = Fixes.Fixes()
+var reader = Mapping.LoadReader()
+var no_folders = Mapping.FolderMap()
+var table = Symbols.SymbolTable(no_folders)
+var renaming = Mapping.Misnamed("", "", "", false)
+
+# ../../../../spite_documentation/classes_and_files.md#a-misnamed-file-or-folder-is-renamed
+func fixed(starting_table: Symbols.SymbolTable) {
+    table = starting_table
+    table.map.misnamed.each(fix_a_name)
+}
+
+func fix_a_name(misnamed: Mapping.Misnamed) {
+    renaming = misnamed
+    fallback holds_only_files_to_fix()
+    fallback no_load_keeps_the_name()
+    misnamed.is_renamed = true
+    table.walks.each(rewrite_the_loads_of)
+    var written = misnamed.written_entry()
+    var right = misnamed.right_entry()
+    var text = "'{written}' was not named in snake_case, every file is lowercase words joined by '_'; renamed it '{right}'"
+    if misnamed.is_folder {
+        text = "the folder '{written}' was not named in snake_case, every folder is lowercase words joined by '_'; renamed it '{right}'"
+    }
+    var problem = Diagnostics.Problem(misnamed.path, 0, text)
+    problem.is_fix = true
+    var renamed_path = misnamed.renamed_path()
+    var move = Fixes.Move(misnamed.path, renamed_path, misnamed.is_folder)
+    writer.moved_later(move, problem)
+}
+
+func holds_only_files_to_fix(): Boolean {
+    var every = table.map.every_class()
+    var index = 0
+    while index < every.count() {
+        var class_file = every[index]
+        var is_held = class_file.path == renaming.path or table.map.inside(class_file.path, renaming.path)
+        fallback not is_held or table.may_move(class_file.path)
+        index = index + 1
+    }
+    return true
+}
+
+func no_load_keeps_the_name(): Boolean {
+    var index = 0
+    while index < table.walks.count() {
+        var walk = table.walks[index]
+        fallback no_load_of_the_walk_keeps_it(walk)
+        index = index + 1
+    }
+    return true
+}
+
+func no_load_of_the_walk_keeps_it(walk: AbstractSyntaxTree.Walk.Walk): Boolean {
+    var may_change = table.may_fix_later(walk.file.path)
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        if found.statement and found.statement.class == AbstractSyntaxTree.Shapes.Statements.LoadStatement {
+            var reach = reach_of(walk, found.statement)
+            fallback reach != 'blocks'
+            fallback reach != 'names_it' or may_change
+        }
+        index = index + 1
+    }
+    return true
+}
+
+# ../../../../spite_documentation/classes_and_files.md#a-misnamed-file-or-folder-is-renamed
+func reach_of(walk: AbstractSyntaxTree.Walk.Walk, loaded: AbstractSyntaxTree.Shapes.Statements.LoadStatement): Reach {
+    var written = reader.text_of(loaded)
+    if not written {
+        return 'blocks'
+    }
+    if not renaming.is_folder or written.contains("@") {
+        return 'passes_by'
+    }
+    var resolved_folder = table.map.resolved(renaming.path)
+    var folder = resolved_folder.lower_case()
+    var reached = table.folder_of(walk.file.path)
+    var was_inside = is_within(reached, folder)
+    var segments = written.replace("\\", "/").split("/")
+    var last = segments.count() - 1
+    var index = 0
+    while index <= last {
+        var segment = segments[index]
+        crash segment
+        reached = "{reached}/{segment}"
+        var is_inside = is_within(reached, folder)
+        if is_inside and not was_inside {
+            return entered_at(reached, folder, segment, index == last)
+        }
+        was_inside = is_inside
+        index = index + 1
+    }
+    return 'passes_by'
+}
+
+func entered_at(reached: String, folder: String, segment: String, is_the_last: Boolean): Reach {
+    var resolved_reached = table.map.resolved(reached)
+    var at = resolved_reached.lower_case()
+    var lowered_segment = segment.lower_case()
+    var lowered_name = renaming.written.lower_case()
+    var is_the_name = at == folder and lowered_segment == lowered_name
+    if is_the_last and is_the_name {
+        return 'names_it'
+    }
+    return 'blocks'
+}
+
+func is_within(path: String, folder: String): Boolean {
+    var resolved_path = table.map.resolved(path)
+    var at = resolved_path.lower_case()
+    return at == folder or at.starts_with("{folder}/")
+}
+
+func rewrite_the_loads_of(walk: AbstractSyntaxTree.Walk.Walk) {
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        if found.statement and found.statement.class == AbstractSyntaxTree.Shapes.Statements.LoadStatement {
+            rewrite_a_load(walk, found.statement, found.function_name)
+        }
+        index = index + 1
+    }
+}
+
+func rewrite_a_load(
+    walk: AbstractSyntaxTree.Walk.Walk,
+    loaded: AbstractSyntaxTree.Shapes.Statements.LoadStatement,
+    function_name: String,
+) {
+    var reach = reach_of(walk, loaded)
+    fallback reach == 'names_it'
+    var written = reader.text_of(loaded)
+    crash written
+    var written_length = written.length()
+    var name_length = renaming.written.length()
+    var kept = written.slice(0, written_length - name_length)
+    crash kept
+    var rewritten = "{kept}{renaming.right}"
+    var expression = loaded.folder
+    crash expression.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral
+    var piece = expression.pieces[0]
+    crash piece
+    piece.text = rewritten
+    var problem = Diagnostics.Problem(
+        walk.file.path,
+        loaded.line,
+        "'load \"{written}\"' named the folder '{renaming.written}', which is renamed '{renaming.right}'; changed it to 'load \"{rewritten}\"'",
+    )
+    problem.class_name = walk.file.class_name()
+    problem.function_name = function_name
+    problem.is_fix = true
+    writer.found_later(walk.file, problem)
+}

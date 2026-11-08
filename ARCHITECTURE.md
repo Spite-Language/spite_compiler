@@ -469,7 +469,7 @@ validator only ever sees what stays an error:
 |---|---|---|
 | tokens | `fixes/tokens/every_fix.spite`'s `fixed`, per file between the lexer and the parser (`AbstractSyntaxTree.run`) | `misspelt_keyword` |
 | syntax tree | `fixes/abstract_syntax_tree/every_fix.spite`'s `fixed`, per file as it is read (`SymbolTable.read_class`) | `misplaced_comment`, `declaration_order` (the printer prints declarations in the enforced order), `type_member_form`, `after_return`, `local_names`, `default_guard` |
-| symbols | `fixes/symbols/every_fix.spite`'s `fixed`, once, when every class is read (`Symbols.run`), and it writes and restarts right there | `platform_load` (a load of the library's `common` alone becomes a load of `windows`, which loads `common`), `unneeded_load`, `repeated_declaration` (a `union` or `type` two classes of a root declare with one name and content moves to the entry class of the lowest namespace holding every copy) |
+| symbols | `fixes/symbols/every_fix.spite`'s `fixed`, once, when every class is read (`Symbols.run`), and it writes and restarts right there | `misnamed_path` (a file or folder of the program the mapping noted as having one right spelling is renamed, with the last segment of every `load` naming it, unless a `load` it cannot rewrite reaches it; what stays is refused by `validators/mapping/misnamed_path`), `platform_load` (a load of the library's `common` alone becomes a load of `windows`, which loads `common`), `unneeded_load`, `repeated_declaration` (a `union` or `type` two classes of a root declare with one name and content moves to the entry class of the lowest namespace holding every copy) |
 | after building | `fixes/after_building/every_fix.spite`: `fixed_a_check` from the proof `proven_checks` before each refusal, `fixed_a_terminal_if` from `guard_asserts`, `fixed_a_walk` before the rules after building, `fixed_an_attribute` from `every_attribute_is_read` | `proven_check` (a `crash` or `fallback` line that proves nothing), `decided_condition` (an `if`, a `while` or a `fallback` decided while compiling), `known_if` (an `if` on what is already narrowed, proven or a decided class test), `terminal_if`, `copy_to_narrow`, `unread_plain_local`, `unread_attribute` |
 
 A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it, a
@@ -487,7 +487,8 @@ restarts.
 - `found_later` keeps a tree a fix changed, a file not yet on disk included. `run`, called once the proofs end, by
   the symbols layer and by
   `Diagnostics.Failure` before it tells an error, prints every such tree and reads each back, writes them only when
-  all of them read back, prints the `fixed:` lines and
+  all of them read back, then makes every move `moved_later` kept (a file or folder renamed, the last noted first, so
+  what a folder holds moves before the folder), prints the `fixed:` lines and
   runs the compiler again with the same flags, folder and environment, answering what that run answers (D1833).
   The number of restarts so far travels in `SPITE_FIX_RESTARTS`; past 8, the compiler names the fix that keeps
   coming back and crashes.
