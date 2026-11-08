@@ -1602,7 +1602,9 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   is a function value by a function value with the same parameter types and answer (D1255).
 - **How, for a `$T`**: the class a `$T` is given is compared with its constraint the same way, each member's types
   as well as its name (D1398), and a `type` member's own members are compared by type too, a pair of class and
-  `type` already being compared counting as fitting so a `type` that names itself ends.
+  `type` already being compared counting as fitting so a `type` that names itself ends. A `T?` is compared as its `T`,
+  and null has to fill every member too: it answers `to_string()` and `to_debug()` with a `String` and nothing else
+  (D754, D1934).
 - **Missing**: nothing known.
 - **Falls back**: refused, "'...' does not fit type '...': it has no function '...'", "... it has no attribute
   '...'", "... attribute 'size' is a String, but the type needs an Integer", "... its 'render' returns an Integer,
@@ -1611,7 +1613,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Lives in**: embedded, `fitting.spite` (`filled_shape`, `fits_as_a_class`), `constraints.spite`.
 - **Checked by**: conformance/shape_mismatch, shape_function_mismatch, shape_attribute_type_mismatch,
   shape_return_type_mismatch, shape_parameter_type_mismatch, generic_constraints, generic_constraint_nullable,
-  generic_constraint_not_a_type, shape_operator_without_function, generic_constraint_mistyped.
+  generic_constraint_not_a_type, shape_operator_without_function, generic_constraint_mistyped,
+  tests/nullable_meets_printable.
 
 ### A member template fits
 
