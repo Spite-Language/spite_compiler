@@ -524,9 +524,11 @@ needs. The folder is named after the rule, and the validator holds every word of
   (`expects_its_slots_fresh` in the lowering), not a rule with a message.
 - `diagnostics/failure.spite` (`Diagnostics.Failure`) ends the compile; only a validator or a proof builds one.
 - The test `tests/compiler_rules_are_validators` of spite_spec reads this source: every
-  `validators/**/validator.spite` defines a `check`, and no file outside `validators/` and `proofs/` defines a
-  `refuse...` or builds a `Diagnostics.Failure`. The files still waiting for a rule to move (the parser, the lexer
-  and the `typing` refusals, after spite_compiler#25) are listed there, each with what it waits for.
+  `validators/**/validator.spite` defines a `check`; no file outside `validators/` and `proofs/` defines a
+  `refuse...` or builds a `Diagnostics.Failure`; no file outside `validators/` calls a `.refuse...(`, hands its own
+  words to a `.stop(...)`, or (outside `diagnostics/`) prints a `console.error` and exits; and inside `validators/`
+  no `check...` refuses before it tests anything, and no rule words a fault of the compiler. The files still waiting
+  for a rule to move are listed there, each with the batch of spite_compiler#385 that empties it.
 - A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_documentation/blob/master/style.md#the-file-content-budget))
   is told with the file's other refusals, by `validators/abstract_syntax_tree/file_content_budget`. No list or flag excuses a file.
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
