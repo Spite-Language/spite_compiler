@@ -1,5 +1,6 @@
 var function = LowIntermediaryRepresentation.LowFunction("", 0)
 var operands = LowOptimizationPasses.Operands()
+var checks = LowIntermediaryRepresentation.Checks()
 var flow = LowOptimizationPasses.Flow()
 var block_count = 0
 var dominators = List<Boolean>()
@@ -20,6 +21,7 @@ var stored_regions = List<String>()
 var tested_inside = List<Boolean>()
 var register_total = 0
 var defining = List<SpiteCompiler.Instruction?>()
+var checked_defining = List<Boolean>()
 var regions = List<String>()
 var region_bases = List<Integer>()
 var region_offsets = List<Integer>()
@@ -334,6 +336,7 @@ func count_the_definitions() {
     defined_inside.clear()
     tested_inside.clear()
     defining.clear()
+    checked_defining.clear()
     var index = 0
     while index < register_total_found {
         var implicit = 0
@@ -344,6 +347,7 @@ func count_the_definitions() {
         defined_inside.append(false)
         tested_inside.append(false)
         defining.append(null)
+        checked_defining.append(false)
         index = index + 1
     }
     register_total = register_total_found
@@ -359,6 +363,7 @@ func count_the_definitions() {
                 var defined = operands.defines[0]
                 crash defined
                 defining[defined] = instruction
+                checked_defining[defined] = checks.is_checked_at(block.instructions, instruction_index)
             }
             instruction_index = instruction_index + 1
         }
@@ -571,6 +576,7 @@ func crosses_the_held(instruction: SpiteCompiler.Instruction, block_index: Integ
         LowIntermediaryRepresentation.Instructions.Constant: return false
         LowIntermediaryRepresentation.Instructions.Copy: return false
         LowIntermediaryRepresentation.Instructions.Arithmetic: return false
+        LowIntermediaryRepresentation.Instructions.Check: return false
         LowIntermediaryRepresentation.Instructions.Compare: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Compare: return false
@@ -604,6 +610,7 @@ func note_a_region(instruction: SpiteCompiler.Instruction) {
         LowIntermediaryRepresentation.Instructions.Constant: note_a_plain(instruction)
         LowIntermediaryRepresentation.Instructions.Copy: note_a_plain(instruction)
         LowIntermediaryRepresentation.Instructions.Arithmetic: note_a_plain(instruction)
+        LowIntermediaryRepresentation.Instructions.Check: note_a_plain(instruction)
         LowIntermediaryRepresentation.Instructions.Compare: note_a_plain(instruction)
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: note_a_plain(instruction)
         LowIntermediaryRepresentation.Instructions.Decimal.Compare: note_a_plain(instruction)
@@ -895,6 +902,7 @@ func reads_through(instruction: SpiteCompiler.Instruction, address: Integer): Bo
         LowIntermediaryRepresentation.Instructions.Constant: return false
         LowIntermediaryRepresentation.Instructions.Copy: return false
         LowIntermediaryRepresentation.Instructions.Arithmetic: return false
+        LowIntermediaryRepresentation.Instructions.Check: return false
         LowIntermediaryRepresentation.Instructions.Compare: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Compare: return false
@@ -982,6 +990,7 @@ func fresh_register(): Integer {
     defined_inside.append(false)
     tested_inside.append(false)
     defining.append(null)
+    checked_defining.append(false)
     if function.register_count < register_total {
         function.register_count = register_total
     }
@@ -1059,6 +1068,7 @@ func is_at_the_place(
         LowIntermediaryRepresentation.Instructions.Constant: return false
         LowIntermediaryRepresentation.Instructions.Copy: return false
         LowIntermediaryRepresentation.Instructions.Arithmetic: return false
+        LowIntermediaryRepresentation.Instructions.Check: return false
         LowIntermediaryRepresentation.Instructions.Compare: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Compare: return false
@@ -1099,6 +1109,7 @@ func is_in_the_region(instruction: SpiteCompiler.Instruction, region: String): B
         LowIntermediaryRepresentation.Instructions.Constant: return false
         LowIntermediaryRepresentation.Instructions.Copy: return false
         LowIntermediaryRepresentation.Instructions.Arithmetic: return false
+        LowIntermediaryRepresentation.Instructions.Check: return false
         LowIntermediaryRepresentation.Instructions.Compare: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Compare: return false
@@ -1149,12 +1160,25 @@ func write_into_the_held(
     var by = LowIntermediaryRepresentation.Instructions.Constant(amount, shift)
     kept.append(by)
     var raised = fresh_register()
-    var up = LowIntermediaryRepresentation.Instructions.Arithmetic(raised, 'shift_left', stored.source, amount)
-    up.is_checked = false
+    var up = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        raised,
+        'shift_left',
+        stored.source,
+        amount,
+        'bits_64',
+        true,
+        false,
+    )
     kept.append(up)
-    var down = LowIntermediaryRepresentation.Instructions.Arithmetic(held, 'shift_right', raised, amount)
-    down.is_checked = false
-    down.is_signed = signed
+    var down = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        held,
+        'shift_right',
+        raised,
+        amount,
+        'bits_64',
+        signed,
+        false,
+    )
     kept.append(down)
 }
 
@@ -1175,7 +1199,8 @@ func fits_already(
     fallback source >= 0 and source < definitions.count() and definitions[source] == 1
     var made = defining[source]
     if made.class == LowIntermediaryRepresentation.Instructions.Arithmetic {
-        return fits_from_arithmetic(made, width, signed)
+        var is_checked = checked_defining[source] == true
+        return fits_from_arithmetic(made, is_checked, width, signed)
     }
     if made.class == LowIntermediaryRepresentation.Instructions.Load {
         return made.width == width and made.is_signed == signed
@@ -1204,11 +1229,12 @@ func fits_as_a_decimal(
 
 func fits_from_arithmetic(
     made: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    is_checked: Boolean,
     width: LowIntermediaryRepresentation.Instructions.Load.Width,
     signed: Boolean,
 ): Boolean {
     var adds = made.operator == 'add' or made.operator == 'subtract'
-    return adds and made.is_checked and made.width == 'bits_32' and width == 'bits_32' and made.is_signed == signed
+    return adds and is_checked and made.width == 'bits_32' and width == 'bits_32' and made.is_signed == signed
 }
 
 func find_the_body(latch: Integer) {
@@ -1371,6 +1397,7 @@ func reads_only(instruction: SpiteCompiler.Instruction): Boolean {
         LowIntermediaryRepresentation.Instructions.Constant: return true
         LowIntermediaryRepresentation.Instructions.Copy: return true
         LowIntermediaryRepresentation.Instructions.Arithmetic: return true
+        LowIntermediaryRepresentation.Instructions.Check: return true
         LowIntermediaryRepresentation.Instructions.Compare: return true
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return true
         LowIntermediaryRepresentation.Instructions.Decimal.Compare: return true
@@ -1414,7 +1441,8 @@ func hoisted_from(block_index: Integer): Boolean {
     var index = 0
     while index < block.instructions.count() {
         var instruction = block.instructions[index]
-        if is_invariant(instruction, block_index) {
+        var is_checked = checks.is_checked_at(block.instructions, index)
+        if is_invariant(instruction, block_index) and not is_checked {
             hoist(instruction)
             moved_any = true
         } else {
@@ -1448,6 +1476,7 @@ func may_move(instruction: SpiteCompiler.Instruction, block_index: Integer): Boo
         LowIntermediaryRepresentation.Instructions.Constant: return true
         LowIntermediaryRepresentation.Instructions.Copy: return true
         LowIntermediaryRepresentation.Instructions.Arithmetic: return operands.is_pure(instruction)
+        LowIntermediaryRepresentation.Instructions.Check: return false
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return true
         LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return true
         LowIntermediaryRepresentation.Instructions.DataAddress: return true

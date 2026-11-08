@@ -264,6 +264,24 @@ a singleton, and `conversions` the conversions, boxing, shape calls and the chec
 collaborators that write one kind of function (`working`, `settling`, `callbacks`, `list_reads` and the rest) take the
 `FunctionLowering` they write into and reach its fields through `lowering.state`.
 
+## A checked operation is two instructions
+
+An instruction does one job (D1939). A run-time halt the program must carry is an instruction of its own, never fields
+on the operation it guards: `Instructions.Arithmetic` holds only the operation (target, operator, operands, width,
+`is_signed`, `wraps`), and a `Check` right after it is the halt when the result does not fit or the divisor is zero,
+holding only what its message needs (line, shown text, type, path, owner). The low `Stop` is the halt that always
+fires; the high `Statements.Stop` and the `Branch` and `Stop` that `conversions` writes for a null read or an item
+outside its list are the other halts. A compile-time refusal is never carried by a pass's data: it is a validator's.
+
+Nothing ever stands between an arithmetic and its check, and the check reads no register: it belongs to the
+instruction before it by place alone, as a compare belongs to the branch the emitter fuses it with.
+`LowIntermediaryRepresentation.Checks` answers the questions a pass asks of the pair (`check_after`, `is_checked_at`,
+`end_of`), and `operation_count` counts a pair as one, so no size limit moves. A pass that moves or copies an
+arithmetic moves or copies its check with it (inlining, unrolling, the pairing of a division and its remainder); one
+that removes an arithmetic as dead or hoists it as invariant leaves a checked one where it is; one that proves the
+result fits removes the check (`checked_ranges`, `power_divisions`, `remainder_tests`, a fold into a constant). The
+emitter writes the check with its arithmetic, as a jump to a cold stop, and writes nothing for the check itself.
+
 ## The resolver and the reflection builder
 
 A class too large for one file keeps its fields in one state object, and each concern is a class beside it that takes

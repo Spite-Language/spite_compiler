@@ -5,6 +5,9 @@ var cold_stops = Generators.WindowsX64.ColdStops(state)
 var division = Generators.WindowsX64.Division(state)
 var frames = Generators.WindowsX64.Frames(state)
 var opcodes = Generators.WindowsX64.Opcodes()
+var checks = LowIntermediaryRepresentation.Checks()
+var is_checked = false
+var check = LowIntermediaryRepresentation.Instructions.Check(0, "", "", "", "")
 
 func Arithmetic(starting_state: Generators.WindowsX64.EmitterState) {
     state = starting_state
@@ -17,9 +20,10 @@ func Arithmetic(starting_state: Generators.WindowsX64.EmitterState) {
 
 func emit(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
     fallback not state.allocation.answers.is_elided_target(arithmetic.target)
+    find_the_check()
     var divides = arithmetic.operator == 'divide' or arithmetic.operator == 'remainder'
     if divides {
-        division.emit_division(arithmetic)
+        division.emit_division(arithmetic, is_checked, check)
         return
     }
     fallback not emitted_in_place(arithmetic)
@@ -44,8 +48,17 @@ func emit(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
     frames.write_from(arithmetic.target, encoder.rax)
 }
 
+# ../../../ARCHITECTURE.md#a-checked-operation-is-two-instructions
+func find_the_check() {
+    var found = checks.check_after(state.current_instructions, state.instruction_position - 1)
+    is_checked = false
+    fallback found
+    is_checked = true
+    check = found
+}
+
 func emitted_narrow(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    fallback arithmetic.is_checked and arithmetic.width == 'bits_32'
+    fallback is_checked and arithmetic.width == 'bits_32'
     var adds = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
     var multiplies = arithmetic.operator == 'multiply' and arithmetic.is_signed
     fallback adds or multiplies
@@ -72,7 +85,7 @@ func emitted_narrow(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
     if arithmetic.is_signed {
         condition = 128
     }
-    cold_stops.defer_a_stop(condition, arithmetic, kind, working, source, immediate)
+    cold_stops.defer_a_stop(condition, arithmetic, check, kind, working, source, immediate)
     if arithmetic.is_signed {
         encoder.sign_extend_double_word(working, working)
     }
@@ -149,7 +162,7 @@ func narrow_working_register(
 }
 
 func is_wide_unsigned(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    return arithmetic.width == 'bits_64' and not arithmetic.is_signed and arithmetic.is_checked
+    return arithmetic.width == 'bits_64' and not arithmetic.is_signed and is_checked
 }
 
 func takes_an_immediate(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
@@ -161,8 +174,8 @@ func takes_an_immediate(arithmetic: LowIntermediaryRepresentation.Instructions.A
         'bits_or': return true
         'bits_xor': return true
         'multiply': return not is_wide_unsigned(arithmetic)
-        'shift_left': return not arithmetic.is_checked
-        'shift_right': return not arithmetic.is_checked
+        'shift_left': return not is_checked
+        'shift_right': return not is_checked
         'divide': return false
         'remainder': return false
         'square_root': return false
@@ -177,7 +190,7 @@ func emit_with_an_immediate(arithmetic: LowIntermediaryRepresentation.Instructio
         'bits_and': encoder.operation_immediate(4, register, value)
         'bits_or': encoder.operation_immediate(1, register, value)
         'bits_xor': encoder.operation_immediate(6, register, value)
-        'multiply': emit_multiply_by(arithmetic, register, value)
+        'multiply': emit_multiply_by(register, value)
         'shift_left': emit_shift_by(4, register, value)
         'divide': emit_shift_right_by(arithmetic, register, value)
         'remainder': emit_shift_right_by(arithmetic, register, value)
@@ -229,13 +242,9 @@ func emit_shift_right_by_cl(arithmetic: LowIntermediaryRepresentation.Instructio
     emit_shift_right(arithmetic.is_signed)
 }
 
-func emit_multiply_by(
-    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    register: Integer,
-    value: Long,
-) {
+func emit_multiply_by(register: Integer, value: Long) {
     var shift = division.power_of_two(value)
-    if not arithmetic.is_checked and shift > 0 {
+    if not is_checked and shift > 0 {
         encoder.shift_immediate(4, register, shift)
         return
     }
@@ -282,7 +291,7 @@ func emitted_in_place(arithmetic: LowIntermediaryRepresentation.Instructions.Ari
     fallback immediate or right_home != target
     var overwrites_left = left_home == target
     var invertible = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
-    fallback not arithmetic.is_checked or not overwrites_left or invertible
+    fallback not is_checked or not overwrites_left or invertible
     var source = encoder.rcx
     if not immediate {
         source = frames.register_of(arithmetic.right, encoder.rcx)
@@ -293,7 +302,7 @@ func emitted_in_place(arithmetic: LowIntermediaryRepresentation.Instructions.Ari
     } else {
         emit_registers(arithmetic, target, source)
     }
-    if not arithmetic.is_checked {
+    if not is_checked {
         return true
     }
     var condition = 128
@@ -304,13 +313,13 @@ func emitted_in_place(arithmetic: LowIntermediaryRepresentation.Instructions.Ari
     if overwrites_left {
         kind = 1
     }
-    cold_stops.defer_a_stop(condition, arithmetic, kind, target, source, immediate)
+    cold_stops.defer_a_stop(condition, arithmetic, check, kind, target, source, immediate)
     return true
 }
 
 # ../../../OPTIMIZATIONS.md#an-unchecked-32-bit-sum-is-one-instruction
 func keeps_its_width(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    fallback not arithmetic.is_checked and arithmetic.width == 'bits_32'
+    fallback not is_checked and arithmetic.width == 'bits_32'
     var bitwise = arithmetic.operator == 'bits_and' or arithmetic.operator == 'bits_or'
     bitwise = bitwise or arithmetic.operator == 'bits_xor'
     var sums = arithmetic.operator == 'add' or arithmetic.operator == 'subtract'
@@ -319,24 +328,24 @@ func keeps_its_width(arithmetic: LowIntermediaryRepresentation.Instructions.Arit
 
 func emit_checked(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
     var wide_unsigned = is_wide_unsigned(arithmetic)
-    if not arithmetic.is_checked {
+    if not is_checked {
         wrap_to_the_width(arithmetic)
         return
     }
     if wide_unsigned {
         var carry = _jump_if_carry_code
-        cold_stops.defer_a_stop(carry, arithmetic, 0, 0, 0, false)
+        cold_stops.defer_a_stop(carry, arithmetic, check, 0, 0, 0, false)
         return
     }
     if arithmetic.width == 'bits_64' {
         var overflow = 128
-        cold_stops.defer_a_stop(overflow, arithmetic, 0, 0, 0, false)
+        cold_stops.defer_a_stop(overflow, arithmetic, check, 0, 0, 0, false)
         return
     }
     encoder.fits_back(arithmetic.width, arithmetic.is_signed)
     encoder.compare_rdx_rax()
     var not_equal = opcodes.jump_if_not_equal_code
-    cold_stops.defer_a_stop(not_equal, arithmetic, 0, 0, 0, false)
+    cold_stops.defer_a_stop(not_equal, arithmetic, check, 0, 0, 0, false)
 }
 
 func emit_multiply(wide_unsigned: Boolean) {

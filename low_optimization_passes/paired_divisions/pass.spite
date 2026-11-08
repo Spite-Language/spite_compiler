@@ -2,6 +2,7 @@
 
 var function = LowIntermediaryRepresentation.LowFunction("", 0)
 var operands = LowOptimizationPasses.Operands()
+var checks = LowIntermediaryRepresentation.Checks()
 var definitions = List<Integer>()
 var constants = List<Long>()
 var next_register = 0
@@ -114,11 +115,9 @@ func bring_its_pair_beside(
     var index = at + 1
     while index < block.instructions.count() {
         var instruction = block.instructions[index]
-        if instruction.class == LowIntermediaryRepresentation.Instructions.Arithmetic and pairs_with(arithmetic, instruction) {
-            var beside = move_beside(block, at, index, instruction)
-            if beside {
-                multiply_back_the_rest(block, at, arithmetic, instruction)
-            }
+        var pairs = instruction.class == LowIntermediaryRepresentation.Instructions.Arithmetic and pairs_with(arithmetic, instruction)
+        if pairs and checks_allow_the_pair(block, at, arithmetic, index) {
+            pair_beside(block, at, arithmetic, index)
             return
         }
         operands.read(instruction)
@@ -139,8 +138,33 @@ func pairs_with(
     var same_numbers = arithmetic.left == following.left and arithmetic.right == following.right
     var same_kind = arithmetic.width == following.width and arithmetic.is_signed == following.is_signed
     fallback same_numbers and same_kind and arithmetic.wraps == following.wraps
-    fallback not following.is_checked or arithmetic.is_checked or halts_never(arithmetic.right)
     return following.target != arithmetic.target
+}
+
+func pair_beside(
+    block: LowIntermediaryRepresentation.LowBlock,
+    at: Integer,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    found: Integer,
+) {
+    var following = block.instructions[found]
+    crash following
+    fallback following.class == LowIntermediaryRepresentation.Instructions.Arithmetic
+    var beside = move_beside(block, at, found, following)
+    if beside {
+        multiply_back_the_rest(block, at, arithmetic, following)
+    }
+}
+
+func checks_allow_the_pair(
+    block: LowIntermediaryRepresentation.LowBlock,
+    at: Integer,
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    found: Integer,
+): Boolean {
+    var following_is_checked = checks.is_checked_at(block.instructions, found)
+    var arithmetic_is_checked = checks.is_checked_at(block.instructions, at)
+    return not following_is_checked or arithmetic_is_checked or halts_never(arithmetic.right)
 }
 
 func move_beside(
@@ -150,7 +174,8 @@ func move_beside(
     following: LowIntermediaryRepresentation.Instructions.Arithmetic,
 ): Boolean {
     var target = following.target
-    var index = at + 1
+    var after = checks.end_of(block.instructions, at)
+    var index = after
     while index < found {
         var between = block.instructions[index]
         crash between
@@ -158,18 +183,23 @@ func move_beside(
         fallback not operands.uses.contains(target) and not operands.defines.contains(target)
         index = index + 1
     }
-    if found == at + 1 {
+    if found == after {
         return true
     }
+    var check = checks.check_after(block.instructions, found)
+    var found_end = checks.end_of(block.instructions, found)
     var made = List<SpiteCompiler.Instruction>()
     index = 0
     while index < block.instructions.count() {
-        if index != found {
+        if index < found or index >= found_end {
             var instruction = block.instructions[index]
             made.append(instruction)
         }
-        if index == at {
+        if index == after - 1 {
             made.append(following)
+            if check {
+                made.append(check)
+            }
         }
         index = index + 1
     }
@@ -206,42 +236,41 @@ func multiply_back_the_rest(
         'multiply',
         dividing.target,
         dividing.right,
+        resting.width,
+        resting.is_signed,
+        false,
     )
-    copy_the_kind(multiplying, resting)
     var subtracting = LowIntermediaryRepresentation.Instructions.Arithmetic(
         resting.target,
         'subtract',
         dividing.left,
         product,
+        resting.width,
+        resting.is_signed,
+        false,
     )
-    copy_the_kind(subtracting, resting)
+    var following_at = checks.end_of(block.instructions, at)
+    var dividing_at = at
+    if arithmetic.operator == 'remainder' {
+        dividing_at = following_at
+    }
+    var check = checks.check_after(block.instructions, dividing_at)
+    var pair_end = checks.end_of(block.instructions, following_at)
     var made = List<SpiteCompiler.Instruction>()
     var index = 0
     while index < block.instructions.count() {
         var instruction = block.instructions[index]
         if index == at {
             made.append(dividing)
+            if check {
+                made.append(check)
+            }
             made.append(multiplying)
             made.append(subtracting)
-        } else if index != at + 1 {
+        } else if index < at or index >= pair_end {
             made.append(instruction)
         }
         index = index + 1
     }
     block.instructions = made
-}
-
-func copy_the_kind(
-    made: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    kind: LowIntermediaryRepresentation.Instructions.Arithmetic,
-) {
-    made.width = kind.width
-    made.is_signed = kind.is_signed
-    made.is_checked = false
-    made.wraps = false
-    made.line = kind.line
-    made.shown = kind.shown
-    made.type_name = kind.type_name
-    made.path = kind.path
-    made.owner = kind.owner
 }

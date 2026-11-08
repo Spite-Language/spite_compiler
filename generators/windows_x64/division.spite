@@ -17,6 +17,9 @@ var cold_stops = ColdStops(state)
 var fixups = Fixups(state)
 var frames = Frames(state)
 var opcodes = Opcodes()
+var checks = LowIntermediaryRepresentation.Checks()
+var is_checked = false
+var check = LowIntermediaryRepresentation.Instructions.Check(0, "", "", "", "")
 
 func Division(starting_state: EmitterState) {
     state = starting_state
@@ -40,7 +43,13 @@ func power_of_two(value: Long): Integer {
     return 0
 }
 
-func emit_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+func emit_division(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    is_paired_with_a_check: Boolean,
+    paired_check: LowIntermediaryRepresentation.Instructions.Check,
+) {
+    is_checked = is_paired_with_a_check
+    check = paired_check
     fallback not emitted_as_a_pair(arithmetic)
     frames.read_into(encoder.rax, arithmetic.left)
     if state.allocation.answers.constant_of(arithmetic.right) {
@@ -52,7 +61,7 @@ func emit_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithm
         }
     }
     frames.read_into(encoder.rcx, arithmetic.right)
-    if arithmetic.is_checked {
+    if is_checked {
         emit_checked_division(arithmetic)
     } else {
         emit_proven_division(arithmetic)
@@ -62,10 +71,11 @@ func emit_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithm
 
 # ../../OPTIMIZATIONS.md#a-division-and-a-remainder-of-the-same-two-numbers-are-one-division
 func emitted_as_a_pair(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
-    fallback state.instruction_position < state.current_instructions.count()
-    var following = state.current_instructions[state.instruction_position]
+    var following_at = checks.end_of(state.current_instructions, state.instruction_position - 1)
+    fallback following_at < state.current_instructions.count()
+    var following = state.current_instructions[following_at]
     if following.class == LowIntermediaryRepresentation.Instructions.Arithmetic {
-        return emitted_with(arithmetic, following)
+        return emitted_with(arithmetic, following, following_at)
     }
     return false
 }
@@ -73,21 +83,27 @@ func emitted_as_a_pair(arithmetic: LowIntermediaryRepresentation.Instructions.Ar
 func emitted_with(
     arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
     following: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    following_at: Integer,
 ): Boolean {
     fallback pairs_with(arithmetic, following)
     frames.read_into(encoder.rax, arithmetic.left)
     frames.read_into(encoder.rcx, arithmetic.right)
-    if arithmetic.is_checked {
+    if is_checked {
         encoder.test_rcx()
         var zero = opcodes.jump_if_equal_code
-        cold_stops.defer_a_stop(zero, arithmetic, 2, 0, 0, false)
+        cold_stops.defer_a_stop(zero, arithmetic, check, 2, 0, 0, false)
     }
     var dividing = arithmetic
+    var dividing_check = check
     if arithmetic.operator == 'remainder' {
         dividing = following
+        var following_check = checks.check_after(state.current_instructions, following_at)
+        if following_check {
+            dividing_check = following_check
+        }
     }
-    if arithmetic.is_checked and arithmetic.is_signed {
-        divide_signed_into_both(dividing)
+    if is_checked and arithmetic.is_signed {
+        divide_signed_into_both(dividing, dividing_check)
     } else if arithmetic.is_signed {
         divide_signed_by_rcx_into_both(arithmetic)
     } else {
@@ -101,7 +117,7 @@ func emitted_with(
     }
     frames.write_from(quotient, encoder.rax)
     frames.write_from(remainder, encoder.rdx)
-    state.skips_the_next = true
+    state.skipped_position = following_at
     return true
 }
 
@@ -121,12 +137,15 @@ func pairs_with(
     return not state.allocation.answers.constant_of(arithmetic.left)
 }
 
-func divide_signed_into_both(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+func divide_signed_into_both(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    dividing_check: LowIntermediaryRepresentation.Instructions.Check,
+) {
     var minus_one = [72, opcodes.arithmetic_with_small_immediate_opcode, _compare_rcx_operand, opcodes.minus_one_byte]
     minus_one.each(fixups.emit_a_byte)
     var not_minus_one = opcodes.jump_if_not_equal_code
     var dividing = encoder.jump_if(not_minus_one)
-    negate_or_stop(arithmetic)
+    negate_or_stop(arithmetic, dividing_check)
     encoder.clear_rdx()
     var done = encoder.jump()
     fixups.patch_here(dividing)
@@ -414,7 +433,7 @@ func divide_signed_by_a_power(
 func emit_checked_division(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
     encoder.test_rcx()
     var zero = opcodes.jump_if_equal_code
-    cold_stops.defer_a_stop(zero, arithmetic, 2, 0, 0, false)
+    cold_stops.defer_a_stop(zero, arithmetic, check, 2, 0, 0, false)
     if arithmetic.is_signed {
         divide_signed(arithmetic)
         return
@@ -431,7 +450,7 @@ func divide_signed(arithmetic: LowIntermediaryRepresentation.Instructions.Arithm
         var zeroed = [49, opcodes.rax_with_rax_operands]
         zeroed.each(fixups.emit_a_byte)
     } else {
-        negate_or_stop(arithmetic)
+        negate_or_stop(arithmetic, check)
     }
     var done = encoder.jump()
     fixups.patch_here(dividing)
@@ -439,13 +458,16 @@ func divide_signed(arithmetic: LowIntermediaryRepresentation.Instructions.Arithm
     fixups.patch_here(done)
 }
 
-func negate_or_stop(arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic) {
+func negate_or_stop(
+    arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
+    negated_check: LowIntermediaryRepresentation.Instructions.Check,
+) {
     var negated = [72, opcodes.unary_group_opcode, opcodes.negate_rax_operand]
     negated.each(fixups.emit_a_byte)
     if arithmetic.width == 'bits_64' {
         var no_overflow = _jump_if_no_overflow_code
         var fits_wide = encoder.jump_if(no_overflow)
-        cold_stops.stop_not_fitting(arithmetic)
+        cold_stops.stop_not_fitting(arithmetic, negated_check)
         fixups.patch_here(fits_wide)
         return
     }
@@ -453,6 +475,6 @@ func negate_or_stop(arithmetic: LowIntermediaryRepresentation.Instructions.Arith
     encoder.compare_rdx_rax()
     var equal = opcodes.jump_if_equal_code
     var fits = encoder.jump_if(equal)
-    cold_stops.stop_not_fitting(arithmetic)
+    cold_stops.stop_not_fitting(arithmetic, negated_check)
     fixups.patch_here(fits)
 }
