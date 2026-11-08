@@ -1559,7 +1559,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   program loads only singleton bindings are checked, counting reads from inside that folder.
 - **Falls back**: an unread attribute is refused (`the attribute 'label' is never read: remove it`).
 - **Lives in**: `validators/abstract_syntax_tree/unused_names`, and the proof `proofs/every_attribute_is_read`
-  for attributes, which hands what it found to `validators/high_intermediary_representation/read_attribute`.
+  for attributes, which hands what it found, and whether its fix removed it, to
+  `validators/high_intermediary_representation/read_attribute`.
 - **Checked by**: conformance/unused_names, written_not_read, unused_attributes, attribute_read_in_another_class,
   loaded_singleton_unread, template_unused_attribute, template_unused_function.
 
