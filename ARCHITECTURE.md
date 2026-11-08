@@ -149,7 +149,9 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    constructor argument.
 5. `unreached_functions`: a function only the calls those passes replaced reached is dropped.
 6. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
-   they are read.
+   they are read. It hands each attribute of a class it shrinks, with whether it left it out, to
+   `validators/high_intermediary_representation/recursive_default`, which decides whether a kept attribute of
+   `String` makes texts.
 7. `layouts_by_use`: every class's layout (offsets, sizes, packing, the shared blocks of union members, the room of
    a short text), recorded as `HighProgram.layout`.
    Right after it, `split_classes` marks each call whose receiver or argument holds one known value in an attribute
