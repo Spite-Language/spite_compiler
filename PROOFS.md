@@ -1621,7 +1621,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **`each` given a value**: "'each' takes a function to call with each element, such as 'each(say_hello)' or
   'each(greeter.say_hello)', and 'engine' is not one".
 - **Falls back**: refused with its own text.
-- **Lives in**: embedded, `templates.spite` (`specialized_over_a_class`), `validators/high_intermediary_representation/typing`.
+- **Lives in**: embedded, `templates.spite` (`specialized_over_a_class`), judged by
+  `validators/high_intermediary_representation/member_fit`, `plural_template` and `template_member`.
 - **Checked by**: conformance/member_template_mistakes, member_template_map_nothing, member_template_sort_boolean,
   member_template_filter_text, member_template_any_number, own_member_template_mistakes, each_of_a_value,
   conformance/passed_functions.
