@@ -3,7 +3,7 @@
 The step from a file's text to its tree, once per class file.
 
 - `abstract_syntax_tree.spite`: the entry, `AbstractSyntaxTree(path, namespace, text)`; its `run` lexes, parses and answers a `Shapes.SourceFile`.
-- `tokens`: what the lexer answers.
+- `tokens`: what the lexer answers, and the `Unreadable` it stopped at.
 - `lexer`: the text as tokens.
 - `parser`: the tokens as a tree.
 - `shapes`: the tree, data only (declarations, expressions, statements, types).

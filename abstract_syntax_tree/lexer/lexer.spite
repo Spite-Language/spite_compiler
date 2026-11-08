@@ -4,35 +4,17 @@ var found = List<AbstractSyntaxTree.Tokens.Token>()
 var comments = List<AbstractSyntaxTree.Shapes.Comment>()
 var keywords = Dictionary<String, AbstractSyntaxTree.Tokens.Token.Kind>()
 var borrowed = Validators.AbstractSyntaxTree.BorrowedWord.Validator()
-var statement_words = [
-    "interface"
-    "struct"
-    "def"
-    "fn"
-    "match"
-    "import"
-    "require"
-    "for"
-    "foreach"
-    "do"
-    "elif"
-    "let"
-    "const"
-    "new"
-]
 var spelling = Validators.AbstractSyntaxTree.Spelling.Validator()
+var unreadable: AbstractSyntaxTree.Tokens.Unreadable? = null
 var position = 0
 var line = 1
 var column = 1
 var equals_sign = 61
 var plus_sign = 43
 var minus_sign = 45
-var ampersand = 38
-var vertical_bar = 124
 var line_break = 10
 var _open_brace_code = 123
 var _close_brace_code = 125
-var _tilde_code = 126
 var _lowercase_z_code = 122
 var _lowercase_e_code = 101
 
@@ -45,12 +27,13 @@ func Lexer(starting_path: String, starting_source: String, starting_line: Intege
 
 func tokens_of(): List<AbstractSyntaxTree.Tokens.Token> {
     read_all_tokens()
+    spelling.check(path, unreadable)
     record('end_of_file', "", "", line, column)
     return found
 }
 
 func read_all_tokens() {
-    while not at_end() {
+    while not at_end() and not unreadable {
         skip_layout()
         if not at_end() {
             read_token()
@@ -138,16 +121,6 @@ func read_token() {
         read_greater()
     } else if code == 33 {
         read_not()
-    } else if code == 59 {
-        refuse(";")
-    } else if code == 38 {
-        read_ampersand()
-    } else if code == vertical_bar {
-        read_vertical_bar()
-    } else if code == 94 {
-        refuse("^")
-    } else if code == _tilde_code {
-        refuse("~")
     } else {
         read_anything_else(code)
     }
@@ -162,62 +135,19 @@ func read_anything_else(code: Integer) {
         read_number()
         return
     }
-    var written = source[position]
-    crash written
-    refuse(written)
+    stop_at_a_mark()
 }
 
-func its_bracket_follows(word: String): Boolean {
-    var ahead = position
-    var length = source.length()
-    while ahead < length and source.byte_at(ahead) == 32 {
-        ahead = ahead + 1
-    }
-    fallback ahead < length
-    var code = source.byte_at(ahead)
-    var opens_a_block = code == _open_brace_code
-    var opens_a_list = code == 40
-    var takes_a_block = word == "do" or word == "struct" or word == "interface"
-    var takes_a_list = word == "for" or word == "foreach" or word == "match" or word == "fn" or word == "def"
-    return opens_a_block and takes_a_block or opens_a_list and takes_a_list
-}
-
-func a_name_follows(): Boolean {
-    var ahead = position
-    var length = source.length()
-    while ahead < length and source.byte_at(ahead) == 32 {
-        ahead = ahead + 1
-    }
-    fallback ahead < length
-    var code = source.byte_at(ahead)
-    var is_lower = code >= 97 and code <= _lowercase_z_code
-    var is_upper = code >= 65 and code <= 90
-    return is_lower or is_upper or code == 95
-}
-
-func stands_alone(word_line: Integer): Boolean {
-    var last = found.last()
-    var shares_the_line = false
-    if last {
-        shares_the_line = last.line == word_line
-    }
-    fallback not shares_the_line
+func code_after_spaces(): Integer {
     var ahead = position
     var length = source.length()
     while ahead < length and source.byte_at(ahead) == 32 {
         ahead = ahead + 1
     }
     if ahead >= length {
-        return true
+        return -1
     }
-    var code = source.byte_at(ahead)
-    return code == line_break or code == 13
-}
-
-func follows_a_variable_keyword(): Boolean {
-    var last = found.last()
-    fallback last
-    return last.kind == 'keyword_variable'
+    return source.byte_at(ahead)
 }
 
 func follows_a_dot(): Boolean {
@@ -244,16 +174,9 @@ func read_name() {
         record(keyword, word, word, start, column_here)
         return
     }
-    var is_a_statement_word = statement_words.contains(word)
-    var names_a_variable = is_a_statement_word and follows_a_variable_keyword()
-    var is_a_plain_name = is_a_statement_word and not a_name_follows() and not its_bracket_follows(word)
-    var is_a_loop_word = word == "break" or word == "continue"
-    if is_a_loop_word and not stands_alone(start) {
-        is_a_plain_name = true
-    }
-    if not is_a_member and not names_a_variable and not is_a_plain_name {
-        borrowed.check(path, start, word)
-    }
+    var previous = found.last()
+    var following_code = code_after_spaces()
+    borrowed.check(path, start, word, previous, following_code)
     var kind: AbstractSyntaxTree.Tokens.Token.Kind = 'name'
     var first = word.byte_at(0)
     if is_upper_letter(first) {
@@ -275,16 +198,8 @@ func read_number() {
         var fraction = digits_here()
         word = "{word}.{fraction}"
     }
-    var is_separated_well = separators_stand_between_digits(word)
-    if not is_separated_well {
-        spelling.refuse(path, start, 'number_separator', word)
-    }
-    var exponent_length = exponent_length_here()
-    if exponent_length > 0 {
-        var exponent = source.slice(position, position + exponent_length)
-        crash exponent
-        spelling.refuse(path, start, 'number_exponent', "{word}{exponent}")
-    }
+    var exponent = exponent_here()
+    spelling.check_a_number(path, start, word, exponent)
     var value = word.replace("_", "")
     record(kind, word, value, start, column_here)
 }
@@ -306,10 +221,12 @@ func starts_digits(code: Integer): Boolean {
     return is_digit(code) or code == 95
 }
 
-func separators_stand_between_digits(word: String): Boolean {
-    fallback not word.starts_with("_") and not word.ends_with("_")
-    fallback not word.contains("__") and not word.contains("_.")
-    return not word.contains("._")
+func exponent_here(): String {
+    var length = exponent_length_here()
+    fallback length > 0
+    var exponent = source.slice(position, position + length)
+    crash exponent
+    return exponent
 }
 
 func exponent_length_here(): Integer {
@@ -344,8 +261,7 @@ func read_symbol() {
         code = code_here()
     }
     if code != 39 {
-        spelling.refuse(path, start, 'unclosed_symbol', word)
-        record('symbol_literal', word, word, start, column_here)
+        stop_reading('symbol', word, "", start)
         return
     }
     step()
@@ -366,8 +282,7 @@ func read_generic_name() {
         code = code_here()
     }
     if word == "$" {
-        spelling.refuse(path, start, 'bare_codegen_mark', word)
-        record('generic_name', word, word, start, column_here)
+        stop_reading('codegen_value', word, "", start)
         return
     }
     record('generic_name', word, word, start, column_here)
@@ -378,13 +293,12 @@ func read_text() {
     var column_here = column
     var content = ""
     step()
-    while not at_end() {
+    while not at_end() and not unreadable {
         var code = code_here()
         var closes = code == 34
         if code == line_break {
-            spelling.refuse(path, start, 'unclosed_text', content)
-        }
-        if code == 34 {
+            stop_reading('text', content, "", start)
+        } else if code == 34 {
             close_text(start, column_here, content)
         } else if code == 92 {
             content = read_escape_pair(content)
@@ -399,8 +313,7 @@ func read_text() {
             keep_reading()
         }
     }
-    spelling.refuse(path, start, 'unclosed_text', content)
-    record('text_literal', content, content, start, column_here)
+    stop_reading('text', content, "", start)
 }
 
 func keep_reading() {
@@ -416,7 +329,8 @@ func read_escape_pair(content: String): String {
     var code = code_after(1)
     var ends_the_line = code == line_break or code == -1
     if ends_the_line {
-        spelling.refuse(path, line, 'unclosed_text', content)
+        stop_reading('text', content, "", line)
+        return content
     }
     var pair = source.slice(position, position + 2)
     crash pair
@@ -463,7 +377,7 @@ func end_of_hole(): Integer {
             index = index + 1
         }
     }
-    spelling.refuse(path, line, 'unclosed_hole', "")
+    stop_reading('hole', "", "", line)
     return source.length() - 1
 }
 
@@ -533,72 +447,37 @@ func read_equals() {
 
 func read_minus() {
     var next_code = code_after(1)
-    if next_code == 62 {
-        refuse("->")
+    if next_code == 62 or next_code == equals_sign or next_code == minus_sign {
+        stop_at_a_mark()
         return
-    }
-    refuse_a_compound(next_code, "-")
-    if next_code == minus_sign {
-        refuse("--")
     }
     simple('minus')
 }
 
 func read_plus() {
     var next_code = code_after(1)
-    refuse_a_compound(next_code, "+")
-    if next_code == plus_sign {
-        refuse("++")
+    if next_code == equals_sign or next_code == plus_sign {
+        stop_at_a_mark()
+        return
     }
     simple('plus')
 }
 
-func refuse_a_compound(next_code: Integer, operator: String) {
-    if next_code == equals_sign {
-        refuse("{operator}=")
-    }
-}
-
-func read_ampersand() {
-    var next_code = code_after(1)
-    if next_code == ampersand {
-        refuse("&&")
-    }
-    if is_upper_letter(next_code) {
-        refuse("&Type")
-    }
-    refuse("&")
-}
-
-func read_vertical_bar() {
-    var next_code = code_after(1)
-    if next_code == vertical_bar {
-        refuse("||")
-    }
-    refuse("|")
-}
-
 func read_star() {
     var next_code = code_after(1)
-    if next_code == 42 {
-        refuse("**")
+    if next_code == 42 or next_code == equals_sign {
+        stop_at_a_mark()
         return
     }
-    refuse_a_compound(next_code, "*")
     simple('star')
 }
 
 func read_slash() {
     var next_code = code_after(1)
-    if next_code == 47 {
-        refuse("//")
+    if next_code == 47 or next_code == 42 or next_code == equals_sign {
+        stop_at_a_mark()
         return
     }
-    if next_code == 42 {
-        refuse("/*")
-        return
-    }
-    refuse_a_compound(next_code, "/")
     simple('slash')
 }
 
@@ -626,7 +505,7 @@ func read_not() {
         written_run('not_equal', 2)
         return
     }
-    refuse("!")
+    stop_at_a_mark()
 }
 
 func simple(kind: AbstractSyntaxTree.Tokens.Token.Kind) {
@@ -653,8 +532,26 @@ func written_run(kind: AbstractSyntaxTree.Tokens.Token.Kind, count: Integer) {
     record(kind, written, written, start, column_here)
 }
 
-func refuse(written: String) {
-    spelling.refuse(path, line, 'unreadable', written)
+func stop_at_a_mark() {
+    var written = source[position]
+    crash written
+    var following = ""
+    var after = position + written.length()
+    var next = source[after]
+    if next {
+        following = next
+    }
+    stop_reading('mark', written, following, line)
+}
+
+func stop_reading(
+    reading: AbstractSyntaxTree.Tokens.Unreadable.Reading,
+    written: String,
+    following: String,
+    stopped_line: Integer,
+) {
+    fallback not unreadable
+    unreadable = AbstractSyntaxTree.Tokens.Unreadable(reading, written, following, stopped_line)
 }
 
 func record(

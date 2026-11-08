@@ -225,8 +225,7 @@ namespaces with `crash`es decided while compiling, so a stage without its entry,
 class, a low pass without the entry named for its folder (D1923), a rule folder without `Validator` or holding anything
 else, a fix layer without `EveryFix` or a printer without `Printer` refuses the build, under `--check` too (D1885,
 `spite_spec`'s `compiler_folder_layout_broken`). A `Validator` holds a `check*` when it
-walks something, or a `refuse*` when the lexer or the parser found the mistake and only asks it for the words (`spelling`,
-`syntax`; D1886). `compiler_contracts_are_true` holds that every stage has a `contract.md`, and that every `contract.md` names only files,
+walks something, or a `refuse*` when the parser found the mistake and only asks it for the words (`syntax`; D1886). `compiler_contracts_are_true` holds that every stage has a `contract.md`, and that every `contract.md` names only files,
 folders and flags that exist. The size of every file is held by `validators/abstract_syntax_tree/file_content_budget`
 (D1854, D1925).
 
@@ -412,7 +411,10 @@ both forms, and that change publishes a new seed: its fixed point as a new `seed
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
 file), it hands it to the validator of that rule at once. The validator lets it pass, or refuses it through
 `Diagnostics.Failure`. A mistake with one fix never reaches its validator: the layer's fix rule changes the tree
-first (below).
+first (below). The lexer stops at the first thing it cannot read (a mark no token starts with, an unclosed text, symbol or
+hole, a `$` with no name), records it as an `AbstractSyntaxTree.Tokens.Unreadable` and hands it to `spelling`'s `check`
+when its reading ends; a number or a word it reads past goes to `spelling`'s `check_a_number` and to `borrowed_word` where
+it stands, with the neighbours they decide on.
 
 A refusal stops the check it happened in, and the compile goes on to the other checks. `Diagnostics.Gathering`
 (a singleton) holds what was found, and what happens next depends on the check:
