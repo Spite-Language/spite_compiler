@@ -27,7 +27,7 @@ anything themselves. A proof on the low representation is a `LowProof`, in its o
 proof, registered among the low passes right before the pass that reads its facts. `ARCHITECTURE.md` lists the
 order.
 
-Of the 92 proofs the old compiler made, 40 are built, 32 are partly built and 20 are missing (audit of
+Of the 92 proofs the old compiler made, 41 are built, 31 are partly built and 20 are missing (audit of
 2026-10-24, with what was built since). Where a proof is partly built and what is missing could let a wrong program through, the section says
 **fails silently**: that is a D244 bug and its issue is labelled `urgency: silent` and comes first.
 
@@ -185,8 +185,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `while target.name != "dragon" { forget_target() crash target }` stands.
 - **Buys**: no re-check after a harmless call; a call that may null what was proven is never read past.
   A read proven by a `[]` or count proof (`NarrowedRead.watched_lists`) is refused past a call that may shrink its list, whatever the call's answer is used for: `Assignments.note_a_shrink` writes a key for each shrinking call in the program's own code, by the attribute that holds the list, or by the list's class when a parameter or another list's item reaches it. A `fallback`, `crash` or `if` on the same read after a call tests the list again and proves it anew. A local made in the function and not handed on is not counted, and neither is what the library does inside its own functions, since a call of a library function that shrinks is itself the shrinking call.
-- **Missing**: a shrink through a local alias of an attribute's list in the same function, and a count kept in a `var` before a call that shrinks (a read they keep halts, "is outside its list", when the list changed); a
-  call inside a condition is ordered after the block it guards.
+  A local that may hold a list held elsewhere (a parameter, a local given anything but a list made there or a `copy()`, and a made list once it is stored, passed or given to another local: `HandedLists`, `Context.shared_lists`) is watched by every read of a list of its type, so `var alias = items`, `alias.clear()` and `given.clear()` on a parameter that is the attribute are refused before `items[0]`. A call or a write that may assign the attribute holding the list, or an attribute on the way to it, counts as a shrink (`shelf.renew()` assigning `items`; `Writes.renews_a_list`). A count kept in a `var` proves from the line it was counted (`Context.counted_starts`, `Statements.stamp_the_kept_counts`), so a shrink between the count and the read, or anywhere in a loop around the read, is refused.
+  A call counts from where it runs in its statement: every call, a getter's included, is logged as it is built (`Context.log_a_call_as_it_is_built`, from `Values.value_of`), so `cleared(alias) + rack.item.number`, a comparison, a text hole, a list item, an index after the list, or an argument of a call on an earlier call's answer is refused like a read on the next line, while a read before the call in the same statement keeps its proof. A getter on a later side of a condition counts like a call (`WrittenGetters`).
+  A call or a write in a `then` does not reach a read in its `else` (`NarrowedRead.is_on_another_branch`), unless the read was proven before a loop around both.
+- **Missing**: a call inside a condition is ordered after the block it guards.
 - **Falls back**: refused, "'keeper.target' was proven before line 12, where 'forget(...)' may assign 'target'
   again, so this read would use what the call left there, unproven: prove 'keeper.target' again after that line"
   (a list: "'items[0]' was proven before line 9, where 'trim(...)' may shrink what it reads, so this read may fall outside it: prove 'items[0]' again after that line");
@@ -451,7 +453,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 ### A proven count or bound proves a read
 
-- **Status**: partly built.
+- **Status**: built.
 - **Rule**: `index < list.count()` (also `- k`, `count() > index`, a count kept in a `var`), with any call-free
   index (`code - 32 < glyphs.count()` proves `glyphs[code - 32]`), `base + k < list.count()` for k from 1 to 63, and
   the count facts `== k`, `>= k`, `> k`, `!= 0` and `not is_empty()` (at most 64 indices) prove `list[...]`, in
@@ -463,7 +465,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **In a `while`** (D1448): a `<=` bound and the count facts prove the reads of its body as they do after a `crash`:
   `while at + 3 <= values.count()` proves `values[at]` to `values[at + 2]`, `while queue.count() > 1` proves
   `queue[0]` and `queue[1]`.
-- **Missing**: a count kept in a `var` before a call that shrinks the list (each read still halts when its list changed, see the next section).
+- **A count kept in a `var`** proves only until a call that may shrink its list: past one, the read is refused as in [A call keeps a proof it cannot change](#a-call-keeps-a-proof-it-cannot-change).
 - **Falls back**: an unproven read is a `T?`; where a `T` is needed it is refused, "'...' may be missing, since every
   '[ ]' answers a 'T?' ...: ..., or prove the count first, 'crash list.count() > 2'".
 - **Lives in**: the proving is building, since it decides whether a read is a `T`: `loops.spite`
