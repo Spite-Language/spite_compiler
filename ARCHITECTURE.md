@@ -32,9 +32,10 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
     fixes                                  the fixes found while or after building written, and the compile
                                            restarted on the fixed files (`Fixes.Fixes`'s `run`, below)
     high_optimization_passes               the high passes, in their order (below)
-    low_intermediary_representation        the lowering; then validators/low_intermediary_representation
+    low_intermediary_representation        the lowering
     low_optimization_passes                the low passes, in their order (below); then
-                                           validators/low_intermediary_representation/written_functions
+                                           low_intermediary_representation/written_functions, which crashes on
+                                           a call of a function never written
     outputs                                the texts (high and low representations, generated classes, the
                                            optimisation report, the crash map), then generators/windows_x64's `run`
                                            and the executable with its function map
@@ -508,8 +509,8 @@ needs. The folder is named after the rule, and the validator holds every word of
 - A validator never changes what it is given.
 - Each layer reaches its rules through one entry, `validators/<layer>/every_rule.spite`, called the way a pass is
   (D1750): the syntax tree's `check` per file, name resolution's `check` once the model is resolved, the high
-  representation's `check_an_evaluation` and the like as the builder meets each statement, the low
-  representation's `check` once it is optimised, the command line's `check` once the program's `Build` settles
+  representation's `check_an_evaluation` and the like as the builder meets each statement, the command line's
+  `check` once the program's `Build` settles
   the settings (`take_the_build`), and the mapping's `check` once every mapped class is read (the end of
   `Symbols.run`). The high entry also holds `stop`, which judges the sites the
   proofs have not judged yet before it ends the compile, so the earliest error is the one told. A check still
@@ -521,7 +522,8 @@ needs. The folder is named after the rule, and the validator holds every word of
 - A proof decides what it proves and hands what breaks it to a validator of its own
   (`validators/high_intermediary_representation/<rule>`), never to the shared `typing`.
 - A check no program can reach, a fault of the compiler itself, is a `crash` on a condition named for the fault
-  (`expects_its_slots_fresh` in the lowering), not a rule with a message.
+  (`expects_its_slots_fresh`, `hands_the_count_it_keeps` and `writes_what_nothing_else_holds` in the lowering,
+  `low_intermediary_representation/written_functions`), not a rule with a message.
 - `diagnostics/failure.spite` (`Diagnostics.Failure`) ends the compile; only a validator or a proof builds one.
 - The test `tests/compiler_rules_are_validators` of spite_spec reads this source: every
   `validators/**/validator.spite` defines a `check`; no file outside `validators/` and `proofs/` defines a

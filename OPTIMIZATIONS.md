@@ -3962,9 +3962,9 @@ instead of counting every place that names it. It is one analysis over the high 
 
 **Nothing of it can fail silently.** After the whole program is lowered, every call of a function that takes a
 parameter is counted against the calls that handed it its count; a call written another way (one the compiler
-writes itself, outside the ordinary call) stops the compile with "a call of '...' does not hand it the count it
-keeps: this is a fault of the compiler", and a constructor that stores into slots it expects empty, called on an
-object made with its defaults, stops it too. A pass after lowering that leaves out the counts of a steady value
+writes itself, outside the ordinary call) is a fault of the compiler, which crashes on
+`hands_the_count_it_keeps`, and a constructor that stores into slots it expects empty, called on an
+object made with its defaults, crashes it too. A pass after lowering that leaves out the counts of a steady value
 keeps them for a value handed to a call that takes it.
 
 **What a program can observe:** fewer counts, the same balance of allocations and frees under `--debug-memory`, and
