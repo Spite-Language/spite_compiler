@@ -38,7 +38,7 @@ A program names everything it loads in its first lines, the standard library by 
 folder. There is no launcher and no library search:
 
     func ExitCode(): Integer {
-        load "../../../spite_standard_library/common"
+        load "../../../spite_standard_library/windows"
 
 ## Test it
 

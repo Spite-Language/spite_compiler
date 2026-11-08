@@ -957,7 +957,6 @@ program's own attributes must be read somewhere, or the compiler refuses them as
 var console = Console()
 
 func Inventory() {
-    load "../../../spite_standard_library/common"
     load "../../../spite_standard_library/windows"
     var name = "sword"
     console.print(name.length())
