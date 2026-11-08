@@ -526,7 +526,9 @@ needs. The folder is named after the rule, and the validator holds every word of
 - A check no program can reach, a fault of the compiler itself, is a `crash` on a condition named for the fault
   (`expects_its_slots_fresh`, `hands_the_count_it_keeps` and `writes_what_nothing_else_holds` in the lowering,
   `low_intermediary_representation/written_functions`), not a rule with a message.
-- `diagnostics/failure.spite` (`Diagnostics.Failure`) ends the compile; only a validator or a proof builds one.
+- `diagnostics/failure.spite` (`Diagnostics.Failure`) ends the compile; only a validator or a proof builds one. A
+  command-line rule that stops a run with no compile to tell it in (`--connect`, a compiler not handed its flags)
+  prints its `error:` line itself and exits with 1.
 - The test `tests/compiler_rules_are_validators` of spite_spec reads this source: every
   `validators/**/validator.spite` defines a `check`; no file outside `validators/` and `proofs/` defines a
   `refuse...` or builds a `Diagnostics.Failure`; no file outside `validators/` calls a `.refuse...(`, hands its own
