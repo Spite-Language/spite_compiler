@@ -398,8 +398,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Buys**: no caller gets a value nobody wrote.
 - **Falls back**: refused, "'...' answers ..., but ... it reaches its end without a 'return' ...: end that path with
   'return <value>', or with 'crash' if it cannot happen".
-- **Lives in**: `high_intermediary_representation/building/endings.spite` (`check`, `always_leaves`), its own class,
-  run by the builder on each function body.
+- **Lives in**: `validators/high_intermediary_representation/missing_return`, run by the builder on each function
+  body, asking `high_intermediary_representation/building/endings.spite` (`always_leaves`) whether a path leaves.
 - **Checked by**: conformance/falling_end; tests/every_path_returns, tests/control_while_running.
 
 ### A fallback answers what its answer type builds with no arguments
