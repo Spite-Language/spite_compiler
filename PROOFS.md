@@ -797,7 +797,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   asked of a walk that is not over functions, "'argument.argument_count()' is how many arguments the function a walk
   over functions stands for takes, so it is asked with no name in a template over functions, such as
   'run_phase_each(phase: Spite.FunctionDeclaration)'".
-- **Lives in**: embedded, `questions.spite` (`counted_arguments`, `refuse_disagreeing_counts`, `pattern_argument_count`).
+- **Lives in**: embedded, `questions.spite` (`counted_arguments`, `pattern_argument_count`), judged by
+  `validators/high_intermediary_representation/function_question` and `walked_argument_count`.
 - **Checked by**: tests/folded_argument_count, tests/system_phases, tests/streamed_rows; conformance/argument_count,
   conformance/argument_count_missing, conformance/passed_argument_count, conformance/argument_count_disagrees,
   conformance/argument_count_outside_walk.
