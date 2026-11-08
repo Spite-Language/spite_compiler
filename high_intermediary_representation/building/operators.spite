@@ -4,7 +4,6 @@ var no_table = Symbols.SymbolTable(no_folders)
 var no_resolver = NameResolution.Resolver(no_table)
 var context = Context(no_program, no_resolver)
 var values = Values(context)
-var _largest_integer: Long = 2147483647
 
 func Operators(starting_context: Context, starting_values: Values) {
     context = starting_context
@@ -79,21 +78,6 @@ func constant_operand(expression: SpiteCompiler.Expression?, double_type: Model.
         return double_constant(expression)
     }
     return values.value_of(expression, double_type)
-}
-
-func refuse_an_operator_on_a_shape(
-    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
-    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
-    left: SpiteCompiler.Value,
-) {
-    fallback left.value_type.kind == 'shape' and not left.value_type.is_nullable
-    var shape = context.program.shape_keyed(left.value_type.name)
-    crash shape
-    var name = operator_function_name(operator)
-    fallback not shape.member_named(name)
-    var printer = Printers.Spite.ExpressionPrinter(binary)
-    var symbol = printer.operator_text(binary.operator)
-    values.typing.refuse_an_operator_on_a_shape(context, symbol, shape.name)
 }
 
 func comparison_through_a_maybe(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value? {
@@ -188,8 +172,8 @@ func binary_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression
     }
     if is_machine_comparable(left.value_type) {
         var fitted_right = fitting.fitted(right, left.value_type)
-        refuse_a_cut(binary, fitted_right, left.value_type, right.value_type)
-        refuse_a_division_by_zero(binary, operator, left, fitted_right)
+        judge_a_cut(binary, fitted_right, left.value_type, right.value_type)
+        judge_a_division(binary, operator, left, fitted_right)
         var decided = decided_comparison(binary, operator, left, fitted_right)
         if decided {
             return decided
@@ -202,10 +186,14 @@ func binary_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression
         made.shown_left = left_printer.text()
         var right_printer = Printers.Spite.ExpressionPrinter(binary.right)
         made.shown_right = right_printer.text()
-        refuse_a_constant_overflow(made)
+        var overflow = Validators.HighIntermediaryRepresentation.ConstantOverflow.Validator()
+        var folded_made = folded_operation(made)
+        overflow.check(context, made, folded_made)
         return made
     }
-    refuse_an_operator_on_a_shape(binary, operator, left)
+    var shape_rule = Validators.HighIntermediaryRepresentation.OperatorOnAShape.Validator()
+    var operator_name = operator_function_name(operator)
+    shape_rule.check(context, binary, left, operator_name)
     var answered = operator_call(operator, left, right)
     var printed = Printers.Spite.ExpressionPrinter(binary)
     var shown = printed.text()
@@ -271,17 +259,16 @@ func show_the_operation(answered: SpiteCompiler.Value, shown: String) {
     }
 }
 
-func refuse_a_division_by_zero(
+func judge_a_division(
     binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
     operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
     left: SpiteCompiler.Value,
     right: SpiteCompiler.Value,
 ) {
-    fallback operator == 'divide' or operator == 'remainder'
-    fallback not values.is_a_decimal_type(left.value_type)
+    var rule = Validators.HighIntermediaryRepresentation.DivisionByZero.Validator()
+    var divides_decimals = values.is_a_decimal_type(left.value_type)
     var folded = folded_whole(right)
-    fallback folded
-    refuse_a_zero(binary, folded)
+    rule.check(context, binary, operator, divides_decimals, folded)
 }
 
 func folded_whole(value: SpiteCompiler.Value?): Long? {
@@ -314,24 +301,6 @@ func folded_operation(operation: HighIntermediaryRepresentation.Values.MachineOp
         'and': return null
         'or': return null
     }
-}
-
-func refuse_a_constant_overflow(made: HighIntermediaryRepresentation.Values.MachineOperation) {
-    var is_an_integer = made.value_type.kind == 'scalar' and made.value_type.name == "Integer"
-    fallback is_an_integer and not made.value_type.is_nullable
-    var folded = folded_operation(made)
-    fallback folded
-    var smallest: Long = -2147483648
-    var largest: Long = _largest_integer
-    fallback folded < smallest or folded > largest
-    values.typing.refuse_a_constant_overflow(context, made.shown, folded)
-}
-
-func refuse_a_zero(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression, number: Long) {
-    fallback number == 0
-    var printer = Printers.Spite.ExpressionPrinter(binary)
-    var shown = printer.text()
-    values.typing.refuse_division_by_zero(context, shown)
 }
 
 func codegen_test(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value? {
@@ -661,52 +630,17 @@ func operands_of(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression)
     return operands
 }
 
-func refuse_a_cut(
+func judge_a_cut(
     binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
     fitted_right: SpiteCompiler.Value,
     left_type: Model.Type,
     right_type: Model.Type,
 ) {
-    fallback left_type.name != "Float" or not is_a_literal_tree(binary.right)
-    if fitted_right.class == HighIntermediaryRepresentation.Values.Conversion {
-        refuse_a_cut_conversion(binary, fitted_right, left_type, right_type)
-    }
-}
-
-func refuse_a_cut_conversion(
-    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
-    conversion: HighIntermediaryRepresentation.Values.Conversion,
-    left_type: Model.Type,
-    right_type: Model.Type,
-) {
-    var cuts = conversion.kind == 'narrow' or conversion.kind == 'narrow_decimal' or conversion.kind == 'to_whole'
-    fallback cuts
-    fallback not changes_only_its_sign(left_type, right_type)
-    var printer = Printers.Spite.ExpressionPrinter(binary)
-    var shown = printer.text()
-    crash binary.left
-    crash binary.right
-    var left_printer = Printers.Spite.ExpressionPrinter(binary.left)
-    var left_text = left_printer.text()
+    var rule = Validators.HighIntermediaryRepresentation.CutOperand.Validator()
+    var right_is_a_literal = is_a_literal_tree(binary.right)
     var turned_operator = turned_around(binary.operator)
-    var turned = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(binary.right, turned_operator, binary.left)
-    var turned_printer = Printers.Spite.ExpressionPrinter(turned)
-    var turned_text = turned_printer.text()
-    if is_a_comparison(binary.operator) {
-        values.typing.refuse_cut_comparison(context, shown, left_type.name, right_type.name, turned_text)
-    }
-    var operation = operation_name_of(binary.operator)
-    var order_free = binary.operator == 'plus' or binary.operator == 'star'
-    values.typing.refuse_cut_operand(
-        context,
-        shown,
-        operation,
-        left_type.name,
-        right_type.name,
-        left_text,
-        turned_text,
-        order_free,
-    )
+    var compares = is_a_comparison(binary.operator)
+    rule.check(context, binary, fitted_right, left_type, right_type, right_is_a_literal, turned_operator, compares)
 }
 
 func is_a_maybe_operand(
@@ -722,15 +656,6 @@ func is_a_maybe_operand(
 func operator_symbol_of(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): String {
     var printer = Printers.Spite.ExpressionPrinter(binary)
     return printer.operator_text(binary.operator)
-}
-
-func changes_only_its_sign(left_type: Model.Type, right_type: Model.Type): Boolean {
-    fallback values.are_whole_numbers(left_type, right_type)
-    var left_scalar = values.scalars.of(left_type.name)
-    var right_scalar = values.scalars.of(right_type.name)
-    crash left_scalar
-    crash right_scalar
-    return left_scalar.size == right_scalar.size
 }
 
 func is_a_comparison(operator: AbstractSyntaxTree.Tokens.Token.Kind): Boolean {
@@ -849,64 +774,6 @@ func turned_around(operator: AbstractSyntaxTree.Tokens.Token.Kind): AbstractSynt
     }
 }
 
-func operation_name_of(kind: AbstractSyntaxTree.Tokens.Token.Kind): String {
-    switch kind {
-        'plus': return "an addition"
-        'minus': return "a subtraction"
-        'star': return "a multiplication"
-        'slash': return "a division"
-        'percent': return "a remainder"
-        'end_of_file': return "a comparison"
-        'name': return "a comparison"
-        'class_name': return "a comparison"
-        'generic_name': return "a comparison"
-        'integer_literal': return "a comparison"
-        'decimal_literal': return "a comparison"
-        'text_literal': return "a comparison"
-        'symbol_literal': return "a comparison"
-        'open_brace': return "a comparison"
-        'close_brace': return "a comparison"
-        'open_parenthesis': return "a comparison"
-        'close_parenthesis': return "a comparison"
-        'open_bracket': return "a comparison"
-        'close_bracket': return "a comparison"
-        'comma': return "a comparison"
-        'dot': return "a comparison"
-        'dots': return "a comparison"
-        'colon': return "a comparison"
-        'question': return "a comparison"
-        'equals': return "a comparison"
-        'equal_equal': return "a comparison"
-        'not_equal': return "a comparison"
-        'less': return "a comparison"
-        'greater': return "a comparison"
-        'less_or_equal': return "a comparison"
-        'greater_or_equal': return "a comparison"
-        'and': return "a comparison"
-        'or': return "a comparison"
-        'not': return "a comparison"
-        'keyword_function': return "a comparison"
-        'keyword_variable': return "a comparison"
-        'keyword_enum': return "a comparison"
-        'keyword_union': return "a comparison"
-        'keyword_type': return "a comparison"
-        'keyword_return': return "a comparison"
-        'keyword_if': return "a comparison"
-        'keyword_else': return "a comparison"
-        'keyword_while': return "a comparison"
-        'keyword_switch': return "a comparison"
-        'keyword_fallback': return "a comparison"
-        'keyword_crash': return "a comparison"
-        'keyword_load': return "a comparison"
-        'keyword_this': return "a comparison"
-        'keyword_null': return "a comparison"
-        'keyword_true': return "a comparison"
-        'keyword_false': return "a comparison"
-        'keyword_generic': return "a comparison"
-        'keyword_singleton': return "a comparison"
-    }
-}
-
 func is_machine_comparable(left_type: Model.Type): Boolean {
     var is_a_scalar = left_type.kind == 'scalar' and not left_type.is_nullable
     var is_an_enum = left_type.kind == 'enumeration' and not left_type.is_nullable
@@ -1022,10 +889,10 @@ func operator_call(
         return same
     }
     var name = operator_function_name(operator)
-    refuse_a_missing_operator(left, name, "this operator", "{name}(other)")
-    refuse_an_operator_of_another_count(left, name, "this operator", "{name}(other)", 1)
+    judge_an_operator_function(left, name, "this operator", "{name}(other)", 1)
     if asks_equality {
-        refuse_a_comparison_across_classes(left, right)
+        var mismatch = Validators.HighIntermediaryRepresentation.TypeMismatch.Validator()
+        mismatch.check_a_comparison(context, left.value_type, right.value_type)
     }
     var arguments = List<SpiteCompiler.Value>()
     arguments.append(right)
@@ -1037,35 +904,26 @@ func operator_call(
     return answered
 }
 
-func refuse_a_missing_operator(operand: SpiteCompiler.Value, name: String, operator_text: String, needed: String) {
-    var templates = Templates(context, values)
-    var operand_type = operand.value_type
-    var is_a_class = operand_type.kind == 'object' and not operand_type.is_nullable
-    fallback is_a_class and context.has_a_class(operand_type)
-    var owner = context.class_of(operand_type)
-    fallback not owner.function_named(name)
-    fallback not templates.member_template_of(owner, name)
-    var shown = context.shown(operand_type)
-    values.typing.refuse_a_missing_operator(context, operator_text, shown, needed)
-}
-
-func refuse_an_operator_of_another_count(
+func judge_an_operator_function(
     operand: SpiteCompiler.Value,
     name: String,
     operator_text: String,
     needed: String,
     wanted_count: Integer,
 ) {
+    var templates = Templates(context, values)
     var operand_type = operand.value_type
     var is_a_class = operand_type.kind == 'object' and not operand_type.is_nullable
     fallback is_a_class and context.has_a_class(operand_type)
     var owner = context.class_of(operand_type)
     var function = owner.function_named(name)
-    fallback function
-    var given_count = function.parameters.count()
-    fallback given_count != wanted_count
-    var shown = context.shown(operand_type)
-    values.typing.refuse_an_operator_of_another_count(context, operator_text, shown, needed, name, given_count)
+    var template: Model.FunctionModel? = null
+    if not function {
+        template = templates.member_template_of(owner, name)
+    }
+    var rule = Validators.HighIntermediaryRepresentation.OperatorFunction.Validator()
+    rule.check(context, operand_type, function, template, operator_text, needed)
+    rule.check_the_count(context, operand_type, function, operator_text, needed, wanted_count)
 }
 
 func compares_identity(left: SpiteCompiler.Value): Boolean {
@@ -1104,30 +962,6 @@ func class_compares_identity(left_type: Model.Type): Boolean {
     return parameter.parameter_type.kind != 'object'
 }
 
-func refuse_a_comparison_across_classes(left: SpiteCompiler.Value, right: SpiteCompiler.Value) {
-    var left_type = left.value_type
-    var right_type = right.value_type
-    var both_kinds = left_type.kind == 'object' and right_type.kind == 'object'
-    var both_classes = both_kinds and context.has_a_class(left_type) and context.has_a_class(right_type)
-    var either_nullable = left_type.is_nullable or right_type.is_nullable
-    var across = both_classes and not either_nullable and left_type.name != right_type.name
-    if across and equals_takes_its_own_class(left_type) {
-        var given = context.shown(left_type)
-        var wanted = context.shown(right_type)
-        var mismatch = Validators.HighIntermediaryRepresentation.TypeMismatch.Validator()
-        mismatch.refuse(context, given, wanted)
-    }
-}
-
-func equals_takes_its_own_class(left_type: Model.Type): Boolean {
-    var owner = context.class_of(left_type)
-    var equals = owner.function_named("equals")
-    crash equals
-    var parameter = equals.parameters[0]
-    crash parameter
-    return parameter.parameter_type.name == left_type.name
-}
-
 func operator_function_name(operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator): String {
     switch operator {
         'add': return "sum"
@@ -1160,7 +994,7 @@ func class_test_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpres
     if tested.value_type.name == "Spite.Class" {
         return same_class(binary, tested, member)
     }
-    refuse_a_test_for_no_member(binary, tested, member)
+    judge_a_test_for_no_member(binary, tested, member)
     note_an_answered_class_test(binary, tested, member)
     var test = HighIntermediaryRepresentation.Values.Class.Membership(tested, member)
     if binary.operator == 'not_equal' {
@@ -1215,45 +1049,16 @@ func note_an_answered_class_test(
     context.note_a_check_site(site)
 }
 
-func refuse_a_test_for_no_member(
+func judge_a_test_for_no_member(
     binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
     tested: SpiteCompiler.Value,
     member: Model.Type,
 ) {
     var fitting = Fitting(context, values)
     fallback tested.value_type.kind == 'union'
-    var names_a_codegen_value = false
-    var right = binary.right
-    if right.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        names_a_codegen_value = right.name.starts_with("$")
-    }
-    var bound = context.current_class.bound_types.keys()
-    fallback not names_a_codegen_value and bound.is_empty()
     var united = fitting.union_model_of(tested.value_type)
-    var held_names = united.members.map_names()
-    fallback not held_names.contains(member.name)
-    var names = List<String>()
-    var index = 0
-    while index < united.members.count() {
-        var held = united.members[index]
-        var shown = context.shown(held)
-        names.append(shown)
-        index = index + 1
-    }
-    var listed = names.join(", ")
-    var printer = Printers.Spite.ExpressionPrinter(binary.left)
-    var tested_text = printer.text()
-    var member_shown = context.shown(member)
-    values.typing.refuse_a_test_for_no_member(context, tested_text, member_shown, united.name, listed)
-}
-
-# ../../../spite_documentation/values_and_types.md#unions
-func refuse_a_class_test_on_a_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression) {
-    var left_printer = Printers.Spite.ExpressionPrinter(binary.left)
-    var left = left_printer.text()
-    var right_printer = Printers.Spite.ExpressionPrinter(binary.right)
-    var right = right_printer.text()
-    values.typing.refuse_a_class_test_on_a_value(context, left, right)
+    var rule = Validators.HighIntermediaryRepresentation.TestForNoMember.Validator()
+    rule.check(context, binary, united, member)
 }
 
 # ../../../spite_documentation/values_and_types.md#unions
@@ -1281,9 +1086,8 @@ func class_tested_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpr
         return asked
     }
     var tested = values.value_of(binary.left, null)
-    if tested.value_type.name != "Spite.Class" {
-        refuse_a_class_test_on_a_value(binary)
-    }
+    var rule = Validators.HighIntermediaryRepresentation.ClassTestOnAValue.Validator()
+    rule.check(context, binary, tested.value_type)
     return tested
 }
 
@@ -1592,10 +1396,8 @@ func condition_of(expression: SpiteCompiler.Expression?): SpiteCompiler.Value {
         var boolean = context.boolean()
         return HighIntermediaryRepresentation.Values.WholeNumber(boolean, 1, false)
     }
-    if not context.is_boolean(value.value_type) {
-        var shown = context.shown(value.value_type)
-        values.typing.refuse_not_a_condition(context, shown)
-    }
+    var condition_rule = Validators.HighIntermediaryRepresentation.NotACondition.Validator()
+    condition_rule.check(context, value.value_type)
     return value
 }
 
@@ -1624,8 +1426,7 @@ func unary_value(
     }
     var operand = values.value_of(unary.operand, expected)
     if operand.value_type.kind == 'object' {
-        refuse_a_missing_operator(operand, "negate", "'-'", "negate()")
-        refuse_an_operator_of_another_count(operand, "negate", "'-'", "negate()", 0)
+        judge_an_operator_function(operand, "negate", "'-'", "negate()", 0)
         var no_arguments = List<SpiteCompiler.Value>()
         return calls.method_call(operand, "negate", no_arguments)
     }

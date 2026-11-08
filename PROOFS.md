@@ -604,7 +604,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   ([values_and_types.md](../spite_documentation/values_and_types.md#numeric-types-and-the-casting-rule)).
 - **Buys**: a division that always halts never compiles.
 - **Falls back**: refused, "'...' divides by zero, which always halts the program ...".
-- **Lives in**: embedded, `operators.spite` (`binary_value`, `refuse_a_division_by_zero`).
+- **Lives in**: `validators/high_intermediary_representation/division_by_zero`, handed the folded divisor by
+  `operators.spite` (`binary_value`, `judge_a_division`).
 - **Checked by**: conformance/division_by_constant_zero, conformance/remainder_by_folded_zero.
 
 ### Arithmetic that does not fit halts
@@ -679,7 +680,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Falls back**: refused, "'...' is added in Integer, since arithmetic takes the left side's type, and the right
   side is a Long, which would be cut to fit: write the Long first ...". A literal out of the left type's range gets
   the literal-fit error instead; inside a template's number copy the cut halts at run time.
-- **Lives in**: embedded, `operators.spite` (`binary_value`, `refuse_a_cut`), `calls.spite` (`refuse_a_wider_bitwise_operand`).
+- **Lives in**: `validators/high_intermediary_representation/cut_operand`, handed the fitted right side by
+  `operators.spite` (`binary_value`, `judge_a_cut`); `calls.spite` (`refuse_a_wider_bitwise_operand`).
 - **Checked by**: conformance/wider_right_operand, conformance/wider_comparison, conformance/wider_bitwise_operand,
   conformance/wider_decimal_right, conformance/wider_multiplication_order, conformance/wider_subtraction;
   tests/signedness_not_wider.
