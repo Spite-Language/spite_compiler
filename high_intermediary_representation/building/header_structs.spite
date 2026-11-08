@@ -1,0 +1,243 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var no_context = Context(no_program, no_resolver)
+var no_values = Values(no_context)
+var constants = ForeignConstants(no_context, no_values)
+var sizes = Dictionary<String, Integer>()
+var pointers = Dictionary<String, String>()
+var parameters = List<String>()
+var words = List<String>()
+var offset = 0
+var widest = 1
+var is_measured = true
+var _pointer_width = 8
+
+func HeaderStructs(starting_constants: ForeignConstants) {
+    constants = starting_constants
+}
+
+func read(text: String) {
+    var flat = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    var braced = flat.replace("\{", " \{ ").replace("}", " } ").replace(";", " ; ")
+    var spaced = braced.replace("*", " * ").replace(",", " , ")
+    words = constants.words_of(spaced)
+    var index = 0
+    while index < words.count() {
+        var word = words[index]
+        if word == "struct" {
+            index = read_a_struct(index)
+        } else {
+            index = index + 1
+        }
+    }
+}
+
+func read_a_struct(at: Integer): Integer {
+    var position = at + 1
+    var tag = ""
+    if position < words.count() {
+        var tag_word = words[position]
+        if tag_word != "\{" {
+            tag = "struct {tag_word}"
+            position = position + 1
+        }
+    }
+    if not opens_a_body(position) {
+        return at + 1
+    }
+    position = lay_out_a_body(position + 1)
+    var size = padded_size()
+    var is_a_typedef = false
+    if at > 0 {
+        var before = words[at - 1]
+        is_a_typedef = before == "typedef"
+    }
+    var named = tag
+    var is_a_pointer = false
+    while position < words.count() and words[position] != ";" {
+        var word = words[position]
+        if word == "*" {
+            is_a_pointer = true
+        } else if word == "," {
+            is_a_pointer = false
+        } else if is_a_typedef and is_a_pointer and not named.is_empty() {
+            pointers[word] = named
+        } else if is_a_typedef and not is_a_pointer {
+            if named.is_empty() {
+                named = word
+            }
+            note_a_size(word, size)
+        }
+        position = position + 1
+    }
+    if not tag.is_empty() {
+        note_a_size(tag, size)
+    }
+    return position
+}
+
+func opens_a_body(position: Integer): Boolean {
+    fallback position < words.count()
+    var word = words[position]
+    return word == "\{"
+}
+
+func lay_out_a_body(start: Integer): Integer {
+    offset = 0
+    widest = 1
+    is_measured = true
+    var field = List<String>()
+    var depth = 1
+    var position = start
+    while position < words.count() and depth > 0 {
+        var word = words[position]
+        if word == "\{" {
+            depth = depth + 1
+            is_measured = false
+        }
+        if word == "}" {
+            depth = depth - 1
+        }
+        if word == ";" {
+            lay_out_a_field(field)
+            field = List<String>()
+        }
+        if word != "\{" and word != "}" and word != ";" {
+            field.append(word)
+        }
+        position = position + 1
+    }
+    return position
+}
+
+func lay_out_a_field(field: List<String>) {
+    fallback not field.is_empty()
+    var text = field.join(" ")
+    if text.contains("[") or text.contains(":") or text.contains("(") {
+        is_measured = false
+        return
+    }
+    var declarators = text.split(",")
+    var first = declarators.first()
+    crash first
+    var unstarred = first.replace("*", " ")
+    var type_words = constants.words_of(unstarred)
+    if type_words.count() < 2 {
+        is_measured = false
+        return
+    }
+    crash type_words.remove_last()
+    var c_type = type_words.join(" ")
+    var index = 0
+    while index < declarators.count() {
+        var declarator = declarators[index]
+        if declarator.contains("*") {
+            place_a_field(_pointer_width)
+        } else {
+            var width = constants.width_of_a_named_type(c_type, 0)
+            place_a_field(width)
+        }
+        index = index + 1
+    }
+}
+
+func place_a_field(width: Integer) {
+    if width == 0 {
+        is_measured = false
+        return
+    }
+    if width > widest {
+        widest = width
+    }
+    var past = offset % width
+    if past > 0 {
+        offset = offset + width - past
+    }
+    offset = offset + width
+}
+
+func padded_size(): Integer {
+    var tail = offset % widest
+    if tail > 0 {
+        return offset + widest - tail
+    }
+    return offset
+}
+
+func note_a_size(name: String, size: Integer) {
+    fallback is_measured
+    sizes[name] = size
+}
+
+func name_the_parameters(inside: String) {
+    var pieces = inside.split(",")
+    var index = 0
+    while index < pieces.count() {
+        var piece = pieces[index]
+        var pointed = pointed_struct(piece)
+        parameters.append(pointed)
+        index = index + 1
+    }
+}
+
+func pointed_struct(piece: String): String {
+    var spaced = piece.replace("*", " * ")
+    var kept = constants.words_of(spaced)
+    var star = kept.index_of("*")
+    if star {
+        var pointee = List<String>()
+        var index = 0
+        while index < star {
+            var word = kept[index]
+            crash word
+            pointee.append(word)
+            index = index + 1
+        }
+        var pointee_type = pointee.join(" ")
+        return struct_named(pointee_type, 0)
+    }
+    if kept.count() > 1 {
+        crash kept.remove_last()
+    }
+    var c_type = kept.join(" ")
+    return struct_pointed_by(c_type, 0)
+}
+
+func struct_named(c_type: String, depth: Integer): String {
+    if sizes.contains(c_type) {
+        return c_type
+    }
+    fallback depth <= 16
+    var renamed = constants.renamed_types[c_type]
+    fallback renamed and not renamed.contains("*")
+    return struct_named(renamed, depth + 1)
+}
+
+func struct_pointed_by(c_type: String, depth: Integer): String {
+    var pointed = pointers[c_type]
+    if pointed {
+        return pointed
+    }
+    fallback depth <= 16
+    var renamed = constants.renamed_types[c_type]
+    fallback renamed
+    if renamed.ends_with("*") {
+        var unstarred = renamed.replace("*", " ")
+        var pointee_type = unstarred.trim()
+        return struct_named(pointee_type, 0)
+    }
+    return struct_pointed_by(renamed, depth + 1)
+}
+
+func name_at(index: Integer): String {
+    fallback index < parameters.count()
+    return parameters[index]
+}
+
+func size_of(name: String): Integer {
+    var size = sizes[name]
+    crash size
+    return size
+}
