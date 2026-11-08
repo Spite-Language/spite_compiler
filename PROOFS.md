@@ -286,7 +286,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: the proof `proofs/proven_checks`, judging what `statements.spite` recorded
   (`note_a_proven_check`, `note_a_proven_condition`, `note_a_proven_read_check`, `note_a_check_of_a_plain_value`,
   `note_a_repeated_check`, `note_a_proven_divisor`, `note_a_check_that_always_holds`, `note_the_checks`,
-  `note_one_check`) and `operators.spite` (`note_an_answered_class_test`).
+  `note_one_check`) and `operators.spite` (`note_an_answered_class_test`). The proof proves the check redundant,
+  tries its fix, and hands the site it could not fix to `validators/high_intermediary_representation/proven_check`,
+  which words it by its kind.
 - **Checked by**: conformance/check_proves_nothing, conformance/known_fact_checked, conformance/proven_element,
   conformance/proven_index_check, conformance/assert_on_plain_value, conformance/leaving_if_proves_nothing,
   conformance/crash_on_plain_local, conformance/known_fact_inside_its_if, conformance/known_fact_divisor,
@@ -308,7 +310,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Falls back**: refused, "'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('fallback
   tracker') and use it directly".
 - **Lives in**: the proof `proofs/proven_checks`, judging each copy `statements.spite` recorded when the copy is
-  narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `note_a_tested_copy`, `build_switch`).
+  narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `note_a_tested_copy`, `build_switch`), and
+  refused by `validators/high_intermediary_representation/proven_check`.
 - **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions,
   conformance/copy_to_narrow_not_leaving; tests/narrowing_snapshot_copy, tests/copy_of_a_getter_with_an_effect_is_kept,
   tests/copy_of_a_path_holding_a_call_is_kept, tests/copy_of_a_getter_before_a_change_is_kept, conformance/namespace_nullable.
