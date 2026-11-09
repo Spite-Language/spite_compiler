@@ -18,7 +18,9 @@ like "is this call ever reached" or "may this value be null" has no answer on th
 
 - `high_intermediary_representation.spite`: the entry, `HighIntermediaryRepresentation(model, resolver, flags)`; its
   `run` makes the `builder.spite` and builds.
-- `builder.spite`: builds every reached function, one at a time, as names ask for them, through `building/`.
+- `builder.spite`: builds every reached function, one at a time, as names ask for them, through `building/`; then
+  builds the functions nobody calls for their errors and puts back what they made (`building/checkpoint.spite`,
+  `building/model_checkpoint.spite`, [ARCHITECTURE.md](../ARCHITECTURE.md#checking-the-functions-nobody-calls)).
 - `building`: the builder's concerns, one file each, around the `Context` it builds in (`building/context.spite`) and
   the sites it records for the proofs (`building/recorded_site.spite`).
   `building/statements.spite` is the entry of the statements builder: it keeps its fields in one object,
