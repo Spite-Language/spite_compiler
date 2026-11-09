@@ -463,7 +463,7 @@ name goes, a codegen list, a `<<`, an `else` with no `if` ...) and the forms the
 form or piece), one on each line, none after a `func` met where a value goes (an unclosed brace swallowed the rest),
 one for a run of statements standing in the file, one for every stray `}` there, and none where a keyword it told as
 a name is used again, so a broken brace or name never floods the list. `spelling` likewise skips from a text that
-never closes to the quote that was meant to close it. Holes in texts are read
+never closes to the quote that was meant to close it, and tells a word from another language where it is first written. Holes in texts are read
 by a lexer and parser of their own, and their tokens and pieces are judged the same way.
 
 `validators/abstract_syntax_tree/every_rule.spite` runs `spelling` once the file is lexed (before `fixes/tokens`: a
