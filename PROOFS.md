@@ -649,7 +649,28 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: the proof `proofs/ranges`, a speed proof run after the acceptance proofs, over every function built from
   the source; it records its fact on each operation (`proves_no_ranges`, the unchecked arithmetic) for the lowering.
 - **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room, tests/down_counter_ranges,
-  tests/leaving_or_proves_ranges.
+  tests/leaving_or_proves_ranges, tests/named_bounds_prove_ranges.
+
+### An attribute nothing writes is read as its default
+
+- **Status**: built (#395).
+- **Rule**: an attribute no built function writes outside its default, whose default is one whole-number literal,
+  holds that number wherever it is read, so the proof `ranges` reads it as that number's range: after
+  `var _hundred = 100`, `floor.minimum(_hundred)` runs to at most 100, and `fallback amount < _thousand` bounds
+  `amount` as `amount < 1000` does ([values_and_types.md](../spite_documentation/values_and_types.md#named-numbers)).
+  What writes an attribute is what [untouched attributes](OPTIMIZATIONS.md#untouched-attributes-have-no-slot)
+  counts: an assignment outside its default, a write through a shape its class fills, a struct handed to a foreign
+  function; the slots the lowering writes (`_length`, `_buffer`, ...) and the classes of a fixed layout (`Buffer`,
+  the scalars, `Spite.*`) count as written.
+- **Buys**: a named bound proves arithmetic as its literal does, so the overflow check goes.
+- **Missing**: a default that is not one literal (`var _bound = _hundred * 2`, a preset) keeps its type's range.
+- **Falls back**: in a `--repl`, `--repl-port`, `--hot-reload` or `--development` build, where code loaded later may
+  write it, every attribute keeps its type's range.
+- **Lives in**: `high_intermediary_representation/attribute_uses.spite`, the one walk that decides which attributes
+  nothing writes. The proof `ranges` runs it before it proves and records the numbers
+  (`HighProgram.numbers_nothing_writes`); the pass `untouched_attributes` runs it again over what the high passes
+  built since, and crashes if any of those attributes is written there.
+- **Checked by**: tests/named_bounds_prove_ranges.
 
 ### The range of a register
 

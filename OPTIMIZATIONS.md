@@ -371,11 +371,40 @@ func total(values: List<Integer>): Long {
 is unchecked too: the loop runs at most 2147483647 passes, so before the addition `sum` holds at most 2147483646
 items, each an `Integer`, which a `Long` always holds.
 
-When it does not apply: an operand that is an attribute, a list item or a call's answer has its type's range, so an
-operation on two of them keeps its check. A `--repl`, `--repl-port` or `--hot-reload` build proves ranges as every
-build does: a range is about one function's own locals, which no REPL command and no reload can write (a call
-already running finishes on the code it started in). What a user can observe: `--optimization-report` lists every check kept, under
+When it does not apply: an operand that is an attribute (but [one nothing writes](#a-named-bound-proves-what-its-number-proves)),
+a list item or a call's answer has its type's range, so an operation on two of them keeps its check. A `--repl`,
+`--repl-port` or `--hot-reload` build proves ranges as every build does: a range is about one function's own locals,
+which no REPL command and no reload can write (a call already running finishes on the code it started in). What a user can observe: `--optimization-report` lists every check kept, under
 "Overflow checks kept", with the ranges that did not prove it.
+
+## A named bound proves what its number proves
+
+An attribute that no built function writes outside its default, whose default is one whole-number literal, always
+holds that number, so the range proof reads it as the number
+([PROOFS.md](PROOFS.md#an-attribute-nothing-writes-is-read-as-its-default)). A bound given a name proves arithmetic
+as the literal does:
+
+```spite
+var _hundred = 100
+var _thousand = 1000
+
+func scaled(amount: Integer): Integer {
+    var floor = amount.maximum(0)
+    var bounded = floor.minimum(_hundred)
+    return bounded * 1000
+}
+
+func guarded(amount: Integer): Integer? {
+    fallback amount < _thousand
+    fallback amount > 0
+    return amount * 1000
+}
+```
+
+Both products are written unchecked: `bounded` runs from 0 to 100, `amount` from 1 to 999. An attribute anything
+writes outside its default, and every attribute in a `--repl`, `--repl-port`, `--hot-reload` or `--development`
+build (whose later code may write it), keeps its type's range. What a user can observe: `--optimization-report`
+no longer lists such an operation under "Overflow checks kept".
 
 ## Arithmetic whose operands' bounds prove it fits is not checked
 

@@ -108,7 +108,8 @@ clearing a function's facts once it has, so no fact outlives the round that prov
 8. `every_attribute_is_read`: an attribute nothing reads is a compile error.
 9. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
 10. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
-   facts on the operations).
+   facts on the operations). It first reads which attributes nothing writes (`AttributeUses`) and records those
+   whose default is a number (`HighProgram.numbers_nothing_writes`), which it reads as that number.
 11. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
 12. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
@@ -149,7 +150,7 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    constructor argument.
 5. `unreached_functions`: a function only the calls those passes replaced reached is dropped.
 6. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
-   they are read. It hands each attribute of a class it shrinks, with whether it left it out, to
+   they are read, from the walk `AttributeUses` that `ranges` ran too, run again over what passes built since. It hands each attribute of a class it shrinks, with whether it left it out, to
    `validators/high_intermediary_representation/recursive_default`, which decides whether a kept attribute of
    `String` makes texts.
 7. `layouts_by_use`: every class's layout (offsets, sizes, packing, the shared blocks of union members, the room of

@@ -1,0 +1,475 @@
+# ../OPTIMIZATIONS.md#untouched-attributes-have-no-slot
+# ../PROOFS.md#an-attribute-nothing-writes-is-read-as-its-default
+
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = HighIntermediaryRepresentation.Building.Context(no_program, no_resolver)
+var no_functions = List<HighIntermediaryRepresentation.HighFunction>()
+var no_exclusions = List<String>()
+var facts = HighIntermediaryRepresentation.Building.Facts(no_program, no_functions, no_exclusions)
+var built = List<HighIntermediaryRepresentation.HighFunction>()
+var written = List<String>()
+var read_keys = List<String>()
+var spoiled = List<String>()
+var looped = List<String>()
+var unplain = List<String>()
+var through_shapes = List<String>()
+var shared = List<String>()
+var receiving_calls = List<HighIntermediaryRepresentation.Values.Call>()
+var receiving_keys = List<String>()
+var held_locals = Dictionary<String, String>()
+var declared_names = List<String>()
+var loop_depth = 0
+var in_defaults = false
+var defaults = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var numbers = Dictionary<String, SpiteCompiler.Value>()
+var protected_names = ["_buffer", "_length", "item_count", "handle", "address", "context", "_function", "_cell"]
+var scalars = Model.Scalars()
+
+func read_the_program(high: HighIntermediaryRepresentation.HighProgram) {
+    crash high.context
+    context = high.context
+    built = high.built_functions.copy()
+    built.each(read_a_function)
+}
+
+# ../OPTIMIZATIONS.md#attributes-nothing-writes-are-rebuilt-where-read
+func is_never_written(attribute: Model.AttributeModel): Boolean {
+    var key = key_of(attribute)
+    return not protected_names.contains(attribute.name) and not written.contains(key)
+}
+
+# ../PROOFS.md#an-attribute-nothing-writes-is-read-as-its-default
+func numbers_nothing_writes(): Dictionary<String, SpiteCompiler.Value> {
+    numbers = Dictionary<String, SpiteCompiler.Value>()
+    if not is_interactive() {
+        context.program.order.each(note_the_numbers_of)
+    }
+    return numbers
+}
+
+func is_interactive(): Boolean {
+    var flags = context.build_flags
+    var inspection = CommandLine.Inspection()
+    return inspection.holds(flags)
+}
+
+func note_the_numbers_of(model: Model.ClassModel) {
+    fallback not keeps_its_declared_layout(model)
+    var found = defaults[model.key]
+    fallback found
+    var spans = spans_of(model, found.body)
+    fallback spans.count() == model.declared_attributes.count()
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var span = spans[index]
+        crash span
+        if span.count() == 1 and is_never_written(attribute) {
+            note_a_number(attribute, span)
+        }
+        index = index + 1
+    }
+}
+
+func note_a_number(attribute: Model.AttributeModel, span: List<SpiteCompiler.Statement>) {
+    var only = span.first()
+    crash only
+    if only.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        var value = only.value
+        if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+            var key = key_of(attribute)
+            numbers[key] = value
+        }
+    }
+}
+
+func keeps_its_declared_layout(model: Model.ClassModel): Boolean {
+    var key = model.key
+    var is_fixed = key == "Buffer" or key == "ForeignCallback" or key.starts_with("Spite.")
+    return is_fixed or scalars.is_a_scalar(key)
+}
+
+func spans_of(
+    model: Model.ClassModel,
+    body: HighIntermediaryRepresentation.Statements.Block,
+): List<List<SpiteCompiler.Statement>> {
+    var spans = List<List<SpiteCompiler.Statement>>()
+    var unmatched = List<List<SpiteCompiler.Statement>>()
+    var span = List<SpiteCompiler.Statement>()
+    var index = 0
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        span.append(statement)
+        var closed = closed_attribute(model, statement)
+        if closed != "" {
+            var position = spans.count()
+            if not is_the_next(model, position, closed) {
+                return unmatched
+            }
+            spans.append(span)
+            span = List<SpiteCompiler.Statement>()
+        }
+        index = index + 1
+    }
+    if not span.is_empty() {
+        return unmatched
+    }
+    return spans
+}
+
+func is_the_next(model: Model.ClassModel, position: Integer, closed: String): Boolean {
+    var wanted = model.declared_attributes[position]
+    fallback wanted
+    return wanted.name == closed
+}
+
+func closed_attribute(model: Model.ClassModel, statement: SpiteCompiler.Statement): String {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        var object = statement.object
+        var is_its_own = object.class == HighIntermediaryRepresentation.Values.ThisRead
+        if is_its_own and statement.attribute.owner == model.key {
+            return statement.attribute.name
+        }
+    }
+    return ""
+}
+
+func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    if function.function.name == "_attribute_defaults" {
+        defaults[function.function.owner] = function
+    }
+    in_defaults = function.function.name == "_attribute_defaults"
+    held_locals = Dictionary<String, String>()
+    declared_names = List<String>()
+    loop_depth = 0
+    read_a_block(function.body)
+}
+
+func read_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(read_a_statement)
+}
+
+func read_a_statement(statement: SpiteCompiler.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: read_a_declaration(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: read_an_assignment(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: read_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: read_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: read_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.Return: look(statement.value)
+        HighIntermediaryRepresentation.Statements.If: read_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: read_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Stop: read_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: read_a_block(statement)
+    }
+}
+
+func read_an_evaluation(statement: HighIntermediaryRepresentation.Statements.Evaluate) {
+    look(statement.value)
+    look(statement.waited)
+}
+
+func read_a_stop(statement: HighIntermediaryRepresentation.Statements.Stop) {
+    statement.shown.each(look_present)
+    look(statement.then)
+}
+
+func read_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    look(branch.condition)
+    read_a_block(branch.then_branch)
+    read_a_block(branch.else_branch)
+}
+
+func read_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    loop_depth = loop_depth + 1
+    look(loop.condition)
+    read_a_block(loop.body)
+    loop_depth = loop_depth - 1
+}
+
+func read_a_declaration(name: String, value: SpiteCompiler.Value?) {
+    if declared_names.contains(name) {
+        spoil_the_local(name)
+    }
+    declared_names.append(name)
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        hold_in_a_local(name, value)
+        return
+    }
+    look(value)
+}
+
+func hold_in_a_local(name: String, read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    var key = key_of(read.attribute)
+    note_a_read(key, read)
+    held_locals[name] = key
+}
+
+func read_an_assignment(name: String, value: SpiteCompiler.Value?) {
+    spoil_the_local(name)
+    look(value)
+}
+
+func spoil_the_local(name: String) {
+    var key = held_locals[name]
+    fallback key
+    add(spoiled, key)
+}
+
+func read_an_attribute_write(statement: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    var is_a_default = is_its_default(statement)
+    if not is_a_default {
+        var key = key_of(statement.attribute)
+        add(written, key)
+    }
+    look(statement.object)
+    look(statement.value)
+}
+
+func is_its_default(statement: HighIntermediaryRepresentation.Statements.Assign.Attribute): Boolean {
+    var object = statement.object
+    if object.class == HighIntermediaryRepresentation.Values.ThisRead {
+        return in_defaults
+    }
+    return false
+}
+
+func read_a_shape_write(statement: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    note_the_fillers(statement.shape.key, statement.member, true)
+    look(statement.object)
+    look(statement.value)
+}
+
+func note_the_fillers(shape_key: String, member: String, is_a_write: Boolean) {
+    var fillers = context.program.fillers_of(shape_key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        note_a_filler(filler, member, is_a_write)
+        index = index + 1
+    }
+    add(shared, "{shape_key}|{member}")
+}
+
+func note_a_filler(filler: Model.Type, member: String, is_a_write: Boolean) {
+    var model = context.program.class_named(filler.name)
+    fallback model
+    var attribute = model.attribute_named(member)
+    fallback attribute
+    var key = key_of(attribute)
+    add(through_shapes, key)
+    add(read_keys, key)
+    if is_a_write {
+        add(written, key)
+    }
+}
+
+func look_present(value: SpiteCompiler.Value) {
+    look(value)
+}
+
+func look_both(first: SpiteCompiler.Value?, second: SpiteCompiler.Value?) {
+    look(first)
+    look(second)
+}
+
+func look(value: SpiteCompiler.Value?) {
+    fallback value
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: look_a_call(value)
+        HighIntermediaryRepresentation.Values.AttributeRead: look_an_attribute(value)
+        HighIntermediaryRepresentation.Values.LocalRead: spoil_the_local(value.name)
+        HighIntermediaryRepresentation.Values.Conversion: look(value.converted)
+        HighIntermediaryRepresentation.Values.Class.OfValue: look(value.described)
+        HighIntermediaryRepresentation.Values.Class.Membership: look(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: look(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: look(value.number)
+        HighIntermediaryRepresentation.Values.ForeignCall: look_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.Function.Value: look(value.receiver)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: look_a_value_call(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: look_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MakeObject: value.arguments.each(look_present)
+        HighIntermediaryRepresentation.Values.Negation: look(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: look_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: look(value.tested)
+        HighIntermediaryRepresentation.Values.ShapeCall: look_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.WholeNumber: return
+        HighIntermediaryRepresentation.Values.DecimalNumber: return
+        HighIntermediaryRepresentation.Values.TextConstant: return
+        HighIntermediaryRepresentation.Values.NullConstant: return
+        HighIntermediaryRepresentation.Values.ThisRead: return
+        HighIntermediaryRepresentation.Values.Class.Object: return
+        HighIntermediaryRepresentation.Values.Function.Fact: return
+    }
+}
+
+func look_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall) {
+    look(call.library)
+    call.arguments.each(look_present)
+    call.arguments.each(write_a_passed_struct)
+}
+
+func write_a_passed_struct(argument: SpiteCompiler.Value) {
+    fallback argument.value_type.kind == 'shape'
+    var shape = context.program.shape_keyed(argument.value_type.name)
+    crash shape
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.is_an_attribute {
+            note_the_fillers(shape.key, member.name, true)
+        }
+        index = index + 1
+    }
+}
+
+func look_a_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
+    look(call.called)
+    call.arguments.each(look_present)
+}
+
+func look_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    var reads_an_attribute = call.member.is_an_attribute or call.arguments.is_empty()
+    if reads_an_attribute and not call.member.is_a_function_member {
+        note_the_shape_read(call.shape.key, call.member.name)
+    }
+    look(call.receiver)
+    call.arguments.each(look_present)
+}
+
+func note_the_shape_read(shape_key: String, member: String) {
+    var fillers = context.program.fillers_of(shape_key)
+    var every_filler_holds_it = true
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        if not holds_the_attribute(filler, member) {
+            every_filler_holds_it = false
+        }
+        note_a_filler(filler, member, false)
+        index = index + 1
+    }
+    if every_filler_holds_it {
+        add(shared, "{shape_key}|{member}")
+    }
+}
+
+func holds_the_attribute(filler: Model.Type, member: String): Boolean {
+    var model = context.program.class_named(filler.name)
+    fallback model
+    if model.attribute_named(member) {
+        return true
+    }
+    return false
+}
+
+func look_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    var receiver = call.receiver
+    if receiver.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        receive_a_read(call, receiver)
+    } else if receiver.class == HighIntermediaryRepresentation.Values.LocalRead {
+        receive_a_local(call, receiver)
+    } else {
+        look(receiver)
+    }
+    call.arguments.each(look_present)
+}
+
+func receive_a_read(
+    call: HighIntermediaryRepresentation.Values.Call,
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+) {
+    var key = key_of(read.attribute)
+    note_a_read(key, read)
+    receiving_calls.append(call)
+    receiving_keys.append(key)
+}
+
+func receive_a_local(
+    call: HighIntermediaryRepresentation.Values.Call,
+    local: HighIntermediaryRepresentation.Values.LocalRead,
+) {
+    var key = held_locals[local.name]
+    fallback key
+    receiving_calls.append(call)
+    receiving_keys.append(key)
+}
+
+func note_a_read(key: String, read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    add(read_keys, key)
+    if loop_depth > 0 {
+        add(looped, key)
+    }
+    var object = read.object
+    var is_plain = object.class == HighIntermediaryRepresentation.Values.ThisRead
+    if object.class == HighIntermediaryRepresentation.Values.LocalRead {
+        is_plain = true
+        spoil_the_local(object.name)
+    }
+    if not is_plain {
+        add(unplain, key)
+        look(object)
+    }
+}
+
+func look_an_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead) {
+    var key = key_of(read.attribute)
+    note_a_read(key, read)
+    add(spoiled, key)
+}
+
+func judge_the_receivers() {
+    facts = HighIntermediaryRepresentation.Building.Facts(context.program, built, no_exclusions)
+    var asked = List<String>()
+    var index = 0
+    while index < receiving_calls.count() {
+        var call = receiving_calls[index]
+        var key = call.function.key()
+        var is_built = facts.bodies.contains(key)
+        if is_built and not asked.contains(key) {
+            asked.append(key)
+        }
+        index = index + 1
+    }
+    if not asked.is_empty() {
+        facts.study(asked)
+    }
+    var judged = 0
+    while judged < receiving_calls.count() {
+        var receiving = receiving_calls[judged]
+        var receiving_key = receiving_keys[judged]
+        crash receiving_key
+        if not leaves_its_receiver(receiving) {
+            add(spoiled, receiving_key)
+        }
+        judged = judged + 1
+    }
+}
+
+func leaves_its_receiver(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    var function = call.function
+    var key = function.key()
+    fallback facts.bodies.contains(key)
+    fallback not facts.writes(function, "this")
+    if not function.answer {
+        return true
+    }
+    if facts.is_immutable(function.answer) {
+        return true
+    }
+    return not facts.returned.contains("{key}|this")
+}
+
+func key_of(attribute: Model.AttributeModel): String {
+    return "{attribute.owner}.{attribute.name}"
+}
+
+func add(listed: List<String>, key: String) {
+    if not listed.contains(key) {
+        listed.append(key)
+    }
+}
