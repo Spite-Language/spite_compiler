@@ -243,8 +243,8 @@ One layout for each kind of folder, so opening one says where its entry is. `fol
 namespaces with `crash`es decided while compiling, so a stage without its entry, a pass or proof folder without its
 class, a low pass without the entry named for its folder (D1923), a rule folder without `Validator` or holding anything
 else, a fix layer without `EveryFix` or a printer without `Printer` refuses the build, under `--check` too (D1885,
-`spite_spec`'s `compiler_folder_layout_broken`). A `Validator` holds a `check*` when it
-walks something, or a `refuse*` when the parser found the mistake and only asks it for the words (`syntax`; D1886). `compiler_contracts_are_true` holds that every stage has a `contract.md`, and that every `contract.md` names only files,
+`spite_spec`'s `compiler_folder_layout_broken`). A `Validator` holds a `check*`, the entry that is handed content and
+finds the mistakes in it (D1975, which replaces D1886). `compiler_contracts_are_true` holds that every stage has a `contract.md`, and that every `contract.md` names only files,
 folders and flags that exist. The size of every file is held by `validators/abstract_syntax_tree/file_content_budget`
 (D1854, D1925).
 
@@ -447,10 +447,29 @@ both forms, and that change publishes a new seed: its fixed point as a new `seed
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
 file), it hands it to the validator of that rule at once. The validator lets it pass, or refuses it through
 `Diagnostics.Failure`. A mistake with one fix never reaches its validator: the layer's fix rule changes the tree
-first (below). The lexer stops at the first thing it cannot read (a mark no token starts with, an unclosed text, symbol or
-hole, a `$` with no name), records it as an `AbstractSyntaxTree.Tokens.Unreadable` and hands it to `spelling`'s `check`
-when its reading ends; a number or a word it reads past goes to `spelling`'s `check_a_number` and to `borrowed_word` where
-it stands, with the neighbours they decide on.
+first (below).
+
+Reading a file judges nothing (D1975). The lexer reads every mark as a token of its own and keeps what starts no token
+(a character with no token, a text, symbol or hole that never closes, a `$` with no name) as an
+`AbstractSyntaxTree.Tokens.Unreadable`, then reads on after it. `spelling` walks those tokens and pieces and finds the
+mistakes: a piece, two marks written together that Spite does not read (`->`, `++`, `//`, `/*` ...), a number whose
+`_` or exponent is wrong, and, through `borrowed_word`, a word from another language. The parser reads the grammar;
+where the token at hand does not continue it, it keeps an `AbstractSyntaxTree.Shapes.Unfit` (what it was reading and
+the token's index) and reads on at the next safe point: the next statement of the same block, or the next
+declaration of the file, past the braces the broken one opened (a `}` closing the block ends the skip). `syntax` is
+handed the tokens and those pieces and finds every mistake: what each piece is (a keyword or reserved word where a
+name goes, a codegen list, a `<<`, an `else` with no `if` ...) and the forms the grammar reads that Spite is not
+(`assert`, `this.`, `load(`, a reserved word after a dot). It reports one mistake for each piece's region (the first,
+form or piece), one on each line, none after a `func` met where a value goes (an unclosed brace swallowed the rest),
+one for a run of statements standing in the file, one for every stray `}` there, and none where a keyword it told as
+a name is used again, so a broken brace or name never floods the list. `spelling` likewise skips from a text that
+never closes to the quote that was meant to close it. Holes in texts are read
+by a lexer and parser of their own, and their tokens and pieces are judged the same way.
+
+`validators/abstract_syntax_tree/every_rule.spite` runs `spelling` once the file is lexed (before `fixes/tokens`: a
+file whose spelling is wrong stops there, since its tokens are not what was meant) and `syntax` once it is parsed,
+gathers what they find in line order and hands it all to `Diagnostics.Failure.stop_every`, so one compile tells every
+reading mistake of a file.
 
 A refusal stops the check it happened in, and the compile goes on to the other checks. `Diagnostics.Gathering`
 (a singleton) holds what was found, and what happens next depends on the check:
@@ -570,12 +589,16 @@ needs. The folder is named after the rule, and the validator holds every word of
 - `diagnostics/failure.spite` (`Diagnostics.Failure`) ends the compile; only a validator or a proof builds one. A
   command-line rule that stops a run with no compile to tell it in (`--connect`, a compiler not handed its flags)
   prints its `error:` line itself and exits with 1.
+- A validator finds the mistake itself (AGENTS.md): it is handed content and decides from it. No caller decides a
+  mistake and hands it the kind, the words or a flag to print (D1975).
 - The test `tests/compiler_rules_are_validators` of spite_spec reads this source: every
   `validators/**/validator.spite` defines a `check`; no file outside `validators/` and `proofs/` defines a
   `refuse...` or builds a `Diagnostics.Failure`; no file outside `validators/` calls a `.refuse...(`, hands its own
-  words to a `.stop(...)`, or (outside `diagnostics/`) prints a `console.error` and exits; and inside `validators/`
-  no `check...` refuses before it tests anything, and no rule words a fault of the compiler. The files still waiting
-  for a rule to move are listed there, each with the batch of spite_compiler#385 that empties it.
+  words to a `.stop(...)`, hands a rule's `check...` a symbol (the kind of a mistake it named), or (outside
+  `diagnostics/`) prints a `console.error` and exits; and inside `validators/` no `check...` refuses before it tests
+  anything, none is handed the kind of its mistake (an `enum Mistake`, a `Mistake` or `mistake:` parameter), and no
+  rule words a fault of the compiler. It keeps no list of files excused (spite_compiler#385), and it judges a printer
+  written for it, to show such a rule is refused.
 - A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_documentation/blob/master/style.md#the-file-content-budget))
   is told with the file's other refusals, by `validators/abstract_syntax_tree/file_content_budget`. No list or flag excuses a file.
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
