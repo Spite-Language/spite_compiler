@@ -209,6 +209,22 @@ never depends on these passes. Moving a function to the end of the order changes
 proven by the same outputs on every test and the same or better times on the benchmarks it affects, not by
 identical bytes.
 
+### Checking the functions nobody calls
+
+Every function of the program's own classes outside a generic class is built in every build, called or not, so a
+mistake in it is refused the way one in a reached function is. An inspectable build keeps them (`keep_the_unreached`).
+A production build checks them once the reached program is built (`Builder.check_the_unreached`), in the same
+context, and then puts back everything the check made: `building/checkpoint.spite` remembers the context (the lists
+the builder only appends to are cut back to their length, a dictionary or a value is set back to a copy) and the
+built functions, and `building/model_checkpoint.spite` the program model (its classes and shapes, the fillers of a
+shape, and the functions, attributes, enums, unions and shapes of each class). So what the proofs, the high passes,
+the lowering and the outputs read is what the reached functions made, and the executable does not change.
+
+The validators the builder calls refuse in every function. The proofs that run after building
+(`proven_present`, `every_attribute_is_read`, the rules after building) read the reached functions only, since
+they prove facts the executable relies on. A context field or a model collection that the builder writes and a
+later stage reads is put back here; one that is not would let an uncalled function change the executable.
+
 ### The low passes, in order
 
 `low_optimization_passes/low_optimization_passes.spite` lists them, with the low proofs before the passes that
