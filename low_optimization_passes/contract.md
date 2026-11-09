@@ -10,3 +10,11 @@ The passes that transform the low representation, in the order `low_optimization
 - `machine.spite` and `frame.spite`: the machine that runs low instructions while compiling, which `compile_time_evaluation` and `constant_folding` read.
 
 `../ARCHITECTURE.md#the-low-passes-in-order` says what each pass does.
+
+## Copies
+
+A pass that copies an instruction (`inlining`, and `compile_time_evaluation`'s unrolling, function clones and
+redirected calls) calls `copy()`, which carries every field, and gives each list field a list of its own with a walk
+over the copy's attributes (`own_list`), so a field added later is copied without anyone writing it. Only what the
+copy changes is written beside it: the registers inlining moves, the blocks a clone maps, the function a call is
+redirected to.
