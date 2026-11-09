@@ -24,7 +24,7 @@ owns it, not to a printer.
 |---|---|---|
 | `diagnostics` | a `Diagnostics.Report` | each problem as `file:line: error: text (in Class.function)`, each fix as `file:line: fixed: text (in Class.function)`, and each note as `note: text` |
 | `spite` | a statement, an expression, a declaration, or a whole `SourceFile` (`Printer`) | the code as Spite; a file in the one layout, declarations in the enforced order, lines over 120 columns broken, with its heading and its functions' comments |
-| `high_intermediary_representation` | one `HighClass` | the class, its attributes and its functions, one statement a line (`--high-ir`, into `.spite/build/<name>.high_ir.txt`) |
+| `high_intermediary_representation` | one `HighFunction` | the function and its statements, one a line with its fields (`--high-ir`, into `.spite/build/<name>.high_ir.txt`) |
 | `low_intermediary_representation` | the name of a class and its `LowFunction`s | each function and its instructions, one a line (`--low-ir`, into `.spite/build/<name>.low_ir.txt`) |
 
 | `final_class` | a class's merged `SourceFile` and the link to each file that supplied a declaration | the class as Spite, each attribute and function under a `#` link to its file (`--final-classes=folder`) |
@@ -38,4 +38,7 @@ They are for people reading what a pass did, and nothing reads them back, so the
 The high one writes a value the way Spite would, with every operation in parentheses so the order is seen, and a
 call with the class that owns it: `ExitCode.double_value(this, (total + index))`. A call whose class the builder
 could not tell says so: `reset(this), its class unknown`. The low one writes `rN` for a virtual register and `pN`
-for a place in the frame, and a jump names the index of the instruction it goes to.
+for a place in the frame, and a jump names the index of the instruction it goes to. Both end each line (an
+instruction, a statement, a `function` line) with ` | ` and every field of what it shows, found by a walk over its
+attributes, so a field a copy forgets shows; the high one writes a value it holds as its own fields in braces
+(`Field<$field_type>` picks how each class of field is written).
