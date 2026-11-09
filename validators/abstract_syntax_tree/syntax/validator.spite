@@ -1,171 +1,466 @@
-enum Mistake {
-    'codegen_value_after_generic'
-    'enum_name'
-    'enum_value'
-    'union_name'
-    'union_member'
-    'type_name'
-    'type_member'
-    'shape_parameter_name'
-    'class_name_after_dot'
-    'name_after_dot'
-    'variable_name'
-    'variable_default'
-    'function_name'
-    'function_parentheses'
-    'parameter_shape'
-    'parameter_type'
-    'opening_brace'
-    'closing_brace'
-    'parameters_closing_parenthesis'
-    'arguments_closing_parenthesis'
-    'group_closing_parenthesis'
-    'closing_bracket'
-    'else_without_if'
-    'case_colon'
-    'key_colon'
-    'statement_in_file'
-    'left_over'
-    'shift_left'
-    'shift_right'
-    'question_mark'
-    'value'
-    'type'
-    'return_type_colon'
-    'load_function_name'
-    'load_variable_name'
-    'load_parameter_name'
-    'load_parentheses'
-    'load_as_value'
-    'class_keyword'
-    'declaration_comma'
-    'this_member'
-    'left_over_after_block'
-    'reserved_name'
+var reserved_words = ["type", "singleton"]
+var value_texts: Dictionary<AbstractSyntaxTree.Tokens.Token.Kind, String> = {
+    'question': "a question mark follows a type to write it as one that may be absent, as in 'Monster?': it is not how Spite chooses between two values, so write an 'if' with an 'else'"
+    'keyword_load': "'load' is a statement on a line of its own, like 'load \"folder\"': it is not a function, and it has no value"
 }
-
-func refuse(path: String, found: AbstractSyntaxTree.Tokens.Token, mistake: Mistake) {
-    var text = text_of(mistake, found.lexeme)
-    var problem = Diagnostics.Problem(path, found.line, text)
-    var failure = Diagnostics.Failure()
-    failure.stop(problem)
+var shift_texts: Dictionary<AbstractSyntaxTree.Tokens.Token.Kind, String> = {
+    'less': "Spite has no '<<': bits are functions on the whole numbers, write 'value.shifted_left(count)'"
+    'greater': "Spite has no '>>': bits are functions on the whole numbers, write 'value.shifted_right(count)'"
 }
+var forms = List<Diagnostics.Problem>()
+var form_places = List<Integer>()
+var misused_words = List<String>()
+var told_a_stray_brace = false
 
-func refuse_an_untyped_variadic(path: String, name: AbstractSyntaxTree.Tokens.Token) {
-    var text = "'...{name.text}' receives the arguments as a list: write '...{name.text}: List<Type>' with the type of each argument"
-    var problem = Diagnostics.Problem(path, name.line, text)
-    var failure = Diagnostics.Failure()
-    failure.stop(problem)
-}
-
-func refuse_an_assert(path: String, line: Integer) {
-    var text = "'assert' is now 'fallback': it returns what the function's answer type builds with no arguments when its condition fails, so write 'fallback' with the same condition"
-    var problem = Diagnostics.Problem(path, line, text)
-    var failure = Diagnostics.Failure()
-    failure.stop(problem)
-}
-
-func refuse_a_generic_comma(path: String, line: Integer, value: String) {
-    var text = "a 'generic' line declares one codegen value: write 'generic {value}' and put the next one on its own line, also starting with 'generic'"
-    var problem = Diagnostics.Problem(path, line, text)
-    var failure = Diagnostics.Failure()
-    failure.stop(problem)
-}
-
-func refuse_a_generics_list(path: String, line: Integer, value: String) {
-    var text = "there is no 'generics' list: a class declares each codegen value on its own line at the top of the file, like 'generic {value}'"
-    var problem = Diagnostics.Problem(path, line, text)
-    var failure = Diagnostics.Failure()
-    failure.stop(problem)
-}
-
-func refuse_a_this_call(
+# ../../../ARCHITECTURE.md#validators
+func check(
     path: String,
-    member: AbstractSyntaxTree.Tokens.Token,
-    class_name: String,
-    function_name: String,
+    namespace: String,
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    unfit: List<AbstractSyntaxTree.Shapes.Unfit>,
+    found: List<Diagnostics.Problem>,
 ) {
-    var text = "a class calls its own functions by name: write '{member.text}()', not 'this.{member.text}()'"
-    var failure = Diagnostics.Failure()
-    failure.stop_inside(path, member.line, class_name, function_name, text)
+    find_the_forms(path, namespace, tokens)
+    misused_words = List<String>()
+    told_a_stray_brace = false
+    var form_index = 0
+    var piece_index = 0
+    var told_a_function_where_a_value_goes = false
+    while piece_index < unfit.count() and not told_a_function_where_a_value_goes {
+        var piece = unfit[piece_index]
+        tell_the_forms_before(piece.start, form_index, found)
+        form_index = forms_past(piece.start, form_index)
+        var is_told = not is_a_follow_on(tokens, unfit, piece_index)
+        remember_what_it_breaks(tokens, piece)
+        if is_told and a_form_comes_first(form_index, piece.at) {
+            tell_a_form(form_index, found)
+        } else if is_told {
+            var problem = problem_of(path, tokens, piece)
+            found.append(problem)
+            told_a_function_where_a_value_goes = is_a_function_where_a_value_goes(tokens, piece)
+        }
+        form_index = forms_past(piece.resumed, form_index)
+        piece_index = piece_index + 1
+    }
+    fallback not told_a_function_where_a_value_goes
+    var count = tokens.count()
+    tell_the_forms_before(count, form_index, found)
 }
 
-func refuse_a_codegen_list(
-    path: String,
-    found: AbstractSyntaxTree.Tokens.Token,
-    function_name: String,
-    values: List<String>,
-) {
-    var lines = List<String>()
+func find_the_forms(path: String, namespace: String, tokens: List<AbstractSyntaxTree.Tokens.Token>) {
+    forms = List<Diagnostics.Problem>()
+    form_places = List<Integer>()
+    var function_name = ""
+    var last = tokens.count() - 1
     var index = 0
-    while index < values.count() {
-        var value = values[index]
-        lines.append("'generic {value}'")
+    while index < last {
+        var token = tokens[index]
+        var next = tokens[index + 1]
+        crash next
+        if token.kind == 'keyword_function' {
+            function_name = declared_name(next)
+        } else if token.kind == 'keyword_fallback' and token.lexeme == "assert" {
+            var assert_words = assert_text()
+            keep_a_form(index, path, token.line, assert_words)
+        } else if token.kind == 'keyword_this' and next.kind == 'dot' {
+            check_a_this(path, namespace, function_name, tokens, index)
+        } else if token.kind == 'keyword_load' and next.kind == 'open_parenthesis' {
+            var load_words = load_parentheses_text()
+            keep_a_form(index, path, next.line, load_words)
+        } else if token.kind == 'name' and reserved_words.contains(token.lexeme) {
+            var reserved_words_text = reserved_name_text(token.lexeme)
+            keep_a_form(index, path, token.line, reserved_words_text)
+        }
         index = index + 1
     }
-    var listed = lines.join(", ")
-    var text = "a function no longer lists codegen values between '<' and '>': declare each at the top of the file on its own line ({listed}), and write 'func {function_name}(' here"
-    var problem = Diagnostics.Problem(path, found.line, text)
-    var failure = Diagnostics.Failure()
-    failure.stop(problem)
 }
 
-func text_of(mistake: Mistake, found: String): String {
-    switch mistake {
-        'codegen_value_after_generic': return "expected a codegen value after 'generic', as in 'generic $name', and found '{found}'"
-        'enum_name': return "an enum is named in PascalCase, and found '{found}'"
-        'enum_value': return "an enum's values are symbols, as in 'knight', and found '{found}'"
-        'union_name': return "a union is named in PascalCase, and found '{found}'"
-        'union_member': return "a union's members are classes, as in 'Player', and found '{found}'"
-        'type_name': return "a type is named in PascalCase, and found '{found}'"
-        'type_member': return "a type's members are written 'name: Type' or 'name(Type, Type): Type', and found '{found}'"
-        'shape_parameter_name': return shape_parameter_text()
-        'class_name_after_dot': return "expected a class name after the dot and found '{found}'"
-        'name_after_dot': return "expected a name after the dot and found '{found}'"
-        'variable_name': return "expected the name of a variable and found '{found}'"
-        'variable_default': return "every variable has a default value, so write '=' and the value"
-        'function_name': return "a function is declared 'func name()', so a name follows 'func', and found '{found}'"
-        'function_parentheses': return "a function takes its parameters in parentheses, as in 'func name(value: Type)'"
-        'parameter_shape': return "a parameter is declared 'name: Type', and found '{found}'"
-        'parameter_type': return "a parameter is declared 'name: Type', so write its type after the ':'"
-        'opening_brace': return "expected an opening brace and found '{found}'"
-        'closing_brace': return "this brace is never closed: write the closing brace that ends it"
-        'parameters_closing_parenthesis': return "expected the closing parenthesis of the parameters and found '{found}'"
-        'arguments_closing_parenthesis': return "expected the closing parenthesis of the arguments and found '{found}'"
-        'group_closing_parenthesis': return "expected the closing parenthesis of the group and found '{found}'"
-        'closing_bracket': return "expected the closing bracket and found '{found}'"
-        'else_without_if': return "this 'else' follows no 'if': an 'else' comes right after the brace closing the branch it answers"
-        'case_colon': return "a case is written 'value:' or 'Class:', so write the ':' after it"
-        'key_colon': return "a written key is written 'key: value', so write the ':' after it"
-        'statement_in_file': return "a file holds declarations and nothing else, so a statement cannot stand here"
-        'left_over': return "'{found}' is left over after the end of the statement: a statement is one line"
-        'shift_left': return "Spite has no '<<': bits are functions on the whole numbers, write 'value.shifted_left(count)'"
-        'shift_right': return "Spite has no '>>': bits are functions on the whole numbers, write 'value.shifted_right(count)'"
-        'question_mark': return question_mark_text()
-        'value': return "expected a value and found '{found}'"
-        'type': return "expected a type and found '{found}'"
-        'return_type_colon': return "a function's answer is written after a ':', as in 'func total(): Integer', and found '{found}'"
-        'load_function_name': return "'load' is a keyword and cannot name a function: give it a name that says what it loads, like 'load_texture'"
-        'load_variable_name': return "'load' is a keyword and cannot name a variable: give it a name that says what it loads, like 'load_texture'"
-        'load_parameter_name': return "'load' is a keyword and cannot name a parameter: give it a name that says what it loads, like 'load_texture'"
-        'load_parentheses': return "'load' is a keyword, not a function: write it without parentheses, 'load \"level\"'"
-        'load_as_value': return "'load' is a statement on a line of its own, like 'load \"folder\"': it is not a function, and it has no value"
-        'class_keyword': return "there is no 'class' keyword: a file is a class, named after the file, and its attributes and functions are written at the top of that file"
-        'declaration_comma': return "the entries of an enum or a union are one per line, not separated by commas: delete the ','"
-        'left_over_after_block': return "'{found}' is left over after the '}' that closes this statement: a statement ends with its line, so remove it, or put it on a line of its own"
-        'this_member': return "a class reads its own attributes and calls its own functions by name: write 'name', not 'this.name'"
-        'reserved_name': return reserved_name_text(found)
+func declared_name(next: AbstractSyntaxTree.Tokens.Token): String {
+    fallback next.kind == 'name' or next.kind == 'class_name'
+    return next.text
+}
+
+func check_a_this(
+    path: String,
+    namespace: String,
+    function_name: String,
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    index: Integer,
+) {
+    var dot = tokens[index + 1]
+    crash dot
+    var member = tokens[index + 2]
+    var opening = tokens[index + 3]
+    var is_a_call = false
+    if member and opening {
+        is_a_call = member.kind == 'name' and opening.kind == 'open_parenthesis'
+    }
+    if not is_a_call {
+        keep_a_form(
+            index,
+            path,
+            dot.line,
+            "a class reads its own attributes and calls its own functions by name: write 'name', not 'this.name'",
+        )
+        return
+    }
+    crash member
+    var text = "a class calls its own functions by name: write '{member.text}()', not 'this.{member.text}()'"
+    var problem = Diagnostics.Problem(path, member.line, text)
+    problem.class_name = namespace
+    problem.function_name = function_name
+    problem.is_among_the_attributes = function_name.is_empty()
+    forms.append(problem)
+    form_places.append(index)
+}
+
+func keep_a_form(index: Integer, path: String, line: Integer, text: String) {
+    var problem = Diagnostics.Problem(path, line, text)
+    forms.append(problem)
+    form_places.append(index)
+}
+
+func a_form_comes_first(form_index: Integer, at: Integer): Boolean {
+    fallback form_index < form_places.count()
+    return place_of_the_form(form_index) < at
+}
+
+func place_of_the_form(form_index: Integer): Integer {
+    var place = form_places[form_index]
+    crash place
+    return place
+}
+
+func tell_a_form(form_index: Integer, found: List<Diagnostics.Problem>) {
+    var problem = forms[form_index]
+    crash problem
+    found.append(problem)
+}
+
+func tell_the_forms_before(end: Integer, form_index: Integer, found: List<Diagnostics.Problem>) {
+    var index = form_index
+    while index < form_places.count() and place_of_the_form(index) < end {
+        tell_a_form(index, found)
+        index = index + 1
     }
 }
 
-func shape_parameter_text(): String {
-    var first = "a shape names the types it needs, not the names they are given"
-    return "{first}: write the type alone, since a class satisfies it whatever it calls its parameters"
+func forms_past(end: Integer, form_index: Integer): Integer {
+    var index = form_index
+    while index < form_places.count() and place_of_the_form(index) < end {
+        index = index + 1
+    }
+    return index
 }
 
-func question_mark_text(): String {
-    var first = "a question mark follows a type to write it as one that may be absent, as in 'Monster?'"
-    return "{first}: it is not how Spite chooses between two values, so write an 'if' with an 'else'"
+func is_a_follow_on(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    unfit: List<AbstractSyntaxTree.Shapes.Unfit>,
+    piece_index: Integer,
+): Boolean {
+    var piece = unfit[piece_index]
+    crash piece
+    if told_a_stray_brace and stands_as_a_stray_brace(tokens, piece) {
+        return true
+    }
+    if uses_a_misused_word(tokens, piece) {
+        return true
+    }
+    fallback piece_index > 0
+    var before = unfit[piece_index - 1]
+    crash before
+    var both_stand_in_the_file = piece.place == 'declaration' and before.place == 'declaration'
+    return both_stand_in_the_file and piece.start == before.resumed
+}
+
+func remember_what_it_breaks(tokens: List<AbstractSyntaxTree.Tokens.Token>, piece: AbstractSyntaxTree.Shapes.Unfit) {
+    told_a_stray_brace = told_a_stray_brace or stands_as_a_stray_brace(tokens, piece)
+    var names_something = piece.place == 'variable_name' or piece.place == 'parameter_name' or piece.place == 'function_name'
+    fallback names_something
+    var found = tokens[piece.at]
+    crash found
+    fallback found.kind != 'name' and not found.lexeme.is_empty()
+    misused_words.append(found.lexeme)
+}
+
+func uses_a_misused_word(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    piece: AbstractSyntaxTree.Shapes.Unfit,
+): Boolean {
+    fallback not misused_words.is_empty()
+    var index = piece.start
+    while index <= piece.at {
+        var token = tokens[index]
+        crash token
+        if token.kind != 'name' and misused_words.contains(token.lexeme) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func stands_as_a_stray_brace(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    piece: AbstractSyntaxTree.Shapes.Unfit,
+): Boolean {
+    fallback piece.place == 'declaration'
+    var found = tokens[piece.at]
+    crash found
+    return found.kind == 'close_brace'
+}
+
+func is_a_function_where_a_value_goes(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    piece: AbstractSyntaxTree.Shapes.Unfit,
+): Boolean {
+    fallback piece.place == 'value'
+    var found = tokens[piece.at]
+    crash found
+    return found.kind == 'keyword_function'
+}
+
+func problem_of(
+    path: String,
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    piece: AbstractSyntaxTree.Shapes.Unfit,
+): Diagnostics.Problem {
+    var found = tokens[piece.at]
+    crash found
+    var line = found.line
+    var text = text_of(tokens, piece, found)
+    if piece.place == 'parameter_colon' and follows_dots(tokens, piece.at) {
+        var name = tokens[piece.at - 1]
+        crash name
+        line = name.line
+    } else if piece.place == 'statement_end' and is_a_generic_list(tokens, piece, found) {
+        var start = tokens[piece.start]
+        crash start
+        line = start.line
+    }
+    return Diagnostics.Problem(path, line, text)
+}
+
+func text_of(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    piece: AbstractSyntaxTree.Shapes.Unfit,
+    found: AbstractSyntaxTree.Tokens.Token,
+): String {
+    var written = found.lexeme
+    switch piece.place {
+        'declaration': return declaration_text(tokens, piece.at, found)
+        'statement': return "this 'else' follows no 'if': an 'else' comes right after the brace closing the branch it answers"
+        'statement_end': return statement_end_text(tokens, piece, found)
+        'generic_value': return "expected a codegen value after 'generic', as in 'generic $name', and found '{written}'"
+        'enum_name': return "an enum is named in PascalCase, and found '{written}'"
+        'enum_value': return "an enum's values are symbols, as in 'knight', and found '{written}'"
+        'union_name': return "a union is named in PascalCase, and found '{written}'"
+        'union_member': return "a union's members are classes, as in 'Player', and found '{written}'"
+        'type_name': return "a type is named in PascalCase, and found '{written}'"
+        'type_member': return "a type's members are written 'name: Type' or 'name(Type, Type): Type', and found '{written}'"
+        'shape_parameter': return shape_parameter_text(tokens, piece.at, found)
+        'path_name': return "expected a class name after the dot and found '{written}'"
+        'member_name': return "expected a name after the dot and found '{written}'"
+        'variable_name': return name_text(found, "variable", "expected the name of a variable and found '{written}'")
+        'variable_equals': return "every variable has a default value, so write '=' and the value"
+        'function_name': return name_text(
+    found,
+    "function",
+    "a function is declared 'func name()', so a name follows 'func', and found '{written}'",
+)
+        'function_parameters': return function_parameters_text(tokens, piece.at, found)
+        'parameter_name': return name_text(found, "parameter", "a parameter is declared 'name: Type', and found '{written}'")
+        'parameter_colon': return parameter_colon_text(tokens, piece.at)
+        'parameters_close': return "expected the closing parenthesis of the parameters and found '{written}'"
+        'opening_brace': return "expected an opening brace and found '{written}'"
+        'closing_brace': return "this brace is never closed: write the closing brace that ends it"
+        'arguments_close': return "expected the closing parenthesis of the arguments and found '{written}'"
+        'group_close': return "expected the closing parenthesis of the group and found '{written}'"
+        'closing_bracket': return "expected the closing bracket and found '{written}'"
+        'case_colon': return "a case is written 'value:' or 'Class:', so write the ':' after it"
+        'entry_colon': return entry_colon_text(found)
+        'value': return value_text(tokens, piece.at, found)
+        'type': return "expected a type and found '{written}'"
+    }
+}
+
+func declaration_text(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    at: Integer,
+    found: AbstractSyntaxTree.Tokens.Token,
+): String {
+    if found.text == "class" {
+        return "there is no 'class' keyword: a file is a class, named after the file, and its attributes and functions are written at the top of that file"
+    }
+    if found.text == "generics" {
+        var next = tokens[at + 1]
+        crash next
+        var value = "$damage_type"
+        if next.kind == 'generic_name' {
+            value = next.text
+        }
+        return "there is no 'generics' list: a class declares each codegen value on its own line at the top of the file, like 'generic {value}'"
+    }
+    return "a file holds declarations and nothing else, so a statement cannot stand here"
+}
+
+func statement_end_text(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    piece: AbstractSyntaxTree.Shapes.Unfit,
+    found: AbstractSyntaxTree.Tokens.Token,
+): String {
+    var last = tokens[piece.at - 1]
+    crash last
+    var start = tokens[piece.start]
+    crash start
+    if last.kind == 'close_brace' {
+        return "'{found.lexeme}' is left over after the '}' that closes this statement: a statement ends with its line, so remove it, or put it on a line of its own"
+    }
+    if is_a_generic_list(tokens, piece, found) {
+        var name = tokens[piece.start + 1]
+        crash name
+        return "a 'generic' line declares one codegen value: write 'generic {name.text}' and put the next one on its own line, also starting with 'generic'"
+    }
+    var lists_entries = start.kind == 'keyword_enum' or start.kind == 'keyword_union'
+    if lists_entries and found.kind == 'comma' {
+        return "the entries of an enum or a union are one per line, not separated by commas: delete the ','"
+    }
+    var after_the_parameters = start.kind == 'keyword_function' and last.kind == 'close_parenthesis'
+    if after_the_parameters and found.kind == 'class_name' {
+        return "a function's answer is written after a ':', as in 'func total(): Integer', and found '{found.lexeme}'"
+    }
+    return "'{found.lexeme}' is left over after the end of the statement: a statement is one line"
+}
+
+func is_a_generic_list(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    piece: AbstractSyntaxTree.Shapes.Unfit,
+    found: AbstractSyntaxTree.Tokens.Token,
+): Boolean {
+    var start = tokens[piece.start]
+    crash start
+    return start.kind == 'keyword_generic' and found.kind == 'comma'
+}
+
+func shape_parameter_text(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    at: Integer,
+    found: AbstractSyntaxTree.Tokens.Token,
+): String {
+    var before = tokens[at - 1]
+    crash before
+    if found.kind == 'colon' and before.kind == 'name' {
+        var first = "a shape names the types it needs, not the names they are given"
+        return "{first}: write the type alone, since a class satisfies it whatever it calls its parameters"
+    }
+    return "expected a type and found '{found.lexeme}'"
+}
+
+func name_text(found: AbstractSyntaxTree.Tokens.Token, named: String, otherwise: String): String {
+    if found.kind == 'keyword_load' {
+        return "'load' is a keyword and cannot name a {named}: give it a name that says what it loads, like 'load_texture'"
+    }
+    if is_a_reserved_word(found) {
+        return reserved_name_text(found.lexeme)
+    }
+    return otherwise
+}
+
+func function_parameters_text(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    at: Integer,
+    found: AbstractSyntaxTree.Tokens.Token,
+): String {
+    if found.kind != 'less' {
+        return "a function takes its parameters in parentheses, as in 'func name(value: Type)'"
+    }
+    var name = tokens[at - 1]
+    crash name
+    var values = codegen_values_from(tokens, at)
+    var listed = values.join(", ")
+    return "a function no longer lists codegen values between '<' and '>': declare each at the top of the file on its own line ({listed}), and write 'func {name.text}(' here"
+}
+
+func codegen_values_from(tokens: List<AbstractSyntaxTree.Tokens.Token>, at: Integer): List<String> {
+    var opening = tokens[at]
+    crash opening
+    var values = List<String>()
+    var last = tokens.count() - 1
+    var index = at
+    var keep_going = true
+    while keep_going and index < last {
+        var token = tokens[index]
+        keep_going = token.kind != 'greater' and token.line == opening.line
+        if keep_going and token.kind == 'generic_name' {
+            values.append("'generic {token.text}'")
+        }
+        index = index + 1
+    }
+    return values
+}
+
+func parameter_colon_text(tokens: List<AbstractSyntaxTree.Tokens.Token>, at: Integer): String {
+    if follows_dots(tokens, at) {
+        var name = tokens[at - 1]
+        crash name
+        return "'...{name.text}' receives the arguments as a list: write '...{name.text}: List<Type>' with the type of each argument"
+    }
+    return "a parameter is declared 'name: Type', so write its type after the ':'"
+}
+
+func follows_dots(tokens: List<AbstractSyntaxTree.Tokens.Token>, at: Integer): Boolean {
+    fallback at >= 2
+    var dots = tokens[at - 2]
+    crash dots
+    return dots.kind == 'dots'
+}
+
+func entry_colon_text(found: AbstractSyntaxTree.Tokens.Token): String {
+    if found.kind == 'equals' {
+        return "expected a value and found '{found.lexeme}'"
+    }
+    return "a written key is written 'key: value', so write the ':' after it"
+}
+
+func value_text(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    at: Integer,
+    found: AbstractSyntaxTree.Tokens.Token,
+): String {
+    var written = value_texts[found.kind]
+    if written {
+        return written
+    }
+    if is_a_reserved_word(found) {
+        return reserved_name_text(found.lexeme)
+    }
+    var shift = shift_texts[found.kind]
+    if shift and doubles_the_mark(tokens, at) {
+        return shift
+    }
+    return "expected a value and found '{found.lexeme}'"
+}
+
+func is_a_reserved_word(found: AbstractSyntaxTree.Tokens.Token): Boolean {
+    return found.kind == 'keyword_type' or found.kind == 'keyword_singleton'
+}
+
+func doubles_the_mark(tokens: List<AbstractSyntaxTree.Tokens.Token>, at: Integer): Boolean {
+    fallback at > 0
+    var mark = tokens[at]
+    crash mark
+    var before = tokens[at - 1]
+    crash before
+    var same = before.kind == mark.kind
+    return same and mark.line == before.line and mark.column == before.column + 1
+}
+
+func assert_text(): String {
+    return "'assert' is now 'fallback': it returns what the function's answer type builds with no arguments when its condition fails, so write 'fallback' with the same condition"
+}
+
+func load_parentheses_text(): String {
+    return "'load' is a keyword, not a function: write it without parentheses, 'load \"level\"'"
 }
 
 func reserved_name_text(found: String): String {

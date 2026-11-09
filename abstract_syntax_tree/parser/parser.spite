@@ -14,7 +14,9 @@ var no_members = List<String>()
 var no_shapes = List<AbstractSyntaxTree.Shapes.Types.TypeMember>()
 var no_parameters = List<AbstractSyntaxTree.Shapes.Declarations.Parameter>()
 var no_statements = List<SpiteCompiler.WrittenStatement>()
-var parsed_function = ""
+var unfit = List<AbstractSyntaxTree.Shapes.Unfit>()
+var holes = List<AbstractSyntaxTree.Parser.Hole>()
+var lost = false
 var stops = Dictionary<Integer, String>()
 var placed_stops = List<Integer>()
 var comments = List<AbstractSyntaxTree.Shapes.Comment>()
@@ -34,6 +36,7 @@ func parse_file(): AbstractSyntaxTree.Shapes.SourceFile {
     comment_index = 0
     while not finished() {
         var first = current()
+        var first_index = position
         var previous_line = 0
         if position > 0 {
             var before = tokens[position - 1]
@@ -44,6 +47,9 @@ func parse_file(): AbstractSyntaxTree.Shapes.SourceFile {
         place_the_comments(file, written, previous_line, first.line)
         file.declarations.append(written)
         end_of_statement()
+        if lost {
+            read_on_after(first_index, false)
+        }
     }
     place_the_last_comments(file)
     return file
@@ -251,7 +257,7 @@ func generic_declaration(): AbstractSyntaxTree.Shapes.Declarations.GenericDeclar
     var start = advance()
     var token = current()
     if token.kind != 'generic_name' {
-        refuse('codegen_value_after_generic')
+        keep_unfit('generic_value')
         return empty_generic(start.line)
     }
     var name_token = advance()
@@ -259,10 +265,6 @@ func generic_declaration(): AbstractSyntaxTree.Shapes.Declarations.GenericDeclar
     if check('colon') {
         step()
         bound = type_reference()
-    }
-    if check('comma') {
-        var syntax = Validators.AbstractSyntaxTree.Syntax.Validator()
-        syntax.refuse_a_generic_comma(path, start.line, name_token.text)
     }
     var written = AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration(name_token.text, bound)
     written.line = start.line
@@ -292,10 +294,10 @@ func enum_declaration(): AbstractSyntaxTree.Shapes.Declarations.EnumDeclaration 
 }
 
 func read_enum_values(values: List<AbstractSyntaxTree.Shapes.Declarations.EnumValue>) {
-    while not finished() and not check('close_brace') {
+    while not finished() and not check('close_brace') and not lost {
         var token = current()
         if token.kind != 'symbol_literal' {
-            refuse('enum_value')
+            keep_unfit('enum_value')
             return
         }
         var symbol = advance()
@@ -306,7 +308,6 @@ func read_enum_values(values: List<AbstractSyntaxTree.Shapes.Declarations.EnumVa
         }
         var value = AbstractSyntaxTree.Shapes.Declarations.EnumValue(symbol.text, number)
         values.append(value)
-        refuse_a_comma()
         end_of_statement()
     }
     closing_brace_expected()
@@ -334,16 +335,15 @@ func union_declaration(): AbstractSyntaxTree.Shapes.Declarations.UnionDeclaratio
 }
 
 func read_union_members(members: List<String>) {
-    while not finished() and not check('close_brace') {
+    while not finished() and not check('close_brace') and not lost {
         var token = current()
         if token.kind != 'class_name' {
-            refuse('union_member')
+            keep_unfit('union_member')
             return
         }
         var path = dotted_name()
         var arguments = generic_text_of_a_member()
         members.append("{path}{arguments}")
-        refuse_a_comma()
         end_of_statement()
     }
     closing_brace_expected()
@@ -377,7 +377,7 @@ func dotted_name(): String {
         step()
         var next_token = current()
         if next_token.kind != 'class_name' {
-            refuse('class_name_after_dot')
+            keep_unfit('path_name')
             keep_going = false
         } else {
             var next_name = advance()
@@ -409,7 +409,7 @@ func type_declaration(): SpiteCompiler.Declaration {
 }
 
 func read_type_members(members: List<AbstractSyntaxTree.Shapes.Types.TypeMember>) {
-    while not finished() and not check('close_brace') {
+    while not finished() and not check('close_brace') and not lost {
         var member = type_member()
         members.append(member)
     }
@@ -425,7 +425,7 @@ func empty_type(line: Integer): AbstractSyntaxTree.Shapes.Declarations.TypeDecla
 func type_member(): AbstractSyntaxTree.Shapes.Types.TypeMember {
     var token = current()
     if token.kind != 'name' {
-        refuse('type_member')
+        keep_unfit('type_member')
         return empty_type_member()
     }
     var name = advance()
@@ -435,7 +435,7 @@ func type_member(): AbstractSyntaxTree.Shapes.Types.TypeMember {
     if check('open_parenthesis') {
         step()
         read_member_parameters(parameters)
-        closing_parenthesis_expected('parameters_closing_parenthesis')
+        closing_parenthesis_expected('parameters_close')
     }
     if check('colon') {
         step()
@@ -448,7 +448,7 @@ func type_member(): AbstractSyntaxTree.Shapes.Types.TypeMember {
 }
 
 func read_member_parameters(parameters: List<AbstractSyntaxTree.Shapes.Declarations.Parameter>) {
-    while not finished() and not check('close_parenthesis') {
+    while not finished() and not check('close_parenthesis') and not lost {
         var taken = member_parameter()
         parameters.append(taken)
         if check('comma') {
@@ -458,22 +458,8 @@ func read_member_parameters(parameters: List<AbstractSyntaxTree.Shapes.Declarati
 }
 
 func member_parameter(): AbstractSyntaxTree.Shapes.Declarations.Parameter {
-    if check('name') and next_kind() == 'colon' {
-        refuse('shape_parameter_name')
-        return empty_parameter(false)
-    }
-    var declared = type_reference()
+    var declared = type_at('shape_parameter')
     return AbstractSyntaxTree.Shapes.Declarations.Parameter("", declared, false)
-}
-
-func next_kind(): AbstractSyntaxTree.Tokens.Token.Kind {
-    var at = position + 1
-    if at >= tokens.count() {
-        at = tokens.count() - 1
-    }
-    var token = tokens[at]
-    crash token
-    return token.kind
 }
 
 func empty_type_member(): AbstractSyntaxTree.Shapes.Types.TypeMember {
@@ -483,14 +469,14 @@ func empty_type_member(): AbstractSyntaxTree.Shapes.Types.TypeMember {
 
 func attribute_declaration(): AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration {
     var start = advance()
-    var name = name_expected('variable_name')
+    var name = name_expected()
     var declared: SpiteCompiler.Type? = null
     if check('colon') {
         step()
         declared = type_reference()
     }
     if not check('equals') {
-        refuse('variable_default')
+        keep_unfit('variable_equals')
     }
     step()
     var value = expression()
@@ -503,24 +489,18 @@ func attribute_declaration(): AbstractSyntaxTree.Shapes.Declarations.AttributeDe
 func function_declaration(): AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration {
     var start = advance()
     var name = function_name()
-    parsed_function = name
-    if check('less') {
-        refuse_a_codegen_list(name)
-    }
     var parameters = List<AbstractSyntaxTree.Shapes.Declarations.Parameter>()
     if check('open_parenthesis') {
         step()
         read_parameters(parameters)
-        closing_parenthesis_expected('parameters_closing_parenthesis')
+        closing_parenthesis_expected('parameters_close')
     } else {
-        refuse('function_parentheses')
+        keep_unfit('function_parameters')
     }
     var result: SpiteCompiler.Type? = null
     if check('colon') {
         step()
         result = type_reference()
-    } else if check('class_name') {
-        refuse('return_type_colon')
     }
     var body: AbstractSyntaxTree.Shapes.Statements.Block? = null
     if check('open_brace') {
@@ -532,34 +512,17 @@ func function_declaration(): AbstractSyntaxTree.Shapes.Declarations.FunctionDecl
     return written
 }
 
-func refuse_a_codegen_list(name: String) {
-    var opening = current()
-    var values = List<String>()
-    while not finished() and not check('greater') and current().line == opening.line {
-        var token = advance()
-        if token.kind == 'generic_name' {
-            values.append(token.text)
-        }
-    }
-    var syntax = Validators.AbstractSyntaxTree.Syntax.Validator()
-    syntax.refuse_a_codegen_list(path, opening, name, values)
-}
-
 func function_name(): String {
     var token = current()
     if token.kind == 'name' or token.kind == 'class_name' {
         return advance().text
     }
-    if token.kind == 'keyword_load' {
-        refuse('load_function_name')
-    }
-    refuse_a_reserved_name(token)
-    refuse('function_name')
+    keep_unfit('function_name')
     return ""
 }
 
 func read_parameters(parameters: List<AbstractSyntaxTree.Shapes.Declarations.Parameter>) {
-    while not finished() and not check('close_parenthesis') {
+    while not finished() and not check('close_parenthesis') and not lost {
         var taken = parameter()
         parameters.append(taken)
         if check('comma') {
@@ -578,21 +541,13 @@ func parameter(): AbstractSyntaxTree.Shapes.Declarations.Parameter {
 
 func named_parameter(is_variadic: Boolean): AbstractSyntaxTree.Shapes.Declarations.Parameter {
     var token = current()
-    if token.kind == 'keyword_load' {
-        refuse('load_parameter_name')
-    }
-    refuse_a_reserved_name(token)
     if not is_a_name(token) {
-        refuse('parameter_shape')
+        keep_unfit('parameter_name')
         return empty_parameter(is_variadic)
     }
     var name = advance()
-    if not check('colon') and is_variadic {
-        var syntax = Validators.AbstractSyntaxTree.Syntax.Validator()
-        syntax.refuse_an_untyped_variadic(path, name)
-    }
     if not check('colon') {
-        refuse('parameter_type')
+        keep_unfit('parameter_colon')
         return empty_parameter(is_variadic)
     }
     step()
@@ -609,33 +564,19 @@ func is_a_name(token: AbstractSyntaxTree.Tokens.Token): Boolean {
     return token.kind == 'name'
 }
 
-func refuse_a_reserved_name(token: AbstractSyntaxTree.Tokens.Token) {
-    var is_reserved = token.kind == 'keyword_type' or token.kind == 'keyword_singleton'
-    if token.kind == 'name' and (token.text == "type" or token.text == "singleton") {
-        is_reserved = true
-    }
-    if is_reserved {
-        refuse('reserved_name')
-    }
-}
-
-func name_expected(mistake: Validators.AbstractSyntaxTree.Syntax.Validator.Mistake): String {
+func name_expected(): String {
     var token = current()
-    if token.kind == 'keyword_load' and mistake == 'variable_name' {
-        refuse('load_variable_name')
-    }
-    refuse_a_reserved_name(token)
     if not is_a_name(token) {
-        refuse(mistake)
+        keep_unfit('variable_name')
         return ""
     }
     return advance().text
 }
 
-func class_name_expected(mistake: Validators.AbstractSyntaxTree.Syntax.Validator.Mistake): String {
+func class_name_expected(place: AbstractSyntaxTree.Shapes.Unfit.Place): String {
     var token = current()
     if token.kind != 'class_name' {
-        refuse(mistake)
+        keep_unfit(place)
         return ""
     }
     return advance().text
@@ -646,7 +587,7 @@ func opening_brace_expected(): Boolean {
         step()
         return true
     }
-    refuse('opening_brace')
+    keep_unfit('opening_brace')
     return false
 }
 
@@ -655,15 +596,15 @@ func closing_brace_expected() {
         step()
         return
     }
-    refuse('closing_brace')
+    keep_unfit('closing_brace')
 }
 
-func closing_parenthesis_expected(mistake: Validators.AbstractSyntaxTree.Syntax.Validator.Mistake) {
+func closing_parenthesis_expected(place: AbstractSyntaxTree.Shapes.Unfit.Place) {
     if check('close_parenthesis') {
         step()
         return
     }
-    refuse(mistake)
+    keep_unfit(place)
 }
 
 func statement(): SpiteCompiler.WrittenStatement {
@@ -728,14 +669,14 @@ func statement(): SpiteCompiler.WrittenStatement {
 
 func variable_statement(): SpiteCompiler.WrittenStatement {
     var start = advance()
-    var name = name_expected('variable_name')
+    var name = name_expected()
     var declared: SpiteCompiler.Type? = null
     if check('colon') {
         step()
         declared = type_reference()
     }
     if not check('equals') {
-        refuse('variable_default')
+        keep_unfit('variable_equals')
     }
     step()
     var value = expression()
@@ -784,7 +725,7 @@ func else_of(line: Integer): AbstractSyntaxTree.Shapes.Statements.Block {
 }
 
 func stranded_else(line: Integer): SpiteCompiler.WrittenStatement {
-    refuse('else_without_if')
+    keep_unfit('statement')
     var empty = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
     var written = AbstractSyntaxTree.Shapes.Statements.CrashStatement(empty)
     written.line = line
@@ -813,7 +754,7 @@ func switch_statement(): SpiteCompiler.WrittenStatement {
 }
 
 func read_cases(cases: List<AbstractSyntaxTree.Shapes.Statements.SwitchCase>) {
-    while not finished() and not check('close_brace') {
+    while not finished() and not check('close_brace') and not lost {
         var written = switch_case()
         cases.append(written)
     }
@@ -824,7 +765,7 @@ func switch_case(): AbstractSyntaxTree.Shapes.Statements.SwitchCase {
     var start = current()
     var value = expression()
     if not check('colon') {
-        refuse('case_colon')
+        keep_unfit('case_colon')
         return empty_case()
     }
     step()
@@ -855,10 +796,6 @@ func case_body(): AbstractSyntaxTree.Shapes.Statements.Block {
 
 func fallback_statement(line: Integer): SpiteCompiler.WrittenStatement {
     var keyword = advance()
-    if keyword.text == "assert" {
-        var syntax = Validators.AbstractSyntaxTree.Syntax.Validator()
-        syntax.refuse_an_assert(path, line)
-    }
     var condition = expression()
     var written = AbstractSyntaxTree.Shapes.Statements.FallbackStatement(condition)
     written.line = line
@@ -885,9 +822,6 @@ func crash_condition(): SpiteCompiler.Expression {
 
 func load_statement(): SpiteCompiler.WrittenStatement {
     var start = advance()
-    if check('open_parenthesis') {
-        refuse('load_parentheses')
-    }
     var folder = expression()
     var written = AbstractSyntaxTree.Shapes.Statements.LoadStatement(folder)
     written.line = start.line
@@ -910,17 +844,21 @@ func simple_statement(line: Integer): SpiteCompiler.WrittenStatement {
 
 func block(): AbstractSyntaxTree.Shapes.Statements.Block {
     var start = current()
-    if not opening_brace_expected() {
+    if lost or not opening_brace_expected() {
         var broken = AbstractSyntaxTree.Shapes.Statements.Block(no_statements)
         broken.line = start.line
         return broken
     }
     var statements = List<SpiteCompiler.WrittenStatement>()
     while not finished() and not check('close_brace') {
+        var first_index = position
         stop_before_a_statement(statements)
         var inner = statement()
         statements.append(inner)
         end_of_statement()
+        if lost {
+            read_on_after(first_index, true)
+        }
     }
     var closing = current()
     closing_brace_expected()
@@ -959,29 +897,12 @@ func parsed_on_line(text: String, line: Integer): SpiteCompiler.WrittenStatement
 }
 
 func not_a_declaration(): SpiteCompiler.Declaration {
-    var token = current()
-    if token.text == "class" {
-        refuse('class_keyword')
-    }
-    if token.text == "generics" {
-        refuse_a_generics_list(token)
-    }
-    refuse('statement_in_file')
+    keep_unfit('declaration')
     return AbstractSyntaxTree.Shapes.Declarations.SingletonDeclaration()
 }
 
-func refuse_a_generics_list(token: AbstractSyntaxTree.Tokens.Token) {
-    var next = tokens[position + 1]
-    crash next
-    var value = "$damage_type"
-    if next.kind == 'generic_name' {
-        value = next.text
-    }
-    var syntax = Validators.AbstractSyntaxTree.Syntax.Validator()
-    syntax.refuse_a_generics_list(path, token.line, value)
-}
-
 func end_of_statement() {
+    fallback not lost
     var token = current()
     var kind = token.kind
     var is_end = kind == 'end_of_file' or kind == 'close_brace'
@@ -989,10 +910,7 @@ func end_of_statement() {
     crash last
     var on_its_own_line = token.line > last.line
     fallback not is_end and not on_its_own_line
-    if last.kind == 'close_brace' {
-        refuse('left_over_after_block')
-    }
-    refuse('left_over')
+    keep_unfit('statement_end')
 }
 
 func at_end_of_statement(): Boolean {
@@ -1077,46 +995,12 @@ func comparison_expression(): SpiteCompiler.Expression {
         if operator == 'end_of_file' {
             keep_going = false
         } else {
-            var token = current()
             step()
-            var right = read_the_right_of(token)
+            var right = sum_expression()
             value = binary_of(value, operator, right)
         }
     }
     return value
-}
-
-func read_the_right_of(token: AbstractSyntaxTree.Tokens.Token): SpiteCompiler.Expression {
-    if refuse_a_shift(token) {
-        return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
-    } else {
-        return sum_expression()
-    }
-}
-
-func refuse_a_shift(token: AbstractSyntaxTree.Tokens.Token): Boolean {
-    if token.kind == 'less' {
-        return refuse_a_shift_of(token, 'shift_left')
-    }
-    if token.kind == 'greater' {
-        return refuse_a_shift_of(token, 'shift_right')
-    }
-    return false
-}
-
-func refuse_a_shift_of(
-    token: AbstractSyntaxTree.Tokens.Token,
-    mistake: Validators.AbstractSyntaxTree.Syntax.Validator.Mistake,
-): Boolean {
-    var following = current()
-    var same = following.kind == token.kind
-    var next_to = following.line == token.line and following.column == token.column + 1
-    if same and next_to {
-        refuse(mistake)
-        return true
-    } else {
-        return false
-    }
 }
 
 func comparison_operator(): AbstractSyntaxTree.Tokens.Token.Kind {
@@ -1300,9 +1184,8 @@ func member_after(before: SpiteCompiler.Expression): SpiteCompiler.Expression {
     step()
     var token = current()
     var kind = token.kind
-    refuse_a_reserved_name(token)
     if kind != 'name' and kind != 'class_name' and kind != 'generic_name' {
-        refuse('name_after_dot')
+        keep_unfit('member_name')
         return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
     }
     var name = advance()
@@ -1330,7 +1213,7 @@ func closing_bracket_expected() {
         step()
         return
     }
-    refuse('closing_bracket')
+    keep_unfit('closing_bracket')
 }
 
 func call_after(
@@ -1340,7 +1223,7 @@ func call_after(
     step()
     var arguments = List<SpiteCompiler.Expression>()
     read_arguments(arguments)
-    closing_parenthesis_expected('arguments_closing_parenthesis')
+    closing_parenthesis_expected('arguments_close')
     var call = AbstractSyntaxTree.Shapes.Expressions.CallExpression(before, generic_arguments, arguments)
     call.line = before.line
     call.column = before.column
@@ -1348,7 +1231,7 @@ func call_after(
 }
 
 func read_arguments(arguments: List<SpiteCompiler.Expression>) {
-    while not check('close_parenthesis') {
+    while not check('close_parenthesis') and not lost {
         var written = expression()
         arguments.append(written)
         if check('comma') {
@@ -1467,53 +1350,53 @@ func primary_expression(): SpiteCompiler.Expression {
         'keyword_true': return literal_after(token)
         'keyword_false': return literal_after(token)
         'keyword_null': return literal_after(token)
-        'keyword_this': return this_after(token)
-        'keyword_load': return refused_load_value()
+        'keyword_this': return literal_after(token)
+        'keyword_load': return unfit_value()
         'text_literal': return text_after(token)
         'name': return name_after(token)
-        'keyword_type': return refused_reserved_name(token)
-        'keyword_singleton': return refused_reserved_name(token)
+        'keyword_type': return unfit_value()
+        'keyword_singleton': return unfit_value()
         'class_name': return name_after(token)
         'generic_name': return name_after(token)
         'open_parenthesis': return grouped()
         'open_bracket': return list_literal()
         'open_brace': return pair_literal()
-        'question': return refused_question()
-        'end_of_file': return refused_primary()
-        'close_brace': return refused_primary()
-        'close_parenthesis': return refused_primary()
-        'close_bracket': return refused_primary()
-        'comma': return refused_primary()
-        'dot': return refused_primary()
-        'dots': return refused_primary()
-        'colon': return refused_primary()
-        'equals': return refused_primary()
-        'plus': return refused_primary()
-        'minus': return refused_primary()
-        'star': return refused_primary()
-        'slash': return refused_primary()
-        'percent': return refused_primary()
-        'equal_equal': return refused_primary()
-        'not_equal': return refused_primary()
-        'less': return refused_primary()
-        'greater': return refused_primary()
-        'less_or_equal': return refused_primary()
-        'greater_or_equal': return refused_primary()
-        'and': return refused_primary()
-        'or': return refused_primary()
-        'not': return refused_primary()
-        'keyword_function': return refused_primary()
-        'keyword_variable': return refused_primary()
-        'keyword_enum': return refused_primary()
-        'keyword_union': return refused_primary()
-        'keyword_return': return refused_primary()
-        'keyword_if': return refused_primary()
-        'keyword_else': return refused_primary()
-        'keyword_while': return refused_primary()
-        'keyword_switch': return refused_primary()
-        'keyword_fallback': return refused_primary()
-        'keyword_crash': return refused_primary()
-        'keyword_generic': return refused_primary()
+        'question': return unfit_value()
+        'end_of_file': return unfit_value()
+        'close_brace': return unfit_value()
+        'close_parenthesis': return unfit_value()
+        'close_bracket': return unfit_value()
+        'comma': return unfit_value()
+        'dot': return unfit_value()
+        'dots': return unfit_value()
+        'colon': return unfit_value()
+        'equals': return unfit_value()
+        'plus': return unfit_value()
+        'minus': return unfit_value()
+        'star': return unfit_value()
+        'slash': return unfit_value()
+        'percent': return unfit_value()
+        'equal_equal': return unfit_value()
+        'not_equal': return unfit_value()
+        'less': return unfit_value()
+        'greater': return unfit_value()
+        'less_or_equal': return unfit_value()
+        'greater_or_equal': return unfit_value()
+        'and': return unfit_value()
+        'or': return unfit_value()
+        'not': return unfit_value()
+        'keyword_function': return unfit_value()
+        'keyword_variable': return unfit_value()
+        'keyword_enum': return unfit_value()
+        'keyword_union': return unfit_value()
+        'keyword_return': return unfit_value()
+        'keyword_if': return unfit_value()
+        'keyword_else': return unfit_value()
+        'keyword_while': return unfit_value()
+        'keyword_switch': return unfit_value()
+        'keyword_fallback': return unfit_value()
+        'keyword_crash': return unfit_value()
+        'keyword_generic': return unfit_value()
     }
 }
 
@@ -1540,7 +1423,7 @@ func name_after(token: AbstractSyntaxTree.Tokens.Token): SpiteCompiler.Expressio
 func grouped(): SpiteCompiler.Expression {
     step()
     var inner = expression()
-    closing_parenthesis_expected('group_closing_parenthesis')
+    closing_parenthesis_expected('group_close')
     return inner
 }
 
@@ -1553,7 +1436,7 @@ func list_literal(): SpiteCompiler.Expression {
 }
 
 func read_list_entries(entries: List<SpiteCompiler.Expression>) {
-    while not check('close_bracket') {
+    while not check('close_bracket') and not lost {
         var written = expression()
         entries.append(written)
         if check('comma') {
@@ -1571,7 +1454,7 @@ func pair_literal(): SpiteCompiler.Expression {
 }
 
 func read_pair_entries(entries: List<SpiteCompiler.Expression>) {
-    while not check('close_brace') {
+    while not check('close_brace') and not lost {
         var written = entry_literal()
         entries.append(written)
         if check('comma') {
@@ -1582,11 +1465,8 @@ func read_pair_entries(entries: List<SpiteCompiler.Expression>) {
 
 func entry_literal(): AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
     var key = expression()
-    if check('equals') {
-        refuse('value')
-    }
     if not check('colon') {
-        refuse('key_colon')
+        keep_unfit('entry_colon')
         return empty_entry()
     }
     step()
@@ -1599,13 +1479,8 @@ func empty_entry(): AbstractSyntaxTree.Shapes.Expressions.EntryLiteral {
     return AbstractSyntaxTree.Shapes.Expressions.EntryLiteral(empty, empty)
 }
 
-func refused_question(): SpiteCompiler.Expression {
-    refuse('question_mark')
-    return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
-}
-
-func refused_primary(): SpiteCompiler.Expression {
-    refuse('value')
+func unfit_value(): SpiteCompiler.Expression {
+    keep_unfit('value')
     return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
 }
 
@@ -1620,11 +1495,15 @@ func text_after(token: AbstractSyntaxTree.Tokens.Token): SpiteCompiler.Expressio
 }
 
 func type_reference(): SpiteCompiler.Type {
+    return type_at('type')
+}
+
+func type_at(place: AbstractSyntaxTree.Shapes.Unfit.Place): SpiteCompiler.Type {
     var quiet = quiet_type()
     if quiet {
         return quiet
     }
-    refuse('type')
+    keep_unfit(place)
     return AbstractSyntaxTree.Shapes.Types.NamedType(no_path, no_arguments)
 }
 
@@ -1665,14 +1544,14 @@ func read_asked_literals(asked: List<String>) {
         var token = advance()
         var is_a_literal = token.kind == 'text_literal' or token.kind == 'integer_literal'
         if not is_a_literal {
-            refuse('arguments_closing_parenthesis')
+            keep_unfit('arguments_close')
         }
         asked.append(token.text)
         if check('comma') {
             step()
         }
     }
-    closing_parenthesis_expected('arguments_closing_parenthesis')
+    closing_parenthesis_expected('arguments_close')
 }
 
 # ../../../spite_documentation/reflection.md#the-spite-classes
@@ -1683,12 +1562,12 @@ func read_a_generic_key(path: List<String>) {
     step()
     var key = current()
     if key.kind != 'text_literal' {
-        refuse('closing_bracket')
+        keep_unfit('closing_bracket')
         return
     }
     step()
     if not check('close_bracket') {
-        refuse('closing_bracket')
+        keep_unfit('closing_bracket')
         return
     }
     step()
@@ -1701,7 +1580,7 @@ func read_type_path(path: List<String>) {
         step()
         var next_token = current()
         if next_token.kind != 'class_name' and next_token.kind != 'name' and next_token.kind != 'generic_name' {
-            refuse('class_name_after_dot')
+            keep_unfit('path_name')
             return
         }
         var next_name = advance()
@@ -1836,7 +1715,15 @@ func hole_between(inner: String): SpiteCompiler.Expression? {
     var hole_lexer = AbstractSyntaxTree.Lexer.Lexer(path, inner, text_line)
     var hole_tokens = hole_lexer.tokens_of()
     var hole_parser = Parser(path, namespace, hole_tokens)
-    return hole_parser.expression()
+    var value = hole_parser.expression()
+    var hole = AbstractSyntaxTree.Parser.Hole(hole_tokens, hole_lexer.unread, hole_parser.unfit)
+    holes.append(hole)
+    hole_parser.holes.each(keep_a_hole)
+    return value
+}
+
+func keep_a_hole(hole: AbstractSyntaxTree.Parser.Hole) {
+    holes.append(hole)
 }
 
 func starts_a_line(): Boolean {
@@ -1887,44 +1774,54 @@ func finished(): Boolean {
     return at_end()
 }
 
-func refuse(mistake: Validators.AbstractSyntaxTree.Syntax.Validator.Mistake) {
-    var token = current()
-    var syntax = Validators.AbstractSyntaxTree.Syntax.Validator()
-    syntax.refuse(path, token, mistake)
+func keep_unfit(place: AbstractSyntaxTree.Shapes.Unfit.Place) {
+    fallback not lost
+    lost = true
+    var count = tokens.count()
+    var piece = AbstractSyntaxTree.Shapes.Unfit(place, position, count)
+    unfit.append(piece)
 }
 
-func refuse_a_comma() {
-    if check('comma') {
-        refuse('declaration_comma')
+# ../../ARCHITECTURE.md#validators
+func read_on_after(start: Integer, inside_a_block: Boolean) {
+    var piece = unfit.last()
+    crash piece
+    var resumed = safe_point_after(start, piece.at, inside_a_block)
+    piece.start = start
+    piece.resumed = resumed
+    position = resumed
+    lost = false
+}
+
+func safe_point_after(start: Integer, unfit_at: Integer, inside_a_block: Boolean): Integer {
+    var last = tokens.count() - 1
+    var depth = 0
+    var index = start
+    while index < last {
+        var token = tokens[index]
+        if index > start {
+            var before = tokens[index - 1]
+            crash before
+            var begins_a_line = token.line > before.line
+            if index > unfit_at and begins_a_line and depth == 0 {
+                return index
+            }
+            if inside_a_block and depth == 0 and token.kind == 'close_brace' {
+                return index
+            }
+        }
+        depth = depth_after(token, depth)
+        index = index + 1
     }
+    return last
 }
 
-func this_after(token: AbstractSyntaxTree.Tokens.Token): SpiteCompiler.Expression {
-    var next = tokens[position + 1]
-    crash next
-    if next.kind == 'dot' {
-        refuse_a_this_call()
-        step()
-        refuse('this_member')
+func depth_after(token: AbstractSyntaxTree.Tokens.Token, depth: Integer): Integer {
+    if token.kind == 'open_brace' {
+        return depth + 1
     }
-    return literal_after(token)
-}
-
-func refuse_a_this_call() {
-    var member = tokens[position + 2]
-    var opening = tokens[position + 3]
-    fallback member and opening
-    fallback member.kind == 'name' and opening.kind == 'open_parenthesis'
-    var syntax = Validators.AbstractSyntaxTree.Syntax.Validator()
-    syntax.refuse_a_this_call(path, member, namespace, parsed_function)
-}
-
-func refused_reserved_name(token: AbstractSyntaxTree.Tokens.Token): SpiteCompiler.Expression {
-    refuse_a_reserved_name(token)
-    return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
-}
-
-func refused_load_value(): SpiteCompiler.Expression {
-    refuse('load_as_value')
-    return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+    if token.kind == 'close_brace' and depth > 0 {
+        return depth - 1
+    }
+    return depth
 }
