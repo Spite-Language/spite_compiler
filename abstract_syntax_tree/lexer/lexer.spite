@@ -3,15 +3,10 @@ var source = ""
 var found = List<AbstractSyntaxTree.Tokens.Token>()
 var comments = List<AbstractSyntaxTree.Shapes.Comment>()
 var keywords = Dictionary<String, AbstractSyntaxTree.Tokens.Token.Kind>()
-var borrowed = Validators.AbstractSyntaxTree.BorrowedWord.Validator()
-var spelling = Validators.AbstractSyntaxTree.Spelling.Validator()
-var unreadable: AbstractSyntaxTree.Tokens.Unreadable? = null
+var unread = List<AbstractSyntaxTree.Tokens.Unreadable>()
 var position = 0
 var line = 1
 var column = 1
-var equals_sign = 61
-var plus_sign = 43
-var minus_sign = 45
 var line_break = 10
 var _open_brace_code = 123
 var _close_brace_code = 125
@@ -27,13 +22,12 @@ func Lexer(starting_path: String, starting_source: String, starting_line: Intege
 
 func tokens_of(): List<AbstractSyntaxTree.Tokens.Token> {
     read_all_tokens()
-    spelling.check(path, unreadable)
     record('end_of_file', "", "", line, column)
     return found
 }
 
 func read_all_tokens() {
-    while not at_end() and not unreadable {
+    while not at_end() {
         skip_layout()
         if not at_end() {
             read_token()
@@ -106,15 +100,15 @@ func read_token() {
     } else if code == 37 {
         simple('percent')
     } else if code == 43 {
-        read_plus()
+        simple('plus')
     } else if code == 45 {
-        read_minus()
+        simple('minus')
     } else if code == 61 {
         read_equals()
     } else if code == 47 {
-        read_slash()
+        simple('slash')
     } else if code == 42 {
-        read_star()
+        simple('star')
     } else if code == 60 {
         read_less()
     } else if code == 62 {
@@ -135,19 +129,7 @@ func read_anything_else(code: Integer) {
         read_number()
         return
     }
-    stop_at_a_mark()
-}
-
-func code_after_spaces(): Integer {
-    var ahead = position
-    var length = source.length()
-    while ahead < length and source.byte_at(ahead) == 32 {
-        ahead = ahead + 1
-    }
-    if ahead >= length {
-        return -1
-    }
-    return source.byte_at(ahead)
+    keep_a_mark()
 }
 
 func follows_a_dot(): Boolean {
@@ -174,9 +156,6 @@ func read_name() {
         record(keyword, word, word, start, column_here)
         return
     }
-    var previous = found.last()
-    var following_code = code_after_spaces()
-    borrowed.check(path, start, word, previous, following_code)
     var kind: AbstractSyntaxTree.Tokens.Token.Kind = 'name'
     var first = word.byte_at(0)
     if is_upper_letter(first) {
@@ -199,7 +178,9 @@ func read_number() {
         word = "{word}.{fraction}"
     }
     var exponent = exponent_here()
-    spelling.check_a_number(path, start, word, exponent)
+    var exponent_length = exponent.length()
+    move_to(position + exponent_length)
+    word = "{word}{exponent}"
     var value = word.replace("_", "")
     record(kind, word, value, start, column_here)
 }
@@ -261,7 +242,7 @@ func read_symbol() {
         code = code_here()
     }
     if code != 39 {
-        stop_reading('symbol', word, "", start)
+        keep_unread('symbol', word, "", start, column_here)
         return
     }
     step()
@@ -282,7 +263,7 @@ func read_generic_name() {
         code = code_here()
     }
     if word == "$" {
-        stop_reading('codegen_value', word, "", start)
+        keep_unread('codegen_value', word, "", start, column_here)
         return
     }
     record('generic_name', word, word, start, column_here)
@@ -293,31 +274,38 @@ func read_text() {
     var column_here = column
     var content = ""
     step()
-    while not at_end() and not unreadable {
+    while not at_end() {
         var code = code_here()
-        var closes = code == 34
         if code == line_break {
-            stop_reading('text', content, "", start)
+            keep_unread('text', content, "", start, column_here)
+            return
         } else if code == 34 {
             close_text(start, column_here, content)
-        } else if code == 92 {
-            content = read_escape_pair(content)
-        } else if code == _open_brace_code {
-            content = read_hole_text(content)
-        } else {
-            content = read_one_letter(content)
-        }
-        if closes {
             return
+        } else if code == 92 and escape_ends_the_line() {
+            keep_unread('text', content, "", line, column_here)
+            return
+        } else if code == _open_brace_code {
+            var end = end_of_hole()
+            if end < 0 {
+                keep_unread('hole', content, "", line, column_here)
+                var length = source.length()
+                move_to(length)
+                return
+            }
+            content = read_hole_text(content, end)
         } else {
-            keep_reading()
+            content = read_inside_text(code, content)
         }
     }
-    stop_reading('text', content, "", start)
+    keep_unread('text', content, "", start, column_here)
 }
 
-func keep_reading() {
-    return
+func read_inside_text(code: Integer, content: String): String {
+    if code == 92 {
+        return read_escape_pair(content)
+    }
+    return read_one_letter(content)
 }
 
 func close_text(start: Integer, column_here: Integer, content: String) {
@@ -325,21 +313,19 @@ func close_text(start: Integer, column_here: Integer, content: String) {
     record('text_literal', content, content, start, column_here)
 }
 
-func read_escape_pair(content: String): String {
+func escape_ends_the_line(): Boolean {
     var code = code_after(1)
-    var ends_the_line = code == line_break or code == -1
-    if ends_the_line {
-        stop_reading('text', content, "", line)
-        return content
-    }
+    return code == line_break or code == -1
+}
+
+func read_escape_pair(content: String): String {
     var pair = source.slice(position, position + 2)
     crash pair
     move_to(position + 2)
     return "{content}{pair}"
 }
 
-func read_hole_text(content: String): String {
-    var end = end_of_hole()
+func read_hole_text(content: String, end: Integer): String {
     var raw = source.slice(position, end + 1)
     crash raw
     move_to(end + 1)
@@ -377,8 +363,7 @@ func end_of_hole(): Integer {
             index = index + 1
         }
     }
-    stop_reading('hole', "", "", line)
-    return source.length() - 1
+    return -1
 }
 
 func brace_of(code: Integer): Integer {
@@ -445,42 +430,6 @@ func read_equals() {
     simple('equals')
 }
 
-func read_minus() {
-    var next_code = code_after(1)
-    if next_code == 62 or next_code == equals_sign or next_code == minus_sign {
-        stop_at_a_mark()
-        return
-    }
-    simple('minus')
-}
-
-func read_plus() {
-    var next_code = code_after(1)
-    if next_code == equals_sign or next_code == plus_sign {
-        stop_at_a_mark()
-        return
-    }
-    simple('plus')
-}
-
-func read_star() {
-    var next_code = code_after(1)
-    if next_code == 42 or next_code == equals_sign {
-        stop_at_a_mark()
-        return
-    }
-    simple('star')
-}
-
-func read_slash() {
-    var next_code = code_after(1)
-    if next_code == 47 or next_code == 42 or next_code == equals_sign {
-        stop_at_a_mark()
-        return
-    }
-    simple('slash')
-}
-
 func read_less() {
     var next_code = code_after(1)
     if next_code == 61 {
@@ -505,7 +454,7 @@ func read_not() {
         written_run('not_equal', 2)
         return
     }
-    stop_at_a_mark()
+    keep_a_mark()
 }
 
 func simple(kind: AbstractSyntaxTree.Tokens.Token.Kind) {
@@ -532,7 +481,9 @@ func written_run(kind: AbstractSyntaxTree.Tokens.Token.Kind, count: Integer) {
     record(kind, written, written, start, column_here)
 }
 
-func stop_at_a_mark() {
+func keep_a_mark() {
+    var start = line
+    var column_here = column
     var written = source[position]
     crash written
     var following = ""
@@ -541,17 +492,19 @@ func stop_at_a_mark() {
     if next {
         following = next
     }
-    stop_reading('mark', written, following, line)
+    move_to(after)
+    keep_unread('mark', written, following, start, column_here)
 }
 
-func stop_reading(
+func keep_unread(
     reading: AbstractSyntaxTree.Tokens.Unreadable.Reading,
     written: String,
     following: String,
-    stopped_line: Integer,
+    starting_line: Integer,
+    starting_column: Integer,
 ) {
-    fallback not unreadable
-    unreadable = AbstractSyntaxTree.Tokens.Unreadable(reading, written, following, stopped_line)
+    var piece = AbstractSyntaxTree.Tokens.Unreadable(reading, written, following, starting_line, starting_column)
+    unread.append(piece)
 }
 
 func record(

@@ -1,28 +1,195 @@
 var two_mark_forms = ["->", "--", "-=", "++", "+=", "**", "*=", "//", "/*", "/=", "&&", "||"]
+var second_marks: List<AbstractSyntaxTree.Tokens.Token.Kind> = [
+    'greater'
+    'greater_or_equal'
+    'equals'
+    'equal_equal'
+    'minus'
+    'plus'
+    'star'
+    'slash'
+]
 var _first_capital_code = 65
 var _last_capital_code = 90
+var _lowercase_z_code = 122
+var inside_a_block_comment = false
+var skipped_to_line = 0
+var skipped_to_column = 0
+var borrowed = Validators.AbstractSyntaxTree.BorrowedWord.Validator()
 
-func check(path: String, unreadable: AbstractSyntaxTree.Tokens.Unreadable?) {
-    fallback unreadable
-    var text = text_of(unreadable)
-    refuse(path, unreadable.line, text)
-}
-
-func check_a_number(path: String, line: Integer, digits: String, exponent: String) {
-    if not separators_stand_between_digits(digits) {
-        var text = "'{digits}' separates its digits wrongly: a '_' stands between two digits, one at a time, as in 1_000_000 or 0.000_01"
-        refuse(path, line, text)
-    } else if not exponent.is_empty() {
-        var written = "{digits}{exponent}"
-        var text = exponent_text(written)
-        refuse(path, line, text)
+# ../../../ARCHITECTURE.md#validators
+func check(
+    path: String,
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    unread: List<AbstractSyntaxTree.Tokens.Unreadable>,
+    comments: List<AbstractSyntaxTree.Shapes.Comment>,
+    found: List<Diagnostics.Problem>,
+) {
+    inside_a_block_comment = false
+    skipped_to_line = 0
+    skipped_to_column = 0
+    var last_token = tokens.count() - 1
+    var token_index = 0
+    var unread_index = 0
+    while token_index < last_token or unread_index < unread.count() {
+        if unread_comes_first(tokens, token_index, unread, unread_index) {
+            check_an_unread(path, unread, unread_index, found)
+            unread_index = unread_index + 1
+        } else {
+            check_a_token(path, tokens, token_index, comments, found)
+            token_index = token_index + 1
+        }
     }
 }
 
-func refuse(path: String, line: Integer, text: String) {
+func unread_comes_first(
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    token_index: Integer,
+    unread: List<AbstractSyntaxTree.Tokens.Unreadable>,
+    unread_index: Integer,
+): Boolean {
+    var piece = unread[unread_index]
+    fallback piece
+    var token = tokens[token_index]
+    crash token
+    if token.kind == 'end_of_file' {
+        return true
+    }
+    if piece.line != token.line {
+        return piece.line < token.line
+    }
+    return piece.column < token.column
+}
+
+func check_an_unread(
+    path: String,
+    unread: List<AbstractSyntaxTree.Tokens.Unreadable>,
+    index: Integer,
+    found: List<Diagnostics.Problem>,
+) {
+    var piece = unread[index]
+    crash piece
+    fallback not inside_a_block_comment and not is_skipped(piece.line, piece.column)
+    var text = text_of(piece)
+    tell(path, piece.line, text, found)
+    fallback piece.reading == 'text'
+    skip_to_the_quote_meant_to_close(unread, index)
+}
+
+# ../../../ARCHITECTURE.md#a-failure-stops-its-own-check
+func skip_to_the_quote_meant_to_close(unread: List<AbstractSyntaxTree.Tokens.Unreadable>, index: Integer) {
+    var later = index + 1
+    while later < unread.count() {
+        var piece = unread[later]
+        if piece.reading == 'text' and not holds_a_word(piece.written) {
+            skipped_to_line = piece.line
+            skipped_to_column = piece.column
+            return
+        }
+        later = later + 1
+    }
+}
+
+func holds_a_word(written: String): Boolean {
+    var index = 0
+    while index < written.length() {
+        var code = written.byte_at(index)
+        var is_a_letter = code >= 97 and code <= _lowercase_z_code or code >= _first_capital_code and code <= _last_capital_code
+        if is_a_letter or code >= 48 and code <= 57 {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func is_skipped(line: Integer, column: Integer): Boolean {
+    fallback line <= skipped_to_line
+    return line < skipped_to_line or column <= skipped_to_column
+}
+
+func check_a_token(
+    path: String,
+    tokens: List<AbstractSyntaxTree.Tokens.Token>,
+    index: Integer,
+    comments: List<AbstractSyntaxTree.Shapes.Comment>,
+    found: List<Diagnostics.Problem>,
+) {
+    var token = tokens[index]
+    crash token
+    var next = tokens[index + 1]
+    crash next
+    if inside_a_block_comment {
+        inside_a_block_comment = not closes_a_block_comment(token, next)
+        return
+    }
+    fallback not is_skipped(token.line, token.column)
+    var kind = token.kind
+    if kind == 'integer_literal' or kind == 'decimal_literal' {
+        check_a_number(path, token, found)
+    } else if kind == 'name' or kind == 'class_name' {
+        borrowed.check(path, tokens, index, comments, found)
+    } else if kind == 'minus' or kind == 'plus' or kind == 'star' or kind == 'slash' {
+        check_a_pair(path, token, next, found)
+    }
+}
+
+func check_a_pair(
+    path: String,
+    token: AbstractSyntaxTree.Tokens.Token,
+    next: AbstractSyntaxTree.Tokens.Token,
+    found: List<Diagnostics.Problem>,
+) {
+    fallback second_marks.contains(next.kind)
+    fallback next.line == token.line and next.column == token.column + 1
+    var second = next.lexeme.slice(0, 1)
+    crash second
+    var pair = "{token.lexeme}{second}"
+    fallback two_mark_forms.contains(pair)
+    var text = unreadable_text(pair)
+    tell(path, token.line, text, found)
+    inside_a_block_comment = pair == "/*"
+}
+
+func closes_a_block_comment(token: AbstractSyntaxTree.Tokens.Token, next: AbstractSyntaxTree.Tokens.Token): Boolean {
+    fallback token.kind == 'star' and next.kind == 'slash'
+    return next.line == token.line and next.column == token.column + 1
+}
+
+func check_a_number(path: String, token: AbstractSyntaxTree.Tokens.Token, found: List<Diagnostics.Problem>) {
+    var written = token.lexeme
+    var digits = written
+    var exponent = ""
+    var marker = exponent_marker_of(written)
+    if marker {
+        var length = written.length()
+        var before = written.slice(0, marker)
+        crash before
+        var after = written.slice(marker, length)
+        crash after
+        digits = before
+        exponent = after
+    }
+    if not separators_stand_between_digits(digits) {
+        var text = "'{digits}' separates its digits wrongly: a '_' stands between two digits, one at a time, as in 1_000_000 or 0.000_01"
+        tell(path, token.line, text, found)
+    } else if not exponent.is_empty() {
+        var text = exponent_text(written)
+        tell(path, token.line, text, found)
+    }
+}
+
+func exponent_marker_of(written: String): Integer? {
+    var marker = written.index_of("e")
+    if marker {
+        return marker
+    }
+    return written.index_of("E")
+}
+
+func tell(path: String, line: Integer, text: String, found: List<Diagnostics.Problem>) {
     var problem = Diagnostics.Problem(path, line, text)
-    var failure = Diagnostics.Failure()
-    failure.stop(problem)
+    found.append(problem)
 }
 
 func text_of(unreadable: AbstractSyntaxTree.Tokens.Unreadable): String {
