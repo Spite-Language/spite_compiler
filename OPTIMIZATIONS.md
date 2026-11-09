@@ -1454,7 +1454,8 @@ A call inside a loop to a function too large to inline, whose first block only r
 constants, copies, comparisons, unchecked arithmetic, at most twelve instructions, none writing a parameter) and then
 returns nothing on one side of its branch, makes that test in the caller: the call runs only on the other side. A
 list's `reserve()` called by every `append` is a compare with the capacity, and the call is made only when the list
-grows. The function is called as before when it runs, and reads its test again.
+grows. The function is called as before when it runs, and reads its test again. A call tested in place stays
+marked so when the function holding it is inlined, since its test is copied in front of it, so it is never tested twice.
 
 **When it does not apply:** to a function the compiler wrote, one that answers a value or waits, or a call outside
 any loop. **What a program can observe:** nothing but time.
