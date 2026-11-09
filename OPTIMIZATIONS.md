@@ -1173,7 +1173,7 @@ before these passes run, and a value must be in the frame when the function resu
 `Monster.name`, `Part.classes.count()`, `Part.classes.map_names().contains("Alpha")` and a walk over
 `Spite.Namespace.instances` are answered while the function is built (`building/folded/constants.spite`,
 [PROOFS.md](PROOFS.md#a-walk-over-known-classes-is-decided-while-compiling)), so no `Spite.Class` or `Spite.Namespace` is made for
-them and no table is filled. A `crash` that holds there writes nothing, a `fallback` a walk copy folds false records no trace, and the local holding a
+them and no table is filled; `Part.classes.first()`, `.last()`, `[0]` and `["Alpha"]` make only the item's object, never the list. A `crash` that holds there writes nothing, a `fallback` a walk copy folds false records no trace, and the local holding a
 known list is not declared. What such a walk leaves is a call of a copy per item that does next to nothing; not every copy is inlined away yet (spite_compiler#299's check leaves about 1600 of them).
 
 The compile-time evaluation's budget (`fits`, in `partial_evaluation.spite`) compares a function's registers with

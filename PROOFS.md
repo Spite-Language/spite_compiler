@@ -928,7 +928,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: a class or namespace named in the code, `$T`, `class`, the parameter of a walk over classes or namespaces,
   and a `var` or a parameter given one of these and never assigned again are constants, and so are their `name`,
   `name_with_namespaces`, `classes`, `namespaces` and `functions`, `Spite.Namespace.instances`, a list literal that only names classes or only names namespaces; `count()`, `is_empty()`, `map_names()`,
-  `contains`, `count_name_starts_with` and `count_name_ends_with` of a constant list; `starts_with`, `ends_with`,
+  `contains`, `count_name_starts_with` and `count_name_ends_with` of a constant list; `first()`, `last()`, `[n]` written as a
+  whole number and `["Name"]` of a constant list of classes or namespaces, which are the item (`first()`, `last()` and a name
+  a constant `T?` holding it, proven present, so a `crash` on a local holding one is removed as proven, as after
+  `Phase.values.find_by_name('update')`), or run time when there is none; `starts_with`, `ends_with`,
   `contains`, `split` and `length()` of a constant text; and `==`, `!=`, the orders, `and`, `or` and `not` over them.
   Each answers what the object made at run time would answer, from the same names (`DescribedNames`, `namespaces_of_the_program`).
 - **Walks**: `each` over a constant list of classes or namespaces with a walker of the class is one call per item, of a copy
@@ -939,10 +942,11 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   built as it was written, at run time, undecided.
 - **Buys**: a walk whose every check folds costs nothing at run time: no reflection object is made for it, and a `crash` that
   holds is not written. A walk over `Spite.Namespace.instances` that checks the program's layout refuses the build, as the compiler's own `folder_layout` does (`tests/compiler_folder_layout_broken`).
-- **Falls back**: what does not fold (an attribute's list, a call on another object, a text with holes, an index) is run time, so
+- **Falls back**: what does not fold (an attribute's list, a call on another object, a text with holes, an index that is not written as a number or a name, or names no item) is run time, so
   a `crash` under it is not decided.
 - **Lives in**: `building/folded/constants.spite`, `building/folded/known_copies.spite`, asked first by `Values.value_of`.
-- **Checked by**: tests/reflection_names_fold, tests/namespace_walk_decided, tests/known_list_walk, tests/class_name_is_short; conformance/reflection_name_crash, conformance/known_list_walk_crash, conformance/walk_name_crash,
+- **Checked by**: tests/reflection_names_fold, tests/reflection_list_first_folds, tests/reflection_list_last_folds,
+  tests/reflection_list_index_folds, tests/reflection_list_name_folds, tests/namespace_walk_decided, tests/known_list_walk, tests/class_name_is_short; conformance/reflection_name_crash, conformance/known_list_walk_crash, conformance/walk_name_crash,
   conformance/reflection_count_crash, conformance/reflection_names_contains_crash, conformance/namespace_walk_crash,
   conformance/namespace_walk_helper_crash.
 
