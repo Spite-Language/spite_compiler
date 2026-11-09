@@ -183,9 +183,10 @@ singleton, calls it, or uses it only on one side of an `if`.
   is carried along a chain: `var writer = Writer(keeper)` stays when `keeper` holds a kept object and `Writer` could
   change it. The plain writes keep the moment a `drop()` runs where it was: what a left-out default held is still
   held by what stays until the constructor replaces that default;
-- the class's defaults read an attribute before its default is written, name `this`, or write anything but an
-  attribute of `this`: the class is made from all of its defaults. A default that reads too soon can crash, so a
-  making of such a class is never quiet;
+- the class's defaults name `this`, or write anything but an attribute of `this`: the class is made from all of its
+  defaults. A default reads only attributes declared above it
+  ([classes_and_files.md](../spite_documentation/classes_and_files.md#a-default-reads-only-what-is-above-it)), so none
+  reads an attribute before its default is written;
 - a singleton is written, called or passed on anywhere in the making, which is a change the rest of the program can
   see; output, a foreign call, a wait, a loop, arithmetic and a check the constants do not decide are not quiet either;
 - the constructor returns first or names `this` before it assigns the attribute.
