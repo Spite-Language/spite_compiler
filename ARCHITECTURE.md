@@ -212,12 +212,14 @@ identical bytes.
 ### Checking the functions nobody calls
 
 Every function of the program's own classes outside a generic class is built in every build, called or not, so a
-mistake in it is refused the way one in a reached function is. An inspectable build keeps them (`keep_the_unreached`).
+mistake in it is refused the way one in a reached function is. One that takes a member a walk hands it (as
+`keep_the_unreached` says) is built per member walked, never on its own. An inspectable build keeps them (`keep_the_unreached`).
 A production build checks them once the reached program is built (`Builder.check_the_unreached`), in the same
 context, and then puts back everything the check made: `building/checkpoint.spite` remembers the context (the lists
 the builder only appends to are cut back to their length, a dictionary or a value is set back to a copy) and the
-built functions, and `building/model_checkpoint.spite` the program model (its classes and shapes, the fillers of a
-shape, and the functions, attributes, enums, unions and shapes of each class). So what the proofs, the high passes,
+built functions, and `building/model_checkpoint.spite` the program model (its classes and shapes, the fillers, members
+and assigned members of a shape, the functions, attributes, enums, unions and shapes of each class, and the foreign
+names each attribute's library looks up). So what the proofs, the high passes,
 the lowering and the outputs read is what the reached functions made, and the executable does not change.
 
 The validators the builder calls refuse in every function. The proofs that run after building
