@@ -13,6 +13,10 @@ var passed = List<Boolean>()
 var compared = List<Boolean>()
 var returned = List<Boolean>()
 var class_ids = List<Long>()
+var texts = List<Boolean>()
+var derived_from = List<Integer>()
+var derivations = List<LowIntermediaryRepresentation.Instructions.Arithmetic>()
+var freeing_calls = List<LowIntermediaryRepresentation.Instructions.Call>()
 var largest_room = 4096
 var largest_field_count = 32
 
@@ -34,6 +38,9 @@ func placed(): LowIntermediaryRepresentation.PlacedObjects? {
     join_the_copies()
     fill_the_roots()
     study_the_uses()
+    settle_the_derivations()
+    settle_the_freeing_calls()
+    study_the_derived()
     var index = 0
     while index < function.parameter_count {
         mark_escaped(index)
@@ -212,6 +219,8 @@ func fill_the_roots() {
         returned.append(false)
         facts.allocation_sizes.append(-1)
         class_ids.append(-1)
+        texts.append(false)
+        derived_from.append(-1)
         facts.modes.append(0)
         facts.plain.append(false)
         facts.field_counts.append(0)
@@ -254,7 +263,7 @@ func study_an_instruction(instruction: SpiteCompiler.Instruction) {
         LowIntermediaryRepresentation.Instructions.Call: study_a_call(instruction)
         LowIntermediaryRepresentation.Instructions.Return: study_a_return(instruction)
         LowIntermediaryRepresentation.Instructions.Constant: operands.uses.each(mark_escaped)
-        LowIntermediaryRepresentation.Instructions.Arithmetic: operands.uses.each(mark_escaped)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: derivations.append(instruction)
         LowIntermediaryRepresentation.Instructions.Check: operands.uses.each(mark_escaped)
         LowIntermediaryRepresentation.Instructions.Compare: study_a_compare(instruction)
         LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: operands.uses.each(mark_escaped)
@@ -317,6 +326,10 @@ func mark_compared(register: Integer) {
 func study_an_allocation(allocate: LowIntermediaryRepresentation.Instructions.Allocate) {
     var root = facts.root_of(allocate.target)
     allocated[root] = true
+    if program.text_class_id >= 0 and allocate.class_id == program.text_class_id {
+        texts[root] = true
+        return
+    }
     if facts.constant_known[allocate.size] != true {
         escaped[root] = true
         return
@@ -381,6 +394,15 @@ func note_the_class(root: Integer, stored: LowIntermediaryRepresentation.Instruc
 
 func study_a_call(call: LowIntermediaryRepresentation.Instructions.Call) {
     fallback call.function != "_release" or call.arguments.count() != 1
+    var frees = call.function == "_free_by_class" or call.function == "_free_String"
+    if frees and call.arguments.count() == 1 {
+        freeing_calls.append(call)
+        return
+    }
+    study_the_arguments(call)
+}
+
+func study_the_arguments(call: LowIntermediaryRepresentation.Instructions.Call) {
     var index = 0
     while index < call.arguments.count() {
         var argument = call.arguments[index]
@@ -450,6 +472,10 @@ func choose_the_modes() {
 }
 
 func choose_a_mode(root: Integer) {
+    if texts[root] == true {
+        choose_a_room_for_a_text(root)
+        return
+    }
     fallback fields_fit(root)
     var class_id = class_ids[root]
     crash class_id
@@ -497,6 +523,213 @@ func choose_a_room_for_bytes(root: Integer) {
         facts.inside_flag = program.buffer_inside_flag
         facts.modes[root] = 4
     }
+}
+
+# ../../OPTIMIZATIONS.md#a-short-text-that-never-leaves-its-function-lives-in-the-frame
+func choose_a_room_for_a_text(root: Integer) {
+    var class_id = class_ids[root]
+    crash class_id
+    var text_class: Long = program.text_class_id
+    fallback returned[root] != true and class_id == text_class
+    fallback keeping.keeps_no_text_buffer(program)
+    var members = members_of(root)
+    if flow.holds_one_at_a_time(function, members) or not flow.allocates_in_a_loop(function, members) {
+        facts.text_flag = program.text_flag
+        facts.short_text_block = program.short_text_block
+        facts.modes[root] = 5
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-short-text-that-never-leaves-its-function-lives-in-the-frame
+func settle_the_derivations() {
+    var changed = true
+    while changed {
+        changed = false
+        var index = 0
+        while index < derivations.count() {
+            var instruction = derivations[index]
+            if derive(instruction) {
+                changed = true
+            }
+            index = index + 1
+        }
+        if derive_the_buffer_reads() {
+            changed = true
+        }
+    }
+    var settling = 0
+    while settling < derivations.count() {
+        var instruction = derivations[settling]
+        if derived_text_of(instruction.target) < 0 {
+            operands.read(instruction)
+            operands.uses.each(mark_escaped)
+        }
+        settling = settling + 1
+    }
+}
+
+func derive(instruction: LowIntermediaryRepresentation.Instructions.Arithmetic): Boolean {
+    fallback instruction.operator == 'add'
+    fallback defined_once(instruction.target) and text_of(instruction.target) < 0
+    var left_text = text_of(instruction.left)
+    var right_text = text_of(instruction.right)
+    var text = left_text
+    if right_text >= 0 {
+        text = right_text
+    }
+    fallback text >= 0 and (left_text < 0 or right_text < 0)
+    var target_root = facts.root_of(instruction.target)
+    derived_from[target_root] = text
+    return true
+}
+
+func derive_the_buffer_reads(): Boolean {
+    var found = false
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if derive_a_buffer_read(instruction) {
+                found = true
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    return found
+}
+
+func derive_a_buffer_read(instruction: SpiteCompiler.Instruction): Boolean {
+    fallback instruction.class == LowIntermediaryRepresentation.Instructions.Load
+    fallback instruction.offset == program.text_buffer_slot and instruction.width == 'bits_64'
+    fallback instruction.address >= 0 and instruction.address < facts.register_total
+    var owner = facts.root_of(instruction.address)
+    fallback texts[owner] == true and text_of(instruction.target) < 0
+    if not defined_once(instruction.target) {
+        escaped[owner] = true
+        return false
+    }
+    var target_root = facts.root_of(instruction.target)
+    derived_from[target_root] = owner
+    return true
+}
+
+func text_of(register: Integer): Integer {
+    fallback register >= 0 and register < facts.register_total
+    var root = facts.root_of(register)
+    if texts[root] == true {
+        return root
+    }
+    var known = derived_from[root]
+    crash known
+    return known
+}
+
+func derived_text_of(register: Integer): Integer {
+    fallback register >= 0 and register < facts.register_total
+    var root = facts.root_of(register)
+    var known = derived_from[root]
+    crash known
+    return known
+}
+
+func settle_the_freeing_calls() {
+    var index = 0
+    while index < freeing_calls.count() {
+        var call = freeing_calls[index]
+        var argument = call.arguments[0]
+        crash argument
+        var root = facts.root_of(argument)
+        if texts[root] != true {
+            study_the_arguments(call)
+        }
+        index = index + 1
+    }
+}
+
+func study_the_derived() {
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        block.instructions.each(study_a_derived_use)
+        block_index = block_index + 1
+    }
+}
+
+func study_a_derived_use(instruction: SpiteCompiler.Instruction) {
+    operands.read(instruction)
+    var used_registers = operands.uses.copy()
+    var index = 0
+    while index < used_registers.count() {
+        var used = used_registers[index]
+        crash used
+        var text = derived_text_of(used)
+        if text >= 0 and not keeps_the_text_inside(instruction, used, text) {
+            escaped[text] = true
+        }
+        index = index + 1
+    }
+}
+
+func keeps_the_text_inside(instruction: SpiteCompiler.Instruction, used: Integer, text: Integer): Boolean {
+    switch instruction {
+        LowIntermediaryRepresentation.Instructions.Load: return true
+        LowIntermediaryRepresentation.Instructions.Copy: return true
+        LowIntermediaryRepresentation.Instructions.Compare: return true
+        LowIntermediaryRepresentation.Instructions.CopyBytes: return true
+        LowIntermediaryRepresentation.Instructions.Store: return stores_inside(instruction, used, text)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return derived_text_of(instruction.target) == text
+        LowIntermediaryRepresentation.Instructions.Call: return reads_only(instruction, used)
+        LowIntermediaryRepresentation.Instructions.Constant: return false
+        LowIntermediaryRepresentation.Instructions.Check: return false
+        LowIntermediaryRepresentation.Instructions.Decimal.Arithmetic: return false
+        LowIntermediaryRepresentation.Instructions.Decimal.Compare: return false
+        LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return false
+        LowIntermediaryRepresentation.Instructions.CallAt: return false
+        LowIntermediaryRepresentation.Instructions.ForeignAddress: return false
+        LowIntermediaryRepresentation.Instructions.DataAddress: return false
+        LowIntermediaryRepresentation.Instructions.FunctionAddress: return false
+        LowIntermediaryRepresentation.Instructions.Allocate: return false
+        LowIntermediaryRepresentation.Instructions.Retain: return false
+        LowIntermediaryRepresentation.Instructions.Free: return false
+        LowIntermediaryRepresentation.Instructions.Resize: return false
+        LowIntermediaryRepresentation.Instructions.OpenLibrary: return false
+        LowIntermediaryRepresentation.Instructions.Jump: return false
+        LowIntermediaryRepresentation.Instructions.Branch: return false
+        LowIntermediaryRepresentation.Instructions.Return: return false
+        LowIntermediaryRepresentation.Instructions.FrameAddress: return false
+        LowIntermediaryRepresentation.Instructions.ThreadIdentity: return false
+        LowIntermediaryRepresentation.Instructions.FrameRoom: return false
+        LowIntermediaryRepresentation.Instructions.StartThread: return false
+        LowIntermediaryRepresentation.Instructions.JoinThread: return false
+        LowIntermediaryRepresentation.Instructions.AtomicAdd: return false
+        LowIntermediaryRepresentation.Instructions.ImportCall: return false
+        LowIntermediaryRepresentation.Instructions.CompareExchange: return false
+        LowIntermediaryRepresentation.Instructions.Stop: return false
+        LowIntermediaryRepresentation.Instructions.Exit: return false
+        LowIntermediaryRepresentation.Instructions.VectorLoop: return false
+        LowIntermediaryRepresentation.Instructions.Select: return false
+    }
+}
+
+func stores_inside(stored: LowIntermediaryRepresentation.Instructions.Store, used: Integer, text: Integer): Boolean {
+    if stored.source != used {
+        return true
+    }
+    return text_of(stored.address) == text
+}
+
+func reads_only(call: LowIntermediaryRepresentation.Instructions.Call, used: Integer): Boolean {
+    fallback call.function != "_release" and call.function != "_free_by_class"
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        fallback argument != used or keeping.keeps_nothing_of(call.function, index)
+        index = index + 1
+    }
+    return true
 }
 
 func flagged_by_its_function(root: Integer): Boolean {

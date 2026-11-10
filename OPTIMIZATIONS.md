@@ -584,6 +584,52 @@ objects, or whose `String` or `Buffer` has a `drop()` or is held back by a cycle
 anything but `_buffer = Buffer(n)` with a number written out and `_length = 0`. What a user can observe: one allocation per text, 48
 more bytes per `Buffer`, and the time.
 
+## A short text that never leaves its function lives in the frame
+
+A text a function makes (a written text, a join, a number's digits, a `slice`) and only reads, compares, looks up
+or hands to calls that keep nothing of it is room in the function's frame instead of a heap block, when its bytes
+fit the room [inside its `String`](#short-text-lives-inside-its-string) (47 bytes): the `String`, its `Buffer`
+and the bytes are the same 120 bytes, cleared where the text is made, and nothing is allocated. Whether a join fits
+is known only when it runs, so the compiler writes both: a join whose length fits takes the frame's room, a longer
+one is made on the heap as before. The text marks itself as living in the frame (its flag is 2 where a text made
+in one block holds 1), its count is kept as on the heap, and the release that brings it to 0 lets go of bytes that
+outgrew the room and, seeing the mark, leaves the room alone.
+
+```spite
+func tagged(count: Integer): Integer {
+    var total = 0
+    var index = 0
+    while index < count {
+        var digit = index % 10
+        var text = "id{digit}"
+        total = total + text.length()
+        index = index + 1
+    }
+    return total
+}
+```
+
+Each `text` is the frame's room: ten million of them allocate nothing (0.24 s before, see `tests/short_text_allocations`
+for the counts).
+
+**When it applies:** to a text that never leaves its function by the rules of [objects that never leave their
+function](#objects-that-never-leave-their-function-live-in-registers-or-the-frame), where its buffer, the bytes
+inside it and the buffer read from its slot count as the text (read, written through, compared, copied from, or
+handed to a call that keeps nothing of them), made at most one at a time in a loop or outside every loop, in a
+program where no function keeps a text's `Buffer` (none stores, answers or retains what it reads from a text's
+`_buffer`, or hands it to a call that keeps it), and only when texts are held whole.
+
+**When it does not apply:** a text stored into a list, a dictionary, an attribute or a singleton, answered by
+`return`, or handed to a call that keeps it, a text in a program that hands a text's `Buffer` out, and a text in a
+function that waits. There it is a heap text made in one block, exactly as before. A text longer than 47 bytes is
+made on the heap even where it could live in the frame. A foreign call handed a text in the frame reads its bytes
+where they are, as it reads a heap text's, and `to_buffer()` copies them into a `Buffer` of its own.
+
+**What a program can observe:** fewer allocations under `--debug-memory`, `program.live_allocations()` and
+`program.live_bytes()`, and the time. Text, comparisons, hashing and every function on `String` answer the same.
+Holding short text inside a 16-byte `String` value, so that it allocates nothing when it is stored or passed on
+too, is the next step (spite_compiler#394).
+
 ## Bytes are copied in one block
 
 The library copies a run of bytes the plain way, one byte read and written per pass of a loop (D1735):

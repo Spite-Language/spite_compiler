@@ -1039,6 +1039,28 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: tests/generic_vectors, tests/written_codegen_in_frame, tests/owned_objects (output only),
   tests/compared_object_in_the_frame (counts with `--debug-memory`).
 
+### A short text that never leaves its function lives in the frame
+
+- **Status**: partly built (D1990).
+- **Rule**: a text a function makes that never leaves it, reached only through its own address, the addresses
+  added to it (its `Buffer`, the bytes inside) and the `Buffer` read from its slot, each only read, written
+  through, compared, copied from or handed to a call that keeps nothing of it, lives in the frame when its bytes fit
+  the room inside it; no function of the program keeps a text's `Buffer`
+  ([standard_library.md](../spite_documentation/standard_library.md)).
+- **Buys**: no allocation for a short text that only lives in its function.
+- **Missing**: a short text held inside a 16-byte `String` value wherever it goes (stored, answered, passed to a
+  call that keeps it), spite_compiler#394.
+- **Falls back**: a heap text, made in one block; a join longer than the room is made on the heap even in a
+  function where its text never leaves.
+- **Lives in**: the low proof `proofs/objects_in_the_frame` (`study.spite`, the derived addresses and the
+  frees by class; `kept_parameters.spite`, whether any function keeps what it reads from a text's `_buffer`,
+  asked once per program), and the pass `low_optimization_passes/object_placement`, which writes the room and the
+  test of the length; `_free_String` (`low_intermediary_representation/lowering/freeing.spite`) leaves a text
+  marked as living in the frame where it is.
+- **Checked by**: tests/short_text_allocations (counts with `program.live_allocations()`, at the 15/16 and the
+  47/48 byte edges), tests/short_text_boundaries (a stored, answered, foreign and handed-out text, output only),
+  tests/short_text.
+
 ### Local and variadic lists in the frame
 
 - **Status**: partly built (D991).

@@ -13,6 +13,7 @@ var placing_known = List<Boolean>()
 var placing_values = List<Long>()
 var placed = List<SpiteCompiler.Instruction>()
 var placing_block = 0
+var text_flags = List<Integer>()
 
 func Pass(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
@@ -29,6 +30,7 @@ func transformed(): LowIntermediaryRepresentation.LowFunction {
     var index = 0
     while index < facts.register_total {
         register_fields.append(-1)
+        text_flags.append(-1)
         index = index + 1
     }
     index = 0
@@ -383,7 +385,7 @@ func finish_the_segment() {
 
 func place_one(instruction: SpiteCompiler.Instruction): Boolean {
     switch instruction {
-        LowIntermediaryRepresentation.Instructions.Allocate: place_an_allocation(instruction)
+        LowIntermediaryRepresentation.Instructions.Allocate: return place_an_allocation(instruction)
         LowIntermediaryRepresentation.Instructions.Copy: place_a_copy(instruction)
         LowIntermediaryRepresentation.Instructions.Load: place_a_load(instruction)
         LowIntermediaryRepresentation.Instructions.Store: place_a_store(instruction)
@@ -478,11 +480,14 @@ func width_of(bytes: Integer): LowIntermediaryRepresentation.Instructions.Load.W
     }
 }
 
-func place_an_allocation(allocate: LowIntermediaryRepresentation.Instructions.Allocate) {
+func place_an_allocation(allocate: LowIntermediaryRepresentation.Instructions.Allocate): Boolean {
     var mode = facts.mode_of(allocate.target)
     if mode == 0 {
         placed.append(allocate)
-        return
+        return false
+    }
+    if mode == 5 {
+        return place_a_text(allocate)
     }
     var root = facts.root_of(allocate.target)
     if mode == 3 or mode == 4 {
@@ -491,7 +496,7 @@ func place_an_allocation(allocate: LowIntermediaryRepresentation.Instructions.Al
         var room = LowIntermediaryRepresentation.Instructions.FrameRoom(allocate.target, size, allocate.zeroed_bytes)
         placed.append(room)
         mark_inside(allocate.target, mode)
-        return
+        return false
     }
     var index = 0
     while index < facts.field_roots.count() {
@@ -505,6 +510,86 @@ func place_an_allocation(allocate: LowIntermediaryRepresentation.Instructions.Al
         }
         index = index + 1
     }
+    return false
+}
+
+# ../../OPTIMIZATIONS.md#a-short-text-that-never-leaves-its-function-lives-in-the-frame
+func place_a_text(allocate: LowIntermediaryRepresentation.Instructions.Allocate): Boolean {
+    var flag = text_flag_of(allocate.target)
+    var block_size = facts.short_text_block
+    if facts.constant_known[allocate.size] == true {
+        var size = facts.constant_values[allocate.size]
+        crash size
+        if size <= block_size {
+            var fitted: Integer = size
+            var room = LowIntermediaryRepresentation.Instructions.FrameRoom(
+                allocate.target,
+                fitted,
+                allocate.zeroed_bytes,
+            )
+            placed.append(room)
+            var in_the_frame = LowIntermediaryRepresentation.Instructions.Constant(flag, 2)
+            placed.append(in_the_frame)
+            return false
+        }
+        placed.append(allocate)
+        var on_the_heap = LowIntermediaryRepresentation.Instructions.Constant(flag, 1)
+        placed.append(on_the_heap)
+        return false
+    }
+    var limit = new_register()
+    var made_limit = LowIntermediaryRepresentation.Instructions.Constant(limit, block_size)
+    placed.append(made_limit)
+    var fits = new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(fits, 'less_or_equal', allocate.size, limit, true)
+    placed.append(compared)
+    var block = function.blocks[placing_block]
+    crash block
+    var framed = LowIntermediaryRepresentation.LowBlock()
+    framed.place = block.place
+    var heaped = LowIntermediaryRepresentation.LowBlock()
+    heaped.place = block.place
+    var continuing = LowIntermediaryRepresentation.LowBlock()
+    continuing.place = block.place
+    var framed_index = function.blocks.count()
+    var heaped_index = framed_index + 1
+    var continuing_index = framed_index + 2
+    function.blocks.append(framed)
+    function.blocks.append(heaped)
+    function.blocks.append(continuing)
+    var test = LowIntermediaryRepresentation.Instructions.Branch(fits, framed_index, heaped_index)
+    placed.append(test)
+    finish_the_segment()
+    var whole_room = LowIntermediaryRepresentation.Instructions.FrameRoom(
+        allocate.target,
+        block_size,
+        allocate.zeroed_bytes,
+    )
+    framed.instructions.append(whole_room)
+    var framed_flag = LowIntermediaryRepresentation.Instructions.Constant(flag, 2)
+    framed.instructions.append(framed_flag)
+    var framed_onward = LowIntermediaryRepresentation.Instructions.Jump(continuing_index)
+    framed.instructions.append(framed_onward)
+    heaped.instructions.append(allocate)
+    var heaped_flag = LowIntermediaryRepresentation.Instructions.Constant(flag, 1)
+    heaped.instructions.append(heaped_flag)
+    var heaped_onward = LowIntermediaryRepresentation.Instructions.Jump(continuing_index)
+    heaped.instructions.append(heaped_onward)
+    placed = List<SpiteCompiler.Instruction>()
+    placing_block = continuing_index
+    return true
+}
+
+func text_flag_of(register: Integer): Integer {
+    var root = facts.root_of(register)
+    var known = text_flags[root]
+    crash known
+    if known >= 0 {
+        return known
+    }
+    var made = new_register()
+    text_flags[root] = made
+    return made
 }
 
 # ../../OPTIMIZATIONS.md#a-buffer-that-never-leaves-its-function-lives-in-the-frame
@@ -561,6 +646,19 @@ func place_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
 
 func place_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
     var mode = facts.mode_of(stored.address)
+    if mode == 5 and stored.offset == facts.text_flag and stored.width == 'bits_8' {
+        var flag = text_flag_of(stored.address)
+        var flagged = LowIntermediaryRepresentation.Instructions.Store(
+            stored.address,
+            stored.offset,
+            flag,
+            'bits_8',
+            "",
+            false,
+        )
+        placed.append(flagged)
+        return
+    }
     if mode == 3 and stored.offset == 8 {
         var owner = facts.root_of(stored.address)
         fallback facts.count_read[owner] == true
@@ -654,7 +752,7 @@ func normalize_into(target: Integer, source: Integer, field: Integer) {
 
 func place_a_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
     var mode = facts.mode_of(retain.object)
-    if mode == 0 or mode == 4 {
+    if mode == 0 or mode == 4 or mode == 5 {
         placed.append(retain)
         return
     }
@@ -688,7 +786,7 @@ func place_a_call(call: LowIntermediaryRepresentation.Instructions.Call): Boolea
     var object = call.arguments[0]
     crash object
     var mode = facts.mode_of(object)
-    if mode == 0 or mode == 4 {
+    if mode == 0 or mode == 4 or mode == 5 {
         placed.append(call)
         return false
     }
