@@ -446,7 +446,7 @@ both forms, and that change publishes a new seed: its fixed point as a new `seed
 
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
 file), it hands it to the validator of that rule at once. The validator lets it pass, or refuses it through
-`Diagnostics.Failure`. A mistake with one fix never reaches its validator: the layer's fix rule changes the tree
+`Diagnostics.Failure`. A mistake with one fix is fixed before it is told: the layer's fix rule changes the tree
 first (below).
 
 Reading a file judges nothing (D1975). The lexer reads every mark as a token of its own and keeps what starts no token
@@ -511,7 +511,10 @@ validator only ever sees what stays an error:
 | after building | `fixes/after_building/every_fix.spite`: `fixed_a_check` from the proof `proven_checks` before each refusal, `fixed_a_terminal_if` from `guard_asserts`, `fixed_a_walk` before the rules after building, `fixed_an_attribute` from `every_attribute_is_read` | `proven_check` (a `crash` or `fallback` line that proves nothing), `decided_condition` (an `if`, a `while` or a `fallback` decided while compiling), `known_if` (an `if` on what is already narrowed, proven or a decided class test), `terminal_if`, `copy_to_narrow`, `unread_plain_local`, `unread_attribute` |
 
 A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it, a
-declaration moved between files) and answers a `Diagnostics.Problem` with `is_fix` for each change. It never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`, `cut_later`, `renamed_with_the_last_fix`), which makes it right before writing. A rename changes only the name a declaration or an identifier holds, so nothing proven about a value's slot is assigned again. A library file, a pinned
+declaration moved between files) and answers a `Diagnostics.Problem` with `is_fix` for each change. Whether a fix
+can be done is its validator's to decide (D2005): the fixer asks the rule, acts on `is_fixable()`, assumes the
+problem is there and only rewrites. `misnamed_path` works this way; the other rules still decide in the fixer, and
+`compiler_rules_are_validators` lists them until spite_compiler#407 moves each decision into its validator. It never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`, `cut_later`, `renamed_with_the_last_fix`), which makes it right before writing. A rename changes only the name a declaration or an identifier holds, so nothing proven about a value's slot is assigned again. A library file, a pinned
 package's file, a generated class, a generic class, a walk and a file holding breakpoints are never fixed: their
 mistakes stay errors.
 
@@ -564,6 +567,16 @@ still print the hidden name, since a second `thing.pop()` is another call.
 `validators/<level>/<rule>/validator.spite` holds a class `Validator()` whose `check(...)` takes the data the rule
 needs. The folder is named after the rule, and the validator holds every word of its error.
 
+Anything that can go wrong hands its state to a validator, which answers fine, fixable or a mistake (D2005,
+spite_compiler#407). The answer is one class for every rule, `validators/answer.spite` (`Validators.Answer`): `fix`
+names the fix when one can be done, `mistake` holds the problem with the rule's words, and `tell()` stops with it
+(D2006). A validator never applies a fix and never does IO: a step that writes, removes, moves, connects or runs git
+records what the system answered as a fact (`CommandLine.Attempt`, `Mapping.GitRun`) and hands that, and a file is
+read elsewhere and its content handed in. `validators/mapping/misnamed_path` is the first rule that answers: its
+fixer asks it and renames only what it answers fixable (`symbols/load_reach.spite` is what both read about the
+loads), and the mapping's entry tells what it answers wrong. The rules that still stop in place answer a mistake by
+stopping; turning each into a returned answer is what spite_compiler#407 leaves.
+
 - A rule lives at the earliest level that has the facts it needs, and runs as soon as those facts exist: a file's
   rules run right after the file is parsed, before the next file is read.
 - A validator never changes what it is given.
@@ -594,11 +607,16 @@ needs. The folder is named after the rule, and the validator holds every word of
 - The test `tests/compiler_rules_are_validators` of spite_spec reads this source: every
   `validators/**/validator.spite` defines a `check`; no file outside `validators/` and `proofs/` defines a
   `refuse...` or builds a `Diagnostics.Failure`; no file outside `validators/` calls a `.refuse...(`, hands its own
-  words to a `.stop(...)`, hands a rule's `check...` a symbol (the kind of a mistake it named), or (outside
-  `diagnostics/`) prints a `console.error` and exits; and inside `validators/` no `check...` refuses before it tests
-  anything, none is handed the kind of its mistake (an `enum Mistake`, a `Mistake` or `mistake:` parameter), and no
-  rule words a fault of the compiler. It keeps no list of files excused (spite_compiler#385), and it judges a printer
-  written for it, to show such a rule is refused.
+  words to a `.stop(...)` or to a rule's `check...` (a text written in the call), hands a rule's `check...` a symbol
+  (the kind of a mistake it named), or (outside `diagnostics/`) prints a `console.error` and exits; inside
+  `validators/` no `check...` refuses before it tests anything, none is handed the kind of its mistake (an
+  `enum Mistake`, a `Mistake` or `mistake:` parameter) or a `Boolean`, none does IO (`Directory(`, `File(`,
+  `Process(`, reading or writing a file, the working directory), none rewrites (`is_fix`, a writer's `..._later(`),
+  and no rule words a fault of the compiler; and under `fixes/<layer>/` no function answers a `Boolean` and every
+  `fix.spite` acts on a rule's `is_fixable()`. Its one waiting list names exactly what spite_compiler#407 has not
+  converted yet, and an entry that no longer breaks a rule is refused, so the list only shrinks. It judges samples
+  written for it (a printer, a validator handed a Boolean that does IO and rewrites, a caller handing words, a
+  fixer that decides), to show each is refused.
 - A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_documentation/blob/master/style.md#the-file-content-budget))
   is told with the file's other refusals, by `validators/abstract_syntax_tree/file_content_budget`. No list or flag excuses a file.
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with

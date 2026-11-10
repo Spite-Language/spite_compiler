@@ -10,3 +10,4 @@ What the compiler changes in a program's own files instead of refusing them, and
 
 A layer holds one folder per rule, `<rule>/fix.spite` with the class `Fix`, and reaches them through its entry: `tokens/every_fix.spite`, `abstract_syntax_tree/every_fix.spite`, `symbols/every_fix.spite` or `after_building/every_fix.spite`.
 A fix changes the representation it is given and answers a `fixed:` problem for each change; it writes no file.
+Its rule's validator decides whether the fix can be done, and the fix acts on that answer (`is_fixable()`) and only rewrites (D2005): `symbols/misnamed_path` so far, the rest is spite_compiler#407.
