@@ -1578,7 +1578,7 @@ function, but it is placed only in the frame (the third placement), never in reg
 address: its room is an address no other object has while it lives, and the group holds one object at a time
 there, so the comparison answers what it would on the heap. A loop that makes an object each pass and compares it
 with one made before the loop made one object per pass before (`compared_object_in_the_frame`: 1022 allocations
-for 1000 passes before, 21 after). An ordering comparison of an address still makes the object leave.
+for 1000 passes before, 20 after, the one less a written text in the frame). An ordering comparison of an address still makes the object leave.
 
 ### A row's count is followed while compiling
 
