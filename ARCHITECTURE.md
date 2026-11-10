@@ -301,6 +301,30 @@ that removes an arithmetic as dead or hoists it as invariant leaves a checked on
 result fits removes the check (`checked_ranges`, `power_divisions`, `remainder_tests`, a fold into a constant). The
 emitter writes the check with its arithmetic, as a jump to a cold stop, and writes nothing for the check itself.
 
+## What a constructor takes
+
+A model, instruction or value class takes in its constructor every field a construction decides, so a field added
+later is a compile error wherever the class is built (D1932, D2000). Three kinds of field are not parameters:
+
+- A fact a pass or a later step of the stage fills keeps its default, even where one construction already knows it:
+  the ranges and folds on a `MachineOperation`, `Load.is_invariant` and `cannot_fault`, the `line` and `frames` a low
+  call gets as it is emitted and inlined, `Call.is_guarded` and `hands_over`, the known arguments `split_classes` marks
+  on a high call and its lowering carries, `Values.Call.is_a_join` (marked on the call `method_call` made), the case
+  a `switch` names on its `Block` once the body is built, a `VectorLoop`'s steps and lanes, and a `Join`'s sources.
+- A list starts empty and the constructions that have items fill it (`Block.statements`, `Stop.labels` and `numbers`,
+  `CallAt.decimal_sizes`); it is a parameter only when every construction hands one over (`Call.arguments`), since a
+  constructor is never an argument and a list parameter would cost every other construction a line.
+- A field the constructor works out from a parameter (`value_type` of a `Values.Call`, an `AttributeRead` or a
+  `NumberRoom`, `Class.Object.reflection_kind`).
+
+State holders are not constructions: they start empty and fill as a stage runs, so no construction can forget a field.
+They are the builders' shared states (`FunctionLoweringState`, `StatementsState`, `ReflectionState`, `SourceState`,
+`VectorLoopState`, the compile-time evaluation's `State`, `EmitterState`, `AllocationState`, `ResolutionState`), the
+building `Context` and its checkpoints, and the containers a stage fills past what their constructors take
+(`ProgramModel`, `ClassModel`, `HighProgram`, `HighFunction`, `LoweredProgram`, `LowFunction`, `LowBlock`).
+`MachineOperation`'s written words, the parts of a function `Model.Type` and `FunctionModel` wait on the split D2001
+describes.
+
 ## The resolver and the reflection builder
 
 A class too large for one file keeps its fields in one state object, and each concern is a class beside it that takes
