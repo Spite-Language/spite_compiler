@@ -609,7 +609,7 @@ func tagged(count: Integer): Integer {
 }
 ```
 
-Each `text` is the frame's room: ten million of them allocate nothing (0.24 s before, see `tests/short_text_allocations`
+Each `text` is the frame's room: ten million of them allocate nothing (0.22 s before, 0.17 s after; `tests/short_text_allocations` has
 for the counts).
 
 **When it applies:** to a text that never leaves its function by the rules of [objects that never leave their
