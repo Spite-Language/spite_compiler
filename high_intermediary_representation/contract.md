@@ -45,7 +45,8 @@ like "is this call ever reached" or "may this value be null" has no answer on th
 - `building/folded/constants.spite` and `building/folded/known_copies.spite`: what a question on a class or namespace known while
   compiling answers, and the copy of a function that knows it.
 - `statements` and `values`: the representation itself, data only, one file per kind; the unions of both are
-  declared in `spite_compiler.spite`.
+  declared in `spite_compiler.spite`. `values/written_operation.spite` is no value: it is the words a
+  `MachineOperation` the source wrote holds.
 - `ownership`: which parameters a function keeps and how a value is used, which the lowering counts with.
 - `layout.spite`, `waits.spite`, `assignments.spite`, `singleton_forms.spite`, `coarse_loops.spite`, `quiet_values.spite`,
   `list_gets.spite` and `setup_list_walk.spite`: what the high passes record on the program for the lowering.

@@ -322,8 +322,13 @@ They are the builders' shared states (`FunctionLoweringState`, `StatementsState`
 `VectorLoopState`, the compile-time evaluation's `State`, `EmitterState`, `AllocationState`, `ResolutionState`), the
 building `Context` and its checkpoints, and the containers a stage fills past what their constructors take
 (`ProgramModel`, `ClassModel`, `HighProgram`, `HighFunction`, `LoweredProgram`, `LowFunction`, `LowBlock`).
-`MachineOperation`'s written words, the parts of a function `Model.Type` and `FunctionModel` wait on the split D2001
-describes.
+Three classes hold a part only some constructions build as one nullable value, which takes every field it holds
+(D2001, D2060): a `MachineOperation` the source wrote holds its words as a `Values.WrittenOperation` (`null` on one the
+compiler builds; `shown()` answers the whole text or nothing), a function or handle `Model.Type` its parameters, answer
+and variadic mark as a `Model.Signature` (`signature_or_empty()` answers no parameters and no answer for any other
+type), and a fused step `FunctionModel` its filters as a `Model.FusedStep`. A `Model.Type` keeps its two-field
+constructor, since 158 of its 166 constructions name no signature. The rest of `FunctionModel` is not split yet
+(spite_compiler#305).
 
 ## The resolver and the reflection builder
 
