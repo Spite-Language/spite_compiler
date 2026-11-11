@@ -95,36 +95,50 @@ func read_shape_members(declaration: AbstractSyntaxTree.Shapes.Declarations.Type
     while index < declaration.members.count() {
         state.line = declaration.line + index + 1
         var member = declaration.members[index]
-        var function = Model.FunctionModel(member.name, made.key)
-        function.is_an_attribute = member.is_an_attribute
         state.read_parameters = List<Model.ParameterModel>()
         member.parameters.each(read_parameter)
-        function.parameters = state.read_parameters
+        var answer: Model.Type? = null
         if member.result {
-            function.answer = types.type_of(member.result)
+            answer = types.type_of(member.result)
         }
-        read_a_function_member(function)
+        var is_an_attribute = member.is_an_attribute
+        var held = function_held_by(answer, is_an_attribute)
+        if held {
+            held.parameters.each(read_a_held_parameter)
+            answer = held.answer
+            is_an_attribute = false
+        }
+        var is_a_function_member = not is_an_attribute
+        var function = Model.FunctionModel(
+            member.name,
+            made.key,
+            answer,
+            null,
+            null,
+            null,
+            null,
+            null,
+            false,
+            false,
+            is_an_attribute,
+            is_a_function_member,
+        )
+        function.parameters = state.read_parameters
         made.members.append(function)
         index = index + 1
     }
 }
 
-func read_a_function_member(member: Model.FunctionModel) {
-    member.is_a_function_member = not member.is_an_attribute
-    fallback member.answer and member.is_an_attribute
-    var held: Model.Type = member.answer
+func function_held_by(answer: Model.Type?, is_an_attribute: Boolean): Model.Signature? {
+    fallback answer and is_an_attribute
+    var held: Model.Type = answer
     fallback held.kind == 'function' and not held.is_nullable
-    var signature = held.signature_or_empty()
-    var index = 0
-    while index < signature.parameters.count() {
-        var taken = signature.parameters[index]
-        var parameter = Model.ParameterModel("", taken, false)
-        member.parameters.append(parameter)
-        index = index + 1
-    }
-    member.answer = signature.answer
-    member.is_an_attribute = false
-    member.is_a_function_member = true
+    return held.signature_or_empty()
+}
+
+func read_a_held_parameter(taken: Model.Type) {
+    var parameter = Model.ParameterModel("", taken, false)
+    state.read_parameters.append(parameter)
 }
 
 func read_attribute(declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration) {
@@ -166,8 +180,6 @@ func read_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionD
     state.read_function_name = declaration.name
     state.read_function_path = declaration.path
     var key = declaration.declared_key()
-    var made = Model.FunctionModel(key, state.context.key)
-    made.declaration = declaration
     var simple_name = monomorphiser.simple_name_of(state.context.file)
     var is_constructor = declaration.is_a_constructor_of(simple_name)
     var is_a_conversion = declaration.is_a_conversion()
@@ -177,21 +189,51 @@ func read_function(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionD
     if template_index >= 0 {
         var collecting = Validators.NameResolution.CollectingTemplate.Validator()
         collecting.check(state.context.shown, declaration, template_index)
-        made.declared = Model.DeclaredFunction(is_constructor, is_a_conversion, is_a_preset, template_index, -1)
+        var declared_template = Model.DeclaredFunction(is_constructor, is_a_conversion, is_a_preset, template_index, -1)
+        var made_template = Model.FunctionModel(
+            key,
+            state.context.key,
+            null,
+            declaration,
+            declared_template,
+            null,
+            null,
+            null,
+            false,
+            false,
+            false,
+            false,
+        )
         mark_the_attribute_reads(declaration, template_index)
-        state.context.declared_functions.append(made)
+        state.context.declared_functions.append(made_template)
         return
     }
     state.read_parameters = List<Model.ParameterModel>()
     declaration.parameters.each(read_parameter)
-    made.parameters = state.read_parameters
+    var parameters = state.read_parameters
     var hand_copies = Validators.NameResolution.HandCopy.Validator()
     hand_copies.check(state.context.file, simple_name, declaration)
     var reflected_answer_index = reflected_answer_index_of(declaration)
-    made.declared = Model.DeclaredFunction(is_constructor, is_a_conversion, is_a_preset, -1, reflected_answer_index)
+    var declared = Model.DeclaredFunction(is_constructor, is_a_conversion, is_a_preset, -1, reflected_answer_index)
+    var answer: Model.Type? = null
     if declaration.result and reflected_answer_index < 0 {
-        made.answer = types.type_of(declaration.result)
+        answer = types.type_of(declaration.result)
     }
+    var made = Model.FunctionModel(
+        key,
+        state.context.key,
+        answer,
+        declaration,
+        declared,
+        null,
+        null,
+        null,
+        false,
+        false,
+        false,
+        false,
+    )
+    made.parameters = parameters
     state.context.declared_functions.append(made)
 }
 
@@ -387,15 +429,14 @@ func specialized(
     template: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration?,
     owner_key: String,
     binding: Model.TemplateBinding,
+    walk_copy: Model.WalkCopy?,
+    fused: Model.FusedStep?,
     called_name: String,
     model: Model.ClassModel,
 ): Model.FunctionModel {
     crash template and binding.member_type
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = template
     var member_type: Model.Type = binding.member_type
-    var made = Model.FunctionModel(called_name, owner_key)
-    made.declaration = declaration
-    made.binding = binding
     var outer_name = state.bound_member_name
     var outer_type = state.bound_member_type
     var outer_is_a_class = state.bound_member_is_a_class
@@ -412,10 +453,26 @@ func specialized(
         }
         index = index + 1
     }
-    made.parameters = state.read_parameters
+    var parameters = state.read_parameters
+    var answer: Model.Type? = null
     if declaration.result {
-        made.answer = types.type_of(declaration.result)
+        answer = types.type_of(declaration.result)
     }
+    var made = Model.FunctionModel(
+        called_name,
+        owner_key,
+        answer,
+        declaration,
+        null,
+        binding,
+        walk_copy,
+        fused,
+        false,
+        false,
+        false,
+        false,
+    )
+    made.parameters = parameters
     state.bound_member_name = outer_name
     state.bound_member_type = outer_type
     state.bound_member_is_a_class = outer_is_a_class
@@ -425,7 +482,12 @@ func specialized(
 }
 
 # ../../spite_documentation/reflection.md#spitefunctiondeclaration
-func read_as_a_walker(template: Model.FunctionModel, made: Model.FunctionModel, model: Model.ClassModel) {
+func read_as_a_walker(
+    template: Model.FunctionModel,
+    name: String,
+    walk_copy: Model.WalkCopy?,
+    model: Model.ClassModel,
+): Model.FunctionModel {
     crash template.declaration
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = template.declaration
     var outer = state.context
@@ -433,12 +495,29 @@ func read_as_a_walker(template: Model.FunctionModel, made: Model.FunctionModel, 
     state.line = declaration.line
     state.read_parameters = List<Model.ParameterModel>()
     declaration.parameters.each(read_parameter)
-    made.parameters = state.read_parameters
+    var parameters = state.read_parameters
+    var answer: Model.Type? = null
     if declaration.result {
-        made.answer = types.type_of(declaration.result)
+        answer = types.type_of(declaration.result)
     }
     state.context = outer
     monomorphiser.fill_the_waiting()
+    var made = Model.FunctionModel(
+        name,
+        template.owner,
+        answer,
+        declaration,
+        null,
+        null,
+        walk_copy,
+        null,
+        false,
+        false,
+        false,
+        false,
+    )
+    made.parameters = parameters
+    return made
 }
 
 func bind_member(

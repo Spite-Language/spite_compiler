@@ -334,8 +334,12 @@ own index and the reflected answer, built once by `Reading.read_function`), what
 `Model.ComparedValue`; each kind of specialisation builds it whole and hands it to `Reading.specialized`), what a walk
 or known-argument copy knows (`Model.WalkCopy`, whose presence makes the function a walk copy) and the fused step.
 Readers take `binding_or_empty()`, `pattern_or_empty()` and `walk_copy_or_empty()`, or ask the function
-(`is_a_constructor()`, `template_index()`, `bound_parameter()`, `is_a_walk_copy()`). `FunctionModel`'s own constructor
-does not take every field yet (spite_compiler#305).
+(`is_a_constructor()`, `template_index()`, `bound_parameter()`, `is_a_walk_copy()`). `FunctionModel` takes every field
+a construction decides in its constructor, placeholders included: name, owner, answer, declaration, the four parts and
+its four flags (`is_synthetic`, `is_written_by_the_compiler`, `is_an_attribute`, `is_a_function_member`), so none is
+forgotten (Mortaro, D2075); a construction names a flag it sets with a local. Its `parameters` and
+`known_parameter_functions` are filled by the constructions that have them, and `placed_at_line`, `inferred_owner` and
+`narrowed_names` by a later step.
 
 ## The resolver and the reflection builder
 
