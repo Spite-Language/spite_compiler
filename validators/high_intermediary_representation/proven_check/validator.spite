@@ -1,135 +1,409 @@
+var sites = HighIntermediaryRepresentation.Building.FixableSite()
+var every_rule = Validators.HighIntermediaryRepresentation.EveryRule()
+var whole_number_names = [
+    "Tiny"
+    "Byte"
+    "Short"
+    "UnsignedShort"
+    "Integer"
+    "UnsignedInteger"
+    "Long"
+    "UnsignedLong"
+]
+
 # ../../../PROOFS.md#proving-what-is-proven-is-an-error
 func check(
     context: HighIntermediaryRepresentation.Building.Context,
     site: HighIntermediaryRepresentation.Building.CheckSite,
-) {
-    if site.kind == "proven check" {
-        refuse_a_narrowed_check(context, site)
-    }
-    if site.kind == "proven read" {
-        refuse_a_proven_read(context, site)
-    }
-    if site.kind == "plain value" {
-        refuse_a_check_of_a_plain_value(context, site)
-    }
-    if site.kind == "proven value" {
-        refuse_a_proven_check(context, site.written, "the proof that every value it can hold is present")
-    }
+): Validators.Answer {
     if site.kind == "copy" {
-        refuse_a_copy(context, site)
-    }
-    if site.kind == "repeated check" {
-        refuse_a_repeated_check(context, site)
-    }
-    if site.kind == "proven divisor" {
-        refuse_a_proven_divisor(context, site)
-    }
-    if site.kind == "always holds" {
-        stopped(context, "'{site.keyword} {site.written}' is decided while compiling and always holds here: remove it")
-    }
-    if site.kind == "answered class test" {
-        refuse_an_answered_class_test(context, site)
+        return check_a_copy(context, site)
     }
     if site.kind == "decided condition" {
-        refuse_a_decided_condition(context, site)
+        return check_a_decided_condition(context, site)
     }
+    if site.kind == "answered class test" {
+        return check_an_answered_class_test(context, site)
+    }
+    var known = check_a_known_if(context, site)
+    if not known.mistake {
+        return known
+    }
+    return check_a_removal(context, site)
 }
 
-func refuse_a_narrowed_check(
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func check_a_removal(
     context: HighIntermediaryRepresentation.Building.Context,
     site: HighIntermediaryRepresentation.Building.CheckSite,
-) {
-    crash site.check
-    refuse_a_proven_check(context, site.written, site.check)
+): Validators.Answer {
+    var tree = sites.tree_of(context)
+    if tree and sites.is_fixed_already(context, site.line) {
+        return Validators.Answer()
+    }
+    if tree and is_removable(site) and holds_the_check(site) {
+        var removable = Validators.Answer()
+        removable.fix = "remove the check"
+        return removable
+    }
+    return mistake_of(context, site)
 }
 
-func refuse_a_proven_check(
-    context: HighIntermediaryRepresentation.Building.Context,
-    written: String,
-    narrowed_by: String,
-) {
-    stopped(context, "'{written}' is already narrowed by {narrowed_by}: remove this check")
+func is_removable(site: HighIntermediaryRepresentation.Building.CheckSite): Boolean {
+    var naming_their_proof = ["proven check", "proven read", "repeated check", "proven divisor"]
+    if naming_their_proof.contains(site.kind) {
+        fallback site.check
+        return true
+    }
+    return site.kind == "proven value" or site.kind == "always holds" or site.kind == "plain value"
 }
 
-func refuse_a_proven_read(
+func holds_the_check(site: HighIntermediaryRepresentation.Building.CheckSite): Boolean {
+    var statements = written_checks(site)
+    var index = 0
+    while index < site.block.count() {
+        var statement = site.block[index]
+        if statement.line == site.line and is_one_of(statement, statements) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func is_one_of(statement: SpiteCompiler.WrittenStatement, statements: List<String>): Boolean {
+    var printer = Printers.Spite.StatementPrinter(statement)
+    var written = printer.text()
+    return statements.contains(written)
+}
+
+func written_checks(site: HighIntermediaryRepresentation.Building.CheckSite): List<String> {
+    var statements = List<String>()
+    if site.keyword.is_empty() {
+        statements.append("crash {site.written}")
+        statements.append("fallback {site.written}")
+    } else {
+        statements.append("{site.keyword} {site.written}")
+    }
+    return statements
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func check_a_known_if(
     context: HighIntermediaryRepresentation.Building.Context,
     site: HighIntermediaryRepresentation.Building.CheckSite,
-) {
-    crash site.check
-    stopped(
-        context,
-        "'{site.written}' is already proven by {site.check}, so this '{site.keyword}' proves nothing: remove it",
-    )
+): Validators.Answer {
+    var why = what_narrowed_it(site)
+    var statement = if_at_the_site(site)
+    if why and statement {
+        crash statement.condition
+        var printer = Printers.Spite.ExpressionPrinter(statement.condition)
+        var condition = printer.text()
+        var holds = condition == site.written
+        if holds or condition == "not {site.written}" {
+            return answer_for_the_replaced_if(context, site, statement, holds)
+        }
+    }
+    return mistake_of(context, site)
 }
 
-func refuse_a_check_of_a_plain_value(
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func check_an_answered_class_test(
     context: HighIntermediaryRepresentation.Building.Context,
     site: HighIntermediaryRepresentation.Building.CheckSite,
-) {
-    var shown = context.shown(site.checked_type)
-    var every_rule = Validators.HighIntermediaryRepresentation.EveryRule()
-    var article = every_rule.article_of(shown)
-    stopped(
-        context,
-        "this value cannot be null here (it is {article} {shown}), so '{site.keyword}' on it proves nothing: remove the check",
-    )
+): Validators.Answer {
+    var statement = if_at_the_site(site)
+    if statement {
+        crash statement.condition
+        crash site.source
+        var printer = Printers.Spite.ExpressionPrinter(statement.condition)
+        var condition = printer.text()
+        if condition == site.whole_test {
+            var shown = context.shown(site.checked_type)
+            var holds = shown == site.source
+            return answer_for_the_replaced_if(context, site, statement, holds)
+        }
+    }
+    return mistake_of(context, site)
 }
 
-# ../../../../spite_documentation/metaprogramming.md#walking-a-programs-structure
-func refuse_a_copy(
+func answer_for_the_replaced_if(
     context: HighIntermediaryRepresentation.Building.Context,
     site: HighIntermediaryRepresentation.Building.CheckSite,
-) {
+    statement: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+    holds: Boolean,
+): Validators.Answer {
+    var tree = sites.tree_of(context)
+    if tree and sites.is_fixed_already(context, site.line) {
+        return Validators.Answer()
+    }
+    var kept = sites.kept_statements(holds, statement)
+    if tree and not sites.moves_a_name_onto_another(context, statement, kept) {
+        var replaceable = Validators.Answer()
+        replaceable.fix = "replace the 'if' with the code it runs"
+        return replaceable
+    }
+    return mistake_of(context, site)
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func what_narrowed_it(site: HighIntermediaryRepresentation.Building.CheckSite): String? {
+    if site.kind == "proven check" {
+        return site.check
+    }
+    if site.kind == "proven value" {
+        return "the proof that every value it can hold is present"
+    }
+    return null
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func if_at_the_site(
+    site: HighIntermediaryRepresentation.Building.CheckSite,
+): AbstractSyntaxTree.Shapes.Statements.IfStatement? {
+    var index = 0
+    while index < site.block.count() {
+        var statement = site.block[index]
+        if statement.line == site.line and statement.class == AbstractSyntaxTree.Shapes.Statements.IfStatement {
+            return statement
+        }
+        index = index + 1
+    }
+    return null
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func check_a_decided_condition(
+    context: HighIntermediaryRepresentation.Building.Context,
+    site: HighIntermediaryRepresentation.Building.CheckSite,
+): Validators.Answer {
+    var is_replaced = site.keyword == "if" or (site.keyword == "while" or site.keyword == "fallback") and not site.holds
+    var tree = sites.tree_of(context)
+    if is_replaced and tree and sites.is_fixed_already(context, site.line) {
+        return Validators.Answer()
+    }
+    var statement = statement_at_the_site(site)
+    if is_replaced and tree and statement and runs_without_the_condition(context, site, statement) {
+        var decided = Validators.Answer()
+        decided.fix = "replace the '{site.keyword}' with what it runs"
+        return decided
+    }
+    return mistake_of(context, site)
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func statement_at_the_site(site: HighIntermediaryRepresentation.Building.CheckSite): SpiteCompiler.WrittenStatement? {
+    var index = 0
+    while index < site.block.count() {
+        var statement = site.block[index]
+        if statement.line == site.line {
+            return statement
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func runs_without_the_condition(
+    context: HighIntermediaryRepresentation.Building.Context,
+    site: HighIntermediaryRepresentation.Building.CheckSite,
+    statement: SpiteCompiler.WrittenStatement,
+): Boolean {
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.FallbackStatement and site.keyword == "fallback" {
+        return answers_without_the_rest(context, site)
+    }
+    var is_an_if = statement.class == AbstractSyntaxTree.Shapes.Statements.IfStatement and site.keyword == "if"
+    var is_a_while = statement.class == AbstractSyntaxTree.Shapes.Statements.WhileStatement and site.keyword == "while"
+    fallback is_an_if or is_a_while
+    var kept = sites.kept_statements(site.holds, statement)
+    return not sites.moves_a_name_onto_another(context, statement, kept)
+}
+
+func answers_without_the_rest(
+    context: HighIntermediaryRepresentation.Building.Context,
+    site: HighIntermediaryRepresentation.Building.CheckSite,
+): Boolean {
+    crash context.current_function.declaration
+    var ends_the_function = is_a_line_of_the_body(context.current_function.declaration, site.line)
+    if context.current_function.declaration.result or not ends_the_function {
+        var answer = default_answer(context.current_function.declaration)
+        fallback answer
+    }
+    return true
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func is_a_line_of_the_body(
+    function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    line: Integer,
+): Boolean {
+    crash function.body
+    var index = 0
+    while index < function.body.statements.count() {
+        var statement = function.body.statements[index]
+        if statement.line == line {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func default_answer(
+    function: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+): AbstractSyntaxTree.Shapes.Statements.ReturnStatement? {
+    if not function.result {
+        return AbstractSyntaxTree.Shapes.Statements.ReturnStatement(null)
+    }
+    var value = default_value(function.result)
+    fallback value
+    return AbstractSyntaxTree.Shapes.Statements.ReturnStatement(value)
+}
+
+func default_value(result: SpiteCompiler.Type): SpiteCompiler.Expression? {
+    if result.is_nullable {
+        return AbstractSyntaxTree.Shapes.Expressions.LiteralExpression('keyword_null', "null")
+    }
+    var last = result.path.last()
+    crash last
+    if whole_number_names.contains(last) {
+        return AbstractSyntaxTree.Shapes.Expressions.LiteralExpression('integer_literal', "0")
+    }
+    if last == "Boolean" {
+        return AbstractSyntaxTree.Shapes.Expressions.LiteralExpression('keyword_false', "false")
+    }
+    return null
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func check_a_copy(
+    context: HighIntermediaryRepresentation.Building.Context,
+    site: HighIntermediaryRepresentation.Building.CheckSite,
+): Validators.Answer {
+    var tree = sites.tree_of(context)
+    if tree and sites.is_fixed_already(context, site.line) {
+        return Validators.Answer()
+    }
+    if tree {
+        var copy = copy_at_the_site(context, site)
+        if copy {
+            var narrowed = Validators.Answer()
+            narrowed.fix = "narrow the copied value itself"
+            return narrowed
+        }
+    }
+    return mistake_of(context, site)
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func copy_at_the_site(
+    context: HighIntermediaryRepresentation.Building.Context,
+    site: HighIntermediaryRepresentation.Building.CheckSite,
+): AbstractSyntaxTree.Walk.Found.Statement? {
     crash site.source
-    stopped(
-        context,
-        "'{site.written}' only copies '{site.source}' so it can be narrowed: narrow '{site.source}' itself ('fallback {site.source}') and use it directly",
-    )
+    crash context.current_function.declaration
+    var holder = AbstractSyntaxTree.Shapes.SourceFile("", "")
+    holder.declarations.append(context.current_function.declaration)
+    var walk = AbstractSyntaxTree.Walk.Walk(holder)
+    fallback declared_once(walk, site.written)
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        var statement = found.statement
+        if statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement and statement.line == site.line {
+            return found
+        }
+        index = index + 1
+    }
+    return null
 }
 
-func refuse_a_repeated_check(
-    context: HighIntermediaryRepresentation.Building.Context,
-    site: HighIntermediaryRepresentation.Building.CheckSite,
-) {
-    crash site.check
-    stopped(
-        context,
-        "'{site.written}' was already checked on line {site.check}, and nothing between could change it: remove this check",
-    )
+func declared_once(walk: AbstractSyntaxTree.Walk.Walk, name: String): Boolean {
+    var declared = 0
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        var statement = found.statement
+        if statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement and statement.name == name {
+            declared = declared + 1
+        }
+        index = index + 1
+    }
+    return declared == 1
 }
 
-func refuse_a_proven_divisor(
+func mistake_of(
     context: HighIntermediaryRepresentation.Building.Context,
     site: HighIntermediaryRepresentation.Building.CheckSite,
-) {
-    crash site.check
-    stopped(context, "'{site.written}' is already proven by {site.check}: remove this check")
+): Validators.Answer {
+    var text = words_of(context, site)
+    fallback text
+    return every_rule.mistake(context, text)
+}
+
+func words_of(
+    context: HighIntermediaryRepresentation.Building.Context,
+    site: HighIntermediaryRepresentation.Building.CheckSite,
+): String? {
+    if site.kind == "proven check" {
+        crash site.check
+        return "'{site.written}' is already narrowed by {site.check}: remove this check"
+    }
+    if site.kind == "proven read" {
+        crash site.check
+        return "'{site.written}' is already proven by {site.check}, so this '{site.keyword}' proves nothing: remove it"
+    }
+    if site.kind == "plain value" {
+        var shown = context.shown(site.checked_type)
+        var article = every_rule.article_of(shown)
+        return "this value cannot be null here (it is {article} {shown}), so '{site.keyword}' on it proves nothing: remove the check"
+    }
+    if site.kind == "proven value" {
+        return "'{site.written}' is already narrowed by the proof that every value it can hold is present: remove this check"
+    }
+    if site.kind == "copy" {
+        crash site.source
+        return "'{site.written}' only copies '{site.source}' so it can be narrowed: narrow '{site.source}' itself ('fallback {site.source}') and use it directly"
+    }
+    if site.kind == "repeated check" {
+        crash site.check
+        return "'{site.written}' was already checked on line {site.check}, and nothing between could change it: remove this check"
+    }
+    if site.kind == "proven divisor" {
+        crash site.check
+        return "'{site.written}' is already proven by {site.check}: remove this check"
+    }
+    if site.kind == "always holds" {
+        return "'{site.keyword} {site.written}' is decided while compiling and always holds here: remove it"
+    }
+    if site.kind == "answered class test" {
+        return words_of_an_answered_class_test(context, site)
+    }
+    if site.kind == "decided condition" {
+        return words_of_a_decided_condition(site)
+    }
+    return null
 }
 
 # ../../../PROOFS.md#proving-what-is-proven-is-an-error
-func refuse_an_answered_class_test(
+func words_of_an_answered_class_test(
     context: HighIntermediaryRepresentation.Building.Context,
     site: HighIntermediaryRepresentation.Building.CheckSite,
-) {
+): String {
     var shown = context.shown(site.checked_type)
     if site.check {
-        stopped(context, "'{site.written}' is already a {shown}, narrowed by {site.check}: remove this test")
+        return "'{site.written}' is already a {shown}, narrowed by {site.check}: remove this test"
     }
     crash site.source
     if shown == site.source {
-        stopped(context, "'{site.written}' is a {shown} here, so this test is decided while compiling: remove it")
+        return "'{site.written}' is a {shown} here, so this test is decided while compiling: remove it"
     }
-    stopped(
-        context,
-        "'{site.written}' is a {shown} here, so it is never {site.source} and this test is decided while compiling: remove it",
-    )
+    return "'{site.written}' is a {shown} here, so it is never {site.source} and this test is decided while compiling: remove it"
 }
 
 # ../../../../spite_documentation/failure.md#nothing-fails-silently
-func refuse_a_decided_condition(
-    context: HighIntermediaryRepresentation.Building.Context,
-    site: HighIntermediaryRepresentation.Building.CheckSite,
-) {
+func words_of_a_decided_condition(site: HighIntermediaryRepresentation.Building.CheckSite): String {
     var keyword = site.keyword
     var known = "'{keyword} {site.written}' is decided while compiling and is always false here"
     if site.holds {
@@ -139,24 +413,16 @@ func refuse_a_decided_condition(
         known = "{known}, since {site.source}"
     }
     if keyword == "if" and site.holds {
-        stopped(context, "{known}, so it tells a reader nothing: remove the 'if' and keep the code it runs")
+        return "{known}, so it tells a reader nothing: remove the 'if' and keep the code it runs"
     }
     if keyword == "if" {
-        stopped(context, "{known}, so the code it guards never runs: remove it, keeping its 'else' if it has one")
+        return "{known}, so the code it guards never runs: remove it, keeping its 'else' if it has one"
     }
     if keyword == "while" and site.holds {
-        stopped(
-            context,
-            "{known}: a loop ends by its condition, so loop 'while' what its leaving paths change, a 'running' local they set to false or the loop's real exit test",
-        )
+        return "{known}: a loop ends by its condition, so loop 'while' what its leaving paths change, a 'running' local they set to false or the loop's real exit test"
     }
     if keyword == "while" {
-        stopped(context, "{known}, so the loop never runs: remove it")
+        return "{known}, so the loop never runs: remove it"
     }
-    stopped(context, "{known}, so the function always answers nothing from here: remove it with the code after it")
-}
-
-func stopped(context: HighIntermediaryRepresentation.Building.Context, text: String) {
-    var rules = Validators.HighIntermediaryRepresentation.EveryRule()
-    rules.stop(context, text)
+    return "{known}, so the function always answers nothing from here: remove it with the code after it"
 }

@@ -1,5 +1,149 @@
-func check(path: String, line: Integer, owner: String, name: String, is_removed: Boolean) {
-    fallback not is_removed
-    var failure = Diagnostics.Failure()
-    failure.stop_inside(path, line, owner, "", "the attribute '{name}' is never read: remove it")
+var reading = AbstractSyntaxTree.UnusedNames.Reads()
+var write_blocks = List<List<SpiteCompiler.WrittenStatement>>()
+var write_lines = List<Integer>()
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func check(
+    table: Symbols.SymbolTable,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration,
+    path: String,
+    owner: String,
+): Validators.Answer {
+    write_blocks = List<List<SpiteCompiler.WrittenStatement>>()
+    write_lines = List<Integer>()
+    var answer = Validators.Answer()
+    if may_go(table, declaration, path) {
+        answer.fix = "remove the attribute '{declaration.name}'"
+        return answer
+    }
+    var text = "the attribute '{declaration.name}' is never read: remove it"
+    var problem = Diagnostics.Problem(path, declaration.line, text)
+    problem.class_name = owner
+    problem.is_among_the_attributes = true
+    answer.mistake = problem
+    return answer
+}
+
+func may_go(
+    table: Symbols.SymbolTable,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration,
+    path: String,
+): Boolean {
+    fallback table.may_fix_later(path) and reading.does_nothing(declaration.value)
+    var tree = table.files[path]
+    fallback tree and not is_generic(tree)
+    fallback every_write_does_nothing(table, declaration.name, tree.namespace, path)
+    var place = place_of(tree, declaration)
+    fallback place
+    return true
+}
+
+func is_generic(tree: AbstractSyntaxTree.Shapes.SourceFile): Boolean {
+    var index = 0
+    while index < tree.declarations.count() {
+        var held = tree.declarations[index]
+        if held.class == AbstractSyntaxTree.Shapes.Declarations.GenericDeclaration {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+# ../../../../spite_documentation/style.md#the-compiler-fixes-what-has-one-fix
+func place_of(
+    tree: AbstractSyntaxTree.Shapes.SourceFile,
+    declaration: AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration,
+): Integer? {
+    var index = 0
+    while index < tree.declarations.count() {
+        var held = tree.declarations[index]
+        if held.class == AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration and held.name == declaration.name {
+            return index
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func every_write_does_nothing(table: Symbols.SymbolTable, name: String, tree_namespace: String, path: String): Boolean {
+    var index = 0
+    while index < table.walks.count() {
+        var walk = table.walks[index]
+        var statement_index = 0
+        while statement_index < walk.statements.count() {
+            var found = walk.statements[statement_index]
+            fallback write_may_go_with_it(walk, found, name, tree_namespace, path)
+            statement_index = statement_index + 1
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func write_may_go_with_it(
+    walk: AbstractSyntaxTree.Walk.Walk,
+    found: AbstractSyntaxTree.Walk.Found.Statement,
+    name: String,
+    namespace: String,
+    path: String,
+): Boolean {
+    var statement = found.statement
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        var target = statement.target
+        if target.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+            return target.name != name
+        }
+        if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression and target.name == name {
+            return write_elsewhere_may_stay(walk, found, statement, name, namespace, path)
+        }
+    }
+    return true
+}
+
+func write_elsewhere_may_stay(
+    walk: AbstractSyntaxTree.Walk.Walk,
+    found: AbstractSyntaxTree.Walk.Found.Statement,
+    write: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    name: String,
+    namespace: String,
+    path: String,
+): Boolean {
+    if walk.file.path == path {
+        return write_may_go(walk, found, write, name)
+    }
+    return walk.file.namespace != namespace
+}
+
+func write_may_go(
+    walk: AbstractSyntaxTree.Walk.Walk,
+    found: AbstractSyntaxTree.Walk.Found.Statement,
+    write: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement,
+    name: String,
+): Boolean {
+    crash found.holder
+    fallback reading.does_nothing(write.value) and found.holder.statements.count() > 1
+    fallback not names_a_local(walk, found.function_name, name)
+    write_blocks.append(found.holder.statements)
+    write_lines.append(write.line)
+    return true
+}
+
+func names_a_local(walk: AbstractSyntaxTree.Walk.Walk, function_name: String, name: String): Boolean {
+    var function = walk.function_named(function_name)
+    crash function
+    var parameter_names = function.parameters.map_names()
+    if parameter_names.contains(name) {
+        return true
+    }
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        var statement = found.statement
+        if found.function_name == function_name and statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement and statement.name == name {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
