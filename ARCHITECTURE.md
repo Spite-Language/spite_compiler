@@ -537,8 +537,10 @@ validator only ever sees what stays an error:
 A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it, a
 declaration moved between files) and answers a `Diagnostics.Problem` with `is_fix` for each change. Whether a fix
 can be done is its validator's to decide (D2005): the fixer asks the rule, acts on `is_fixable()`, assumes the
-problem is there and only rewrites. `misnamed_path` works this way; the other rules still decide in the fixer, and
-`compiler_rules_are_validators` lists them until spite_compiler#407 moves each decision into its validator. It never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`, `cut_later`, `renamed_with_the_last_fix`), which makes it right before writing. A rename changes only the name a declaration or an identifier holds, so nothing proven about a value's slot is assigned again. A library file, a pinned
+problem is there and only rewrites. The token and syntax-tree fixes and `misnamed_path` work this way: their rule answers each
+candidate with a `check...` that returns a `Validators.Answer`, and what the fixer needs to rewrite (the keyword meant, the
+name without its underscore) it asks the rule, never decides (D2055). The symbols and after-building fixes still decide in
+the fixer, and `compiler_rules_are_validators` lists them until spite_compiler#407 moves each decision into its validator. It never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`, `cut_later`, `renamed_with_the_last_fix`), which makes it right before writing. A rename changes only the name a declaration or an identifier holds, so nothing proven about a value's slot is assigned again. A library file, a pinned
 package's file, a generated class, a generic class, a walk and a file holding breakpoints are never fixed: their
 mistakes stay errors.
 
@@ -596,7 +598,13 @@ spite_compiler#407). The answer is one class for every rule, `validators/answer.
 names the fix when one can be done, `mistake` holds the problem with the rule's words, and `tell()` stops with it
 (D2006). A validator never applies a fix and never does IO: a step that writes, removes, moves, connects or runs git
 records what the system answered as a fact (`CommandLine.Attempt`, `Mapping.GitRun`) and hands that, and a file is
-read elsewhere and its content handed in. `validators/mapping/misnamed_path` is the first rule that answers: its
+read elsewhere and its content handed in: the symbol table reads the markdown each comment links and whether each
+linked `.spite` file exists into a `Symbols.LinkedFiles` before a file's rules run, `ForeignConstants` reads what a C
+header declares a function to answer into a `HeaderAnswer`, and the settings record what the environment handed into a
+`CommandLine.HandedSetting` (D2055). A rule that needs what a step can answer (whether two signatures are the same, a
+literal, a member kept inline, whether a walk drops an answer) is handed that step (`Values`, `Operators`, `Fitting`,
+`Constraints`, `Keys`, `DroppingWalks`, a proof, a pass) or the site it recorded, and asks it itself (D2055).
+`validators/mapping/misnamed_path` is the first rule that answers: its
 fixer asks it and renames only what it answers fixable (`symbols/load_reach.spite` is what both read about the
 loads), and the mapping's entry tells what it answers wrong. The rules that still stop in place answer a mistake by
 stopping; turning each into a returned answer is what spite_compiler#407 leaves.
