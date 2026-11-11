@@ -553,10 +553,17 @@ validator only ever sees what stays an error:
 A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it, a
 declaration moved between files) and answers a `Diagnostics.Problem` with `is_fix` for each change. Whether a fix
 can be done is its validator's to decide (D2005): the fixer asks the rule, acts on `is_fixable()`, assumes the
-problem is there and only rewrites. The token and syntax-tree fixes and `misnamed_path` work this way: their rule answers each
-candidate with a `check...` that returns a `Validators.Answer`, and what the fixer needs to rewrite (the keyword meant, the
-name without its underscore) it asks the rule, never decides (D2055). The symbols and after-building fixes still decide in
-the fixer, and `compiler_rules_are_validators` lists them until spite_compiler#407 moves each decision into its validator. It never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`, `cut_later`, `renamed_with_the_last_fix`), which makes it right before writing. A rename changes only the name a declaration or an identifier holds, so nothing proven about a value's slot is assigned again. A library file, a pinned
+problem is there and only rewrites. Every fix works this way: its rule answers each candidate with a `check...` that
+returns a `Validators.Answer` (fine when the line was fixed already), and what the fixer needs to rewrite (the keyword
+meant, the name without its underscore, the statement at a site, the writes to remove) it asks the rule, never decides
+(D2055). The after-building rules are `proven_check` (for `proven_check`, `known_if`, `decided_condition` and
+`copy_to_narrow`), `guard_assert` (`terminal_if`), `default_order`, `read_attribute` (`unread_attribute`) and the syntax
+tree's `unused_names` (`unread_plain_local`); what they share about a site (its tree, whether its line was fixed, whether
+replacing an `if` moves a name onto another) is `HighIntermediaryRepresentation.Building.FixableSite`. The symbols rules
+are `validators/mapping/` `misnamed_path`, `platform_load` (it reads whether the system's folder beside a loaded `common`
+exists from `Symbols.SymbolTable.platforms_beside_common`, which `read_one_load` records with the load's own IO),
+`unneeded_load` and `repeated_declaration`. A proof or step asks the rule, calls the fix when the answer is fixable, and
+tells the answer otherwise. A fix never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`, `cut_later`, `renamed_with_the_last_fix`), which makes it right before writing. A rename changes only the name a declaration or an identifier holds, so nothing proven about a value's slot is assigned again. A library file, a pinned
 package's file, a generated class, a generic class, a walk and a file holding breakpoints are never fixed: their
 mistakes stay errors.
 
@@ -620,10 +627,11 @@ header declares a function to answer into a `HeaderAnswer`, and the settings rec
 `CommandLine.HandedSetting` (D2055). A rule that needs what a step can answer (whether two signatures are the same, a
 literal, a member kept inline, whether a walk drops an answer) is handed that step (`Values`, `Operators`, `Fitting`,
 `Constraints`, `Keys`, `DroppingWalks`, a proof, a pass) or the site it recorded, and asks it itself (D2055).
-`validators/mapping/misnamed_path` is the first rule that answers: its
-fixer asks it and renames only what it answers fixable (`symbols/load_reach.spite` is what both read about the
-loads), and the mapping's entry tells what it answers wrong. The rules that still stop in place answer a mistake by
-stopping; turning each into a returned answer is what spite_compiler#407 leaves.
+A rule a fixer asks answers through `Validators.Answer`, and its caller tells a mistake with `tell()`; the high entry's
+`mistake` builds one with the site's place, and its `tell` judges what the proofs recorded first, as `stop` does.
+`validators/mapping/misnamed_path` is an example: its fixer asks it and renames only what it answers fixable
+(`symbols/load_reach.spite` is what both read about the loads), and the mapping's entry tells what it answers wrong.
+Rules no fixer asks still stop in place; turning each into a returned answer is what spite_compiler#407 leaves.
 
 - A rule lives at the earliest level that has the facts it needs, and runs as soon as those facts exist: a file's
   rules run right after the file is parsed, before the next file is read.
@@ -661,8 +669,8 @@ stopping; turning each into a returned answer is what spite_compiler#407 leaves.
   `enum Mistake`, a `Mistake` or `mistake:` parameter) or a `Boolean`, none does IO (`Directory(`, `File(`,
   `Process(`, reading or writing a file, the working directory), none rewrites (`is_fix`, a writer's `..._later(`),
   and no rule words a fault of the compiler; and under `fixes/<layer>/` no function answers a `Boolean` and every
-  `fix.spite` acts on a rule's `is_fixable()`. Its one waiting list names exactly what spite_compiler#407 has not
-  converted yet, and an entry that no longer breaks a rule is refused, so the list only shrinks. It judges samples
+  `fix.spite` acts on a rule's `is_fixable()`. It keeps no waiting list: whatever breaks one of these is
+  refused. It judges samples
   written for it (a printer, a validator handed a Boolean that does IO and rewrites, a caller handing words, a
   fixer that decides), to show each is refused.
 - A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_documentation/blob/master/style.md#the-file-content-budget))
