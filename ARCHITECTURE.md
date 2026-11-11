@@ -327,8 +327,15 @@ Three classes hold a part only some constructions build as one nullable value, w
 compiler builds; `shown()` answers the whole text or nothing), a function or handle `Model.Type` its parameters, answer
 and variadic mark as a `Model.Signature` (`signature_or_empty()` answers no parameters and no answer for any other
 type), and a fused step `FunctionModel` its filters as a `Model.FusedStep`. A `Model.Type` keeps its two-field
-constructor, since 158 of its 166 constructions name no signature. The rest of `FunctionModel` is not split yet
-(spite_compiler#305).
+constructor, since 158 of its 166 constructions name no signature. A `FunctionModel` holds four such parts (D2001,
+D2060, D2075): what a written declaration says (`Model.DeclaredFunction`: constructor, conversion, preset, a template's
+own index and the reflected answer, built once by `Reading.read_function`), what a specialisation binds
+(`Model.TemplateBinding`, with a walked function pattern as a `Model.BoundPattern` and a compared enum value as a
+`Model.ComparedValue`; each kind of specialisation builds it whole and hands it to `Reading.specialized`), what a walk
+or known-argument copy knows (`Model.WalkCopy`, whose presence makes the function a walk copy) and the fused step.
+Readers take `binding_or_empty()`, `pattern_or_empty()` and `walk_copy_or_empty()`, or ask the function
+(`is_a_constructor()`, `template_index()`, `bound_parameter()`, `is_a_walk_copy()`). `FunctionModel`'s own constructor
+does not take every field yet (spite_compiler#305).
 
 ## The resolver and the reflection builder
 

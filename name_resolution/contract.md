@@ -112,6 +112,7 @@ member is answered when the class is compiled.
 - `owners.spite`: for a function that takes a declaration of the class it walks, the owner of the declaration and the
   class of each value it reads, found from how the function uses it.
 - `reading.spite`: a class file's declarations read into its class model (enums, unions, types, attributes, functions and
-  their parameters), a template's functions specialised for a member, and the ranges a template's parameters write.
+  their parameters), a template's functions specialised for the `Model.TemplateBinding` their caller builds, and the
+  ranges a template's parameters write.
 - `inference.spite`: the type of an expression written in a default or a constructor call, read without building it.
 - `place.spite`: where a message names a function, found only when a message is told.
