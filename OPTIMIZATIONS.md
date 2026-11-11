@@ -3977,7 +3977,7 @@ one. Measured on `a_list_of_lists_filled_again_keeps_each_lists_room`.
 func run(entity_count: Integer) {
     var entity = 0
     while entity < entity_count {
-        var row: $row_type = null
+        var row = $row_type()
         fill_attributes(row, entity)
         system.update_each(row)
         entity = entity + 1
@@ -3985,7 +3985,7 @@ func run(entity_count: Integer) {
 }
 ```
 
-A row made with `null` holds a new object for each attribute of a class (`Entity()`, `Position()`, ...) until
+A row made with `$row_type()` holds a new object for each attribute of a class (`Entity()`, `Position()`, ...) until
 something assigns it; once `fill_attributes` is inlined and the row lives in registers, each of those objects is
 made, put in the row's register, and let go when the fill replaces it, with nothing reading it in between. Such an
 object is never made: its register holds null instead, and the release that would have freed it finds null and
