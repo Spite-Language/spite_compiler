@@ -17,12 +17,14 @@ func passed_on_template(
     var literals = Literals(context, values)
     var calls = Calls(context, values)
     var current = context.current_function
-    var is_walked = not current.bound_pattern.is_empty() or function.reflects_its_answer()
-    var is_bound = not current.bound_parameter.is_empty() and is_walked
-    fallback is_bound and function.template_index < 0
+    var binding = current.binding_or_empty()
+    var bound_pattern = binding.pattern_or_empty()
+    var is_walked = not bound_pattern.pattern.is_empty() or function.reflects_its_answer()
+    var is_bound = not current.bound_parameter().is_empty() and is_walked
+    fallback is_bound and function.template_index() < 0
     var symbol_index = passed_symbol_index(function, call)
     fallback symbol_index >= 0
-    var specialised_name = "{function.name}_for_{current.bound_function}"
+    var specialised_name = "{function.name}_for_{bound_pattern.function}"
     var made = context.current_class.function_named(specialised_name)
     if not made {
         made = specialised_for_the_pattern(function, symbol_index, specialised_name)
@@ -67,7 +69,8 @@ func passes_the_symbol(
 ): Boolean {
     fallback argument
     fallback context.resolver.types.is_a_declaration_type(parameter.declared_type)
-    return names_the_member(argument, context.current_function.bound_parameter)
+    var bound_parameter = context.current_function.bound_parameter()
+    return names_the_member(argument, bound_parameter)
 }
 
 func specialised_for_the_pattern(
@@ -75,25 +78,33 @@ func specialised_for_the_pattern(
     symbol_index: Integer,
     specialised_name: String,
 ): Model.FunctionModel {
-    var current = context.current_function
-    crash current.bound_member_type
-    var member_type: Model.Type = current.bound_member_type
-    var template = Model.FunctionModel(function.name, function.owner)
-    template.declaration = function.declaration
-    template.template_index = symbol_index
+    var current = context.current_function.binding_or_empty()
+    crash current.member_type
+    var current_pattern = current.pattern_or_empty()
+    var pattern = Model.BoundPattern(
+        current_pattern.pattern,
+        current_pattern.function,
+        current_pattern.class_key,
+        current_pattern.binds_a_function_declaration,
+    )
+    var bound = Model.TemplateBinding(
+        symbol_index,
+        current.member,
+        current.member_type,
+        current.member_is_a_function,
+        current.member_index,
+        "",
+        "",
+        pattern,
+        null,
+    )
     var made = context.resolver.reading.specialized(
-        template,
+        function.declaration,
+        function.owner,
+        bound,
         specialised_name,
-        current.bound_member,
-        member_type,
-        current.bound_member_is_a_function,
         context.current_class,
     )
-    made.bound_member_index = current.bound_member_index
-    made.bound_pattern = current.bound_pattern
-    made.bound_function = current.bound_function
-    made.bound_class = current.bound_class
-    made.binds_a_function_declaration = current.binds_a_function_declaration
     context.current_class.declared_functions.append(made)
     return made
 }
@@ -104,7 +115,8 @@ func rebound_template_call(
 ): SpiteCompiler.Value? {
     var literals = Literals(context, values)
     var calls = Calls(context, values)
-    var parameter = context.current_function.bound_parameter
+    var binding = context.current_function.binding_or_empty()
+    var parameter = context.current_function.bound_parameter()
     fallback not parameter.is_empty()
     var words = name.split("_")
     fallback words.contains(parameter)
@@ -126,7 +138,7 @@ func rebound_template_call(
     while word_index < words.count() {
         var word = words[word_index]
         if word == parameter {
-            renamed.append(context.current_function.bound_member)
+            renamed.append(binding.member)
         } else {
             renamed.append(word)
         }
@@ -152,7 +164,8 @@ func specialised_for_a_constant(
     written: List<SpiteCompiler.Expression>,
 ): SpiteCompiler.Value? {
     var calls = Calls(context, values)
-    fallback function.declaration and function.template_index < 0 and function.bound_member.is_empty()
+    var binding = function.binding_or_empty()
+    fallback function.declaration and function.template_index() < 0 and binding.member.is_empty()
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
     var place = -1
     var index = 0
@@ -200,18 +213,25 @@ func specialised_for_an_attribute(
     described_model: Model.ClassModel,
     attribute: Model.AttributeModel,
 ): Model.FunctionModel {
-    var template = Model.FunctionModel(function.name, function.owner)
-    template.declaration = function.declaration
-    template.template_index = place
-    var made = context.resolver.reading.specialized(
-        template,
-        specialised_name,
+    var attribute_place = attribute_place_of(described_model, attribute.name)
+    var bound = Model.TemplateBinding(
+        place,
         attribute.name,
         attribute.attribute_type,
         false,
+        attribute_place,
+        "",
+        "",
+        null,
+        null,
+    )
+    var made = context.resolver.reading.specialized(
+        function.declaration,
+        function.owner,
+        bound,
+        specialised_name,
         owner,
     )
-    made.bound_member_index = attribute_place_of(described_model, attribute.name)
     owner.declared_functions.append(made)
     return made
 }
@@ -290,7 +310,7 @@ func member_template_of(owner: Model.ClassModel, name: String): Model.FunctionMo
     var index = 0
     while index < owner.declared_functions.count() {
         var template = owner.declared_functions[index]
-        if template.is_a_member_template {
+        if template.is_a_member_template() {
             var made = specialized_for(owner, template, name)
             if made {
                 return made
@@ -320,6 +340,8 @@ func dictionary_template(
 }
 
 func specialized_for(owner: Model.ClassModel, template: Model.FunctionModel, name: String): Model.FunctionModel? {
+    var binding = context.current_function.binding_or_empty()
+    var bound_pattern = binding.pattern_or_empty()
     var match = template_match(template, name)
     fallback match
     var member_owner = values.owner_of_a_template(template, owner, name)
@@ -329,19 +351,19 @@ func specialized_for(owner: Model.ClassModel, template: Model.FunctionModel, nam
     var is_rebound = owner_type.name != written_owner.name
     var known_name = name
     if is_rebound and owner_type.kind == 'parameters' {
-        known_name = "{name}_in_{context.current_function.bound_function}"
+        known_name = "{name}_in_{bound_pattern.function}"
     }
     var known = owner.function_named(known_name)
     if known and is_rebound {
         return known
     }
-    var made = specialized_by_kind(owner, template, owner_type, name, match)
-    if made and is_rebound and owner_type.kind == 'parameters' {
-        made.name = known_name
-        made.bound_pattern = context.current_function.bound_pattern
-        made.bound_function = context.current_function.bound_function
+    if is_rebound and owner_type.kind == 'parameters' {
+        var current = context.current_function.binding_or_empty()
+        var current_pattern = current.pattern_or_empty()
+        var rebound = Model.BoundPattern(current_pattern.pattern, current_pattern.function, "", false)
+        return specialized_over_parameters(owner, template, owner_type, known_name, match, rebound)
     }
-    return made
+    return specialized_by_kind(owner, template, owner_type, name, match)
 }
 
 func bound_parameters(template: Model.FunctionModel, owner_type: Model.Type): Model.Type {
@@ -359,9 +381,11 @@ func bound_parameters(template: Model.FunctionModel, owner_type: Model.Type): Mo
         return Model.Type('pattern', owner_type.name)
     }
     var function = context.current_function
-    var is_bound = function.bound_pattern == function_part and not function.bound_function.is_empty()
+    var binding = function.binding_or_empty()
+    var bound_pattern = binding.pattern_or_empty()
+    var is_bound = bound_pattern.pattern == function_part and not bound_pattern.function.is_empty()
     if is_bound {
-        return Model.Type('parameters', "{class_key}|{function.bound_function}")
+        return Model.Type('parameters', "{class_key}|{bound_pattern.function}")
     }
     return owner_type
 }
@@ -405,7 +429,8 @@ func pattern_names(template: Model.FunctionModel, pattern: Model.Type): List<Str
 }
 
 func hole_of(function: Model.FunctionModel, function_part: String, word: String): String {
-    var is_written = function.declaration and function.bound_member.is_empty() and not function.is_a_member_template
+    var binding = function.binding_or_empty()
+    var is_written = function.declaration and binding.member.is_empty() and not function.is_a_member_template()
     fallback is_written and not function.is_synthetic and not function.is_a_walk_copy
     return hole_in(function.name, function_part, word)
 }
@@ -486,12 +511,10 @@ func specialized_over_a_pattern(
     )
     crash place
     var symbol = context.resolver.types.walked_name_type()
-    var made = context.resolver.reading.specialized(template, name, written, symbol, false, owner)
-    made.bound_member_index = place
-    made.bound_pattern = function_part
-    made.bound_function = bound_function
-    made.bound_class = class_key
-    made.binds_a_function_declaration = true
+    var pattern = Model.BoundPattern(function_part, bound_function, class_key, true)
+    var template_index = template.template_index()
+    var bound = Model.TemplateBinding(template_index, written, symbol, false, place, "", "", pattern, null)
+    var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
     owner.declared_functions.append(made)
     return made
 }
@@ -517,7 +540,9 @@ func specialized_over_a_handle(
     var asks_if_finished = match == "finished" or match == "is_finished"
     fallback asks_if_finished
     var boolean = context.boolean()
-    var made = context.resolver.reading.specialized(template, name, "finished", boolean, false, owner)
+    var template_index = template.template_index()
+    var bound = Model.TemplateBinding(template_index, "finished", boolean, false, 0, "", "", null, null)
+    var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
     owner.declared_functions.append(made)
     return made
 }
@@ -534,7 +559,7 @@ func specialized_by_kind(
         'handle': return specialized_over_a_handle(owner, template, name, match)
         'shape': return specialized_over_a_shape(owner, template, owner_type, name, match)
         'namespace': return specialized_over_a_namespace(owner, template, name, match)
-        'parameters': return specialized_over_parameters(owner, template, owner_type, name, match)
+        'parameters': return specialized_over_parameters(owner, template, owner_type, name, match, null)
         'union': return specialized_over_a_union(owner, template, owner_type, name, match)
         'enumeration': return specialized_over_values(owner, template, owner_type, name, match)
         'nothing': return specialized_over_a_class(owner, template, owner_type, name, match)
@@ -600,8 +625,19 @@ func specialized_over_a_class(
     }
     var member_fit = Validators.HighIntermediaryRepresentation.MemberFit.Validator()
     member_fit.check(context, owner, name, member, element_class, member_type)
-    var made = context.resolver.reading.specialized(template, name, member, member_type, is_a_function, owner)
-    made.bound_member_index = member_index
+    var template_index = template.template_index()
+    var bound = Model.TemplateBinding(
+        template_index,
+        member,
+        member_type,
+        is_a_function,
+        member_index,
+        "",
+        "",
+        null,
+        null,
+    )
+    var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
     owner.declared_functions.append(made)
     return made
 }
@@ -658,7 +694,7 @@ func enum_members_of(element_class: Model.ClassModel): List<String> {
         var function = element_class.declared_functions[function_index]
         var answer = values.answer_or_nothing(function)
         var answers_an_enum = answer.kind == 'enumeration' and not answer.is_nullable
-        var is_plain = function.parameters.is_empty() and not function.is_a_member_template
+        var is_plain = function.parameters.is_empty() and not function.is_a_member_template()
         if answers_an_enum and is_plain {
             names.append(function.name)
         }
@@ -693,21 +729,32 @@ func specialized_over_an_enum_value(
     var chosen_type = enum_type_of_member(element_class, chosen)
     var is_a_function = not element_class.attribute_named(chosen)
     var boolean = context.boolean()
-    var made = context.resolver.reading.specialized(template, name, chosen, boolean, is_a_function, owner)
-    made.bound_member_index = member_index_of(element_class, chosen)
-    compare_with_the_value(made, chosen_type, written)
+    var member_index = member_index_of(element_class, chosen)
+    var compared = compared_with_the_value(chosen_type, written)
+    var template_index = template.template_index()
+    var bound = Model.TemplateBinding(
+        template_index,
+        chosen,
+        boolean,
+        is_a_function,
+        member_index,
+        "",
+        "",
+        null,
+        compared,
+    )
+    var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
     owner.declared_functions.append(made)
     return made
 }
 
-func compare_with_the_value(made: Model.FunctionModel, enum_type: Model.Type, written: String) {
+func compared_with_the_value(enum_type: Model.Type, written: String): Model.ComparedValue {
     var enumeration = values.enum_model_of(enum_type)
     var place = enumeration.values.index_of(written)
     crash place
     var number = enumeration.numbers[place]
     crash number
-    made.compared_value = enum_type
-    made.compared_number = number
+    return Model.ComparedValue(enum_type, number)
 }
 
 func specialized_over_a_shape(
@@ -730,9 +777,20 @@ func specialized_over_a_shape(
         var member = shape.member_named(candidate)
         if member {
             var member_type = values.answer_or_nothing(member)
-            var made = context.resolver.reading.specialized(template, name, candidate, member_type, false, owner)
-            made.bound_shape = shape.key
-            made.bound_member_index = shape_member_index(shape, candidate)
+            var member_index = shape_member_index(shape, candidate)
+            var template_index = template.template_index()
+            var bound = Model.TemplateBinding(
+                template_index,
+                candidate,
+                member_type,
+                false,
+                member_index,
+                shape.key,
+                "",
+                null,
+                null,
+            )
+            var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
             owner.declared_functions.append(made)
             return made
         }
@@ -775,8 +833,19 @@ func specialized_over_a_union(
             var member = shape.members[0]
             crash member
             var member_type = values.answer_or_nothing(member)
-            var made = context.resolver.reading.specialized(template, name, answered, member_type, false, owner)
-            made.bound_shape = shape.key
+            var template_index = template.template_index()
+            var bound = Model.TemplateBinding(
+                template_index,
+                answered,
+                member_type,
+                false,
+                0,
+                shape.key,
+                "",
+                null,
+                null,
+            )
+            var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
             owner.declared_functions.append(made)
             return made
         }
@@ -819,10 +888,22 @@ func specialized_through_a_function(
         var member = values.member_named(element_class, member_name)
         if not member.is_empty() {
             var member_type = enum_type_of_member(element_class, member)
-            var chained = chained_specialization(owner, template, member_type, member, function_name, name)
+            var is_a_function = not element_class.attribute_named(member)
+            var member_index = member_index_of(element_class, member)
+            var template_index = template.template_index()
+            var through = Model.TemplateBinding(
+                template_index,
+                member,
+                member_type,
+                is_a_function,
+                member_index,
+                "",
+                function_name,
+                null,
+                null,
+            )
+            var chained = chained_specialization(owner, template, through, name)
             if chained {
-                chained.bound_member_is_a_function = not element_class.attribute_named(member)
-                chained.bound_member_index = member_index_of(element_class, member)
                 return chained
             }
         }
@@ -849,9 +930,20 @@ func union_through_a_function(
             var member = shape.members[0]
             crash member
             var member_type = values.answer_or_nothing(member)
-            var chained = chained_specialization(owner, template, member_type, answered, function_name, name)
+            var template_index = template.template_index()
+            var through = Model.TemplateBinding(
+                template_index,
+                answered,
+                member_type,
+                false,
+                0,
+                shape.key,
+                function_name,
+                null,
+                null,
+            )
+            var chained = chained_specialization(owner, template, through, name)
             if chained {
-                chained.bound_shape = shape.key
                 return chained
             }
         }
@@ -863,18 +955,27 @@ func union_through_a_function(
 func chained_specialization(
     owner: Model.ClassModel,
     template: Model.FunctionModel,
-    member_type: Model.Type,
-    member: String,
-    function_name: String,
+    through: Model.TemplateBinding,
     name: String,
 ): Model.FunctionModel? {
-    fallback context.has_a_class(member_type) and not member_type.is_nullable
-    var through_class = context.class_of(member_type)
-    var function = through_class.function_named(function_name)
+    crash through.member_type
+    fallback context.has_a_class(through.member_type) and not through.member_type.is_nullable
+    var through_class = context.class_of(through.member_type)
+    var function = through_class.function_named(through.chained_function)
     fallback function
     var answer = values.answer_or_nothing(function)
-    var made = context.resolver.reading.specialized(template, name, member, answer, false, owner)
-    made.chained_function = function_name
+    var bound = Model.TemplateBinding(
+        through.template_index,
+        through.member,
+        answer,
+        through.member_is_a_function,
+        through.member_index,
+        through.shape,
+        through.chained_function,
+        null,
+        null,
+    )
+    var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
     var index = 0
     while index < function.parameters.count() {
         var parameter = function.parameters[index]
@@ -917,9 +1018,20 @@ func union_enum_value(
         if fits {
             var shape = values.union_shape_of(owner_type, answered)
             var boolean = context.boolean()
-            var made = context.resolver.reading.specialized(template, name, answered, boolean, false, owner)
-            made.bound_shape = shape.key
-            compare_with_the_value(made, enum_type, written)
+            var compared = compared_with_the_value(enum_type, written)
+            var template_index = template.template_index()
+            var bound = Model.TemplateBinding(
+                template_index,
+                answered,
+                boolean,
+                false,
+                0,
+                shape.key,
+                "",
+                null,
+                compared,
+            )
+            var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
             owner.declared_functions.append(made)
             return made
         }
@@ -968,7 +1080,9 @@ func specialized_over_a_namespace(
     var model = context.resolver.monomorphiser.class_model_named(written)
     fallback model
     var member_type = Model.Type('object', model.key)
-    var made = context.resolver.reading.specialized(template, name, model.shown, member_type, false, owner)
+    var template_index = template.template_index()
+    var bound = Model.TemplateBinding(template_index, model.shown, member_type, false, 0, "", "", null, null)
+    var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
     owner.declared_functions.append(made)
     return made
 }
@@ -986,8 +1100,9 @@ func specialized_over_values(
     var enumeration = values.enum_model_of(owner_type)
     var index = enumeration.values.index_of(written)
     fallback index
-    var made = context.resolver.reading.specialized(template, name, written, owner_type, false, owner)
-    made.bound_member_index = index
+    var template_index = template.template_index()
+    var bound = Model.TemplateBinding(template_index, written, owner_type, false, index, "", "", null, null)
+    var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
     owner.declared_functions.append(made)
     return made
 }
@@ -998,6 +1113,7 @@ func specialized_over_parameters(
     owner_type: Model.Type,
     name: String,
     match: String,
+    pattern: Model.BoundPattern?,
 ): Model.FunctionModel? {
     var parts = match.split("|")
     var written = parts[0]
@@ -1008,15 +1124,19 @@ func specialized_over_parameters(
     while index < walked.parameters.count() {
         var parameter = walked.parameters[index]
         if parameter.name == written {
-            var made = context.resolver.reading.specialized(
-                template,
-                name,
+            var template_index = template.template_index()
+            var bound = Model.TemplateBinding(
+                template_index,
                 written,
                 parameter.parameter_type,
                 false,
-                owner,
+                index,
+                "",
+                "",
+                pattern,
+                null,
             )
-            made.bound_member_index = index
+            var made = context.resolver.reading.specialized(template.declaration, template.owner, bound, name, owner)
             owner.declared_functions.append(made)
             return made
         }
@@ -1028,7 +1148,7 @@ func specialized_over_parameters(
 func template_match(template: Model.FunctionModel, name: String): String? {
     crash template.declaration
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = template.declaration
-    var parameter = declaration.parameters[template.template_index]
+    var parameter = declaration.parameters[template.template_index()]
     crash parameter
     var words = template.name.split("_")
     var place = words.index_of(parameter.name)
@@ -1088,7 +1208,7 @@ func walk_on(
     var index = 0
     while index < owner.declared_functions.count() {
         var template = owner.declared_functions[index]
-        var is_singular = template.is_a_member_template and not values.template_takes_a_plural(template)
+        var is_singular = template.is_a_member_template() and not values.template_takes_a_plural(template)
         if is_singular and walks_by_the_name(template, name) {
             var held = receiver
             var is_its_own = receiver.class == HighIntermediaryRepresentation.Values.ThisRead
