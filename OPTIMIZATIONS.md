@@ -3531,7 +3531,10 @@ thread for a blocking call) carries none of it, imports no thread function and a
 hands `sum_of_squares` to a waiting pool thread (or starts the first one), and joins it where `total` is read. The
 pool grows instead of being a fixed size, so work never waits for a thread to come free: a `Parallel` that joins
 another, or one that waits on a socket for good, cannot keep the rest from running. A pool thread keeps its
-small-block lists between works, so the blocks one work frees serve the next.
+small-block lists between works, so the blocks one work frees serve the next. Queued work holds a waiting thread
+for itself; a thread that finishes and finds it queued takes it and hands the hold back, so the waiting thread
+still counts as waiting and the pool never grows past the work that runs at once (bands started over and over
+once grew it past 1024 threads).
 
 **What a program can observe:** the time. A `Parallel` costs a lock, a queue entry and a wake when a pool thread is
 waiting, and the start of a thread only when none is; the threads the pool started wait until the program ends.
