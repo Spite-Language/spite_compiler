@@ -1,0 +1,317 @@
+# ../../../OPTIMIZATIONS.md#a-loop-over-a-lists-positions-whose-passes-write-only-what-they-alone-reach-runs-in-bands
+
+var no_program = Model.ProgramModel()
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = HighIntermediaryRepresentation.Building.Context(no_program, no_resolver)
+var walked_classes = List<String>()
+var walked_edges = List<String>()
+var reaching = List<String>()
+var not_reaching = List<String>()
+var visiting = List<String>()
+var walk_name = "$held_alone"
+var is_walkable = true
+var integer = Model.Type('scalar', "Integer")
+var boolean = Model.Type('scalar', "Boolean")
+
+func Walks(starting_program: HighIntermediaryRepresentation.HighProgram, starting_walked: List<String>) {
+    program = starting_program
+    crash starting_program.context
+    context = starting_program.context
+    walked_classes = starting_walked
+    integer = context.scalar_type("Integer")
+    boolean = context.boolean()
+}
+
+func reaches(of_type: Model.Type?): Boolean {
+    fallback of_type
+    if of_type.kind == 'union' {
+        return of_type.members.any(reaches_a_member)
+    }
+    if of_type.kind == 'function' or of_type.kind == 'shape' or of_type.kind == 'handle' {
+        is_walkable = false
+        return false
+    }
+    fallback of_type.kind == 'object'
+    return class_reaches(of_type.name)
+}
+
+func reaches_a_member(member: Model.Type): Boolean {
+    return reaches(member)
+}
+
+func class_reaches(class_key: String): Boolean {
+    if reaching.contains(class_key) or walked_classes.contains(class_key) {
+        return true
+    }
+    fallback not not_reaching.contains(class_key) and not visiting.contains(class_key)
+    var model = program.model.class_named(class_key)
+    if not model {
+        is_walkable = false
+        return false
+    }
+    visiting.append(class_key)
+    var found = false
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if is_walked(attribute) {
+            found = true
+        }
+        index = index + 1
+    }
+    var element = element_of(model)
+    if element and reaches(element) {
+        found = true
+    }
+    crash visiting.remove_last()
+    if found {
+        reaching.append(class_key)
+    } else {
+        not_reaching.append(class_key)
+    }
+    return found
+}
+
+func is_walked(attribute: Model.AttributeModel): Boolean {
+    var attribute_type = attribute.attribute_type
+    var edge = "{attribute.owner}.{attribute.name}"
+    var walked = walked_edges.contains(edge) or reaches(attribute_type)
+    if walked and attribute_type.kind != 'object' {
+        is_walkable = false
+    }
+    return walked
+}
+
+func element_of(model: Model.ClassModel): Model.Type? {
+    var building = values_of()
+    var lists = HighIntermediaryRepresentation.Building.HeldOnceForms(context, building)
+    fallback lists.is_a_list(model)
+    return model.bound_types["$element_type"]
+}
+
+func values_of(): HighIntermediaryRepresentation.Building.Values {
+    return HighIntermediaryRepresentation.Building.Values(context)
+}
+
+func walk_of(class_key: String): Model.FunctionModel? {
+    var model = program.model.class_named(class_key)
+    fallback model
+    var known = model.function_named(walk_name)
+    if known {
+        return known
+    }
+    var made = function_on(model, walk_name, boolean)
+    var body = HighIntermediaryRepresentation.Statements.Block(0)
+    var own_type = model.type_of_an_instance()
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if is_walked(attribute) {
+            walk_an_attribute(body, attribute, own_type)
+        }
+        index = index + 1
+    }
+    var element = element_of(model)
+    if element and reaches(element) {
+        walk_the_items(body, model, element, own_type)
+    }
+    var yes = boolean_value(true)
+    var all_alone = HighIntermediaryRepresentation.Statements.Return(yes, 0)
+    body.statements.append(all_alone)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    program.built_functions.append(function)
+    return made
+}
+
+func walk_an_attribute(
+    body: HighIntermediaryRepresentation.Statements.Block,
+    attribute: Model.AttributeModel,
+    own_type: Model.Type,
+) {
+    var attribute_type = attribute.attribute_type
+    crash attribute_type.kind == 'object'
+    var inner = model_of(attribute_type)
+    crash inner
+    var asking = intrinsic(inner, "_is_held_once", boolean)
+    var checks = HighIntermediaryRepresentation.Statements.Block(0)
+    var held_owner = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var held_value = HighIntermediaryRepresentation.Values.AttributeRead(held_owner, attribute)
+    var no_values = List<SpiteCompiler.Value>()
+    var held = HighIntermediaryRepresentation.Values.Call(asking, held_value, no_values, "", "")
+    refuse_unless(checks, held)
+    if reaches(attribute_type) {
+        var walking = walk_of(inner.key)
+        crash walking
+        var walked_owner = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+        var walked_value = HighIntermediaryRepresentation.Values.AttributeRead(walked_owner, attribute)
+        var no_arguments = List<SpiteCompiler.Value>()
+        var walked = HighIntermediaryRepresentation.Values.Call(walking, walked_value, no_arguments, "", "")
+        refuse_unless(checks, walked)
+    }
+    if attribute_type.is_nullable {
+        var tested_owner = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+        var tested_value = HighIntermediaryRepresentation.Values.AttributeRead(tested_owner, attribute)
+        var present = HighIntermediaryRepresentation.Values.PresenceTest(tested_value)
+        var guarded = HighIntermediaryRepresentation.Statements.If(present, checks, null, 0, "")
+        body.statements.append(guarded)
+        return
+    }
+    body.statements.append(checks)
+}
+
+func walk_the_items(
+    body: HighIntermediaryRepresentation.Statements.Block,
+    model: Model.ClassModel,
+    element: Model.Type,
+    own_type: Model.Type,
+) {
+    var first = number(0)
+    declare(body, "walk$index", first)
+    var passing = HighIntermediaryRepresentation.Statements.Block(0)
+    var asking = intrinsic(model, "_item_held_once", boolean)
+    var asked = List<SpiteCompiler.Value>()
+    var position = read("walk$index", integer)
+    asked.append(position)
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var held = HighIntermediaryRepresentation.Values.Call(asking, own, asked, "", "")
+    refuse_unless(passing, held)
+    var reading = model.function_named("_read_value")
+    crash reading
+    var read_at = List<SpiteCompiler.Value>()
+    var read_position = read("walk$index", integer)
+    read_at.append(read_position)
+    var read_owner = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var item_value = HighIntermediaryRepresentation.Values.Call(reading, read_owner, read_at, "", "")
+    declare(passing, "walk$item", item_value)
+    walk_an_item(passing, element)
+    var counted = read("walk$index", integer)
+    var one = number(1)
+    var next = HighIntermediaryRepresentation.Values.MachineOperation(integer, 'add', counted, one, null)
+    var stepped = HighIntermediaryRepresentation.Statements.Assign.Assign("walk$index", next, 0)
+    passing.statements.append(stepped)
+    var length = model.attribute_named("_length")
+    crash length
+    var length_owner = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    var counted_length = HighIntermediaryRepresentation.Values.AttributeRead(length_owner, length)
+    var reached = read("walk$index", integer)
+    var more = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'less', reached, counted_length, null)
+    var loop = HighIntermediaryRepresentation.Statements.While(more, passing, 0)
+    body.statements.append(loop)
+}
+
+func walk_an_item(block: HighIntermediaryRepresentation.Statements.Block, element: Model.Type) {
+    if element.kind == 'object' {
+        var item = read("walk$item", element)
+        walk_a_value(block, element, item)
+        return
+    }
+    if element.kind != 'union' {
+        is_walkable = false
+        return
+    }
+    var index = 0
+    while index < element.members.count() {
+        var member = element.members[index]
+        if reaches(member) {
+            walk_a_member(block, element, member)
+        }
+        index = index + 1
+    }
+}
+
+func walk_a_member(block: HighIntermediaryRepresentation.Statements.Block, element: Model.Type, member: Model.Type) {
+    var tested = read("walk$item", element)
+    var is_one = HighIntermediaryRepresentation.Values.Class.Membership(tested, member)
+    var inside = HighIntermediaryRepresentation.Statements.Block(0)
+    var held = read("walk$item", element)
+    var converted = HighIntermediaryRepresentation.Values.Conversion(member, 'out_of_union', held, "")
+    walk_a_value(inside, member, converted)
+    var choosing = HighIntermediaryRepresentation.Statements.If(is_one, inside, null, 0, "")
+    block.statements.append(choosing)
+}
+
+func walk_a_value(
+    block: HighIntermediaryRepresentation.Statements.Block,
+    of_type: Model.Type,
+    value: SpiteCompiler.Value,
+) {
+    var inner = model_of(of_type)
+    fallback inner
+    var walking = walk_of(inner.key)
+    fallback walking
+    var no_arguments = List<SpiteCompiler.Value>()
+    var walked = HighIntermediaryRepresentation.Values.Call(walking, value, no_arguments, "", "")
+    refuse_unless(block, walked)
+}
+
+func model_of(of_type: Model.Type): Model.ClassModel? {
+    var model = program.model.class_named(of_type.name)
+    if not model {
+        is_walkable = false
+    }
+    return model
+}
+
+func refuse_unless(block: HighIntermediaryRepresentation.Statements.Block, condition: SpiteCompiler.Value) {
+    var refused = HighIntermediaryRepresentation.Values.Negation(condition)
+    var refusing = HighIntermediaryRepresentation.Statements.Block(0)
+    var no = boolean_value(false)
+    var answered = HighIntermediaryRepresentation.Statements.Return(no, 0)
+    refusing.statements.append(answered)
+    var checking = HighIntermediaryRepresentation.Statements.If(refused, refusing, null, 0, "")
+    block.statements.append(checking)
+}
+
+func intrinsic(owner: Model.ClassModel, name: String, answer: Model.Type): Model.FunctionModel {
+    var known = owner.function_named(name)
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel(name, owner.key, answer, null, null, null, null, null, false, false, false, false)
+    owner.declared_functions.append(made)
+    return made
+}
+
+func function_on(owner: Model.ClassModel, name: String, answer: Model.Type?): Model.FunctionModel {
+    var is_synthetic = true
+    var made = Model.FunctionModel(
+        name,
+        owner.key,
+        answer,
+        null,
+        null,
+        null,
+        null,
+        null,
+        is_synthetic,
+        false,
+        false,
+        false,
+    )
+    owner.declared_functions.append(made)
+    return made
+}
+
+func declare(block: HighIntermediaryRepresentation.Statements.Block, name: String, value: SpiteCompiler.Value) {
+    var made = HighIntermediaryRepresentation.Statements.Declare(name, value.value_type, value, 0, "")
+    block.statements.append(made)
+}
+
+func read(name: String, of_type: Model.Type): HighIntermediaryRepresentation.Values.LocalRead {
+    return HighIntermediaryRepresentation.Values.LocalRead(of_type, name)
+}
+
+func number(written: Integer): HighIntermediaryRepresentation.Values.WholeNumber {
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, written, false)
+}
+
+func boolean_value(written: Boolean): HighIntermediaryRepresentation.Values.WholeNumber {
+    var number_of_it = 0
+    if written {
+        number_of_it = 1
+    }
+    return HighIntermediaryRepresentation.Values.WholeNumber(boolean, number_of_it, false)
+}

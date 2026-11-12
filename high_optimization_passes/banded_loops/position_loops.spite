@@ -1,0 +1,564 @@
+# ../../OPTIMIZATIONS.md#a-loop-over-a-lists-positions-whose-passes-write-only-what-they-alone-reach-runs-in-bands
+
+var no_program = Model.ProgramModel()
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = HighIntermediaryRepresentation.Building.Context(no_program, no_resolver)
+var values = HighIntermediaryRepresentation.Building.Values(context)
+var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var owner = Model.ClassModel("", "", no_file, false)
+var enclosing = Model.FunctionModel("", "", null, null, null, null, null, null, false, false, false, false)
+var places = HighOptimizationPasses.BandedLoops.Places()
+var built_by_key = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var no_high = HighIntermediaryRepresentation.HighProgram(no_program)
+var weights = HighOptimizationPasses.OverlappedWork.WorkWeights(no_high)
+var free_names = List<String>()
+var reached_in_bands = List<String>()
+var is_collecting = false
+var free_types = List<Model.Type>()
+var declared = List<String>()
+var integer = Model.Type('scalar', "Integer")
+var boolean = Model.Type('scalar', "Boolean")
+var banded_count = 0
+var most_bands = 64
+var lightest_banded = 256
+var work_per_band_start = 1000000
+
+func PositionLoops(
+    starting_program: HighIntermediaryRepresentation.HighProgram,
+    starting_values: HighIntermediaryRepresentation.Building.Values,
+) {
+    program = starting_program
+    crash starting_program.context
+    context = starting_program.context
+    values = starting_values
+    integer = context.scalar_type("Integer")
+    boolean = context.boolean()
+    weights = HighOptimizationPasses.OverlappedWork.WorkWeights(starting_program)
+    var index = 0
+    while index < starting_program.built_functions.count() {
+        var built = starting_program.built_functions[index]
+        var key = built.function.key()
+        built_by_key[key] = built
+        index = index + 1
+    }
+}
+
+func collect_the_loops(function: HighIntermediaryRepresentation.HighFunction) {
+    is_collecting = true
+    walk_the_loops(function)
+}
+
+func band_the_loops(function: HighIntermediaryRepresentation.HighFunction) {
+    is_collecting = false
+    var key = function.function.key()
+    fallback not reached_in_bands.contains(key)
+    walk_the_loops(function)
+}
+
+func walk_the_loops(function: HighIntermediaryRepresentation.HighFunction) {
+    var found = program.model.class_named(function.function.owner)
+    fallback found
+    owner = found
+    enclosing = function.function
+    band_in_block(function.body)
+}
+
+func band_in_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        if statement.class == HighIntermediaryRepresentation.Statements.While {
+            band_a_loop(block, index, statement)
+        } else {
+            band_inside(statement)
+        }
+        index = index + 1
+    }
+}
+
+func band_a_loop(
+    block: HighIntermediaryRepresentation.Statements.Block,
+    index: Integer,
+    loop: HighIntermediaryRepresentation.Statements.While,
+) {
+    var banded = banded_loop(loop)
+    if banded {
+        block.statements[index] = banded
+        return
+    }
+    band_in_block(loop.body)
+}
+
+func band_inside(statement: SpiteCompiler.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.If: band_in_branches(statement)
+        HighIntermediaryRepresentation.Statements.Block: band_in_block(statement)
+        HighIntermediaryRepresentation.Statements.While: band_in_block(statement.body)
+        HighIntermediaryRepresentation.Statements.Declare: return
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: return
+        HighIntermediaryRepresentation.Statements.Evaluate: return
+        HighIntermediaryRepresentation.Statements.Return: return
+        HighIntermediaryRepresentation.Statements.Stop: return
+    }
+}
+
+func band_in_branches(branch: HighIntermediaryRepresentation.Statements.If) {
+    band_in_block(branch.then_branch)
+    band_in_block(branch.else_branch)
+}
+
+func banded_loop(
+    loop: HighIntermediaryRepresentation.Statements.While,
+): HighIntermediaryRepresentation.Statements.Block? {
+    fallback loop.condition and loop.condition.class == HighIntermediaryRepresentation.Values.MachineOperation
+    fallback loop.condition.operator == 'less'
+    fallback loop.condition.left and loop.condition.left.class == HighIntermediaryRepresentation.Values.LocalRead
+    fallback loop.condition.right and loop.condition.right.class == HighIntermediaryRepresentation.Values.Call
+    fallback loop.condition.right.function.name == "count" and loop.condition.right.arguments.is_empty()
+    fallback loop.condition.right.receiver and places.is_stable(loop.condition.right.receiver)
+    var index_name = loop.condition.left.name
+    fallback places.base_name(loop.condition.right.receiver) != index_name
+    var list_class = list_class_of(loop.condition.right.function.owner)
+    fallback list_class
+    var element = list_class.bound_types["$element_type"]
+    fallback element and element.kind == 'object' and not element.is_nullable
+    var element_class = program.model.class_named(element.name)
+    fallback element_class and not element_class.is_singleton
+    var body = loop.body
+    var count = body.statements.count()
+    fallback count >= 3
+    var first = body.statements.first()
+    var last = body.statements.last()
+    fallback first and last
+    var item_name = item_read_by(first, loop.condition.right.receiver, index_name)
+    fallback not item_name.is_empty()
+    fallback steps(last, index_name)
+    var names = HighOptimizationPasses.BandedLoops.DeclaredNames()
+    names.read_block(body)
+    fallback not names.answers
+    fallback not names.names.contains(index_name) and names.assigned_times(index_name) == 1
+    var middle = middle_of(body)
+    var weight = weights.weight_of_block(middle)
+    fallback weight >= lightest_banded
+    var proof = HighOptimizationPasses.BandedLoops.Owned.Writes(program, built_by_key)
+    fallback proof.proves_a_loop(element.name, middle, item_name, index_name, loop.condition.right.receiver)
+    if is_collecting {
+        proof.add_the_reached(reached_in_bands)
+        return null
+    }
+    var least = (work_per_band_start + weight - 1) / weight
+    if least < 2 {
+        least = 2
+    }
+    var walks = HighOptimizationPasses.BandedLoops.Owned.Walks(program, proof.walked_classes)
+    walks.walked_edges = proof.walked_edges
+    var element_written = walks.class_reaches(element.name)
+    fallback walks.is_walkable
+    declared = names.names
+    note_the_free_names(body, index_name)
+    banded_count = banded_count + 1
+    var stem = "{enclosing.name}$band{banded_count}"
+    var band = made_band(stem, loop, index_name)
+    var split = made_split(stem, band)
+    var held: Model.FunctionModel? = null
+    if element_written {
+        held = made_held_alone(stem, loop.condition.right.receiver, list_class, element_class, walks)
+    }
+    return driver(split, held, loop.condition.right.receiver, list_class, index_name, least, walks)
+}
+
+func list_class_of(class_key: String): Model.ClassModel? {
+    var model = program.model.class_named(class_key)
+    fallback model
+    var library = Mapping.LibraryFile()
+    var written = model.file.path.replace("\\", "/")
+    fallback library.holds(written) and written.ends_with("/common/list.spite")
+    return model
+}
+
+func item_read_by(statement: SpiteCompiler.Statement, place: SpiteCompiler.Value?, index_name: String): String {
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Declare
+    var taken = statement.value
+    if taken and taken.class == HighIntermediaryRepresentation.Values.Conversion {
+        taken = taken.converted
+    }
+    fallback taken and taken.class == HighIntermediaryRepresentation.Values.Call
+    var name = taken.function.name
+    fallback name == "get_at" or name == "_read_value"
+    fallback taken.arguments.count() == 1 and places.is_the_same(taken.receiver, place)
+    var position = taken.arguments.first()
+    fallback position and position.class == HighIntermediaryRepresentation.Values.LocalRead
+    fallback position.name == index_name
+    return statement.name
+}
+
+func steps(statement: SpiteCompiler.Statement, index_name: String): Boolean {
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Assign.Assign
+    fallback statement.name == index_name
+    fallback statement.value and statement.value.class == HighIntermediaryRepresentation.Values.MachineOperation
+    fallback statement.value.operator == 'add'
+    fallback statement.value.left and statement.value.left.class == HighIntermediaryRepresentation.Values.LocalRead
+    fallback statement.value.right and statement.value.right.class == HighIntermediaryRepresentation.Values.WholeNumber
+    return statement.value.left.name == index_name and statement.value.right.number == 1
+}
+
+func middle_of(body: HighIntermediaryRepresentation.Statements.Block): HighIntermediaryRepresentation.Statements.Block {
+    var middle = HighIntermediaryRepresentation.Statements.Block(0)
+    var index = 1
+    while index + 1 < body.statements.count() {
+        var statement = body.statements[index]
+        middle.statements.append(statement)
+        index = index + 1
+    }
+    return middle
+}
+
+func note_the_free_names(body: HighIntermediaryRepresentation.Statements.Block, index_name: String) {
+    free_names = List<String>()
+    free_types = List<Model.Type>()
+    var reads = HighOptimizationPasses.BandedLoops.ReadNames()
+    reads.read_block(body)
+    var index = 0
+    while index < reads.names.count() {
+        var name = reads.names[index]
+        var read_type = reads.types[index]
+        crash read_type
+        var is_free = name != index_name and not declared.contains(name) and not free_names.contains(name)
+        if is_free {
+            free_names.append(name)
+            free_types.append(read_type)
+        }
+        index = index + 1
+    }
+}
+
+func made_band(
+    stem: String,
+    loop: HighIntermediaryRepresentation.Statements.While,
+    index_name: String,
+): Model.FunctionModel {
+    var made = function_named(stem, null)
+    parameter(made, "{stem}$start", integer)
+    parameter(made, "{stem}$end", integer)
+    free_parameters(made)
+    var body = HighIntermediaryRepresentation.Statements.Block(0)
+    var start = read("{stem}$start", integer)
+    declare(body, index_name, start)
+    var reached = read(index_name, integer)
+    var end = read("{stem}$end", integer)
+    var more = operation('less', reached, end, boolean)
+    var walking = HighIntermediaryRepresentation.Statements.While(more, loop.body, loop.line)
+    body.statements.append(walking)
+    add(made, body)
+    return made
+}
+
+func made_split(stem: String, band: Model.FunctionModel): Model.FunctionModel {
+    var made = function_named("{stem}$band_split", integer)
+    parameter(made, "band$start", integer)
+    parameter(made, "band$end", integer)
+    parameter(made, "band$bands", integer)
+    free_parameters(made)
+    var body = HighIntermediaryRepresentation.Statements.Block(0)
+    var alone = HighIntermediaryRepresentation.Statements.Block(0)
+    var alone_start = read("band$start", integer)
+    var alone_end = read("band$end", integer)
+    var running_alone = call_with_free(band, alone_start, alone_end, null)
+    var ran = HighIntermediaryRepresentation.Statements.Evaluate(running_alone, 0)
+    alone.statements.append(ran)
+    var walked_end = read("band$end", integer)
+    var walked_start = read("band$start", integer)
+    var walked = operation('subtract', walked_end, walked_start, integer)
+    var answered = HighIntermediaryRepresentation.Statements.Return(walked, 0)
+    alone.statements.append(answered)
+    var asked_bands = read("band$bands", integer)
+    var two = number(2)
+    var one = operation('less', asked_bands, two, boolean)
+    var leaving = HighIntermediaryRepresentation.Statements.If(one, alone, null, 0, "")
+    body.statements.append(leaving)
+    var halved_bands = read("band$bands", integer)
+    var halving = number(2)
+    var half = operation('divide', halved_bands, halving, integer)
+    declare(body, "band$half", half)
+    var span_end = read("band$end", integer)
+    var span_start = read("band$start", integer)
+    var span = operation('subtract', span_end, span_start, integer)
+    var divided_bands = read("band$bands", integer)
+    var per_band = operation('divide', span, divided_bands, integer)
+    var lower_half = read("band$half", integer)
+    var lower_span = operation('multiply', per_band, lower_half, integer)
+    var middle_start = read("band$start", integer)
+    var middle = operation('add', middle_start, lower_span, integer)
+    declare(body, "band$middle", middle)
+    var all_bands = read("band$bands", integer)
+    var given_half = read("band$half", integer)
+    var upper_bands = operation('subtract', all_bands, given_half, integer)
+    var upper_start = read("band$middle", integer)
+    var upper_end = read("band$end", integer)
+    var upper = call_with_free(made, upper_start, upper_end, upper_bands)
+    var handle_type = context.resolver.monomorphiser.handle_of("Parallel", integer)
+    values.need_the_scheduler(handle_type)
+    program.makes_work = true
+    var started = HighIntermediaryRepresentation.Values.Conversion(handle_type, 'into_handle', upper, "")
+    declare(body, "band$running", started)
+    var lower_start = read("band$start", integer)
+    var lower_end = read("band$middle", integer)
+    var lower_bands = read("band$half", integer)
+    var lower = call_with_free(made, lower_start, lower_end, lower_bands)
+    declare(body, "band$first", lower)
+    var running = HighIntermediaryRepresentation.Values.LocalRead(handle_type, "band$running")
+    var joined = HighIntermediaryRepresentation.Values.Conversion(integer, 'join', running, "")
+    declare(body, "band$second", joined)
+    var first = read("band$first", integer)
+    var second = read("band$second", integer)
+    var both = operation('add', first, second, integer)
+    var total = HighIntermediaryRepresentation.Statements.Return(both, 0)
+    body.statements.append(total)
+    add(made, body)
+    return made
+}
+
+func made_held_alone(
+    stem: String,
+    place: SpiteCompiler.Value,
+    list_class: Model.ClassModel,
+    element_class: Model.ClassModel,
+    walks: HighOptimizationPasses.BandedLoops.Owned.Walks,
+): Model.FunctionModel {
+    var made = function_named("{stem}$held_alone", boolean)
+    parameter(made, "band$start", integer)
+    parameter(made, "band$end", integer)
+    free_parameters(made)
+    var body = HighIntermediaryRepresentation.Statements.Block(0)
+    var start = read("band$start", integer)
+    declare(body, "band$index", start)
+    var passing = HighIntermediaryRepresentation.Statements.Block(0)
+    var asking = walks.intrinsic(list_class, "_item_held_once", boolean)
+    var asked = List<SpiteCompiler.Value>()
+    var position = read("band$index", integer)
+    asked.append(position)
+    var listed = rebuilt(place)
+    var held = HighIntermediaryRepresentation.Values.Call(asking, listed, asked, "", "")
+    walks.refuse_unless(passing, held)
+    var reading = list_class.function_named("_read_value")
+    crash reading
+    var read_at = List<SpiteCompiler.Value>()
+    var read_position = read("band$index", integer)
+    read_at.append(read_position)
+    var read_list = rebuilt(place)
+    var item_value = HighIntermediaryRepresentation.Values.Call(reading, read_list, read_at, "", "")
+    declare(passing, "band$item", item_value)
+    var element_type = element_class.type_of_an_instance()
+    var item = read("band$item", element_type)
+    walks.walk_a_value(passing, element_type, item)
+    var counted = read("band$index", integer)
+    var one = number(1)
+    var next = operation('add', counted, one, integer)
+    var stepped = HighIntermediaryRepresentation.Statements.Assign.Assign("band$index", next, 0)
+    passing.statements.append(stepped)
+    var reached = read("band$index", integer)
+    var end = read("band$end", integer)
+    var more = operation('less', reached, end, boolean)
+    var loop = HighIntermediaryRepresentation.Statements.While(more, passing, 0)
+    body.statements.append(loop)
+    var yes = walks.boolean_value(true)
+    var all_alone = HighIntermediaryRepresentation.Statements.Return(yes, 0)
+    body.statements.append(all_alone)
+    add(made, body)
+    return made
+}
+
+func driver(
+    split: Model.FunctionModel,
+    held: Model.FunctionModel?,
+    place: SpiteCompiler.Value,
+    list_class: Model.ClassModel,
+    index_name: String,
+    least: Integer,
+    walks: HighOptimizationPasses.BandedLoops.Owned.Walks,
+): HighIntermediaryRepresentation.Statements.Block {
+    var block = HighIntermediaryRepresentation.Statements.Block(0)
+    var length_name = "{index_name}$length"
+    var bands_name = "{index_name}$bands"
+    var span_name = "{index_name}$span"
+    var counting = list_class.function_named("count")
+    crash counting
+    var no_values = List<SpiteCompiler.Value>()
+    var listed = rebuilt(place)
+    var counted = HighIntermediaryRepresentation.Values.Call(counting, listed, no_values, "", "")
+    declare(block, length_name, counted)
+    var processors = walks.intrinsic(owner, "_processor_count", integer)
+    var own = this_value()
+    var no_arguments = List<SpiteCompiler.Value>()
+    var processor_count = HighIntermediaryRepresentation.Values.Call(processors, own, no_arguments, "", "")
+    declare(block, bands_name, processor_count)
+    var most = number(most_bands)
+    lower_to(block, bands_name, most)
+    var length = read(length_name, integer)
+    var from = read(index_name, integer)
+    var span = operation('subtract', length, from, integer)
+    declare(block, span_name, span)
+    var spanned = read(span_name, integer)
+    lower_to(block, bands_name, spanned)
+    var too_few_span = read(span_name, integer)
+    var least_number = number(least)
+    var too_few = operation('less', too_few_span, least_number, boolean)
+    one_band_when(block, bands_name, too_few)
+    if held {
+        var checked = HighIntermediaryRepresentation.Statements.Block(0)
+        var held_start = read(index_name, integer)
+        var held_end = read(length_name, integer)
+        var held_once = call_with_free(held, held_start, held_end, null)
+        var shared = HighIntermediaryRepresentation.Values.Negation(held_once)
+        one_band_when(checked, bands_name, shared)
+        var several_bands = read(bands_name, integer)
+        var two = number(2)
+        var several = operation('greater_or_equal', several_bands, two, boolean)
+        var checking = HighIntermediaryRepresentation.Statements.If(several, checked, null, 0, "")
+        block.statements.append(checking)
+    }
+    var split_start = read(index_name, integer)
+    var split_end = read(length_name, integer)
+    var split_bands = read(bands_name, integer)
+    var splitting = call_with_free(split, split_start, split_end, split_bands)
+    var running = HighIntermediaryRepresentation.Statements.Evaluate(splitting, 0)
+    block.statements.append(running)
+    var ended = read(length_name, integer)
+    var leaving = HighIntermediaryRepresentation.Statements.Assign.Assign(index_name, ended, 0)
+    block.statements.append(leaving)
+    return block
+}
+
+func rebuilt(place: SpiteCompiler.Value?): SpiteCompiler.Value {
+    crash place
+    if place.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return HighIntermediaryRepresentation.Values.LocalRead(place.value_type, place.name)
+    }
+    if place.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        var object = rebuilt(place.object)
+        return HighIntermediaryRepresentation.Values.AttributeRead(object, place.attribute)
+    }
+    return HighIntermediaryRepresentation.Values.ThisRead(place.value_type)
+}
+
+func call_with_free(
+    function: Model.FunctionModel,
+    start: SpiteCompiler.Value,
+    end: SpiteCompiler.Value,
+    bands: SpiteCompiler.Value?,
+): HighIntermediaryRepresentation.Values.Call {
+    var arguments = List<SpiteCompiler.Value>()
+    arguments.append(start)
+    arguments.append(end)
+    if bands {
+        arguments.append(bands)
+    }
+    var index = 0
+    while index < free_names.count() {
+        var name = free_names[index]
+        var free_type = free_types[index]
+        crash free_type
+        var passed = read(name, free_type)
+        arguments.append(passed)
+        index = index + 1
+    }
+    var own = this_value()
+    return HighIntermediaryRepresentation.Values.Call(function, own, arguments, "", "")
+}
+
+func free_parameters(function: Model.FunctionModel) {
+    var index = 0
+    while index < free_names.count() {
+        var name = free_names[index]
+        var free_type = free_types[index]
+        crash free_type
+        parameter(function, name, free_type)
+        index = index + 1
+    }
+}
+
+func function_named(name: String, answer: Model.Type?): Model.FunctionModel {
+    var is_synthetic = true
+    var made = Model.FunctionModel(
+        name,
+        owner.key,
+        answer,
+        null,
+        null,
+        null,
+        null,
+        null,
+        is_synthetic,
+        false,
+        false,
+        false,
+    )
+    owner.declared_functions.append(made)
+    return made
+}
+
+func parameter(function: Model.FunctionModel, name: String, parameter_type: Model.Type) {
+    var made = Model.ParameterModel(name, parameter_type, false)
+    function.parameters.append(made)
+}
+
+func add(made: Model.FunctionModel, body: HighIntermediaryRepresentation.Statements.Block) {
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    program.built_functions.append(function)
+}
+
+func declare(block: HighIntermediaryRepresentation.Statements.Block, name: String, value: SpiteCompiler.Value) {
+    var made = HighIntermediaryRepresentation.Statements.Declare(name, value.value_type, value, 0, "")
+    block.statements.append(made)
+}
+
+func lower_to(block: HighIntermediaryRepresentation.Statements.Block, name: String, most: SpiteCompiler.Value) {
+    var current = read(name, integer)
+    var above = operation('greater', current, most, boolean)
+    var lowering = HighIntermediaryRepresentation.Statements.Block(0)
+    var lowered = HighIntermediaryRepresentation.Statements.Assign.Assign(name, most, 0)
+    lowering.statements.append(lowered)
+    var capped = HighIntermediaryRepresentation.Statements.If(above, lowering, null, 0, "")
+    block.statements.append(capped)
+}
+
+func one_band_when(
+    block: HighIntermediaryRepresentation.Statements.Block,
+    name: String,
+    condition: SpiteCompiler.Value,
+) {
+    var alone = HighIntermediaryRepresentation.Statements.Block(0)
+    var single = number(1)
+    var one = HighIntermediaryRepresentation.Statements.Assign.Assign(name, single, 0)
+    alone.statements.append(one)
+    var choosing = HighIntermediaryRepresentation.Statements.If(condition, alone, null, 0, "")
+    block.statements.append(choosing)
+}
+
+func operation(
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+    left: SpiteCompiler.Value,
+    right: SpiteCompiler.Value,
+    answer: Model.Type,
+): HighIntermediaryRepresentation.Values.MachineOperation {
+    return HighIntermediaryRepresentation.Values.MachineOperation(answer, operator, left, right, null)
+}
+
+func read(name: String, of_type: Model.Type): HighIntermediaryRepresentation.Values.LocalRead {
+    return HighIntermediaryRepresentation.Values.LocalRead(of_type, name)
+}
+
+func number(written: Integer): HighIntermediaryRepresentation.Values.WholeNumber {
+    return HighIntermediaryRepresentation.Values.WholeNumber(integer, written, false)
+}
+
+func this_value(): HighIntermediaryRepresentation.Values.ThisRead {
+    var own_type = owner.type_of_an_instance()
+    return HighIntermediaryRepresentation.Values.ThisRead(own_type)
+}

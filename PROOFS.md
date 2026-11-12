@@ -1440,6 +1440,35 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Checked by**: tests/fixpoint_rounds (40 rounds, values flowing against the list order, a scratch attribute and a
   memo read after the loop, an unguarded `append`, and a loop stopped by its round limit).
 
+### Passes that write only what they alone reach
+
+- **Status**: partly built (spite_compiler#411).
+- **Rule**: a pass of `list.each_f()` that the number rule above refuses still runs in bands when every value it
+  handles, through every function it calls (the library's included) and every constructor and attribute defaults
+  of what it makes, has a known origin, and it writes only through values that are its own. A value is made in the
+  pass (an object or a list it makes), the element itself, or shared (anything else: a text written in the
+  source, an attribute of the element or of anything shared, what a shared list holds). A write of an attribute,
+  and a write the compiler supplies for a list or a buffer (`_write_value`, `_write_*_at`, `_forget_value`,
+  `_reserve`), goes only to the element or to what the pass made. What a pass reads back from an attribute of
+  something it made is what any pass stored there, joined, so a shared value kept in a fresh list is read back
+  shared. A shared value that could be an element (of the element's class, a union, a shape or a function value)
+  refuses the pass, so no pass reads another's element. Each function is studied once for each origin of its
+  receiver and arguments; the stores are joined over the whole pass until they settle. Refused: a singleton
+  (a taken `fallback` among them, which writes the fallback ring), a foreign call, a function value, a call
+  through a shape, a wait or a handle, recursion, and a function the compiler supplies outside that list. A block
+  that only ends the program (a `crash` and its report) is not studied: the pass may halt (D1747).
+- **Buys**: [bands](OPTIMIZATIONS.md#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) for a pass that
+  makes objects, lists and texts per element and writes any attribute of its element.
+- **Missing** (spite_compiler#411): writes through objects the element alone reaches (a run-time walk that every
+  one is held once), a taken `fallback`, reading singletons that never change, function values, the compiler's
+  own form of a loop over a list's positions that hands each item to a fresh worker and writes its answer back
+  to the item's slot, and appends to shared lists joined in item order.
+- **Falls back**: the loop in order, as written.
+- **Lives in**: `high_optimization_passes/banded_loops/owned_writes.spite`, tried by the high pass `banded_loops`
+  when `pass_weights.spite` refuses; the pass is weighed as [calls in a row](OPTIMIZATIONS.md#independent-calls-in-a-row-run-at-once)
+  weigh theirs (`overlapped_work/work_weights.spite`), every function it reaches included.
+- **Checked by**: tests/band_passes_that_make_objects.
+
 ### An object made for its owner is told apart
 
 - **Status**: missing. **Falls back**: nothing runs at once, so nothing depends on it. **Checked by**: none.

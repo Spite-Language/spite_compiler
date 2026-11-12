@@ -3847,6 +3847,15 @@ func advance() {
 first band and waits for the others, so whatever comes after the loop (`orbits.sum_turns()`) runs after every pass,
 as written.
 
+A pass may also make what it works with. When the number rule refuses a pass, the compiler tries a wider one
+([passes that write only what they alone reach](PROOFS.md#passes-that-write-only-what-they-alone-reach)): every
+object and list the pass makes is its own, so it may write them, call any function on them (the library's
+`List` functions among them) and keep them in any attribute of its element; it may read anything nothing in the
+pass writes (a shared table, its element's other objects), and it writes nothing else. `shapes.each_settle()`,
+where `settle` fills a fresh `List<Corner>` from a shared `Weights`, adds up the corners and keeps the list and the
+sum in its shape, runs in bands. A pass that takes a `fallback`, reads a singleton, calls a function value or
+writes anything its element only points at runs in order.
+
 **What the compiler writes.** The library's `each_advance()` is a plain loop calling `_each_range_advance(start, end)`
 over the whole list. For a proven call the pass replaces it with `_each_range_advance$bands(least, times)` on the
 list's class, and builds `_each_range_advance$split(start, end, bands, times)` and `_items_held_once$bands()` beside
@@ -3860,7 +3869,8 @@ does), runs the lower half itself, and joins (the `join` conversion). Which loop
 
 **When it pays.** A band costs handing it to a thread of the [pool](#a-parallel-runs-on-a-thread-the-program-keeps)
 (the start of one the first time), so the compiler weighs the pass while compiling: each statement 1,
-a loop's body times its bound (the literal it is counted to, or 8), a call what its function weighs. A pass that
+a loop's body times its bound (the literal it is counted to, or 8), a call what its function weighs (a pass the
+wider rule proves is weighed through every function it reaches, the library's included). A pass that
 weighs less than 256 never runs in bands (it is bound by memory, not by the processor). For a heavier pass the
 compiler writes the smallest count at which the bands pay, the count times the weight reaching a million; the loop
 compares the list's count with it when it starts and runs in order below it.
@@ -3900,6 +3910,56 @@ held elsewhere too, the rounds run over the whole list one after another, as wri
 
 **What a program can observe:** the time; a checked operation that overflows reports its band's frames, as in any
 band.
+
+## A loop over a list's positions whose passes write only what they alone reach runs in bands
+
+```spite
+func optimized(low: LoweredProgram) {
+    var index = 0
+    while index < low.lowered_functions.count() {
+        var function = low.lowered_functions[index]
+        if low.is_selected(function.key) {
+            var pass = Pass(function)
+            low.lowered_functions[index] = pass.transformed()
+        }
+        index = index + 1
+    }
+}
+```
+
+A `while` that counts a name up by one from where it stands to a list's `count()`, takes the item at that
+position first and steps the name last, runs in bands when every pass writes only what it alone reaches. This is
+the form of each of the compiler's own per-function passes: nothing is written for it, the loop is the loop as
+written (`high_optimization_passes/banded_loops/position_loops.spite`).
+
+**What has to hold.** The list is a library `List` of a class of the program, read through names the loop never
+assigns. The body, through every function it calls, is proven by
+[passes that write only what they alone reach](PROOFS.md#passes-that-write-only-what-they-alone-reach) with the
+item as the band's own: it writes the item, anything it reaches through the item's attributes and lists, and
+whatever it makes (a fresh `Pass` and its scratch lists), and its only write to anything else is the item's own
+slot (`list[index] = answer`). It reads anything nothing in the loop writes (`low.is_selected`), assigns no name
+declared outside it but the counter, returns nothing, and takes no `fallback`: the fallback ring is one object
+under a lock, and bands taking fallbacks by the million wait on it (a test pass that takes one per element used 35
+times the processor time of running in order), so a pass that takes one runs in order until each thread keeps a
+ring of its own.
+
+**What the compiler writes.** The loop's body moves, as it is, into `<function>$band<n>(start, end, ...)` on the
+same class, one parameter for each name it reads from outside; `<function>$band<n>$band_split` halves the
+positions as the [bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) do, starting the upper half
+on the pool; the loop is replaced by a driver that counts the list, caps the bands at the processors (at most 64)
+and at the positions left, runs in order below the count at which the bands pay, and leaves the counter at the
+list's count, as the loop would.
+
+**Why some of it is at run time.** Whether two items share something one pass writes is known only when the loop
+runs. The proof records which classes and attributes the passes write through the item; when there are any, the
+driver first calls `<function>$band<n>$held_alone(start, end, ...)`, which walks every item, and everything
+reachable from it along attributes and list items that can lead to what is written, and asks that each object is
+held exactly once (`_item_held_once`, `_is_held_once`, one load each). Any object held twice runs the whole loop in
+order. Only what can lead to a write is walked: a pass that writes only its blocks never walks the instructions.
+
+**What a program can observe:** the time, and the same output and bytes. A pass that crashes reports its band's
+frames; when several would crash, the one reported may be another than the first in the list's order. Not in
+`--hot-reload`, `--repl` or `--development` builds, and not in the standard library.
 
 ## Independent calls in a row run at once
 
