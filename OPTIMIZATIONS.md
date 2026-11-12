@@ -3947,8 +3947,10 @@ ring of its own.
 same class, one parameter for each name it reads from outside; `<function>$band<n>$band_split` halves the
 positions as the [bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) do, starting the upper half
 on the pool; the loop is replaced by a driver that counts the list, caps the bands at the processors (at most 64)
-and at the positions left, runs in order below the count at which the bands pay, and leaves the counter at the
-list's count, as the loop would.
+and at the positions left, runs in order below the count at which the bands pay (the work per band reaching a
+million, and never under 64 positions, since the weights of passes that call through lists are rough and a small
+list called often would start bands by the thousand), and leaves the counter at the list's count, as the loop
+would.
 
 **Why some of it is at run time.** Whether two items share something one pass writes is known only when the loop
 runs. The proof records which classes and attributes the passes write through the item; when there are any, the
