@@ -1419,6 +1419,27 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Checked by**: tests/band_passes, tests/banded_pass_halts (a pass that halts prints what came before the loop
   and nothing after it, as running in order does, spite_compiler#222).
 
+### A pass whose inputs did not change is skipped in a fixed-point loop
+
+- **Status**: missing (spite_compiler#421).
+- **Rule**: in `changed = true; while changed [and round < limit] { changed = false; list.each(f) [round = round + 1] }`
+  (or the same loop by index), the pass `f(item)` is skipped when nothing it read since its last run has changed,
+  and every other pass runs in list order, so rounds, writes and their order stay as written. A skipped pass would
+  read the same values, take the same path and write what is already there. It holds when: `f` does no IO and
+  depends on no address; every read of state the loop writes is recorded per item (an attribute of one object, a
+  key of a `Dictionary`, an item of a `List` used as a set), skipping reads its own run wrote first; every write
+  that changes a recorded value marks its readers to run again, the writer included (an `append` that is not
+  guarded by `contains` marks its own pass every time); and state every pass writes before reading (a scratch
+  attribute) is never read after the loop before it is written again.
+- **Missing**: all of it. The two loops it is for do not meet it as written: `Holders.keys_of` (reached from
+  `ExactSums.spread_through`) keeps a one-entry memo, `defined_function`, that every pass reads and the next pass
+  overwrites, so recording reads marks every pass that reaches it as changed each round, unless a memo whose
+  answer depends only on its key is proven; and both loops leave scratch attributes (`current_key`, `aliases`,
+  `local_wholes`, `is_local`, `Operands.defines`) whose deadness after the loop no proof answers today.
+- **Falls back**: every pass runs every round.
+- **Checked by**: tests/fixpoint_rounds (40 rounds, values flowing against the list order, a scratch attribute and a
+  memo read after the loop, an unguarded `append`, and a loop stopped by its round limit).
+
 ### An object made for its owner is told apart
 
 - **Status**: missing. **Falls back**: nothing runs at once, so nothing depends on it. **Checked by**: none.
