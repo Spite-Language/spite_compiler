@@ -1387,15 +1387,25 @@ refuses nothing (D1781).
   or whole numbers. The functions of `List` and `Dictionary` themselves are not walked: a call of one is judged by its
   name. Where a list was made does not matter: a list made elsewhere holds no index yet and is searched item by item
   until its searches index it.
+  A family is never a set when code that may run at once with other code searches it, appends to it or walks it
+  in a search loop, since `contains$set` writes the list's count of items read and builds and stores its index:
+  code that may run at once is every function the compiler starts on the pool (a `Parallel`: a band of a banded
+  loop, a call of overlapped work; and a `Concurrent` of a frame loop), what its starter does from the start to
+  the join that answers it in the same block (the whole starter when that join is anywhere else), and everything
+  that code reaches: every function it calls, every filler's member of a shape it calls through, every
+  constructor and attribute defaults of what it makes, every function the program takes as a value once it calls
+  a function value, and every `drop`. The passes that start work run before this proof and leave each start in the
+  IR (`Conversion` of kind `into_handle`), so the proof reads them there; nothing else records them.
 - **Buys**: [a list used as a set keeps a hash index](OPTIMIZATIONS.md#a-list-used-as-a-set-keeps-a-hash-index): it
   marks each `contains`, `index_of` and `append` of the family (`Call.is_on_a_set`) and each search loop over it
   (`While.searches_a_set`).
 - **Falls back**: the list as written, searched item by item; nothing is refused.
 - **Lives in**: the proof `proofs/set_lists`, registered among the high passes through `HighOptimizationPasses.Proving`
   right before `indexed_lists`, which acts on its marks; a search loop's shape is
-  `high_intermediary_representation/search_loop.spite`.
+  `high_intermediary_representation/search_loop.spite`; what runs at once is `proofs/set_lists/threads.spite`.
 - **Checked by**: tests/lists_used_as_sets (a 100,000-item set answers `contains` about as fast as a 1,000-item one,
-  and a list that stops being a set keeps its answers).
+  and a list that stops being a set keeps its answers), tests/set_searched_in_bands (a set every band searches
+  keeps its plain `contains` and answers the same every run).
 
 ## Threads and locks
 
@@ -1482,6 +1492,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   (a taken `fallback` among them, which writes the fallback ring), a foreign call, a function value, a call
   through a shape, a wait or a handle, recursion, and a function the compiler supplies outside that list. A block
   that only ends the program (a `crash` and its report) is not studied: the pass may halt (D1747).
+  A `contains` of a shared list stays a read: [a list used only as a set](#a-list-used-only-as-a-set) keeps no
+  index for a list that code run at once searches.
 - **Buys**: [bands](OPTIMIZATIONS.md#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) for a pass that
   makes objects, lists and texts per element and writes any attribute of its element.
 - **Missing** (spite_compiler#411): writes through objects the element alone reaches (a run-time walk that every

@@ -1926,6 +1926,10 @@ are one family, and a family is indexed when it is searched (`contains`, `index_
   through a `type`, into a union or a shape, or as the receiver of a function taken as a value;
 - its items are `String`s or whole numbers (a decimal's `NaN` is not equal to itself, so a list of decimals is never
   hashed);
+- no code that may run at once with other code searches it or appends to it: a band of a banded loop, a call of
+  overlapped work, a frame loop's started call, what their starter does until the join, and everything those
+  reach. An indexed search writes the list (its count of items read, and the index it builds), so bands searching
+  one shared list would build it at the same time; such a family keeps its `contains` as written, a read;
 - the build is not inspectable.
 
 Reading in order does not stop it, since the items stay where they were, and an `append` with no `contains` before it
