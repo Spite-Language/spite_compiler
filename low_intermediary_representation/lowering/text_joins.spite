@@ -123,10 +123,75 @@ func appended(call: HighIntermediaryRepresentation.Values.Call): Lowered {
 
 func lower_text(text: HighIntermediaryRepresentation.Values.TextConstant): Lowered {
     var lowering_counting = Counting(lowering.state)
+    if text.lives_in_data and lowering.state.layout.holds_texts_whole() {
+        return constant_text(text.text)
+    }
     note_a_piece(text)
     var made = fresh_text()
     write_the_pieces(made)
     return lowering_counting.owned(made)
+}
+
+# ../../OPTIMIZATIONS.md#a-text-literal-is-made-once-in-the-programs-data
+func constant_text(text: String): Lowered {
+    var label = constant_text_label(text)
+    var made = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(made, label)
+    lowering.emit(addressed)
+    return lowering.single(made)
+}
+
+func constant_text_label(text: String): Integer {
+    var program = lowering.state.program
+    var known = program.constant_texts[text]
+    if known {
+        return known
+    }
+    var layout = lowering.state.layout
+    var text_size = layout.size_of("String")
+    var bytes_at = text_size + layout.inline_offset()
+    var length = text.length()
+    var whole = bytes_at + length + 1
+    var word = 8
+    var padded = (whole + word - 1) / word * word
+    var bytes = Buffer(0)
+    var index = 0
+    while index < padded {
+        bytes.append(0)
+        index = index + 1
+    }
+    var text_class: Long = layout.class_id_of("String")
+    var buffer_class: Long = layout.class_id_of("Buffer")
+    bytes.write_long_little_endian_at(0, text_class)
+    bytes.write_long_little_endian_at(word, layout.immortal_count)
+    var length_at = string_offset("_length")
+    bytes.write_integer_little_endian_at(length_at, length)
+    var text_flag_at = layout.text_flag_offset()
+    bytes[text_flag_at] = 1
+    bytes.write_long_little_endian_at(text_size, buffer_class)
+    bytes.write_long_little_endian_at(text_size + word, layout.immortal_count)
+    var capacity_at = text_size + buffer_offset("_capacity")
+    bytes.write_integer_little_endian_at(capacity_at, length)
+    var count_at = text_size + buffer_offset("item_count")
+    bytes.write_integer_little_endian_at(count_at, length)
+    var embedded_at = text_size + layout.embedded_flag_offset()
+    bytes[embedded_at] = 1
+    var written = text.to_buffer()
+    index = 0
+    while index < length {
+        var code = written[index]
+        crash code
+        bytes[bytes_at + index] = code
+        index = index + 1
+    }
+    var label = lowering.data_label(bytes)
+    var buffer_slot = string_offset("_buffer")
+    program.note_a_pointer(label, buffer_slot, text_size)
+    var storage_slot = text_size + layout.storage_offset
+    program.note_a_pointer(label, storage_slot, bytes_at)
+    program.constant_texts[text] = label
+    program.constant_text_buffers[label] = text_size
+    return label
 }
 
 func fresh_text(): Integer {

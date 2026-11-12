@@ -1061,6 +1061,28 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   47/48 byte edges), tests/short_text_boundaries (a stored, answered, foreign and handed-out text, output only),
   tests/short_text.
 
+### A text is written only while nothing else holds it
+
+- **Status**: built, embedded in the pass `high_optimization_passes/constant_texts` (D2120).
+- **Rule**: every write into a text (into its length, its `Buffer` or the bytes, by any function, through `this`,
+  a parameter or a local) writes a text one local of one function holds: the local starts from a text nothing else
+  holds (made there, a join, a literal, or the answer of a function that answers only such texts), and until the
+  statement of its last write nothing hands it on (stores, answers or passes it to a call that keeps or writes it).
+  A text appended to in place after `_ready_to_grow` counts as held once, since that call copies it otherwise. What
+  a function does with its `this` and its parameters (keeps them, writes them) is summarised per function and
+  followed through every call until nothing changes. A text's `Buffer` is never kept: it is only read where it is,
+  handed to a call that keeps nothing of it, or named by a local that does the same. A function that writes a text
+  it is handed is never taken as a value or called through a shape. When anything breaks the rule the whole program
+  keeps every text as today.
+- **Buys**: [a text literal made once in the program's data](OPTIMIZATIONS.md#a-text-literal-is-made-once-in-the-programs-data)
+  and [a text split only to search it](OPTIMIZATIONS.md#a-text-split-only-to-search-it-is-scanned-in-place): a text
+  nothing writes keeps its bytes for the whole run.
+- **Falls back**: every literal is made on each evaluation and every split is made, as before. A literal that starts
+  a local the function writes into is made on each evaluation in a program where the rule holds.
+- **Lives in**: `high_optimization_passes/constant_texts/written_texts.spite`, embedded.
+- **Checked by**: tests/constant_texts (counts with `--debug-memory`, and literals appended to, written by
+  `append_code` and kept).
+
 ### Local and variadic lists in the frame
 
 - **Status**: partly built (D991).

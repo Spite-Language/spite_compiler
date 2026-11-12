@@ -630,6 +630,81 @@ where they are, as it reads a heap text's, and `to_buffer()` copies them into a 
 Holding short text inside a 16-byte `String` value, so that it allocates nothing when it is stored or passed on
 too, is the next step (spite_compiler#394).
 
+## A text literal is made once in the program's data
+
+`"gold"` is the same text each time it runs, so where no write can reach it the compiler writes it once into the
+executable's data, laid out as a text made in one block (its `String`, its `Buffer` and its bytes, with the
+pointers between them filled in when the executable is written) and with counts that never reach zero. Evaluating
+it is its address: no allocation, no copy, nothing let go. Equal literals share one text.
+
+```spite
+func tally(words: List<String>): Integer {
+    var found = 0
+    var index = 0
+    while index < words.count() {
+        var word = words[index]
+        if word == "gold" {
+            found = found + 1
+        }
+        index = index + 1
+    }
+    return found
+}
+```
+
+Each `"gold"` used to be a text made and let go per pass of the loop; it is now one address. A literal handed to a
+function that keeps it (a fallback's site text kept by `Spite.Asserts.failed`, a key stored in a dictionary) is
+counted up and down like any text and is never freed.
+
+**When it applies:** to every literal of a program where [a text is written only while nothing else holds
+it](PROOFS.md#a-text-is-written-only-while-nothing-else-holds-it), in a program whose texts are held whole (see
+[short text lives inside its `String`](#short-text-lives-inside-its-string)).
+
+**When it does not apply:** a literal that starts a local the function then writes into (`var made = ""` followed by
+`made.append_code(code)`) is made on each evaluation, as before, and so is every literal of a program that breaks
+the proof, of a `--development`, `--repl` or `--hot-reload` build, or whose texts are not held whole. Text appended
+in place (`text = "{text}more"`) starts from the literal in the data and copies it at the first append, since
+its count is never 1. The compile-time evaluation reads such a text as a fresh one.
+
+**What a program can observe:** fewer allocations under `--debug-memory`, `program.live_allocations()` and
+`program.live_bytes()`, and the time. Two evaluations of one literal answer the same object.
+
+## A text split only to search it is scanned in place
+
+`key.split(" ").contains("r{register}")` reads as making a list of texts and searching it. Where the list is only
+searched, the compiler calls `String._holds_piece(separator, piece)`, which it writes itself
+(`high_optimization_passes/constant_texts/scan_forms.spite`): it finds each separator from the start as `split`
+does and compares the piece where it lies, so no list and no text is made. An empty separator, whose pieces are the
+characters, still splits.
+
+```spite
+func names_any(key: String, registers: List<Integer>): Boolean {
+    var words = key.split(" ")
+    var index = 0
+    while index < registers.count() {
+        var register = registers[index]
+        if words.contains("r{register}") {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+```
+
+`words` is never made: each `words.contains(...)` scans `key`. This is `common_subexpressions`' `names_any`, which
+was 7.8% of a self-build.
+
+**When it applies:** to `text.split(separator).contains(piece)` written in one piece, and to a local holding a split
+that nothing reads but `.contains(...)`, whose text and separator are literals, `this` or names nothing assigns
+again and the function writes no text into, with the library's `String.split` and `List.contains`, in a program
+where [a text is written only while nothing else holds it](PROOFS.md#a-text-is-written-only-while-nothing-else-holds-it),
+so the text holds the same bytes at every search.
+
+**When it does not apply:** a split read any other way (indexed, counted, walked, stored), a program that reopens
+`String` or `List` with its own `split` or `contains`, and a program that breaks the proof. **What a program can
+observe:** fewer allocations under `--debug-memory`, and the time; the answers are the ones the list gave.
+
 ## Bytes are copied in one block
 
 The library copies a run of bytes the plain way, one byte read and written per pass of a loop (D1735):

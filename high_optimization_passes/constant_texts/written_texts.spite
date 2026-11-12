@@ -1,0 +1,832 @@
+# ../../PROOFS.md#a-text-is-written-only-while-nothing-else-holds-it
+
+var no_program = Model.ProgramModel()
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
+var uses = HighIntermediaryRepresentation.Ownership.Uses()
+var bodies = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var escaping = Dictionary<String, List<String>>()
+var mutated = Dictionary<String, List<String>>()
+var callers = Dictionary<String, List<String>>()
+var waiting = List<String>()
+var is_waiting = Dictionary<String, Boolean>()
+var answers = Dictionary<String, Integer>()
+var answers_fresh_text = 2
+var aliases = Dictionary<String, SpiteCompiler.Value>()
+var value_functions = List<Model.FunctionModel>()
+var shape_members = List<String>()
+var mutated_names = List<String>()
+var walked_key = ""
+var walked_parameters = List<String>()
+var guarded = ""
+var counting = ""
+var held_by_nothing = 0
+var held_alone = 1
+var handed_on = 2
+var most_rounds = 3
+var escapes_counted = 0
+var mutations_counted = 0
+var holds = true
+
+func WrittenTexts(high: HighIntermediaryRepresentation.HighProgram) {
+    program = high
+}
+
+func study(): Boolean {
+    program.built_functions.each(note_a_body)
+    program.built_functions.each(wait_for)
+    while not waiting.is_empty() {
+        var key = waiting.last()
+        crash key
+        var left = waiting.count() - 1
+        waiting.truncate(left)
+        is_waiting[key] = false
+        summarise(key)
+    }
+    value_functions.each(check_a_value_function)
+    check_the_shape_members()
+    program.built_functions.each(check_the_written_locals)
+    return holds
+}
+
+func writes_in(function: HighIntermediaryRepresentation.HighFunction, name: String): Boolean {
+    start_walking(function)
+    walk_block(function.body)
+    if mutated_names.contains(name) {
+        return true
+    }
+    var slots = slots_of(mutated, walked_key)
+    return slots.contains(name)
+}
+
+func note_a_body(function: HighIntermediaryRepresentation.HighFunction) {
+    var key = function.function.key()
+    bodies[key] = function
+}
+
+func wait_for(function: HighIntermediaryRepresentation.HighFunction) {
+    var key = function.function.key()
+    fallback is_waiting[key] != true
+    is_waiting[key] = true
+    waiting.append(key)
+}
+
+func wake_the_callers(key: String) {
+    var known = callers[key]
+    fallback known
+    var index = 0
+    while index < known.count() {
+        var caller = known[index]
+        var function = bodies[caller]
+        if function {
+            wait_for(function)
+        }
+        index = index + 1
+    }
+}
+
+func fail() {
+    holds = false
+}
+
+func start_walking(function: HighIntermediaryRepresentation.HighFunction) {
+    walked_key = function.function.key()
+    walked_parameters = List<String>()
+    function.function.parameters.each(note_a_parameter)
+    aliases = Dictionary<String, SpiteCompiler.Value>()
+    mutated_names = List<String>()
+    guarded = ""
+}
+
+func note_a_parameter(parameter: Model.ParameterModel) {
+    walked_parameters.append(parameter.name)
+}
+
+func summarise(key: String) {
+    var function = bodies[key]
+    crash function
+    var escaped_before = slots_of(escaping, key)
+    var mutated_before = slots_of(mutated, key)
+    var escaped_count = escaped_before.count()
+    var mutated_count = mutated_before.count()
+    start_walking(function)
+    walk_block(function.body)
+    var escaped_after = slots_of(escaping, key)
+    var mutated_after = slots_of(mutated, key)
+    if escaped_after.count() != escaped_count or mutated_after.count() != mutated_count {
+        wake_the_callers(key)
+    }
+}
+
+func slots_of(table: Dictionary<String, List<String>>, key: String): List<String> {
+    var known = table[key]
+    if known {
+        return known
+    }
+    var made = List<String>()
+    table[key] = made
+    return made
+}
+
+func add_a_slot(table: Dictionary<String, List<String>>, slot: String) {
+    var slots = slots_of(table, walked_key)
+    if not slots.contains(slot) {
+        slots.append(slot)
+    }
+}
+
+func is_a_slot(name: String): Boolean {
+    return name == "this" or walked_parameters.contains(name)
+}
+
+func escape(name: String) {
+    if name == counting {
+        escapes_counted = escapes_counted + 1
+    }
+    if aliases[name] {
+        fail()
+        return
+    }
+    if is_a_slot(name) {
+        add_a_slot(escaping, name)
+    }
+}
+
+func mutate(name: String) {
+    if name == counting {
+        mutations_counted = mutations_counted + 1
+    }
+    if is_a_slot(name) {
+        add_a_slot(mutated, name)
+        return
+    }
+    if not mutated_names.contains(name) {
+        mutated_names.append(name)
+    }
+}
+
+func is_text(value_type: Model.Type): Boolean {
+    return value_type.kind == 'object' and value_type.name == "String"
+}
+
+func is_text_bytes(value: SpiteCompiler.Value): Boolean {
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        return value.attribute.owner == "String" and value.attribute.name == "_buffer"
+    }
+    return false
+}
+
+func is_ready_to_grow(function: Model.FunctionModel): Boolean {
+    return function.is_synthetic and function.owner == "String" and function.name == "_ready_to_grow"
+}
+
+func walk_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    guarded = ""
+    block.statements.each(walk_statement)
+    guarded = ""
+}
+
+func walk_statement(statement: SpiteCompiler.Statement) {
+    var guarding = guarded
+    guarded = ""
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: walk_a_declaration(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: walk_an_assignment(statement)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: walk_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: walk_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: walk_an_evaluation(statement, guarding)
+        HighIntermediaryRepresentation.Statements.If: walk_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: walk_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Return: kept(statement.value)
+        HighIntermediaryRepresentation.Statements.Stop: walk_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: walk_block(statement)
+    }
+}
+
+func walk_a_declaration(declared: HighIntermediaryRepresentation.Statements.Declare) {
+    fallback declared.value
+    if is_text_bytes(declared.value) {
+        aliases[declared.name] = declared.value
+        read(declared.value)
+        return
+    }
+    kept(declared.value)
+}
+
+func walk_an_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign) {
+    if aliases[assigned.name] {
+        fail()
+    }
+    kept(assigned.value)
+    fallback assigned.value
+    if assigned.value.class == HighIntermediaryRepresentation.Values.Call and is_ready_to_grow(assigned.value.function) {
+        guarded = assigned.name
+    }
+}
+
+func walk_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate, guarding: String) {
+    kept(evaluated.waited)
+    fallback evaluated.value
+    if evaluated.value.class == HighIntermediaryRepresentation.Values.Call and not guarding.is_empty() {
+        var is_the_append = evaluated.value.function.name == "_append_text"
+        if evaluated.value.receiver and is_the_append and uses.is_the_local(evaluated.value.receiver, guarding) {
+            evaluated.value.arguments.each(kept_present)
+            return
+        }
+    }
+    read(evaluated.value)
+}
+
+func walk_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    kept(written.value)
+    fallback written.object
+    mutation(written.object)
+    read(written.object)
+}
+
+func walk_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    kept(written.value)
+    fallback written.object
+    if is_text(written.object.value_type) {
+        fail()
+    }
+    kept(written.object)
+}
+
+func walk_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    read(branch.condition)
+    read(branch.decided_condition)
+    walk_block(branch.then_branch)
+    walk_block(branch.else_branch)
+}
+
+func walk_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    read(loop.condition)
+    walk_block(loop.body)
+}
+
+func walk_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(read_present)
+    kept(stop.then)
+}
+
+func kept(value: SpiteCompiler.Value?) {
+    fallback value
+    switch value {
+        HighIntermediaryRepresentation.Values.LocalRead: escape(value.name)
+        HighIntermediaryRepresentation.Values.ThisRead: escape("this")
+        HighIntermediaryRepresentation.Values.AttributeRead: attribute_kept(value)
+        HighIntermediaryRepresentation.Values.Call: walk_a_call(value)
+        HighIntermediaryRepresentation.Values.MakeObject: value.arguments.each(kept_present)
+        HighIntermediaryRepresentation.Values.MachineOperation: read_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.Negation: read(value.negated)
+        HighIntermediaryRepresentation.Values.ForeignCall: walk_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.Class.Membership: read(value.tested)
+        HighIntermediaryRepresentation.Values.PresenceTest: read(value.tested)
+        HighIntermediaryRepresentation.Values.Conversion: kept(value.converted)
+        HighIntermediaryRepresentation.Values.Function.Value: walk_a_function_value(value)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: walk_a_value_call(value)
+        HighIntermediaryRepresentation.Values.NumberRoom: kept_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.ShapeCall: walk_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.EnumText: read(value.number)
+        HighIntermediaryRepresentation.Values.EnumFromText: read(value.text)
+        HighIntermediaryRepresentation.Values.Class.OfValue: read(value.described)
+        HighIntermediaryRepresentation.Values.Function.Fact: return
+        HighIntermediaryRepresentation.Values.WholeNumber: return
+        HighIntermediaryRepresentation.Values.DecimalNumber: return
+        HighIntermediaryRepresentation.Values.TextConstant: return
+        HighIntermediaryRepresentation.Values.NullConstant: return
+        HighIntermediaryRepresentation.Values.Class.Object: return
+    }
+}
+
+func read(value: SpiteCompiler.Value?) {
+    fallback value
+    fallback value.class != HighIntermediaryRepresentation.Values.LocalRead
+    fallback value.class != HighIntermediaryRepresentation.Values.ThisRead
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        read(value.object)
+        return
+    }
+    kept(value)
+}
+
+func kept_present(value: SpiteCompiler.Value) {
+    kept(value)
+}
+
+func read_present(value: SpiteCompiler.Value) {
+    read(value)
+}
+
+func read_both(left: SpiteCompiler.Value?, right: SpiteCompiler.Value?) {
+    read(left)
+    read(right)
+}
+
+func kept_both(first: SpiteCompiler.Value?, second: SpiteCompiler.Value?) {
+    kept(first)
+    kept(second)
+}
+
+func attribute_kept(read_attribute: HighIntermediaryRepresentation.Values.AttributeRead) {
+    if is_text_bytes(read_attribute) {
+        fail()
+        return
+    }
+    read(read_attribute.object)
+}
+
+func walk_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    var function = call.function
+    if call.receiver {
+        handed(call.receiver, function, "this")
+    }
+    var parameters = function.parameters
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var slot = slot_at(parameters, index)
+        handed(argument, function, slot)
+        index = index + 1
+    }
+}
+
+func slot_at(parameters: List<Model.ParameterModel>, index: Integer): String {
+    if index < parameters.count() {
+        var parameter = parameters[index]
+        return parameter.name
+    }
+    var last = parameters.last()
+    if last and last.is_variadic {
+        return last.name
+    }
+    return ""
+}
+
+func handed(value: SpiteCompiler.Value, function: Model.FunctionModel, slot: String) {
+    if slot_mutates(function, slot) {
+        mutation(value)
+    }
+    if slot_escapes(function, slot) {
+        kept(value)
+        return
+    }
+    read(value)
+}
+
+func listen_to(function: Model.FunctionModel) {
+    var key = function.key()
+    var known = slots_of(callers, key)
+    if not known.contains(walked_key) {
+        known.append(walked_key)
+    }
+}
+
+func slot_mutates(function: Model.FunctionModel, slot: String): Boolean {
+    fallback not slot.is_empty()
+    var key = function.key()
+    if bodies[key] {
+        listen_to(function)
+        var slots = slots_of(mutated, key)
+        return slots.contains(slot)
+    }
+    fallback slot == "this" and function.owner == "Buffer"
+    var name = function.name
+    return name.starts_with("_write_") or name == "_copy_bytes" or name == "_resize_room"
+}
+
+func slot_escapes(function: Model.FunctionModel, slot: String): Boolean {
+    if slot.is_empty() {
+        return true
+    }
+    var key = function.key()
+    if bodies[key] {
+        listen_to(function)
+        var slots = slots_of(escaping, key)
+        return slots.contains(slot)
+    }
+    var owner = function.owner
+    var moves_bytes = owner == "Buffer" or owner == "String"
+    return slot != "this" and not moves_bytes
+}
+
+func mutation(value: SpiteCompiler.Value) {
+    if value.class == HighIntermediaryRepresentation.Values.ThisRead {
+        mutate("this")
+        return
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        mutation_of_a_local(value)
+        return
+    }
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead and is_text_bytes(value) {
+        crash value.object
+        mutation(value.object)
+        return
+    }
+    var is_readied = value.class == HighIntermediaryRepresentation.Values.Call and is_ready_to_grow(value.function)
+    if is_text(value.value_type) and not is_readied {
+        fail()
+    }
+}
+
+func mutation_of_a_local(local: HighIntermediaryRepresentation.Values.LocalRead) {
+    var aliased = aliases[local.name]
+    if aliased {
+        mutation(aliased)
+        return
+    }
+    if is_a_slot(local.name) or is_text(local.value_type) {
+        mutate(local.name)
+    }
+}
+
+func walk_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall) {
+    kept(call.library)
+    call.arguments.each(kept_present)
+}
+
+func walk_a_function_value(made: HighIntermediaryRepresentation.Values.Function.Value) {
+    kept(made.receiver)
+    value_functions.append(made.function)
+}
+
+func walk_a_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall) {
+    kept(call.called)
+    call.arguments.each(kept_present)
+}
+
+func walk_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    kept(call.receiver)
+    call.arguments.each(kept_present)
+    shape_members.append(call.member.name)
+}
+
+func check_a_value_function(function: Model.FunctionModel) {
+    if writes_a_text(function) {
+        fail()
+    }
+}
+
+func writes_a_text(function: Model.FunctionModel): Boolean {
+    var key = function.key()
+    var slots = slots_of(mutated, key)
+    var owner = function.owner
+    if slots.contains("this") and (owner == "String" or owner == "Buffer") {
+        return true
+    }
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var kind = parameter.parameter_type
+        var holds_a_text = kind.name == "String" or kind.name == "Buffer"
+        if slots.contains(parameter.name) and holds_a_text {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func check_the_shape_members() {
+    var keys = mutated.keys()
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        var function = bodies[key]
+        if function and shape_members.contains(function.function.name) and writes_a_text(function.function) {
+            fail()
+        }
+        index = index + 1
+    }
+}
+
+func check_the_written_locals(function: HighIntermediaryRepresentation.HighFunction) {
+    start_walking(function)
+    walk_block(function.body)
+    var written = mutated_names.copy()
+    var index = 0
+    while index < written.count() {
+        var name = written[index]
+        check_the_starts(function, name)
+        if not walked_parameters.contains(name) {
+            check_the_holding(function.body, name)
+        }
+        index = index + 1
+    }
+}
+
+func check_the_starts(function: HighIntermediaryRepresentation.HighFunction, name: String) {
+    var starts = List<SpiteCompiler.Value>()
+    gather_the_starts(function.body, name, starts)
+    var index = 0
+    while index < starts.count() {
+        var start = starts[index]
+        if not is_fresh(start) {
+            fail()
+        }
+        index = index + 1
+    }
+}
+
+func gather_the_starts(
+    block: HighIntermediaryRepresentation.Statements.Block?,
+    name: String,
+    starts: List<SpiteCompiler.Value>,
+) {
+    fallback block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        gather_a_start(statement, name, starts)
+        index = index + 1
+    }
+}
+
+func gather_a_start(statement: SpiteCompiler.Statement, name: String, starts: List<SpiteCompiler.Value>) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Declare and statement.name == name and statement.value {
+        starts.append(statement.value)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Assign and statement.name == name and statement.value {
+        starts.append(statement.value)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.If {
+        gather_the_starts(statement.then_branch, name, starts)
+        gather_the_starts(statement.else_branch, name, starts)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.While {
+        gather_the_starts(statement.body, name, starts)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        gather_the_starts(statement, name, starts)
+    }
+}
+
+func is_fresh(value: SpiteCompiler.Value): Boolean {
+    if value.class == HighIntermediaryRepresentation.Values.MakeObject {
+        return true
+    }
+    if value.class == HighIntermediaryRepresentation.Values.TextConstant {
+        value.stays_fresh = true
+        return true
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Call {
+        if value.is_a_join or is_ready_to_grow(value.function) {
+            return true
+        }
+        return answers_fresh(value.function)
+    }
+    return false
+}
+
+func answers_fresh(function: Model.FunctionModel): Boolean {
+    var key = function.key()
+    var known = answers[key]
+    if known {
+        return known == answers_fresh_text
+    }
+    answers[key] = 1
+    var body = bodies[key]
+    fallback body
+    var returned = List<SpiteCompiler.Value>()
+    gather_the_answers(body.body, returned)
+    var fresh = not returned.is_empty()
+    var index = 0
+    while index < returned.count() and fresh {
+        var answer = returned[index]
+        fresh = is_a_fresh_answer(body, answer)
+        index = index + 1
+    }
+    if fresh {
+        answers[key] = answers_fresh_text
+    }
+    return fresh
+}
+
+func gather_the_answers(block: HighIntermediaryRepresentation.Statements.Block?, returned: List<SpiteCompiler.Value>) {
+    fallback block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        gather_an_answer(statement, returned)
+        index = index + 1
+    }
+}
+
+func gather_an_answer(statement: SpiteCompiler.Statement, returned: List<SpiteCompiler.Value>) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Return and statement.value {
+        returned.append(statement.value)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.If {
+        gather_the_answers(statement.then_branch, returned)
+        gather_the_answers(statement.else_branch, returned)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.While {
+        gather_the_answers(statement.body, returned)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        gather_the_answers(statement, returned)
+    }
+}
+
+func is_a_fresh_answer(function: HighIntermediaryRepresentation.HighFunction, answer: SpiteCompiler.Value): Boolean {
+    if answer.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return is_a_fresh_local(function, answer.name)
+    }
+    return is_fresh(answer)
+}
+
+func is_a_fresh_local(function: HighIntermediaryRepresentation.HighFunction, name: String): Boolean {
+    fallback not names_a_parameter(function.function, name)
+    var starts = List<SpiteCompiler.Value>()
+    gather_the_starts(function.body, name, starts)
+    fallback not starts.is_empty() and starts.all(is_fresh)
+    var outer_key = walked_key
+    var outer_parameters = walked_parameters
+    var outer_aliases = aliases
+    var outer_names = mutated_names
+    var outer_counting = counting
+    var outer_escapes = escapes_counted
+    var outer_mutations = mutations_counted
+    start_walking(function)
+    counting = name
+    escapes_counted = 0
+    mutations_counted = 0
+    walk_block(function.body)
+    var escapes = escapes_counted
+    var returns = List<SpiteCompiler.Value>()
+    gather_the_answers(function.body, returns)
+    var answered = 0
+    var index = 0
+    while index < returns.count() {
+        var returned = returns[index]
+        if uses.is_the_local(returned, name) {
+            answered = answered + 1
+        }
+        index = index + 1
+    }
+    walked_key = outer_key
+    walked_parameters = outer_parameters
+    aliases = outer_aliases
+    mutated_names = outer_names
+    counting = outer_counting
+    escapes_counted = outer_escapes
+    mutations_counted = outer_mutations
+    return escapes == answered
+}
+
+func names_a_parameter(function: Model.FunctionModel, name: String): Boolean {
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if parameter.name == name {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func check_the_holding(block: HighIntermediaryRepresentation.Statements.Block?, name: String) {
+    fallback block
+    var statements = block.statements
+    var index = 0
+    while index < statements.count() {
+        var statement = statements[index]
+        var declares_it = statement.class == HighIntermediaryRepresentation.Statements.Declare and statement.name == name
+        if declares_it {
+            check_a_holding_from(statements, index, name)
+        }
+        check_the_inner_holding(statement, name)
+        index = index + 1
+    }
+}
+
+func check_the_inner_holding(statement: SpiteCompiler.Statement, name: String) {
+    if statement.class == HighIntermediaryRepresentation.Statements.If {
+        check_the_holding(statement.then_branch, name)
+        check_the_holding(statement.else_branch, name)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.While {
+        check_the_holding(statement.body, name)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        check_the_holding(statement, name)
+    }
+}
+
+func check_a_holding_from(statements: List<SpiteCompiler.Statement>, declared_at: Integer, name: String) {
+    counting = name
+    guarded = ""
+    var after = declared_at + 1
+    var ended = held_through(statements, after, held_alone)
+    crash ended >= held_by_nothing
+    counting = ""
+}
+
+func held_through(statements: List<SpiteCompiler.Statement>, from: Integer, state: Integer): Integer {
+    var held = state
+    var index = from
+    while index < statements.count() {
+        var statement = statements[index]
+        held = held_after(statement, held)
+        index = index + 1
+    }
+    return held
+}
+
+func held_after(statement: SpiteCompiler.Statement, state: Integer): Integer {
+    if state == held_by_nothing {
+        return state
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.If {
+        var tested = held_after_a_value(statement.condition, state)
+        var then_state = held_in_a_block(statement.then_branch, tested)
+        var else_state = held_in_a_block(statement.else_branch, tested)
+        return joined(then_state, else_state)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.While {
+        return held_in_a_loop(statement, state)
+    }
+    if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        return held_in_a_block(statement, state)
+    }
+    var held = held_after_a_statement(statement, state)
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Assign {
+        held = held_after_an_assignment(statement, held)
+    }
+    var ends = statement.class == HighIntermediaryRepresentation.Statements.Return
+    if ends or statement.class == HighIntermediaryRepresentation.Statements.Stop {
+        held = held_by_nothing
+    }
+    return held
+}
+
+func held_after_an_assignment(
+    assigned: HighIntermediaryRepresentation.Statements.Assign.Assign,
+    state: Integer,
+): Integer {
+    if assigned.name == counting and starts_fresh(assigned.value) {
+        return held_alone
+    }
+    return state
+}
+
+func starts_fresh(value: SpiteCompiler.Value?): Boolean {
+    fallback value
+    return is_fresh(value)
+}
+
+func held_in_a_block(block: HighIntermediaryRepresentation.Statements.Block?, state: Integer): Integer {
+    if block {
+        return held_through(block.statements, 0, state)
+    }
+    return state
+}
+
+func held_in_a_loop(loop: HighIntermediaryRepresentation.Statements.While, state: Integer): Integer {
+    var head = state
+    var rounds = 0
+    var settled = false
+    while not settled and rounds < most_rounds {
+        var tested = held_after_a_value(loop.condition, head)
+        var ended = held_in_a_block(loop.body, tested)
+        var next = joined(head, ended)
+        settled = next == head
+        head = next
+        rounds = rounds + 1
+    }
+    return head
+}
+
+func joined(first: Integer, second: Integer): Integer {
+    if first > second {
+        return first
+    }
+    return second
+}
+
+func held_after_a_value(value: SpiteCompiler.Value?, state: Integer): Integer {
+    escapes_counted = 0
+    mutations_counted = 0
+    read(value)
+    return counted_state(state)
+}
+
+func held_after_a_statement(statement: SpiteCompiler.Statement, state: Integer): Integer {
+    escapes_counted = 0
+    mutations_counted = 0
+    walk_statement(statement)
+    return counted_state(state)
+}
+
+func counted_state(state: Integer): Integer {
+    if mutations_counted > 0 and (state == handed_on or escapes_counted > 0) {
+        fail()
+    }
+    if escapes_counted > 0 {
+        return handed_on
+    }
+    return state
+}
