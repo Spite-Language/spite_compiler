@@ -3950,15 +3950,17 @@ list's class, and builds `_each_range_advance$split(start, end, bands, times)` a
 it. All three are IR the compiler writes, never Spite source. The driver reads the list's count and the processor
 count (an intrinsic the compiler declares itself), caps the bands at 64 and at the count, uses one band when the
 count is under `least` or an item is held by more than one slot, and calls the split over the whole list. The split
-given fewer than 2 bands runs `_each_range_advance(start, end)` `times` times. Otherwise it halves the bands, starts
+given one band runs `_each_range_advance(start, end)` `times` times. Otherwise it halves the bands, starts
 the upper half on the pool with the IR's own work node (the `into_handle` conversion, as `Parallel`'s lowering
-does), runs the lower half itself, and joins (the `join` conversion). Which loops may band is proven in
-`pass_weights.spite`.
+does), runs the lower half itself, and joins (the `join` conversion); each band then takes chunks of the list until
+none is left ([a band that finishes early takes the next chunk](#a-band-that-finishes-early-takes-the-next-chunk)).
+Which loops may band is proven in `pass_weights.spite`.
 
 **When it pays.** A band costs handing it to a thread of the [pool](#a-parallel-runs-on-a-thread-the-program-keeps)
 (the start of one the first time), so the compiler weighs the pass while compiling: each statement 1,
-a loop's body times its bound (the literal it is counted to, or 8), a call what its function weighs (a pass the
-wider rule proves is weighed through every function it reaches, the library's included). A pass that
+a loop's body times its bound (the literal it is counted to, or the number a named constant nothing writes holds,
+`while round < _rounds`, or else 8), a call what its function weighs (a pass the wider rule proves is weighed through
+every function it reaches, the library's included). A pass that
 weighs less than 256 never runs in bands (it is bound by memory, not by the processor). For a heavier pass the
 compiler writes the smallest count at which the bands pay, the count times the weight reaching a million; the loop
 compares the list's count with it when it starts and runs in order below it.
@@ -4033,8 +4035,8 @@ ring of its own.
 
 **What the compiler writes.** The loop's body moves, as it is, into `<function>$band<n>(start, end, ...)` on the
 same class, one parameter for each name it reads from outside; `<function>$band<n>$band_split` halves the
-positions as the [bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) do, starting the upper half
-on the pool; the loop is replaced by a driver that counts the list, caps the bands at the processors (at most 64)
+bands as the [bands](#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) do, starting the upper half
+on the pool, and each band takes [chunks](#a-band-that-finishes-early-takes-the-next-chunk) of the positions; the loop is replaced by a driver that counts the list, caps the bands at the processors (at most 64)
 and at the positions left, runs in order below the count at which the bands pay (the work per band reaching a
 million, and never under 64 positions, since the weights of passes that call through lists are rough and a small
 list called often would start bands by the thousand), and leaves the counter at the list's count, as the loop
@@ -4050,6 +4052,43 @@ order. Only what can lead to a write is walked: a pass that writes only its bloc
 **What a program can observe:** the time, and the same output and bytes. A pass that crashes reports its band's
 frames; when several would crash, the one reported may be another than the first in the list's order. Not in
 `--hot-reload`, `--repl` or `--development` builds, and not in the standard library.
+
+## A band that finishes early takes the next chunk
+
+The passes of a banded loop are rarely even: the compiler's per-function passes over a list of functions spend most of
+their time on a few large functions, and a band cut as one fixed slice of the list would leave its threads waiting
+for the one that drew them. So no band owns a slice. The loop cuts what is left of the list into chunks, eight for
+each band, and every band takes the next chunk not yet taken, runs its passes, and takes another until none is left;
+a band whose chunks were light simply takes more of them. For `functions.each_lower()` over 1,000 functions on 32
+bands, each chunk is 3 or 4 functions, and a band that drew the one huge function runs it while the others share the
+rest.
+
+**What the compiler writes.** The driver (the `$bands` function of a walk, or the block that replaces a loop over
+positions) reserves eight bytes of its own frame, sets them to 0 and hands their address to the split (the
+intrinsic `_claim_room`, a `FrameRoom` and a `Store` in the lowering), with the chunk size: the positions left
+divided by eight times the bands, and at least one. The split halves the bands as before, but each band, instead of
+running a slice, adds one to the claim count (`_claim_next`, a locked `xadd`, the `AtomicAdd` the counts use) and
+runs the chunk it names, from the first position plus the chunk size times the count before the add, up to the next
+chunk or the end of the list, then claims again, and stops at the first claim past the end. Every position is run by
+exactly one band, since each claim answers a different count. The driver's frame lives until every band is joined,
+so the claim count does too. With one band (a short list, an item held twice) the split runs the whole list in
+order, as before, and claims nothing. Nothing of it is a library class or written in Spite source: it is the IR the
+pass writes (`high_optimization_passes/banded_loops/band_functions.spite`, `position_loops.spite`) and two
+intrinsics the lowering writes (`low_intermediary_representation/lowering/intrinsics.spite`).
+
+**Why the output cannot change.** The proof that lets a loop band (each pass writes only its own item and what it
+alone reaches, [passes that write only what they alone reach](PROOFS.md#passes-that-write-only-what-they-alone-reach))
+already allows the passes to run in any order and at once; which band runs a position, and when, was never part of
+what a program sees. A counted loop of one banded pass runs all its rounds over each chunk, as a band ran them over
+its slice.
+
+**When it pays.** A claim is one locked add, about as dear as a count of a shared object, and a band makes one per
+chunk; eight chunks for each band are 8 locked adds per thread against at least the million units of work the bands
+already ask for, and they leave at worst one eighth of a band's share, or the heaviest single pass, as the tail
+the other threads wait for.
+
+**What a program can observe:** the time. As in any band, a crash reports its band's frames, and of two passes that
+would crash, either may be the one reported. Not in `--hot-reload`, `--repl` or `--development` builds.
 
 ## Independent calls in a row run at once
 
@@ -4080,8 +4119,8 @@ func blend(seed: Integer): Double {
 calling thread.
 
 **When it pays.** Each call is weighed as the bands weigh a pass, on the high representation (`work_weights.spite`:
-each statement 1, a loop's body times its bound, the literal it is counted to or 8, a call what its function
-weighs), and the run is overlapped only when every call weighs at least a million, the work the bands ask of each
+each statement 1, a loop's body times its bound, the literal it is counted to, the number a named constant nothing
+writes holds, or 8, a call what its function weighs), and the run is overlapped only when every call weighs at least a million, the work the bands ask of each
 band they start. Otherwise the run stays in order, as written.
 
 **Why the output cannot change (spite_compiler#222, D1747).** Quiet work shows nothing but its halt: it prints
