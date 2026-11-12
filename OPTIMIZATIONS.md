@@ -705,6 +705,51 @@ so the text holds the same bytes at every search.
 `String` or `List` with its own `split` or `contains`, and a program that breaks the proof. **What a program can
 observe:** fewer allocations under `--debug-memory`, and the time; the answers are the ones the list gave.
 
+## An interpolation only compared is compared in place
+
+`if words.contains("r{register}")` reads as making the text `r12` and searching for it. Where an interpolation is
+only compared (by `==`, `!=`, `contains`, `starts_with`, or as the piece of [a split only
+searched](#a-text-split-only-to-search-it-is-scanned-in-place)), the compiler works out its holes left to right as
+the join would and hands them, with its written pieces, to a comparison it writes itself on `String`
+(`high_optimization_passes/constant_texts/piece_forms.spite`): `_equals_pieces_tw`, `_contains_pieces_tw`,
+`_starts_with_pieces_tw` or `_holds_pieces_tw`, named by the kinds of its pieces (`t` a text, `w` a whole number).
+Each walks the other text from a start with `_pieces_end_at_tw`, which compares each text piece where it lies and
+each `Integer` or `Long` hole digit by digit (`_whole_ends_at`, the digits `to_string()` writes, with the `-`), so
+no text is made.
+
+```spite
+func names_any(key: String, registers: List<Integer>): Boolean {
+    var words = key.split(" ")
+    var index = 0
+    while index < registers.count() {
+        var register = registers[index]
+        if words.contains("r{register}") {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+```
+
+`words` is never made, and neither is `"r{register}"`: each search calls `key._holds_pieces_tw(" ", "r", register)`.
+A short interpolation [lives in the frame](#a-short-text-that-never-leaves-its-function-lives-in-the-frame) and
+costs no allocation either way; comparing it in place still saves clearing the frame's room, writing the digits
+and copying the written piece, and it saves an allocation for one longer than 47 bytes.
+
+**When it applies:** to an interpolation (a join of two or more pieces) handed straight to the library's
+`String.equals`, `contains` or `starts_with`, or to `_holds_piece`, whose pieces are written texts, `String` values
+and `Integer` or `Long` holes, in a program where [a text is written only while nothing else holds
+it](PROOFS.md#a-text-is-written-only-while-nothing-else-holds-it), so its written pieces live in the program's data.
+An interpolation on the left of `==` is compared in place when the right is a local, `this` or a literal, so
+nothing it calls runs in another order.
+
+**When it does not apply:** an interpolation stored in a local first, one with a hole of another type (a decimal,
+an enum, a `String?`), `"{index}"` alone (a number's `to_string()`), a program that reopens `String` with its own
+`equals`, `contains`, `starts_with` or `sum`, and a program that breaks the proof. **What a program can observe:**
+fewer allocations under `--debug-memory` for an interpolation longer than 47 bytes, and the time; the answers are
+the ones the made text gave.
+
 ## Bytes are copied in one block
 
 The library copies a run of bytes the plain way, one byte read and written per pass of a loop (D1735):

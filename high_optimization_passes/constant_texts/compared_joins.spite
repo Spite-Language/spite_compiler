@@ -1,0 +1,178 @@
+# ../../OPTIMIZATIONS.md#an-interpolation-only-compared-is-compared-in-place
+
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = HighIntermediaryRepresentation.Building.Context(no_program, no_resolver)
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
+var library = Mapping.LibraryFile()
+var forms: PieceForms? = null
+var pieces = List<SpiteCompiler.Value>()
+var shape = ""
+
+func ComparedJoins(high: HighIntermediaryRepresentation.HighProgram) {
+    program = high
+    crash high.context
+    context = high.context
+}
+
+func rewrite() {
+    var text_model = context.program.class_named("String")
+    fallback text_model
+    forms = PieceForms(program, text_model)
+    var rewriting = HighOptimizationPasses.Rewriting(this)
+    var built = program.built_functions.copy()
+    var index = 0
+    while index < built.count() {
+        var function = built[index]
+        rewriting.rewrite_block(function.body)
+        index = index + 1
+    }
+}
+
+func rewritten(value: SpiteCompiler.Value): SpiteCompiler.Value {
+    if value.class == HighIntermediaryRepresentation.Values.Call {
+        return compared_in_place(value)
+    }
+    return value
+}
+
+func compared_in_place(call: HighIntermediaryRepresentation.Values.Call): SpiteCompiler.Value {
+    var operation = compared_by(call)
+    if operation.is_empty() or not call.receiver {
+        return call
+    }
+    if operation == "holds" {
+        return held(call)
+    }
+    var compared = call.arguments[0]
+    crash compared
+    if is_a_whole_join(compared) {
+        return in_place(operation, call.receiver, compared, null)
+    }
+    var is_the_receiver_joined = operation == "equals" and is_a_whole_join(call.receiver)
+    if is_the_receiver_joined and reads_in_place(compared) {
+        return in_place(operation, compared, call.receiver, null)
+    }
+    return call
+}
+
+func held(call: HighIntermediaryRepresentation.Values.Call): SpiteCompiler.Value {
+    var separator = call.arguments[0]
+    var piece = call.arguments[1]
+    crash separator
+    crash piece
+    crash call.receiver
+    if is_a_whole_join(piece) {
+        return in_place("holds", call.receiver, piece, separator)
+    }
+    return call
+}
+
+func compared_by(call: HighIntermediaryRepresentation.Values.Call): String {
+    var function = call.function
+    if function.name == "_holds_piece" and function.owner == "String" and not function.declaration {
+        return "holds"
+    }
+    fallback call.arguments.count() == 1
+    var named = ["equals", "contains", "starts_with"]
+    fallback named.contains(function.name)
+    fallback is_the_librarys(function)
+    return function.name
+}
+
+func is_the_librarys(function: Model.FunctionModel): Boolean {
+    fallback function.declaration
+    var owner = context.program.class_named(function.owner)
+    fallback owner and owner.file.namespace == "String"
+    return library.holds(function.declaration.path) and library.holds(owner.file.path)
+}
+
+func reads_in_place(value: SpiteCompiler.Value): Boolean {
+    var reads = value.class == HighIntermediaryRepresentation.Values.LocalRead
+    reads = reads or value.class == HighIntermediaryRepresentation.Values.TextConstant
+    return reads or value.class == HighIntermediaryRepresentation.Values.ThisRead
+}
+
+func is_a_whole_join(value: SpiteCompiler.Value): Boolean {
+    pieces = List<SpiteCompiler.Value>()
+    shape = ""
+    fallback value.class == HighIntermediaryRepresentation.Values.Call and is_a_join(value)
+    return gathered(value)
+}
+
+func is_a_join(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    fallback call.is_a_join and call.arguments.count() == 1 and call.receiver
+    var key = call.function.key()
+    fallback key == "String.sum"
+    return is_the_librarys(call.function)
+}
+
+func gathered(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    crash call.receiver
+    var piece = call.arguments[0]
+    crash piece
+    fallback gathered_piece(call.receiver)
+    return gathered_piece(piece)
+}
+
+func gathered_piece(piece: SpiteCompiler.Value): Boolean {
+    if piece.class == HighIntermediaryRepresentation.Values.Call and is_a_join(piece) {
+        return gathered(piece)
+    }
+    if piece.class == HighIntermediaryRepresentation.Values.Call and is_a_whole_text(piece) {
+        crash piece.receiver
+        var whole = widened(piece.receiver)
+        pieces.append(whole)
+        shape = "{shape}w"
+        return true
+    }
+    var text_type = context.text()
+    fallback piece.value_type.is_the_same_as(text_type)
+    pieces.append(piece)
+    shape = "{shape}t"
+    return true
+}
+
+# ../../OPTIMIZATIONS.md#a-number-joined-into-text-is-written-in-place
+func is_a_whole_text(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    fallback call.arguments.is_empty() and call.receiver and call.function.declaration
+    var key = call.function.key()
+    fallback key == "Integer.to_string" or key == "Long.to_string"
+    fallback library.holds(call.function.declaration.path)
+    var number_type = call.receiver.value_type
+    fallback number_type.kind == 'scalar' and not number_type.is_nullable
+    return number_type.name == "Integer" or number_type.name == "Long"
+}
+
+func widened(number: SpiteCompiler.Value): SpiteCompiler.Value {
+    if number.value_type.name != "Integer" {
+        return number
+    }
+    var long_type = context.scalar_type("Long")
+    return HighIntermediaryRepresentation.Values.Conversion(long_type, 'widen', number, "")
+}
+
+func in_place(
+    operation: String,
+    text: SpiteCompiler.Value,
+    joined: SpiteCompiler.Value,
+    separator: SpiteCompiler.Value?,
+): SpiteCompiler.Value {
+    var is_joined = is_a_whole_join(joined)
+    crash is_joined
+    crash forms
+    var comparing = forms.compared_of(operation, shape)
+    var arguments = List<SpiteCompiler.Value>()
+    if separator {
+        arguments.append(separator)
+    }
+    var index = 0
+    while index < pieces.count() {
+        var piece = pieces[index]
+        arguments.append(piece)
+        index = index + 1
+    }
+    return HighIntermediaryRepresentation.Values.Call(comparing, text, arguments, "", "")
+}

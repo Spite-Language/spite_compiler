@@ -1083,6 +1083,26 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: tests/constant_texts (counts with `--debug-memory`, and literals appended to, written by
   `append_code` and kept).
 
+### An interpolation compared in place answers what its text answers
+
+- **Status**: built, embedded in the pass `high_optimization_passes/constant_texts` (D2125, to confirm).
+- **Rule**: an interpolation handed straight to the library's `String.equals`, `contains`, `starts_with` or the
+  compiler's `_holds_piece` is equal to a run of the other text exactly when each piece, in order, matches where the
+  last one ended: a text piece byte for byte, an `Integer` or `Long` hole as the digits its `to_string()` writes
+  (a `-` below 0, the digits from the last). The holes are worked out in the order the join works them out, and the
+  join reads its text holes' bytes only after the last hole, as the comparison does, so no call runs between a hole
+  and its reading that the join did not have too. A join on the left of `==` is compared in place only when the
+  right side is a local, `this` or a literal, which nothing a hole calls can change. The written pieces are
+  literals living in the program's data, so the rule runs only where [a text is written only while nothing else
+  holds it](#a-text-is-written-only-while-nothing-else-holds-it).
+- **Buys**: [an interpolation only compared is compared in
+  place](OPTIMIZATIONS.md#an-interpolation-only-compared-is-compared-in-place): no text is made for it.
+- **Falls back**: the interpolation is made and compared, as before.
+- **Lives in**: `high_optimization_passes/constant_texts/compared_joins.spite`, embedded; the comparisons are
+  written by `piece_forms.spite`.
+- **Checked by**: tests/compared_joins (matches, mismatches, empty pieces, negative, zero and `Long` holes, the
+  order of holes that call, and the counts with `--debug-memory`).
+
 ### Local and variadic lists in the frame
 
 - **Status**: partly built (D991).
