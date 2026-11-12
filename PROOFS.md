@@ -1464,7 +1464,7 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   own form of a loop over a list's positions that hands each item to a fresh worker and writes its answer back
   to the item's slot, and appends to shared lists joined in item order.
 - **Falls back**: the loop in order, as written.
-- **Lives in**: `high_optimization_passes/banded_loops/owned_writes.spite`, tried by the high pass `banded_loops`
+- **Lives in**: `high_optimization_passes/banded_loops/owned/writes.spite`, tried by the high pass `banded_loops` (and by `position_loops.spite` for a loop over positions)
   when `pass_weights.spite` refuses; the pass is weighed as [calls in a row](OPTIMIZATIONS.md#independent-calls-in-a-row-run-at-once)
   weigh theirs (`overlapped_work/work_weights.spite`), every function it reaches included.
 - **Checked by**: tests/band_passes_that_make_objects.
