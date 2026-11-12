@@ -735,7 +735,8 @@ func names_any(key: String, registers: List<Integer>): Boolean {
 `words` is never made, and neither is `"r{register}"`: each search calls `key._holds_pieces_tw(" ", "r", register)`.
 A short interpolation [lives in the frame](#a-short-text-that-never-leaves-its-function-lives-in-the-frame) and
 costs no allocation either way; comparing it in place still saves clearing the frame's room, writing the digits
-and copying the written piece, and it saves an allocation for one longer than 47 bytes.
+and copying the written piece (twenty million `key == "r{register}"` take 0.26 s instead of 0.69 s, with no
+allocation in either), and it saves an allocation for one longer than 47 bytes.
 
 **When it applies:** to an interpolation (a join of two or more pieces) handed straight to the library's
 `String.equals`, `contains` or `starts_with`, or to `_holds_piece`, whose pieces are written texts, `String` values
