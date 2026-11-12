@@ -1372,6 +1372,31 @@ refuses nothing (D1781).
 - **Lives in**: the pass `low_optimization_passes/compile_time_evaluation`.
 - **Checked by**: tests/configured_tables.
 
+### A list used only as a set
+
+- **Status**: built.
+- **Rule**: every list value has a place: a name or a parameter of a function, a function's answer, an attribute of a
+  class, or the items of the lists and dictionaries of a place. Assigning, passing, answering, putting a list into
+  another list or a dictionary and reading it back join two places into one family, and the items of joined lists
+  are joined too. A family is used only as a set when it is searched (`contains`, `index_of`, or a
+  [search loop](OPTIMIZATIONS.md#a-search-loop-over-such-a-list-is-one-lookup)), when no call writes it but `append`
+  (any other function of `List` that writes, and any the proof does not name, marks the family written), when none
+  of its lists reaches code the proof does not follow (a foreign call, a function value, a call through a `type`, a
+  conversion into a union or a shape, an answer one of those hands back, or the receiver of a function taken as a
+  value: each taints the family, and the items of a tainted list are tainted too), and when its items are `String`s
+  or whole numbers. The functions of `List` and `Dictionary` themselves are not walked: a call of one is judged by its
+  name. Where a list was made does not matter: a list made elsewhere holds no index yet and is searched item by item
+  until its searches index it.
+- **Buys**: [a list used as a set keeps a hash index](OPTIMIZATIONS.md#a-list-used-as-a-set-keeps-a-hash-index): it
+  marks each `contains`, `index_of` and `append` of the family (`Call.is_on_a_set`) and each search loop over it
+  (`While.searches_a_set`).
+- **Falls back**: the list as written, searched item by item; nothing is refused.
+- **Lives in**: the proof `proofs/set_lists`, registered among the high passes through `HighOptimizationPasses.Proving`
+  right before `indexed_lists`, which acts on its marks; a search loop's shape is
+  `high_intermediary_representation/search_loop.spite`.
+- **Checked by**: tests/lists_used_as_sets (a 100,000-item set answers `contains` about as fast as a 1,000-item one,
+  and a list that stops being a set keeps its answers).
+
 ## Threads and locks
 
 The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, for the counts,

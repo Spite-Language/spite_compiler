@@ -1,0 +1,512 @@
+# ../../PROOFS.md#a-list-used-only-as-a-set
+
+var no_program = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(no_program)
+var places = Proofs.SetLists.Places()
+var built_keys = List<String>()
+var walked_key = ""
+var marking = false
+var kept_names = ["count", "is_empty", "contains", "index_of"]
+var item_reading_names = ["get_at", "first", "last"]
+var reading_names = [
+    "each"
+    "join"
+    "copy"
+    "deep_copy"
+    "filter"
+    "count_where"
+    "any"
+    "all"
+    "find"
+    "sum"
+    "sort_by"
+    "to_debug"
+]
+var item_writing_names = ["set_at", "insert", "prepend"]
+var item_taking_names = ["remove_last", "remove_first"]
+var removing_names = ["remove_at", "clear", "reverse", "swap", "truncate", "remove_swapping"]
+var set_names = ["contains", "index_of", "append"]
+var keyed_names = ["contains", "count", "is_empty", "remove_at", "clear", "keys"]
+var plain_conversions: List<HighIntermediaryRepresentation.Values.Conversion.Kind> = ['present', 'nullable', 'proven']
+var whole_numbers = ["Integer", "Long", "Short", "Byte", "UnsignedInteger", "UnsignedLong", "UnsignedShort"]
+
+func check(starting_high: HighIntermediaryRepresentation.HighProgram) {
+    fallback starting_high.will_be_lowered()
+    crash starting_high.context
+    var inspection = CommandLine.Inspection()
+    fallback not inspection.holds(starting_high.context.build_flags)
+    high = starting_high
+    high.built_functions.each(note_a_built_key)
+    marking = false
+    high.built_functions.each(walk_a_function)
+    marking = true
+    high.built_functions.each(walk_a_function)
+}
+
+func note_a_built_key(function: HighIntermediaryRepresentation.HighFunction) {
+    var key = function.function.key()
+    built_keys.append(key)
+}
+
+func walk_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    var owner = function.function.owner
+    fallback not is_a_collection(owner)
+    walked_key = function.function.key()
+    walk_a_block(function.body)
+}
+
+func is_a_collection(class_key: String): Boolean {
+    return class_key.starts_with("List_of_") or class_key.starts_with("Dictionary_of_")
+}
+
+func is_held_in_a_collection(of_type: Model.Type): Boolean {
+    return of_type.kind == 'object' and is_a_collection(of_type.name)
+}
+
+func walk_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        if index > 0 {
+            var before = block.statements[index - 1]
+            crash before
+            note_a_search_loop(before, statement)
+        }
+        walk_a_statement(statement)
+        index = index + 1
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-list-used-as-a-set-keeps-a-hash-index
+func note_a_search_loop(start: SpiteCompiler.Statement, loop: SpiteCompiler.Statement) {
+    var search = HighIntermediaryRepresentation.SearchLoop(start, loop)
+    fallback search.matches()
+    crash search.list
+    var place = place_of(search.list)
+    if not marking {
+        places.note_a_search(place)
+        return
+    }
+    fallback loop.class == HighIntermediaryRepresentation.Statements.While
+    fallback places.is_a_set(place) and holds_keys(search.list.value_type)
+    loop.searches_a_set = true
+}
+
+func holds_keys(list_type: Model.Type): Boolean {
+    var model = high.model.class_named(list_type.name)
+    fallback model
+    var searching = model.function_named("index_of")
+    fallback searching
+    return takes_a_key(searching)
+}
+
+func takes_a_key(function: Model.FunctionModel): Boolean {
+    fallback function.parameters.count() == 1
+    var parameter = function.parameters[0]
+    var held = parameter.parameter_type
+    fallback not held.is_nullable
+    if held.kind == 'object' {
+        return held.name == "String"
+    }
+    return held.kind == 'scalar' and whole_numbers.contains(held.name)
+}
+
+func walk_a_statement(statement: SpiteCompiler.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: hold_in_a_name(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Assign: hold_in_a_name(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: walk_an_attribute_write(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: walk_a_shape_write(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: walk_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.Return: walk_a_return(statement)
+        HighIntermediaryRepresentation.Statements.If: walk_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: walk_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Block: walk_a_block(statement)
+        HighIntermediaryRepresentation.Statements.Stop: walk_a_stop(statement)
+    }
+}
+
+func hold_in_a_name(name: String, value: SpiteCompiler.Value?) {
+    var place = optional_place_of(value)
+    join("{walked_key}|{name}", place)
+}
+
+func walk_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    walk(written.object)
+    var place = optional_place_of(written.value)
+    var attribute = written.attribute
+    join("{attribute.owner}.{attribute.name}", place)
+}
+
+func walk_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    walk(written.object)
+    var place = optional_place_of(written.value)
+    taint(place)
+    taint_the_fillers(written.shape, written.member)
+}
+
+func walk_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
+    walk(evaluated.value)
+    walk(evaluated.waited)
+}
+
+func walk_a_return(answered: HighIntermediaryRepresentation.Statements.Return) {
+    var place = optional_place_of(answered.value)
+    join("{walked_key} answers", place)
+}
+
+func walk_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    walk(branch.condition)
+    walk_a_block(branch.then_branch)
+    walk_a_block(branch.else_branch)
+}
+
+func walk_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    walk(loop.condition)
+    walk_a_block(loop.body)
+}
+
+func walk_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(walk_a_value)
+    walk(stop.then)
+}
+
+func walk_a_value(value: SpiteCompiler.Value) {
+    walk(value)
+}
+
+func taint_a_value(value: SpiteCompiler.Value) {
+    var place = place_of(value)
+    taint(place)
+}
+
+func join(first: String, second: String) {
+    fallback not marking
+    places.join(first, second)
+}
+
+func taint(place: String) {
+    fallback not marking
+    places.taint(place)
+}
+
+func note_a_write(place: String) {
+    fallback not marking
+    places.note_a_write(place)
+}
+
+func element_of(place: String): String {
+    if marking {
+        return places.known_element_of(place)
+    }
+    return places.element_of(place)
+}
+
+func fresh(of_type: Model.Type): String {
+    fallback is_held_in_a_collection(of_type)
+    return places.fresh()
+}
+
+func fresh_tainted(of_type: Model.Type): String {
+    var made = fresh(of_type)
+    taint(made)
+    return made
+}
+
+func walk(value: SpiteCompiler.Value?) {
+    var place = optional_place_of(value)
+    fallback not place.is_empty()
+}
+
+func optional_place_of(value: SpiteCompiler.Value?): String {
+    fallback value
+    return place_of(value)
+}
+
+func place_of(value: SpiteCompiler.Value): String {
+    switch value {
+        HighIntermediaryRepresentation.Values.Call: return place_of_a_call(value)
+        HighIntermediaryRepresentation.Values.ShapeCall: return place_of_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.Function.Value: return place_of_a_function_value(value)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: return place_of_a_value_call(value)
+        HighIntermediaryRepresentation.Values.Conversion: return place_of_a_conversion(value)
+        HighIntermediaryRepresentation.Values.AttributeRead: return place_of_an_attribute(value)
+        HighIntermediaryRepresentation.Values.LocalRead: return place_of_a_name(value)
+        HighIntermediaryRepresentation.Values.MakeObject: return place_of_a_making(value)
+        HighIntermediaryRepresentation.Values.ForeignCall: return place_of_a_foreign_call(value)
+        HighIntermediaryRepresentation.Values.Class.OfValue: return walked(value.described)
+        HighIntermediaryRepresentation.Values.Class.Membership: return walked(value.tested)
+        HighIntermediaryRepresentation.Values.EnumFromText: return walked(value.text)
+        HighIntermediaryRepresentation.Values.EnumText: return walked(value.number)
+        HighIntermediaryRepresentation.Values.MachineOperation: return walked_both(value.left, value.right)
+        HighIntermediaryRepresentation.Values.Negation: return walked(value.negated)
+        HighIntermediaryRepresentation.Values.NumberRoom: return walked_both(value.made, value.number)
+        HighIntermediaryRepresentation.Values.PresenceTest: return walked(value.tested)
+        HighIntermediaryRepresentation.Values.WholeNumber: return ""
+        HighIntermediaryRepresentation.Values.DecimalNumber: return ""
+        HighIntermediaryRepresentation.Values.TextConstant: return ""
+        HighIntermediaryRepresentation.Values.NullConstant: return ""
+        HighIntermediaryRepresentation.Values.ThisRead: return ""
+        HighIntermediaryRepresentation.Values.Class.Object: return ""
+        HighIntermediaryRepresentation.Values.Function.Fact: return ""
+    }
+}
+
+func walked(value: SpiteCompiler.Value?): String {
+    walk(value)
+    return ""
+}
+
+func walked_both(first: SpiteCompiler.Value?, second: SpiteCompiler.Value?): String {
+    walk(first)
+    walk(second)
+    return ""
+}
+
+func place_of_a_name(read: HighIntermediaryRepresentation.Values.LocalRead): String {
+    fallback is_held_in_a_collection(read.value_type)
+    return "{walked_key}|{read.name}"
+}
+
+func place_of_an_attribute(read: HighIntermediaryRepresentation.Values.AttributeRead): String {
+    walk(read.object)
+    fallback is_held_in_a_collection(read.value_type)
+    var attribute = read.attribute
+    return "{attribute.owner}.{attribute.name}"
+}
+
+func place_of_a_conversion(converted: HighIntermediaryRepresentation.Values.Conversion): String {
+    var inner = optional_place_of(converted.converted)
+    if plain_conversions.contains(converted.kind) {
+        return inner
+    }
+    taint(inner)
+    return fresh_tainted(converted.value_type)
+}
+
+func place_of_a_making(made: HighIntermediaryRepresentation.Values.MakeObject): String {
+    if made.constructor {
+        hand_to(made.constructor, made.arguments)
+    } else if not made.arguments.is_empty() {
+        made.arguments.each(taint_a_value)
+        taint_the_attributes_of(made.value_type)
+    }
+    return fresh(made.value_type)
+}
+
+func taint_the_attributes_of(made_type: Model.Type) {
+    var model = high.model.class_named(made_type.name)
+    fallback model
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        taint("{model.key}.{attribute.name}")
+        index = index + 1
+    }
+}
+
+func place_of_a_foreign_call(call: HighIntermediaryRepresentation.Values.ForeignCall): String {
+    call.arguments.each(taint_a_value)
+    return fresh_tainted(call.value_type)
+}
+
+func place_of_a_value_call(call: HighIntermediaryRepresentation.Values.Function.ValueCall): String {
+    walk(call.called)
+    call.arguments.each(taint_a_value)
+    return fresh_tainted(call.value_type)
+}
+
+func place_of_a_function_value(made: HighIntermediaryRepresentation.Values.Function.Value): String {
+    var bound = optional_place_of(made.receiver)
+    taint(bound)
+    note_a_write(bound)
+    taint_a_function(made.function)
+    return ""
+}
+
+func taint_a_function(function: Model.FunctionModel) {
+    var key = function.key()
+    taint("{key} answers")
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        taint("{key}|{parameter.name}")
+        index = index + 1
+    }
+}
+
+func place_of_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall): String {
+    var receiver = optional_place_of(call.receiver)
+    taint(receiver)
+    call.arguments.each(taint_a_value)
+    taint_the_fillers(call.shape, call.member.name)
+    return fresh_tainted(call.value_type)
+}
+
+func taint_the_fillers(shape: Model.ShapeModel, member: String) {
+    var fillers = high.model.fillers_of(shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        taint("{filler.name}.{member}")
+        var model = high.model.class_named(filler.name)
+        if model {
+            var function = model.function_named(member)
+            if function {
+                taint_a_function(function)
+            }
+        }
+        index = index + 1
+    }
+}
+
+func place_of_a_call(call: HighIntermediaryRepresentation.Values.Call): String {
+    var receiver = optional_place_of(call.receiver)
+    var owner = call.function.owner
+    if owner.starts_with("List_of_") {
+        return place_of_a_list_call(call, receiver)
+    }
+    if owner.starts_with("Dictionary_of_") {
+        return place_of_a_dictionary_call(call, receiver)
+    }
+    hand_to(call.function, call.arguments)
+    var key = call.function.key()
+    fallback is_held_in_a_collection(call.value_type)
+    if is_walked(call.function) {
+        return "{key} answers"
+    }
+    taint("{key} answers")
+    return fresh_tainted(call.value_type)
+}
+
+func is_walked(function: Model.FunctionModel): Boolean {
+    var key = function.key()
+    return built_keys.contains(key) and function.has_a_body()
+}
+
+func hand_to(function: Model.FunctionModel, arguments: List<SpiteCompiler.Value>) {
+    var key = function.key()
+    var is_built = is_walked(function)
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        var place = place_of(argument)
+        if index < function.parameters.count() {
+            var parameter = function.parameters[index]
+            var given = "{key}|{parameter.name}"
+            join(given, place)
+            if not is_built {
+                taint(given)
+            }
+        } else {
+            taint(place)
+        }
+        index = index + 1
+    }
+}
+
+# ../../PROOFS.md#a-list-used-only-as-a-set
+func place_of_a_list_call(call: HighIntermediaryRepresentation.Values.Call, list: String): String {
+    var arguments = places_of(call.arguments)
+    var name = call.function.name
+    mark_a_set_call(call, list)
+    if kept_names.contains(name) {
+        if name == "contains" or name == "index_of" {
+            note_a_search(list)
+        }
+        return ""
+    }
+    if name == "append" {
+        join_each(arguments, list)
+        return ""
+    }
+    if item_reading_names.contains(name) {
+        return element_of(list)
+    }
+    if reading_names.contains(name) {
+        var items = element_of(list)
+        taint(items)
+        if name == "find" {
+            return items
+        }
+        return copied_list(call.value_type, items)
+    }
+    note_a_write(list)
+    if item_writing_names.contains(name) {
+        join_each(arguments, list)
+        return ""
+    }
+    if item_taking_names.contains(name) {
+        return element_of(list)
+    }
+    fallback not removing_names.contains(name)
+    taint(list)
+    arguments.each(taint)
+    return fresh_tainted(call.value_type)
+}
+
+func copied_list(of_type: Model.Type, items: String): String {
+    var made = fresh(of_type)
+    fallback not made.is_empty()
+    var copied_items = element_of(made)
+    join(copied_items, items)
+    return made
+}
+
+func note_a_search(list: String) {
+    fallback not marking
+    places.note_a_search(list)
+}
+
+func mark_a_set_call(call: HighIntermediaryRepresentation.Values.Call, list: String) {
+    fallback marking
+    fallback set_names.contains(call.function.name)
+    fallback places.is_a_set(list) and takes_a_key(call.function)
+    call.is_on_a_set = true
+}
+
+func place_of_a_dictionary_call(call: HighIntermediaryRepresentation.Values.Call, dictionary: String): String {
+    var arguments = places_of(call.arguments)
+    var name = call.function.name
+    if name == "get_at" {
+        return element_of(dictionary)
+    }
+    if name == "set_at" {
+        var stored = arguments.last()
+        crash stored
+        var held = element_of(dictionary)
+        join(held, stored)
+        return ""
+    }
+    if keyed_names.contains(name) {
+        return fresh(call.value_type)
+    }
+    taint(dictionary)
+    arguments.each(taint)
+    return fresh_tainted(call.value_type)
+}
+
+func places_of(values: List<SpiteCompiler.Value>): List<String> {
+    var found = List<String>()
+    var index = 0
+    while index < values.count() {
+        var value = values[index]
+        var place = place_of(value)
+        found.append(place)
+        index = index + 1
+    }
+    return found
+}
+
+func join_each(arguments: List<String>, list: String) {
+    var index = 0
+    while index < arguments.count() {
+        var place = arguments[index]
+        if not place.is_empty() {
+            var held = element_of(list)
+            join(held, place)
+        }
+        index = index + 1
+    }
+}

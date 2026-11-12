@@ -1909,6 +1909,87 @@ func sum_points(): Long {
 
 It is decided by the high pass `high_optimization_passes/inline_items`, which records each such list in the layout.
 
+## A list used as a set keeps a hash index
+
+A `List` of texts or whole numbers that the program only appends to, searches and reads keeps a hash index beside
+its items, so `contains` and `index_of` take the same time however long the list is. The list is the same list: its
+items stay in their order, `list[index]`, `count()` and `each` read them as before, and the index only answers where
+an item first sits.
+
+**When it applies:** to every list the proof [a list used only as a set](PROOFS.md#a-list-used-only-as-a-set) finds.
+Lists that can meet (through names, parameters, answers, attributes, and the items of other lists and dictionaries)
+are one family, and a family is indexed when it is searched (`contains`, `index_of`, or the loop below) and:
+
+- nothing writes its lists but `append`: no `list[index] = `, `insert`, `prepend`, `remove_at`, `remove_last`,
+  `remove_first`, `clear`, `reverse`, `swap`, `truncate`, template or function the proof does not know;
+- none of its lists goes where the compiler cannot follow it: to a foreign function, a function value or a call
+  through a `type`, into a union or a shape, or as the receiver of a function taken as a value;
+- its items are `String`s or whole numbers (a decimal's `NaN` is not equal to itself, so a list of decimals is never
+  hashed);
+- the build is not inspectable.
+
+Reading in order does not stop it, since the items stay where they were, and an `append` with no `contains` before it
+does not either: the index keeps the first place of an item appended twice. A copy, a filtered list or a deep copy is
+a new list outside the family.
+
+**What runs instead:** the list holds two more slots: its index, empty at first, and how many items its searches have
+read. Without an index, `append` appends and `contains` reads every item, as written, adding the list's count to
+what its searches have read. Once a list of at least 16 items has been searched for 16 times as many items as it
+holds, the search indexes the items the list holds, and from then on each `append` places its item in the index
+(when it is not there yet) and `contains` and `index_of` ask the index. Building the index costs about what 16
+searches of the list did, so a list searched rarely (made and dropped after a few searches, as the common
+subexpressions make theirs) never pays for one, and a list searched often pays once. A list that came from
+elsewhere (a copy, a reader) starts with no index, like a new one.
+
+**What a program can observe:** only time and memory: the index is a `Dictionary` the list holds and lets go with
+it, made once the searches have paid for it, and `--debug-memory` counts it.
+
+```spite
+func mark(slot: String) {
+    var entry = "{current_key}|{slot}"
+    if not written.contains(entry) {
+        written.append(entry)
+    }
+}
+```
+
+`written` is only appended to, searched and passed to functions that search it, so each `contains` is a lookup
+(the compiler's own `Facts`, `AttributeUses` and common subexpressions).
+
+**Not built:** a list some other write reaches keeps searching item by item, and so does a list of objects or of
+decimals. So does a list whose `append` or `count`, or whose `Dictionary<Item, Integer>`'s `contains`, `get_at` or
+`set_at`, a pass already dropped as unreached; and when the program does not already call the writers among them
+(`append` of the list and of `List<Integer>`, the dictionary's `set_at`), so they would be built for the index, a list whose program has a number of the list, of `List<Integer>`, of the
+`Dictionary<Item, Integer>` or of `Buffer` that the range proof reads as its default because nothing wrote it: those
+functions could write it after the proof.
+
+It is proven by `proofs/set_lists` and made by the high pass `high_optimization_passes/indexed_lists`, which writes
+`contains$set`, `index_of$set` and `append$set` for each indexed list class; they are in the function map.
+
+### A search loop over such a list is one lookup
+
+A loop that walks such a list from its first item and answers the place of the first item equal to a name is the
+list's `index_of`:
+
+```spite
+func flowing_index(key: String): Integer {
+    var index = 0
+    while index < flowing_keys.count() {
+        var known = flowing_keys[index]
+        if known == key {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+```
+
+The loop is one lookup in the index, and `index` holds the count after it, as the loop leaves it. It applies when
+the counter is set to 0 by the statement right before the loop, the loop's body is exactly the read, the test (either
+way round, of the item and a name the loop does not change) answering the counter, and the step by one, and the list
+is a name or an attribute of `this`.
+
 ## A local list of known size lives in the frame
 
 A list literal kept in a local (`var weights = [4, 3, 2, 1]`) that the function only counts and reads by index is

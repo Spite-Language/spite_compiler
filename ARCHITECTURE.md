@@ -155,6 +155,12 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-text-literal-is-made-once-in-the-programs-data)); an interpolation only
    compared becomes a call of a comparison it writes on `String` that matches the pieces in place
    ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#an-interpolation-only-compared-is-compared-in-place)).
+   After it, the proof `set_lists`, registered through `HighOptimizationPasses.Proving`, marks each `contains`,
+   `index_of` and `append` of a list used only as a set, and each loop searching one (`Call.is_on_a_set`,
+   `While.searches_a_set`), and the pass `indexed_lists` calls the functions it writes for them (`contains$set`,
+   `index_of$set`, `append$set`), which keep a hash index in the list.
+   `constant_texts` goes first: a split only searched is found by its `List.contains`, which `indexed_lists` would
+   have replaced, and what `set_lists` proves covers the functions `constant_texts` wrote.
 6. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
    they are read, from the walk `AttributeUses` that `ranges` ran too, run again over what passes built since. It hands each attribute of a class it shrinks, with whether it left it out, to
    `validators/high_intermediary_representation/recursive_default`, which decides whether a kept attribute of
