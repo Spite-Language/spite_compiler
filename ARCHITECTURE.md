@@ -152,7 +152,9 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    Right after it, `constant_texts` proves that the program writes a text only while one local holds it; where it
    does, it marks each literal nothing writes into to live in the executable's data (`TextConstant.lives_in_data`)
    and turns a split only searched into a call of `String._holds_piece`, which it writes
-   ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-text-literal-is-made-once-in-the-programs-data)).
+   ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-text-literal-is-made-once-in-the-programs-data)); an interpolation only
+   compared becomes a call of a comparison it writes on `String` that matches the pieces in place
+   ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#an-interpolation-only-compared-is-compared-in-place)).
 6. `untouched_attributes`: attributes nothing reads have no slot, and attributes nothing writes are rebuilt where
    they are read, from the walk `AttributeUses` that `ranges` ran too, run again over what passes built since. It hands each attribute of a class it shrinks, with whether it left it out, to
    `validators/high_intermediary_representation/recursive_default`, which decides whether a kept attribute of
