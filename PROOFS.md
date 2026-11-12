@@ -307,6 +307,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
   A path holding a written call is never a copy's source, since writing it again calls again; a copy through a getter keeps a value when the getter may have an effect, or when a call or a write before the read may assign what it reads (`kept_copies.spite`: `getter_may_change_under`), and one through a getter that only reads is a copy like any other.
   A local whose source (an attribute, or one along its path) a call or a write through any object may change between the copy and a read of the local keeps a value, so it is not a copy: the builder records those reads as `NarrowedRead`s with their `copy_line`, and `proven_checks` asks the question `narrowings_kept_across_calls` asks.
+  The fix renames every use of the copy, and a copy of a copy names the first source: each `Fixes.Renaming` also renames a path an earlier one wrote that starts at its name, and rewrites the source of a later one in the same function that does (`fixes.spite`: `rename_every_use`).
 - **Buys**: one name per value.
 - **Falls back**: refused, "'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('fallback
   tracker') and use it directly".
@@ -314,7 +315,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `note_a_tested_copy`, `build_switch`), and
   refused by `validators/high_intermediary_representation/proven_check`.
 - **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions,
-  conformance/copy_to_narrow_not_leaving; tests/narrowing_snapshot_copy, tests/copy_of_a_getter_with_an_effect_is_kept,
+  conformance/copy_to_narrow_not_leaving, conformance/copy_to_narrow_of_a_copy, conformance/copy_to_narrow_of_a_kept_copy; tests/narrowing_snapshot_copy, tests/copy_of_a_getter_with_an_effect_is_kept,
   tests/copy_of_a_path_holding_a_call_is_kept, tests/copy_of_a_getter_before_a_change_is_kept, conformance/namespace_nullable.
 
 ### A literal that converts is a `T`
