@@ -1393,8 +1393,10 @@ refuses nothing (D1781).
   loop, a call of overlapped work; and a `Concurrent` of a frame loop), what its starter does from the start to
   the join that answers it in the same block (the whole starter when that join is anywhere else), and everything
   that code reaches: every function it calls, every filler's member of a shape it calls through, every
-  constructor and attribute defaults of what it makes, every function the program takes as a value once it calls
-  a function value, and every `drop`. The passes that start work run before this proof and leave each start in the
+  constructor and attribute defaults of what it makes, every function handed straight to the parameter whose value
+  it calls (every function taken as a value when it calls one that is not a parameter, a parameter that was handed
+  on or reassigned, or once any function value goes to a call through a shape, a function value or a foreign
+  function), and every `drop`. The passes that start work run before this proof and leave each start in the
   IR (`Conversion` of kind `into_handle`), so the proof reads them there; nothing else records them.
 - **Buys**: [a list used as a set keeps a hash index](OPTIMIZATIONS.md#a-list-used-as-a-set-keeps-a-hash-index): it
   marks each `contains`, `index_of` and `append` of the family (`Call.is_on_a_set`) and each search loop over it
