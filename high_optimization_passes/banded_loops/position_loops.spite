@@ -26,6 +26,7 @@ var most_bands = 64
 var lightest_banded = 256
 var fewest_banded_items = 64
 var work_per_band_start = 1000000
+var chunks_per_band = 8
 
 func PositionLoops(
     starting_program: HighIntermediaryRepresentation.HighProgram,
@@ -266,19 +267,33 @@ func made_split(names: HighOptimizationPasses.BandedLoops.BandNames, band: Model
     parameter(made, "band$start", integer)
     parameter(made, "band$end", integer)
     parameter(made, "band$bands", integer)
+    parameter(made, "band$claims", integer)
+    parameter(made, "band$per", integer)
     free_parameters(made)
     var body = HighIntermediaryRepresentation.Statements.Block(0)
     var alone = HighIntermediaryRepresentation.Statements.Block(0)
+    var in_order = HighIntermediaryRepresentation.Statements.Block(0)
     var alone_start = read("band$start", integer)
     var alone_end = read("band$end", integer)
     var running_alone = call_with_free(band, alone_start, alone_end)
     var ran = HighIntermediaryRepresentation.Statements.Evaluate(running_alone, 0)
-    alone.statements.append(ran)
+    in_order.statements.append(ran)
     var walked_end = read("band$end", integer)
     var walked_start = read("band$start", integer)
     var walked = operation('subtract', walked_end, walked_start, integer)
     var answered = HighIntermediaryRepresentation.Statements.Return(walked, 0)
-    alone.statements.append(answered)
+    in_order.statements.append(answered)
+    var asked_per = read("band$per", integer)
+    var one_per = number(1)
+    var unclaimed = operation('less', asked_per, one_per, boolean)
+    var ordering = HighIntermediaryRepresentation.Statements.If(unclaimed, in_order, null, 0, "")
+    alone.statements.append(ordering)
+    claim_the_chunks(alone, band)
+    var claimed_end = read("band$end", integer)
+    var claimed_start_read = read("band$start", integer)
+    var claimed_span = operation('subtract', claimed_end, claimed_start_read, integer)
+    var claimed_answer = HighIntermediaryRepresentation.Statements.Return(claimed_span, 0)
+    alone.statements.append(claimed_answer)
     var asked_bands = read("band$bands", integer)
     var two = number(2)
     var one = operation('less', asked_bands, two, boolean)
@@ -288,31 +303,25 @@ func made_split(names: HighOptimizationPasses.BandedLoops.BandNames, band: Model
     var halving = number(2)
     var half = operation('divide', halved_bands, halving, integer)
     declare(body, "band$half", half)
-    var span_end = read("band$end", integer)
-    var span_start = read("band$start", integer)
-    var span = operation('subtract', span_end, span_start, integer)
-    var divided_bands = read("band$bands", integer)
-    var per_band = operation('divide', span, divided_bands, integer)
-    var lower_half = read("band$half", integer)
-    var lower_span = operation('multiply', per_band, lower_half, integer)
-    var middle_start = read("band$start", integer)
-    var middle = operation('add', middle_start, lower_span, integer)
-    declare(body, "band$middle", middle)
     var all_bands = read("band$bands", integer)
     var given_half = read("band$half", integer)
     var upper_bands = operation('subtract', all_bands, given_half, integer)
-    var upper_start = read("band$middle", integer)
+    var upper_start = read("band$start", integer)
     var upper_end = read("band$end", integer)
-    var upper = call_with_bands(made, upper_start, upper_end, upper_bands)
+    var upper_claims = read("band$claims", integer)
+    var upper_per = read("band$per", integer)
+    var upper = call_with_bands(made, upper_start, upper_end, upper_bands, upper_claims, upper_per)
     var handle_type = context.resolver.monomorphiser.handle_of("Parallel", integer)
     values.need_the_scheduler(handle_type)
     program.makes_work = true
     var started = HighIntermediaryRepresentation.Values.Conversion(handle_type, 'into_handle', upper, "")
     declare(body, "band$running", started)
     var lower_start = read("band$start", integer)
-    var lower_end = read("band$middle", integer)
+    var lower_end = read("band$end", integer)
     var lower_bands = read("band$half", integer)
-    var lower = call_with_bands(made, lower_start, lower_end, lower_bands)
+    var lower_claims = read("band$claims", integer)
+    var lower_per = read("band$per", integer)
+    var lower = call_with_bands(made, lower_start, lower_end, lower_bands, lower_claims, lower_per)
     declare(body, "band$first", lower)
     var running = HighIntermediaryRepresentation.Values.LocalRead(handle_type, "band$running")
     var joined = HighIntermediaryRepresentation.Values.Conversion(integer, 'join', running, "")
@@ -323,6 +332,90 @@ func made_split(names: HighOptimizationPasses.BandedLoops.BandNames, band: Model
     var total = HighIntermediaryRepresentation.Statements.Return(both, 0)
     body.statements.append(total)
     add(made, body)
+    return made
+}
+
+# ../../OPTIMIZATIONS.md#a-band-that-finishes-early-takes-the-next-chunk
+func claim_the_chunks(block: HighIntermediaryRepresentation.Statements.Block, band: Model.FunctionModel) {
+    var first = claimed_start()
+    declare(block, "band$chunk", first)
+    var taking = HighIntermediaryRepresentation.Statements.Block(0)
+    var chunk_start = read("band$chunk", integer)
+    var chunk_length = read("band$per", integer)
+    var chunk_end = operation('add', chunk_start, chunk_length, integer)
+    declare(taking, "band$chunk_end", chunk_end)
+    var whole_end = read("band$end", integer)
+    lower_to(taking, "band$chunk_end", whole_end)
+    var from = read("band$chunk", integer)
+    var to = read("band$chunk_end", integer)
+    var running = call_with_free(band, from, to)
+    var ran = HighIntermediaryRepresentation.Statements.Evaluate(running, 0)
+    taking.statements.append(ran)
+    var next = claimed_start()
+    var stepped = HighIntermediaryRepresentation.Statements.Assign.Assign("band$chunk", next, 0)
+    taking.statements.append(stepped)
+    var reached = read("band$chunk", integer)
+    var end = read("band$end", integer)
+    var more = operation('less', reached, end, boolean)
+    var loop = HighIntermediaryRepresentation.Statements.While(more, taking, 0)
+    block.statements.append(loop)
+}
+
+func claimed_start(): SpiteCompiler.Value {
+    var claiming = intrinsic("_claim_next")
+    var asked = List<SpiteCompiler.Value>()
+    var claims = read("band$claims", integer)
+    asked.append(claims)
+    var own = this_value()
+    var claimed = HighIntermediaryRepresentation.Values.Call(claiming, own, asked, "", "")
+    var one = number(1)
+    var taken = operation('subtract', claimed, one, integer)
+    var per = read("band$per", integer)
+    var offset = operation('multiply', taken, per, integer)
+    var start = read("band$start", integer)
+    return operation('add', start, offset, integer)
+}
+
+# ../../OPTIMIZATIONS.md#a-band-that-finishes-early-takes-the-next-chunk
+func chunk_size(
+    block: HighIntermediaryRepresentation.Statements.Block,
+    bands_name: String,
+    span_name: String,
+    per_name: String,
+) {
+    var unsized = number(0)
+    declare(block, per_name, unsized)
+    var sizing = HighIntermediaryRepresentation.Statements.Block(0)
+    var chunked_bands = read(bands_name, integer)
+    var per_band = number(chunks_per_band)
+    var chunks = operation('multiply', chunked_bands, per_band, integer)
+    var span = read(span_name, integer)
+    var size = operation('divide', span, chunks, integer)
+    var sized = HighIntermediaryRepresentation.Statements.Assign.Assign(per_name, size, 0)
+    sizing.statements.append(sized)
+    var current = read(per_name, integer)
+    var one = number(1)
+    var below = operation('less', current, one, boolean)
+    var raising = HighIntermediaryRepresentation.Statements.Block(0)
+    var least = number(1)
+    var raised = HighIntermediaryRepresentation.Statements.Assign.Assign(per_name, least, 0)
+    raising.statements.append(raised)
+    var floored = HighIntermediaryRepresentation.Statements.If(below, raising, null, 0, "")
+    sizing.statements.append(floored)
+    var several_bands = read(bands_name, integer)
+    var two = number(2)
+    var several = operation('greater_or_equal', several_bands, two, boolean)
+    var choosing = HighIntermediaryRepresentation.Statements.If(several, sizing, null, 0, "")
+    block.statements.append(choosing)
+}
+
+func intrinsic(name: String): Model.FunctionModel {
+    var known = owner.function_named(name)
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel(name, owner.key, integer, null, null, null, null, null, false, false, false, false)
+    owner.declared_functions.append(made)
     return made
 }
 
@@ -425,10 +518,20 @@ func driver(
         var checking = HighIntermediaryRepresentation.Statements.If(several, checked, null, 0, "")
         block.statements.append(checking)
     }
+    var per_name = "{index_name}$per"
+    var claims_name = "{index_name}$claims"
+    chunk_size(block, bands_name, span_name, per_name)
+    var room = intrinsic("_claim_room")
+    var no_room_values = List<SpiteCompiler.Value>()
+    var room_owner = this_value()
+    var claimed_room = HighIntermediaryRepresentation.Values.Call(room, room_owner, no_room_values, "", "")
+    declare(block, claims_name, claimed_room)
     var split_start = read(index_name, integer)
     var split_end = read(length_name, integer)
     var split_bands = read(bands_name, integer)
-    var splitting = call_with_bands(split, split_start, split_end, split_bands)
+    var split_claims = read(claims_name, integer)
+    var split_per = read(per_name, integer)
+    var splitting = call_with_bands(split, split_start, split_end, split_bands, split_claims, split_per)
     var running = HighIntermediaryRepresentation.Statements.Evaluate(splitting, 0)
     block.statements.append(running)
     var ended = read(length_name, integer)
@@ -465,11 +568,15 @@ func call_with_bands(
     start: SpiteCompiler.Value,
     end: SpiteCompiler.Value,
     bands: SpiteCompiler.Value,
+    claims: SpiteCompiler.Value,
+    per: SpiteCompiler.Value,
 ): HighIntermediaryRepresentation.Values.Call {
     var arguments = List<SpiteCompiler.Value>()
     arguments.append(start)
     arguments.append(end)
     arguments.append(bands)
+    arguments.append(claims)
+    arguments.append(per)
     return call_passing_free(function, arguments)
 }
 
