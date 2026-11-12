@@ -55,8 +55,8 @@ like "is this call ever reached" or "may this value be null" has no answer on th
 ## What the builder does
 
 It only builds: a rule decides every error, so every check the builder meets is handed to the rule of
-`validators/high_intermediary_representation` that owns it, with what was built; the rule decides and stops through
-the layer's entry. What a program may say is decided by the proofs before any pass runs, and what is cheaper by the
+`validators/high_intermediary_representation` that owns it, with what was built; the rule decides and answers, and the builder tells a mistake through
+`Context.tell` and the layer's entry. What a program may say is decided by the proofs before any pass runs, and what is cheaper by the
 passes after them; nothing that builds the representation also optimises it.
 
 **An argument is passed by its parameter's type only.** The builder fits each argument to its parameter (made nullable,

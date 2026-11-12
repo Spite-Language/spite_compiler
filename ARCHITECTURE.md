@@ -485,8 +485,8 @@ both forms, and that change publishes a new seed: its fixed point as a new `seed
 ## A failure stops its own check
 
 A step holds no error text. When it finds something to judge (a folder name, a token it cannot read, a parsed
-file), it hands it to the validator of that rule at once. The validator lets it pass, or refuses it through
-`Diagnostics.Failure`. A mistake with one fix is fixed before it is told: the layer's fix rule changes the tree
+file), it hands it to the validator of that rule at once. The validator answers fine or a mistake, and the step
+or entry that called it tells a mistake through `Diagnostics.Failure` right after the call. A mistake with one fix is fixed before it is told: the layer's fix rule changes the tree
 first (below).
 
 Reading a file judges nothing (D1975). The lexer reads every mark as a token of its own and keeps what starts no token
@@ -516,7 +516,7 @@ A refusal stops the check it happened in, and the compile goes on to the other c
 
 | The check | What a refusal does | Why |
 |---|---|---|
-| a rule of `validators/abstract_syntax_tree` on a read file, a proof | `Failure` keeps the problem and returns, and the rule walks on (`gathering.goes_on`) | they only read a whole tree or program |
+| a rule of `validators/abstract_syntax_tree` on a read file, a proof | `Failure` keeps the problem and returns, and the walk goes on (`gathering.goes_on`); a rule gathers every mistake it finds into its one answer | they only read a whole tree or program |
 | reading a file (its lexer and parser), building a function or a class's defaults | a new round: `Diagnostics.Rounds` runs the compiler again, and that run skips the failed check | a step cannot be left half way, and nothing in the language unwinds it. A fresh run has no half-built state, so it cannot echo |
 | anything else (the command line, the mapping, name resolution, the steps after the proofs) | everything found so far is told and the compile ends | nothing can go on without it |
 
@@ -618,7 +618,8 @@ needs. The folder is named after the rule, and the validator holds every word of
 
 Anything that can go wrong hands its state to a validator, which answers fine, fixable or a mistake (D2005,
 spite_compiler#407). The answer is one class for every rule, `validators/answer.spite` (`Validators.Answer`): `fix`
-names the fix when one can be done, `mistake` holds the problem with the rule's words, and `tell()` stops with it
+names the fix when one can be done, `mistakes` holds the problems with the rule's words in the order it found them,
+and `tell()` stops with each
 (D2006). A validator never applies a fix and never does IO: a step that writes, removes, moves, connects or runs git
 records what the system answered as a fact (`CommandLine.Attempt`, `Mapping.GitRun`) and hands that, and a file is
 read elsewhere and its content handed in: the symbol table reads the markdown each comment links and whether each
@@ -627,11 +628,15 @@ header declares a function to answer into a `HeaderAnswer`, and the settings rec
 `CommandLine.HandedSetting` (D2055). A rule that needs what a step can answer (whether two signatures are the same, a
 literal, a member kept inline, whether a walk drops an answer) is handed that step (`Values`, `Operators`, `Fitting`,
 `Constraints`, `Keys`, `DroppingWalks`, a proof, a pass) or the site it recorded, and asks it itself (D2055).
-A rule a fixer asks answers through `Validators.Answer`, and its caller tells a mistake with `tell()`; the high entry's
-`mistake` builds one with the site's place, and its `tell` judges what the proofs recorded first, as `stop` does.
+Every rule answers through `Validators.Answer`, those a fixer asks and those it does not: its `check...` returns the
+answer and never stops in place, and the step or entry that called it tells it right after the call (`answer.tell()`),
+so the first error told and the list are what they were when a rule stopped where it found the mistake. A rule that
+walks while the gathering goes on gathers every mistake into the one answer, in the order it finds them; a rule that
+asks another takes its answer (`take`) or returns it. The high entry's `mistake` and `mistake_at` build an answer
+with the site's place (`problem_at`), and its `tell` judges what the proofs recorded first, then tells; a building
+step or proof tells through `Context.tell(answer)`, which asks the entry.
 `validators/mapping/misnamed_path` is an example: its fixer asks it and renames only what it answers fixable
 (`symbols/load_reach.spite` is what both read about the loads), and the mapping's entry tells what it answers wrong.
-Rules no fixer asks still stop in place; turning each into a returned answer is what spite_compiler#407 leaves.
 
 - A rule lives at the earliest level that has the facts it needs, and runs as soon as those facts exist: a file's
   rules run right after the file is parsed, before the next file is read.
@@ -641,9 +646,9 @@ Rules no fixer asks still stop in place; turning each into a returned answer is 
   representation's `check_an_evaluation` and the like as the builder meets each statement, the command line's
   `check` once the program's `Build` settles
   the settings (`take_the_build`), and the mapping's `check` once every mapped class is read (the end of
-  `Symbols.run`). The high entry also holds `stop`, which judges the sites the
-  proofs have not judged yet before it ends the compile, so the earliest error is the one told; only a rule calls it,
-  with its own words, and the wording helpers the rules share (`article_of`, `is_a_number`, `plain_class_name`,
+  `Symbols.run`). The high entry also holds `mistake`, which a rule answers with its own words, and `tell`, which
+  judges the sites the proofs have not judged yet before it ends the compile, so the earliest error is the one told;
+  the wording helpers the rules share (`article_of`, `is_a_number`, `plain_class_name`,
   `shown_function_name`) sit beside it. A check still
   written inside a step moves behind its layer's entry (spite_compiler#243).
 - A rule is a `check` or `check_...` that receives the data it is about (what the resolver found, the built value,
@@ -655,7 +660,8 @@ Rules no fixer asks still stop in place; turning each into a returned answer is 
 - A check no program can reach, a fault of the compiler itself, is a `crash` on a condition named for the fault
   (`expects_its_slots_fresh`, `hands_the_count_it_keeps` and `writes_what_nothing_else_holds` in the lowering,
   `low_intermediary_representation/written_functions`), not a rule with a message.
-- `diagnostics/failure.spite` (`Diagnostics.Failure`) ends the compile; only a validator or a proof builds one. A
+- `diagnostics/failure.spite` (`Diagnostics.Failure`) ends the compile; only `Validators.Answer.tell`, an entry or a
+  proof builds one. A
   command-line rule that stops a run with no compile to tell it in (`--connect`, a compiler not handed its flags)
   prints its `error:` line itself and exits with 1.
 - A validator finds the mistake itself (AGENTS.md): it is handed content and decides from it. No caller decides a
@@ -668,11 +674,12 @@ Rules no fixer asks still stop in place; turning each into a returned answer is 
   `validators/` no `check...` refuses before it tests anything, none is handed the kind of its mistake (an
   `enum Mistake`, a `Mistake` or `mistake:` parameter) or a `Boolean`, none does IO (`Directory(`, `File(`,
   `Process(`, reading or writing a file, the working directory), none rewrites (`is_fix`, a writer's `..._later(`),
-  and no rule words a fault of the compiler; and under `fixes/<layer>/` no function answers a `Boolean` and every
+  none stops in place (outside the entries and `answer.spite`, no `Diagnostics.Failure(`, `.stop...(` or `.tell(`:
+  it answers, and its caller tells), and no rule words a fault of the compiler; and under `fixes/<layer>/` no function answers a `Boolean` and every
   `fix.spite` acts on a rule's `is_fixable()`. It keeps no waiting list: whatever breaks one of these is
   refused. It judges samples
   written for it (a printer, a validator handed a Boolean that does IO and rewrites, a caller handing words, a
-  fixer that decides), to show each is refused.
+  fixer that decides, a rule that stops in place), to show each is refused.
 - A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_documentation/blob/master/style.md#the-file-content-budget))
   is told with the file's other refusals, by `validators/abstract_syntax_tree/file_content_budget`. No list or flag excuses a file.
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
