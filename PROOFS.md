@@ -1527,12 +1527,18 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   or a dictionary's items, a union's member, a shape's filler); a function value there counts every class whose
   function is taken as a value, and a union or shape whose members are not known counts every class. A program that
   makes a `ForeignCallback` counts every class atomically.
+  A band of a loop over a list's positions is walked on its own, and leaves out the classes its proof
+  ([passes that write only what they alone reach](#passes-that-write-only-what-they-alone-reach)) saw only as
+  objects the pass made (`Writes.fresh_classes`), less every class a value the pass did not make, or a write
+  through its item, can reach (`Writes.held_types`, followed through attributes, list items, union members and
+  shape fillers); a block that only ends the program counts every class it names.
 - **Buys**: [plain counts](OPTIMIZATIONS.md#plain-counts-where-no-other-thread-counts-a-class) for every other
   class whose objects' class is known where they are counted.
 - **Falls back**: an atomic count wherever the class is not known while compiling, or another thread may count it.
 - **Lives in**: `proofs/no_thread_counts`, registered among the high passes right after `singleton_locks`, whose
   walk it reads; it records `HighProgram.thread_counted_classes`.
-- **Checked by**: tests/plain_counts, tests/thread_counted_classes (output only).
+- **Checked by**: tests/plain_counts, tests/thread_counted_classes (output only), tests/plain_counts_in_bands
+  (a class only a band's passes make takes no locked count, read from the low representation).
 
 ### What one of the calls run at once counts
 

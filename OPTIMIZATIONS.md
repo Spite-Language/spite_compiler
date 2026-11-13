@@ -919,6 +919,46 @@ atomically, since C may call it from any thread. What a user can observe: the ti
 no thread at all). `tests/plain_counts` and `tests/thread_counted_classes` (a class counted on both threads, beside
 one only the program's thread counts) show it.
 
+## A class only a band's passes make is counted plainly
+
+A loop over a list's positions that [runs in bands](#a-loop-over-a-lists-positions-whose-passes-write-only-what-they-alone-reach-runs-in-bands)
+runs its passes on other threads, so every class its passes name would be
+[counted by another thread](#plain-counts-where-no-other-thread-counts-a-class) and take locked counts everywhere
+in the program. A class whose every object the passes handle was made by the pass itself is the exception: an
+object one pass made is seen by no other band, and by the rest of the program only once the bands are joined, so
+two threads never count it at once.
+
+```spite
+func transformed(): Shape {
+    var tallies = List<Tally>()
+    var round = 0
+    while round < _rounds {
+        var tally = Tally(round * shape.seed % 13)
+        tallies.append(tally)
+        round = round + 1
+    }
+    shape.total = shape.total + tallies.sum_value()
+    return shape
+}
+```
+
+Each `Tally` and the `List<Tally>` are made in the pass and dropped in it, so both keep plain counts; the `Shape`
+items are reached through the list and keep locked ones.
+
+**Why the output cannot change.** The proof that lets the loop band follows where every value its passes handle
+comes from ([passes that write only what they alone reach](PROOFS.md#passes-that-write-only-what-they-alone-reach));
+it records each class some value of which was made in the pass (`Writes.fresh_classes`), and the type of every
+value that was not, and of everything a pass writes through its item (`Writes.held_types`), since a write there
+may let go of what the slot held. [No other thread counts a class](PROOFS.md#no-other-thread-counts-a-class) then
+walks each band on its own, and leaves out of its classes those made in the pass that nothing held can reach
+(the held types followed through their attributes, list items, union members and shape fillers). Code that only
+ends the program counts every class it names, since the proof does not follow it.
+
+**What a program can observe:** the time. Only a loop over positions that bands is covered; an `each_<member>()`
+walk in bands, a `Parallel` and overlapped calls count every class they name, as before. A class reached through
+an item stays locked: two items may share an object the passes only read, and the bands check only what they
+write is held once.
+
 ## Small blocks come from the compiler's own free lists
 
 Every object, list storage, text and task frame used to be one `HeapAlloc` and one `HeapFree` (about 60 ns each on
