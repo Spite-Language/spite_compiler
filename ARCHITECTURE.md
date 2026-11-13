@@ -194,6 +194,9 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    running program holds, or whose numbers of an enum's values, differ from the manifest's.
    Then the proof `steady_singleton_attributes` records the singleton attributes nothing assigns after their
    singleton is made (`HighProgram.steady_singleton_attributes`), whose loads `made_singletons` marks invariant.
+   Last, the proof `alone_counts` walks what may run at once (`run_at_once.spite`, the walk `set_lists` reads too)
+   on the final representation and marks each function that runs alone (`HighFunction.runs_alone`), which the
+   lowering counts plainly.
 
 Passes 2 to 15 run only when the program is lowered (not with `--check`). Passes 7 to 15 make the decisions the
 lowering reads, so the lowering only lowers; they read nothing a later high pass changes. The layout and the studies of calls
@@ -419,6 +422,8 @@ functions and blocks. Its fields live in one object, `EmitterState`, which every
 (`instructions/decimal/` the decimal ones), and `fixups`, `frames`, `edge_moves`, `block_analysis`, `places`,
 `runtime_routines`, `decimals`, `cold_stops` and `division` hold what several of them share. A constant two classes
 use lives in `opcodes.spite`. A jump is written in the emitter, since a rotated loop emits the test of its head again.
+After every function, the emitter writes the copies `alone_copies.spite` finds: a function that both code run at
+once and code run alone call, written again with no lock on its counts for the code run alone.
 
 The allocator never names a register a convention decides. It reads the target's `X64.CallingConvention`, a table
 the target fills (`windows_x64/convention.spite`): the registers that carry the first arguments, the registers a

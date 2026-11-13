@@ -1404,7 +1404,7 @@ refuses nothing (D1781).
 - **Falls back**: the list as written, searched item by item; nothing is refused.
 - **Lives in**: the proof `proofs/set_lists`, registered among the high passes through `HighOptimizationPasses.Proving`
   right before `indexed_lists`, which acts on its marks; a search loop's shape is
-  `high_intermediary_representation/search_loop.spite`; what runs at once is `proofs/set_lists/threads.spite`.
+  `high_intermediary_representation/search_loop.spite`; what runs at once is `high_intermediary_representation/run_at_once.spite`.
 - **Checked by**: tests/lists_used_as_sets (a 100,000-item set answers `contains` about as fast as a 1,000-item one,
   and a list that stops being a set keeps its answers), tests/set_searched_in_bands (a set every band searches
   keeps its plain `contains` and answers the same every run).
@@ -1539,6 +1539,44 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   walk it reads; it records `HighProgram.thread_counted_classes`.
 - **Checked by**: tests/plain_counts, tests/thread_counted_classes (output only), tests/plain_counts_in_bands
   (a class only a band's passes make takes no locked count, read from the low representation).
+
+### A function only one thread runs counts plainly
+
+- **Status**: built.
+- **Rule**: a function runs alone when no code that may run at once with other code reaches it, by the walk of
+  [a list used only as a set](#a-list-used-only-as-a-set) (`high_intermediary_representation/run_at_once.spite`):
+  not a function the compiler starts on the pool, nor one they reach, nor a `drop`, nor a function that starts work
+  itself. Such a function only ever runs while no other thread the compiler made runs: every start is joined in the
+  block that made it, and the join waits for the work and everything it let go, so what the bands counted is
+  settled before the function goes on. So every count it takes or lets go, of any class, a union, a shape or a
+  value whose class is not known, is plain. It holds for the whole program only when nothing else can run beside
+  it: no `ForeignCallback` (C may call it on a thread of its own), no start whose join is not in its own block (the
+  work may outlive the function that started it), and no interactive build (the prompt and the reloader start
+  threads of their own).
+  The lowering then checks the rule against what it wrote: from every function that does not run alone (the
+  functions the compiler writes itself among them, but `_start`, which runs before any thread), it follows every
+  call, function address and thread start it wrote; a function counted plainly that one of those reaches is
+  counted atomically again, and so on from it, so a call the lowering adds that the walk did not see never runs a
+  plain count beside another thread.
+  A function both kinds of code call is written twice: from every function that runs alone (and `_start`, which
+  runs before any thread), each direct call the generator writes to a function that does not run alone reaches a
+  copy of it, `<key>$alone`, written from the same low function with no `lock` on its count updates (a retain, and
+  a count a release takes down), whose own calls reach copies the same way. A function that starts work (a call of
+  `_pool_submit` or a thread start), a resumable step and the end of a thread get no copy: the code that calls them
+  runs alone again once they answer. A function value always points to the copy with locked counts, and a stop's
+  words name the function as written.
+- **Buys**: [plain counts in code no other thread runs](OPTIMIZATIONS.md#a-function-only-one-thread-runs-counts-plainly).
+- **Missing**: inside a band, an object made and let go there, or held once through its item, still counts
+  atomically unless its class does not reach another thread
+  ([a class only a band's passes make](OPTIMIZATIONS.md#a-class-only-a-bands-passes-make-is-counted-plainly)).
+- **Falls back**: the counts of [no other thread counts a class](#no-other-thread-counts-a-class).
+- **Lives in**: the proof `proofs/alone_counts`, registered last among the high passes, which marks
+  `HighFunction.runs_alone`; the lowering (`counting.spite`) counts plainly where `FunctionLoweringState.counts_alone`
+  holds, and `lowering/alone_counts.spite` checks the calls it wrote; the copies are
+  `generators/windows_x64/alone_copies.spite`, written by the emitter after every other function.
+- **Checked by**: tests/plain_counts_alone (a function only the program's thread runs lets go of a class the bands
+  count without a locked count, while one the bands call too keeps its locked counts; read from the low
+  representation), tests/set_searched_in_bands, tests/band_passes (the same output on every run).
 
 ### What one of the calls run at once counts
 

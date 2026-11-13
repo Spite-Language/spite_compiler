@@ -959,6 +959,49 @@ walk in bands, a `Parallel` and overlapped calls count every class they name, as
 an item stays locked: two items may share an object the passes only read, and the bands check only what they
 write is held once.
 
+## A function only one thread runs counts plainly
+
+A program whose loops run in bands has other threads only while a band runs, and the code around the bands runs
+alone: the bands are started and joined inside one function, and once the join answers, every count a band took
+or let go is settled. A count in a function no band, no `Parallel` and no overlapped call can reach is therefore
+plain arithmetic, whatever its class, even a class the bands count too, a union, a shape or a function value's
+captured object.
+
+```spite
+func gathered(shapes: List<Shape>): Integer {
+    var even = List<Shape>()
+    var index = 0
+    while index < shapes.count() {
+        var shape = shapes[index]
+        if shape.seed % 2 == 0 {
+            even.append(shape)
+        }
+        index = index + 1
+    }
+    return even.sum_total()
+}
+```
+
+The bands of `reshape` read and write every `Shape` and the `List<Shape>` that holds them, so both classes are
+[counted by another thread](#plain-counts-where-no-other-thread-counts-a-class). `gathered` runs only after
+`reshape` has joined its bands, and nothing a band runs calls it, so its appends count each shape with a plain
+addition and `even` is let go with a plain subtraction.
+
+**Why the output cannot change.** [A function only one thread runs](PROOFS.md#a-function-only-one-thread-runs-counts-plainly)
+walks everything the compiler starts on the pool and everything it reaches, the same walk that keeps a list's
+index away from code run at once. A function the walk does not reach runs only on the thread that started the
+program while no other runs, so no two threads ever update one count at once in it. The lowering then follows
+every call it wrote from every other function and counts atomically again any plain function one reaches. A
+program that hands a function to C (`ForeignCallback`), keeps work running past the block that started it, or is
+built for the prompt or hot reload counts as before.
+
+A function both the bands and the code around them call (the library's list and text functions, mostly) is written
+twice: the bands call it as it is, with locked counts, and the code around them calls a copy whose count updates
+take no lock (`<key>$alone` in the `.functions` map).
+
+**What a program can observe:** the time, and a larger executable. A count is still the read and write of one word,
+so the gain is the lock: about twenty cycles a count on Mortaro's machine.
+
 ## Small blocks come from the compiler's own free lists
 
 Every object, list storage, text and task frame used to be one `HeapAlloc` and one `HeapFree` (about 60 ns each on
