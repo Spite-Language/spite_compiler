@@ -107,17 +107,18 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    refuse a `crash` on such a read).
 7. `folded_crashes`: a `crash` that folds false in reached code is a compile error.
 8. `every_attribute_is_read`: an attribute nothing reads is a compile error.
-9. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
-10. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
+9. `every_preload_is_read`: a `preload` no `Volume` reads is a compile error.
+10. `narrowings_kept_across_calls`: a narrowed attribute is not read past a call that may assign it.
+11. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
    facts on the operations). It first reads which attributes nothing writes (`AttributeUses`) and records those
    whose default is a number (`HighProgram.numbers_nothing_writes`), which it reads as that number.
-11. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
+12. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
-12. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
+13. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
    index holds a known count of items (a speed proof: it records the count on the list's declaration,
    `Declare.frame_items`, which a high pass carries with the statement, and the lowering lays the list out in the
    frame).
-13. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
+14. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
    since the running program's manifest; none answers `unchanged` before anything is lowered.
 
 The sites `recorded_sites` judges hold what the builder resolved where it recorded them (the names in scope with
