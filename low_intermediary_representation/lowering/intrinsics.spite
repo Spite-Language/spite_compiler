@@ -2,7 +2,10 @@ var no_state = FunctionLoweringState()
 var lowering = FunctionLowering(no_state)
 var _all_processor_groups: Long = 65535
 var _low_32_bits_mask: Long = 4294967295
-var _claim_bytes = 8
+var _claim_bytes = 24
+var _claim_table = 8
+var _claim_table_count = 16
+var _log_bytes = 24
 
 func Intrinsics(starting_lowering: FunctionLowering) {
     lowering = starting_lowering
@@ -252,7 +255,55 @@ func claim_room(): Lowered {
     var no_claims = lowering.constant(0)
     var cleared = LowIntermediaryRepresentation.Instructions.Store(room, 0, no_claims, 'bits_64', "", false)
     lowering.emit(cleared)
+    var no_table = LowIntermediaryRepresentation.Instructions.Store(room, _claim_table, no_claims, 'bits_64', "", false)
+    lowering.emit(no_table)
+    var no_count = LowIntermediaryRepresentation.Instructions.Store(
+        room,
+        _claim_table_count,
+        no_claims,
+        'bits_64',
+        "",
+        false,
+    )
+    lowering.emit(no_count)
     return lowering.single(room)
+}
+
+# ../../OPTIMIZATIONS.md#a-call-that-only-changes-a-singleton-waits-for-the-join
+func log_room(): Lowered {
+    if lowering.state.program.deferred_keys.is_empty() {
+        var nothing = lowering.constant(0)
+        return lowering.single(nothing)
+    }
+    var room = lowering.new_register()
+    var taken = LowIntermediaryRepresentation.Instructions.FrameRoom(room, _log_bytes, -1)
+    lowering.emit(taken)
+    return lowering.single(room)
+}
+
+func log_call(call: HighIntermediaryRepresentation.Values.Call, routine: String): Lowered {
+    var nothing = lowering.constant(0)
+    if lowering.state.program.deferred_keys.is_empty() {
+        return lowering.single(nothing)
+    }
+    var arguments = List<Integer>()
+    var index = 0
+    while index < call.arguments.count() {
+        var passed = argument(call, index)
+        arguments.append(passed)
+        index = index + 1
+    }
+    if routine == "_deferred_close" {
+        crash lowering.state.logged_section_calls > 0
+        lowering.state.in_a_logged_section = false
+    }
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, routine, arguments, -1, false)
+    lowering.emit(called)
+    if routine == "_deferred_open" {
+        lowering.state.in_a_logged_section = true
+        lowering.state.logged_section_calls = 0
+    }
+    return lowering.single(nothing)
 }
 
 func claim_next(call: HighIntermediaryRepresentation.Values.Call): Lowered {
@@ -411,6 +462,14 @@ func typed_access(call: HighIntermediaryRepresentation.Values.Call, key: String)
         return claim_room()
     } else if call.function.name == "_claim_next" {
         return claim_next(call)
+    } else if call.function.name == "_log_room" {
+        return log_room()
+    } else if call.function.name == "_log_open" {
+        return log_call(call, "_deferred_open")
+    } else if call.function.name == "_log_close" {
+        return log_call(call, "_deferred_close")
+    } else if call.function.name == "_log_replay" {
+        return log_call(call, "_deferred_replay")
     } else if call.function.name == "_live_allocations" {
         return live_allocations()
     } else if call.function.name == "_live_bytes" {

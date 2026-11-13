@@ -39,6 +39,7 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
     program.static_singletons = high.static_singletons
     program.counts_every_class_atomically = high.counts_every_class_atomically
     program.counts_alone_outside_the_work = high.counts_alone_outside_the_work
+    note_the_deferred()
     crash high.context
     program.hot_reload = high.context.build_flags["hot_reload"] == "true"
     if layout.program.class_named("Spite.Fault") {
@@ -110,6 +111,14 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
         var pool_writer = FunctionLowering(pool_writer_state)
         var pooling = PoolWriting(pool_writer)
         pooling.write_the_pool()
+    }
+    if not program.deferred_keys.is_empty() {
+        var deferred_writer_state = FunctionLoweringState()
+        deferred_writer_state.start_from(layout, program, singleton_slots)
+        var deferred_writer = FunctionLowering(deferred_writer_state)
+        var deferring = DeferredWriting(deferred_writer)
+        deferring.write_the_logs()
+        copy_for_the_bands(deferring)
     }
     if program.uses_threads or high.makes_work {
         var gate_writer_state = FunctionLoweringState()
@@ -193,8 +202,11 @@ func count_the_handed_calls_in(function: LowIntermediaryRepresentation.LowFuncti
 func count_a_call(called: String): Boolean {
     crash taken
     var base = called
-    if called.ends_with("$unguarded") {
-        base = called.replace("$unguarded", "")
+    if called.ends_with("$logged") {
+        base = called.replace("$logged", "")
+    }
+    if base.ends_with("$unguarded") {
+        base = base.replace("$unguarded", "")
     }
     fallback taken.takes_any(base)
     var known = calls_of[base]
@@ -374,6 +386,138 @@ func lower_a_step(function: HighIntermediaryRepresentation.HighFunction, source_
     program.lowered_functions.append(frame)
 }
 
+# ../../OPTIMIZATIONS.md#a-call-that-only-changes-a-singleton-waits-for-the-join
+func note_the_deferred() {
+    var index = 0
+    while index < high.deferred_functions.count() {
+        var function = high.deferred_functions[index]
+        var key = function.key()
+        if is_built(key) {
+            program.deferred_keys.append(key)
+            var arguments = function.parameters.count()
+            program.deferred_argument_counts.append(arguments)
+        }
+        index = index + 1
+    }
+    fallback not program.deferred_keys.is_empty()
+    program.deferred_slot = zeroed_count()
+    program.name_state(program.deferred_slot, "deferred.slot")
+}
+
+func is_built(key: String): Boolean {
+    var index = 0
+    while index < high.built_functions.count() {
+        var built = high.built_functions[index]
+        if built.function.key() == key {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+# ../../OPTIMIZATIONS.md#a-call-that-only-changes-a-singleton-waits-for-the-join
+func copy_for_the_bands(deferring: DeferredWriting) {
+    var copies = BandCopies(program)
+    var by_key = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+    var built_index = 0
+    while built_index < high.built_functions.count() {
+        var built = high.built_functions[built_index]
+        var built_key = built.function.key()
+        by_key[built_key] = built
+        built_index = built_index + 1
+    }
+    var index = 0
+    while index < copies.copied.count() {
+        var name = copies.copied[index]
+        if copies.is_deferred(name) {
+            var original = lowered_named(name)
+            deferring.write_a_logged_call(name, original.parameter_count)
+        } else if name == "_deferred_replay" {
+            deferring.write_the_logged_replay()
+        } else {
+            copy_for_a_band(name, by_key, copies.reaching)
+        }
+        index = index + 1
+    }
+}
+
+func lowered_named(name: String): LowIntermediaryRepresentation.LowFunction {
+    var index = 0
+    while index < program.lowered_functions.count() {
+        var function = program.lowered_functions[index]
+        if function.key == name {
+            return function
+        }
+        index = index + 1
+    }
+    crash
+}
+
+func copy_for_a_band(
+    name: String,
+    by_key: Dictionary<String, HighIntermediaryRepresentation.HighFunction>,
+    reaching: Dictionary<String, Integer>,
+) {
+    var key = name
+    var unguarded = name.ends_with("$unguarded")
+    if unguarded {
+        key = name.replace("$unguarded", "")
+    }
+    if key.ends_with("$defaults") {
+        copy_the_defaults(key, reaching)
+        return
+    }
+    var function = by_key[key]
+    crash function
+    var owner = high.model.class_named(function.function.owner)
+    crash owner
+    var lowering_state = FunctionLoweringState()
+    lowering_state.start_from(layout, program, singleton_slots)
+    var lowering = FunctionLowering(lowering_state)
+    lowering.state.waits = waits
+    lowering.state.assignments = assignments
+    lowering.state.trimmed_keys = trimmed_keys
+    lowering.state.makes_work = high.makes_work
+    lowering.state.taken = taken
+    lowering.state.fresh_by_constructor = fresh_by_constructor
+    lowering.state.skips_the_lock = unguarded
+    lowering.state.copies_for_the_bands = true
+    lowering.state.logged_names = reaching
+    var made = lowering.lowered(function, owner.file.path)
+    program.lowered_functions.append(made)
+}
+
+func copy_the_defaults(name: String, reaching: Dictionary<String, Integer>) {
+    var constructor_key = name.replace("$defaults", "")
+    var index = trimmed_keys.index_of(constructor_key)
+    crash index
+    var variant = high.trimmed_defaults[index]
+    crash variant
+    var owner = high.model.class_named(variant.function.owner)
+    crash owner
+    var lowering_state = FunctionLoweringState()
+    lowering_state.start_from(layout, program, singleton_slots)
+    var lowering = FunctionLowering(lowering_state)
+    lowering.state.assignments = assignments
+    lowering.state.taken = taken
+    lowering.state.trimmed_keys = trimmed_keys
+    lowering.state.fresh_by_constructor = fresh_by_constructor
+    lowering.state.copies_for_the_bands = true
+    lowering.state.logged_names = reaching
+    var made = lowering.lowered(variant, owner.file.path)
+    made.key = "{name}$logged"
+    program.lowered_functions.append(made)
+}
+
+func take_the_deferred_slot(lowering: FunctionLowering) {
+    var machine = MachineWriting(lowering)
+    var no_arguments = machine.none_listed()
+    var slot = machine.imported("TlsAlloc", no_arguments)
+    var label = machine.data_at(program.deferred_slot)
+    machine.stored(label, 0, slot)
+}
+
 func lower_the_start() {
     var lowering_state = FunctionLoweringState()
     lowering_state.start_from(layout, program, singleton_slots)
@@ -390,6 +534,9 @@ func lower_the_start() {
     if high.makes_work {
         var beginning = Working(lowering)
         beginning.begin()
+    }
+    if not program.deferred_keys.is_empty() {
+        take_the_deferred_slot(lowering)
     }
     if high.settings_check {
         check_the_settings(lowering, high.settings_check)

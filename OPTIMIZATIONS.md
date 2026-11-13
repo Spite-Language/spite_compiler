@@ -4033,6 +4033,58 @@ Eight `Parallel`s running `run` read `Transforms` together; `insert`, called bet
 read changes while they run. **When it does not apply:** a loop that calls a function writing anything, or one
 reaching another lock, takes the lock alone; a single call outside such a loop takes it alone too.
 
+## A call that only changes a singleton waits for the join
+
+A band never runs a call that only changes a singleton: it writes the call down, and the thread that started the
+bands makes the calls after they all end, in the order of the list's positions, so the singleton sees exactly the
+calls running in order makes (D2210, D2211). The first such call is every taken `fallback`: it calls
+`Spite.Asserts.failed(site, streams)`, which keeps the ring of the last 32 fallback sites a crash report prints.
+`Spite.Asserts` is written as a plain singleton; the compiler picks this form for it, and its source stays naive.
+
+```spite
+func settle() {
+    var corner = corners.first()
+    fallback corner
+    total = total + corner.weight
+}
+```
+
+`shapes.each_settle()` runs in bands even though `settle` takes a fallback. Before, the ring was one singleton
+written under its lock by every band (a third of a banded self-build's processor time spun on that lock, #435).
+
+**Which calls.** A call whose receiver is a singleton (made with no arguments), whose function answers nothing and
+is not a constructor, and whose arguments, at most two, are each a text written in the source, a whole number, a
+`Boolean` or an enum. The band proof ([a call that only changes a singleton waits for the join](PROOFS.md#a-call-that-only-changes-a-singleton-waits-for-the-join))
+accepts such a call where it refuses any other use of a singleton, so no band can read what the call changes; a
+pass the number rule bands calls no singleton but the fallback ring, through its `fallback`s. The functions are
+listed in `HighProgram.deferred_functions`.
+
+**What the compiler writes.** Each band chunk opens a log (`_log_room` and `_log_open`: a 24-byte room in the band's
+frame that the thread's slot points at while the chunk runs) and closes it into the chunk's place of a table kept
+with the band's claims (`_log_close`); a band that runs its pass several times (a counted loop of one banded pass)
+keeps a log per round, so the replay goes round by round as the loop as written does. The call inside the open
+log goes to a band copy of the pass (`<key>$logged`): every function a band reaches that can reach such a call, read
+from the lowered calls (a call through a function value counts as reaching every function taken as a value), is
+lowered a second time with its calls to those functions renamed to their copies, and the call itself becomes
+`<key>$logged`, which appends the call (its number, the singleton and two words) to the thread's log; a call equal
+to the last one only adds one to its count. Code outside bands calls the functions as written, with no test added,
+and band code records with no test (`lowering/band_copies.spite`). After the split returns, the driver replays the
+table in chunk order (`_log_replay`), calling the real function, which takes the singleton's lock if anything else
+needs it, and frees the logs. A chunk that makes no such call allocates nothing. Logs are blocks of 4096 bytes; the
+routines are written by `lowering/deferred_writing.spite`.
+
+**Nested bands and the lock.** A replay made inside another band's chunk goes through the copy of the replay
+(`_deferred_replay$logged`) and is itself written to that chunk's log, so the order still holds. Since a band never runs the function, the walk of [which singletons another thread
+reaches](PROOFS.md#which-singletons-another-thread-reaches) stops at it from a band: a singleton only bands call
+this way keeps no lock at all. **When it does not apply:** a `Parallel` or overlapped work runs its calls as
+written, so a singleton they reach keeps its lock for every caller. The compiler's own build is such a case: its
+overlapped work takes fallbacks, so `Spite.Asserts` keeps its lock there, taken only while another thread runs.
+
+**What a program can observe:** the time. A `--trace-fallbacks` build prints each fallback site when the call is
+replayed, so its lines come in the same order, all at once when the loop ends (D2211). A crash in a band reports
+the ring as replayed so far: the fallbacks of the loop's positions before the crash may be missing from it (D1747
+already lets a banded crash report a later position first).
+
 ## A loop whose passes write only their own item runs in bands
 
 `orbits.each_advance()` on a `List` of a class of the program runs on several threads at once, one band of the
@@ -4076,8 +4128,10 @@ object and list the pass makes is its own, so it may write them, call any functi
 `List` functions among them) and keep them in any attribute of its element; it may read anything nothing in the
 pass writes (a shared table, its element's other objects), and it writes nothing else. `shapes.each_settle()`,
 where `settle` fills a fresh `List<Corner>` from a shared `Weights`, adds up the corners and keeps the list and the
-sum in its shape, runs in bands. A pass that takes a `fallback`, reads a singleton, calls a function value or
-writes anything its element only points at runs in order.
+sum in its shape, runs in bands. A pass may take `fallback`s, and call any singleton function that only changes
+its singleton with numbers and texts written in the source: those calls
+[wait for the join](#a-call-that-only-changes-a-singleton-waits-for-the-join). A pass that reads a singleton, calls
+a function value or writes anything its element only points at runs in order.
 
 **What the compiler writes.** The library's `each_advance()` is a plain loop calling `_each_range_advance(start, end)`
 over the whole list. For a proven call the pass replaces it with `_each_range_advance$bands(least, times)` on the
@@ -4189,8 +4243,8 @@ frames; when several would crash, the one reported may be another than the first
 `--hot-reload`, `--repl` or `--development` builds, and not in the standard library.
 
 **When it does not band**, `--optimization-report` lists the loop under "Loops run in order" with what refused it
-(`` a loop over the positions of a `List<Shape>` runs in order: `Worker.note_a_value` takes a `fallback`, which
-writes the fallback ring under its lock ``). Only loops of this shape that weigh enough for bands are listed.
+(`` a loop over the positions of a `List<Shape>` runs in order: it writes into a `Buffer` it does not own (in
+`Buffer._reserve`, reached from `Worker.tallied`) ``). Only loops of this shape that weigh enough for bands are listed.
 
 ## A band that finishes early takes the next chunk
 

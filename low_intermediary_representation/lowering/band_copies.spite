@@ -1,0 +1,134 @@
+# ../../OPTIMIZATIONS.md#a-call-that-only-changes-a-singleton-waits-for-the-join
+
+var program = LowIntermediaryRepresentation.LoweredProgram()
+var callees = Dictionary<String, List<String>>()
+var callers = Dictionary<String, List<String>>()
+var calling_values = List<String>()
+var addressed = List<String>()
+var reaching = Dictionary<String, Integer>()
+var waiting = List<String>()
+var reached = 0
+var copied = List<String>()
+var copied_names = Dictionary<String, Integer>()
+
+func BandCopies(starting_program: LowIntermediaryRepresentation.LoweredProgram) {
+    program = starting_program
+    program.lowered_functions.each(read_a_function)
+    find_what_reaches_a_deferred_call()
+    program.logged_root_calls.each(copy_from_a_root)
+    var index = 0
+    while index < copied.count() {
+        var name = copied[index]
+        var called = callees[name]
+        if called and not is_deferred(name) {
+            called.each(copy_if_it_reaches)
+        }
+        index = index + 1
+    }
+}
+
+func read_a_function(function: LowIntermediaryRepresentation.LowFunction) {
+    var called = List<String>()
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        var block = function.blocks[block_index]
+        var index = 0
+        while index < block.instructions.count() {
+            var instruction = block.instructions[index]
+            if instruction.class == LowIntermediaryRepresentation.Instructions.Call {
+                called.append(instruction.function)
+            } else if instruction.class == LowIntermediaryRepresentation.Instructions.FunctionAddress {
+                called.append(instruction.function)
+                addressed.append(instruction.function)
+            }
+            index = index + 1
+        }
+        block_index = block_index + 1
+    }
+    callees[function.key] = called
+    if function.calls_function_values {
+        calling_values.append(function.key)
+    }
+    var called_index = 0
+    while called_index < called.count() {
+        var callee = called[called_index]
+        note_a_caller(callee, function.key)
+        called_index = called_index + 1
+    }
+}
+
+func note_a_caller(callee: String, caller: String) {
+    var known = callers[callee]
+    if known {
+        known.append(caller)
+        return
+    }
+    var first = List<String>()
+    first.append(caller)
+    callers[callee] = first
+}
+
+func find_what_reaches_a_deferred_call() {
+    var index = 0
+    while index < program.deferred_keys.count() {
+        var key = program.deferred_keys[index]
+        reach(key)
+        reach("{key}$unguarded")
+        index = index + 1
+    }
+    reach_the_callers()
+    fallback reaches_an_addressed()
+    calling_values.each(reach)
+    reach_the_callers()
+}
+
+func reach(name: String) {
+    fallback not reaching.contains(name)
+    reaching[name] = 1
+    waiting.append(name)
+}
+
+func reach_the_callers() {
+    while reached < waiting.count() {
+        var name = waiting[reached]
+        var calling = callers[name]
+        if calling {
+            calling.each(reach)
+        }
+        reached = reached + 1
+    }
+}
+
+func reaches_an_addressed(): Boolean {
+    var index = 0
+    while index < addressed.count() {
+        var name = addressed[index]
+        if reaching.contains(name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func copy_from_a_root(call: LowIntermediaryRepresentation.Instructions.Call) {
+    fallback reaching.contains(call.function)
+    copy(call.function)
+    call.function = "{call.function}$logged"
+}
+
+func copy(name: String) {
+    fallback not copied_names.contains(name)
+    copied_names[name] = 1
+    copied.append(name)
+}
+
+func copy_if_it_reaches(callee: String) {
+    fallback reaching.contains(callee)
+    copy(callee)
+}
+
+func is_deferred(name: String): Boolean {
+    var key = name.replace("$unguarded", "")
+    return program.deferred_keys.contains(key)
+}

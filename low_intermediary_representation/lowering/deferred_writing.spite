@@ -1,0 +1,310 @@
+# ../../OPTIMIZATIONS.md#a-call-that-only-changes-a-singleton-waits-for-the-join
+
+var no_state = FunctionLoweringState()
+var lowering = FunctionLowering(no_state)
+var machine = MachineWriting(lowering)
+var _block_bytes = 4096
+var _block_header = 16
+var _entry_bytes = 40
+var _entries_per_block = 102
+var _word = 8
+var _log_head = 0
+var _log_tail = 8
+var _log_previous = 16
+var _block_next = 0
+var _block_used = 8
+var _entry_number = 0
+var _entry_times = 8
+var _entry_receiver = 16
+var _entry_first = 24
+var _entry_second = 32
+var _table_count = 16
+var _logged_words = 2
+
+func DeferredWriting(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+    machine = MachineWriting(starting_lowering)
+}
+
+func write_the_logs() {
+    fallback not machine.is_written("_deferred_record")
+    write_open()
+    write_close()
+    write_record()
+    write_replay("_deferred_replay", "")
+}
+
+func write_a_logged_call(name: String, parameter_count: Integer) {
+    var key = name.replace("$unguarded", "")
+    var place = lowering.state.program.deferred_keys.index_of(key)
+    crash place
+    machine.begin("{name}$logged", parameter_count)
+    var slot = thread_slot()
+    var log = current_log(slot)
+    var number = machine.constant_of(place + 1)
+    var receiver = 0
+    var passed = machine.three_listed(log, number, receiver)
+    var index = 1
+    while index <= _logged_words {
+        var argument = index
+        if index >= parameter_count {
+            argument = machine.constant_of(0)
+        }
+        passed.append(argument)
+        index = index + 1
+    }
+    machine.called_for_nothing("_deferred_record", passed)
+    machine.answered_nothing()
+    machine.finish()
+}
+
+func write_the_logged_replay() {
+    write_replay("_deferred_replay$logged", "$logged")
+}
+
+func thread_slot(): Integer {
+    var label = machine.data_at(lowering.state.program.deferred_slot)
+    return machine.loaded(label, 0)
+}
+
+func current_log(slot: Integer): Integer {
+    var asking = machine.one_listed(slot)
+    return machine.imported("TlsGetValue", asking)
+}
+
+func set_the_log(slot: Integer, log: Integer) {
+    var setting = machine.two_listed(slot, log)
+    machine.call_imported("TlsSetValue", setting)
+}
+
+func write_open() {
+    machine.begin("_deferred_open", 1)
+    var slot = thread_slot()
+    var previous = current_log(slot)
+    machine.stored_number(0, _log_head, 0)
+    machine.stored_number(0, _log_tail, 0)
+    machine.stored(0, _log_previous, previous)
+    set_the_log(slot, 0)
+    machine.answered_nothing()
+    machine.finish()
+}
+
+func write_close() {
+    machine.begin("_deferred_close", 4)
+    var log = 0
+    var claims = 1
+    var place = 2
+    var count = 3
+    var slot = thread_slot()
+    var previous = machine.loaded(log, _log_previous)
+    set_the_log(slot, previous)
+    var head = machine.loaded(log, _log_head)
+    var empty = machine.is_zero(head)
+    var kept = machine.opened_when(empty)
+    machine.answered_nothing()
+    machine.closed(kept)
+    var table = machine.loaded(claims, _word)
+    var unmade = machine.is_zero(table)
+    var made_already = machine.opened_when(unmade)
+    var made = allocated_words(count)
+    var free = machine.constant_of(0)
+    var before = machine.writing.new_register()
+    var claimed = LowIntermediaryRepresentation.Instructions.CompareExchange(
+        before,
+        claims,
+        _word,
+        free,
+        made,
+        'bits_64',
+        true,
+    )
+    machine.writing.emit(claimed)
+    var won = machine.is_zero(before)
+    var lost = machine.opened_unless(won)
+    machine.freed(made)
+    machine.copied(table, before)
+    machine.closed(lost)
+    var winning = machine.opened_when(won)
+    machine.stored(claims, _table_count, count)
+    machine.copied(table, made)
+    machine.closed(winning)
+    machine.closed(made_already)
+    var address = word_at(table, place)
+    machine.stored(address, 0, head)
+    machine.answered_nothing()
+    machine.finish()
+}
+
+func allocated_words(count: Integer): Integer {
+    var word = machine.constant_of(_word)
+    var size = machine.product_of(count, word)
+    var made = machine.writing.new_register()
+    var allocating = LowIntermediaryRepresentation.Instructions.Allocate(made, size, 0, 0)
+    machine.writing.emit(allocating)
+    var index = machine.variable(0)
+    var top = machine.loop_top()
+    var more = machine.compared('less', index, count)
+    var done = machine.loop_while(more)
+    var address = word_at(made, index)
+    machine.stored_number(address, 0, 0)
+    machine.step_by(index, 1)
+    machine.loop_back(top, done)
+    return made
+}
+
+func word_at(base: Integer, index: Integer): Integer {
+    var word = machine.constant_of(_word)
+    var offset = machine.product_of(index, word)
+    return machine.sum_of(base, offset)
+}
+
+func entry_at(block: Integer, index: Integer): Integer {
+    var size = machine.constant_of(_entry_bytes)
+    var offset = machine.product_of(index, size)
+    var entries = machine.plus_number(block, _block_header)
+    return machine.sum_of(entries, offset)
+}
+
+func write_entry(entry: Integer, number: Integer, receiver: Integer, first: Integer, second: Integer) {
+    machine.stored(entry, _entry_number, number)
+    machine.stored_number(entry, _entry_times, 1)
+    machine.stored(entry, _entry_receiver, receiver)
+    machine.stored(entry, _entry_first, first)
+    machine.stored(entry, _entry_second, second)
+}
+
+func write_record() {
+    machine.begin("_deferred_record", 5)
+    var log = 0
+    var number = 1
+    var receiver = 2
+    var first = 3
+    var second = 4
+    var tail = machine.loaded(log, _log_tail)
+    var no_tail = machine.is_zero(tail)
+    var has_tail = machine.opened_unless(no_tail)
+    var used = machine.loaded(tail, _block_used)
+    var none_used = machine.is_zero(used)
+    var has_entries = machine.opened_unless(none_used)
+    var last_index = machine.plus_number(used, -1)
+    var last = entry_at(tail, last_index)
+    var last_number = machine.loaded(last, _entry_number)
+    var last_receiver = machine.loaded(last, _entry_receiver)
+    var last_first = machine.loaded(last, _entry_first)
+    var last_second = machine.loaded(last, _entry_second)
+    var same_number = machine.compared('equal', last_number, number)
+    var same_receiver = machine.compared('equal', last_receiver, receiver)
+    var same_first = machine.compared('equal', last_first, first)
+    var same_second = machine.compared('equal', last_second, second)
+    var same_call = machine.both(same_number, same_receiver)
+    var same_arguments = machine.both(same_first, same_second)
+    var repeated = machine.both(same_call, same_arguments)
+    var counting = machine.opened_when(repeated)
+    var times = machine.loaded(last, _entry_times)
+    var more_times = machine.plus_number(times, 1)
+    machine.stored(last, _entry_times, more_times)
+    machine.answered_nothing()
+    machine.closed(counting)
+    machine.closed(has_entries)
+    var room_left = machine.compared_to('less', used, _entries_per_block)
+    var appending = machine.opened_when(room_left)
+    var entry = entry_at(tail, used)
+    write_entry(entry, number, receiver, first, second)
+    var one_more = machine.plus_number(used, 1)
+    machine.stored(tail, _block_used, one_more)
+    machine.answered_nothing()
+    machine.closed(appending)
+    machine.closed(has_tail)
+    var block = machine.allocated(_block_bytes)
+    machine.stored_number(block, _block_next, 0)
+    machine.stored_number(block, _block_used, 1)
+    var zero = machine.constant_of(0)
+    var first_entry = entry_at(block, zero)
+    write_entry(first_entry, number, receiver, first, second)
+    var no_tail_now = machine.is_zero(tail)
+    var linking = machine.opened_unless(no_tail_now)
+    machine.stored(tail, _block_next, block)
+    machine.closed(linking)
+    var heading = machine.opened_when(no_tail_now)
+    machine.stored(log, _log_head, block)
+    machine.closed(heading)
+    machine.stored(log, _log_tail, block)
+    machine.answered_nothing()
+    machine.finish()
+}
+
+func write_replay(name: String, suffix: String) {
+    machine.begin(name, 1)
+    var claims = 0
+    var table = machine.loaded(claims, _word)
+    var missing = machine.is_zero(table)
+    var made = machine.opened_when(missing)
+    machine.answered_nothing()
+    machine.closed(made)
+    var count = machine.loaded(claims, _table_count)
+    var index = machine.variable(0)
+    var top = machine.loop_top()
+    var more = machine.compared('less', index, count)
+    var done = machine.loop_while(more)
+    var address = word_at(table, index)
+    var block = machine.loaded(address, 0)
+    replay_the_blocks(block, suffix)
+    machine.step_by(index, 1)
+    machine.loop_back(top, done)
+    machine.freed(table)
+    machine.stored_number(claims, _word, 0)
+    machine.answered_nothing()
+    machine.finish()
+}
+
+func replay_the_blocks(block: Integer, suffix: String) {
+    var top = machine.loop_top()
+    var present = machine.compared_to('not_equal', block, 0)
+    var done = machine.loop_while(present)
+    var used = machine.loaded(block, _block_used)
+    var index = machine.variable(0)
+    var entries_top = machine.loop_top()
+    var more = machine.compared('less', index, used)
+    var entries_done = machine.loop_while(more)
+    var entry = entry_at(block, index)
+    replay_an_entry(entry, suffix)
+    machine.step_by(index, 1)
+    machine.loop_back(entries_top, entries_done)
+    var next = machine.loaded(block, _block_next)
+    machine.freed(block)
+    machine.copied(block, next)
+    machine.loop_back(top, done)
+}
+
+func replay_an_entry(entry: Integer, suffix: String) {
+    var number = machine.loaded(entry, _entry_number)
+    var times = machine.loaded(entry, _entry_times)
+    var receiver = machine.loaded(entry, _entry_receiver)
+    var first = machine.loaded(entry, _entry_first)
+    var second = machine.loaded(entry, _entry_second)
+    var round = machine.variable(0)
+    var top = machine.loop_top()
+    var more = machine.compared('less', round, times)
+    var done = machine.loop_while(more)
+    var keys = lowering.state.program.deferred_keys
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        var arguments = lowering.state.program.deferred_argument_counts[index]
+        crash arguments
+        var matches = machine.compared_to('equal', number, index + 1)
+        var calling = machine.opened_when(matches)
+        var passed = machine.one_listed(receiver)
+        if arguments > 0 {
+            passed.append(first)
+        }
+        if arguments > 1 {
+            passed.append(second)
+        }
+        machine.called_for_nothing("{key}{suffix}", passed)
+        machine.closed(calling)
+        index = index + 1
+    }
+    machine.step_by(round, 1)
+    machine.loop_back(top, done)
+}

@@ -1515,8 +1515,9 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   something it made is what any pass stored there, joined, so a shared value kept in a fresh list is read back
   shared. A shared value that could be an element (of the element's class, a union, a shape or a function value)
   refuses the pass, so no pass reads another's element. Each function is studied once for each origin of its
-  receiver and arguments; the stores are joined over the whole pass until they settle. Refused: a singleton
-  (a taken `fallback` among them, which writes the fallback ring), a foreign call, a function value, a call
+  receiver and arguments; the stores are joined over the whole pass until they settle. A taken `fallback`, and any
+  [call that only changes a singleton](#a-call-that-only-changes-a-singleton-waits-for-the-join), is no use of
+  it. Refused: any other use of a singleton, a foreign call, a function value, a call
   through a shape, a wait or a handle, recursion, and a function the compiler supplies outside that list. A block
   that only ends the program (a `crash` and its report) is not studied: the pass may halt (D1747).
   A `contains` of a shared list stays a read: [a list used only as a set](#a-list-used-only-as-a-set) keeps no
@@ -1524,14 +1525,12 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Buys**: [bands](OPTIMIZATIONS.md#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) for a pass that
   makes objects, lists and texts per element and writes any attribute of its element.
 - **Missing** (spite_compiler#411): writes through objects the element alone reaches (a run-time walk that every
-  one is held once), a taken `fallback`, reading singletons that never change, function values, the compiler's
+  one is held once), reading singletons that never change, function values, the compiler's
   own form of a loop over a list's positions that hands each item to a fresh worker and writes its answer back
   to the item's slot, and appends to shared lists joined in item order.
 - **Falls back**: the loop in order, as written. A loop over a list's positions heavy enough for bands that the
   proof refuses is listed by `--optimization-report` under "Loops run in order", with the first thing that refused
   it and the function it was in (and the program's own function that reached it, when that one is the library's).
-  A taken `fallback` does not stop the study: the proof reads on, so a pass named for its fallback is held by
-  nothing else in the first round (`Writes.why_refused`).
 - **Lives in**: `high_optimization_passes/banded_loops/owned/writes.spite`, tried by the high pass `banded_loops` (and by `position_loops.spite` for a loop over positions)
   when `pass_weights.spite` refuses; the pass is weighed as [calls in a row](OPTIMIZATIONS.md#independent-calls-in-a-row-run-at-once)
   weigh theirs (`overlapped_work/work_weights.spite`), every function it reaches included.
@@ -1681,6 +1680,32 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   (`singletons.spite`, `reads_under_the_lock`). Not in the inspectable builds.
 - **Checked by**: tests/singleton_forms, tests/singleton_lock_calls, tests/lone_atomic_counter,
   tests/steady_singleton_reads (output only).
+
+### A call that only changes a singleton waits for the join
+
+- **Status**: built for calls from bands (spite_compiler#441, D2210, D2211).
+- **Rule**: in a pass the band proof studies, a call is written down instead of made when its receiver is a
+  singleton made with no arguments, its function answers nothing and is not a constructor, and each of its
+  arguments (at most two) is a text written in the source, a whole number, a `Boolean` or an enum. The band
+  refuses every other use of a singleton, so nothing a band runs can read what such a call changes, and the
+  arguments need no count. A band chunk's calls are replayed in the order of the list's positions after the join,
+  so the singleton sees the calls in the order running in order makes them. A pass the number rule bands
+  (`pass_weights.spite`) calls no singleton but the fallback ring, through its `fallback`s, whose site texts are
+  written in the source. The band calls copies of the functions it reaches (`<key>$logged`), and only the copies
+  write the call down; every function a band can reach the call from is copied, reading the lowered calls, with a
+  call through a function value taken to reach every function made a value, whose value made in a copy names the
+  copy. Code outside bands is lowered as written.
+- **Buys**: [bands for passes that take fallbacks](OPTIMIZATIONS.md#a-call-that-only-changes-a-singleton-waits-for-the-join),
+  and no lock for a singleton only bands reach this way: the walk of [which singletons another thread
+  reaches](#which-singletons-another-thread-reaches) stops at such a function from a band, after every other start
+  is walked whole.
+- **Missing**: calls from overlapped work and `Parallel` (they keep the lock); arguments other than numbers and
+  texts written in the source; a singleton split into one per group of attributes its callers use apart (D2210).
+- **Falls back**: the band refuses the pass, which runs in order.
+- **Lives in**: `high_optimization_passes/banded_loops/owned/writes.spite` (`is_a_deferred_call`),
+  `banded_loops/pass.spite` (`keep_the_fallback_ring`), `high_intermediary_representation/waits.spite`
+  (`reach_from_a_band`), the lowering (`band_copies.spite`, `deferred_writing.spite`).
+- **Checked by**: tests/band_fallbacks_replayed, tests/band_fallbacks_traced, tests/band_singleton_calls_replayed.
 
 ### A function that touches no changing state takes no lock
 
