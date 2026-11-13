@@ -858,7 +858,8 @@ before.
 A text literal laid out in the program's data and a static object live for the whole run, so taking and letting go
 of their counts decides nothing. Where [a register holds a data constant](PROOFS.md#a-data-constant-is-never-counted)
 on every path, followed through copies, picks and joins and through the answers of functions that answer only
-constants, its retains and releases are left out. In a program with threads those were locked updates of count
+constants, its retains and releases are left out; so is the retain of a name a block has just given a constant
+(`name = "right"` in one branch of an `if`), though the name is let go of as before where the paths join. In a program with threads those were locked updates of count
 words every thread shares, so they also stop bouncing a cache line between the cores.
 
 ```spite

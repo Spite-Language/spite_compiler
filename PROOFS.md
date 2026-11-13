@@ -1089,7 +1089,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built, embedded in the pass `low_optimization_passes/uncounted_constants` (D2200, to confirm).
 - **Rule**: a register holds a data constant when every write of it is the address of a text literal laid out in the
   program's data or of a static object, a `0`, a copy or a pick (`if`-select, a join of edges) of registers that
-  hold one, or the answer of a function every `return` of which answers one; a parameter never does. Such an object
+  hold one, or the answer of a function every `return` of which answers one; a parameter never does. Inside one
+  block, a register the block has set to such an address (or copied from one) holds it until it is written again,
+  even when other paths give the register something else: the count taken where an `if` gives a name a literal is
+  left out there. Such an object
   is never freed and nothing writes it in place: a literal lives in the data only where [a text is written only while
   nothing else holds it](#a-text-is-written-only-while-nothing-else-holds-it), a write into one takes its copy as
   before, and a test for being held once (`_ready_to_grow`) sees a count far from one. Which functions answer only
@@ -1099,7 +1102,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   release on such a register, so no locked count update on a constant, the count words every thread would share.
 - **Falls back**: a register written once by anything else (a load, a parameter, an unknown call) is counted as
   before, even when it holds a constant at run time; a holder that lets go of a constant it was handed uncounted
-  takes its count down by one. A constant starts at 2^60, so no run takes one to zero (a billion such lettings go a
+  (a list, or the release of a name a constant reached on one path) takes its count down by one. A constant starts at 2^60, so no run takes one to zero (a billion such lettings go a
   second would take 36 years).
 - **Lives in**: `low_optimization_passes/uncounted_constants` (`constant_registers.spite`, the registers of one
   function; `constant_answers.spite`, the functions that answer only constants), embedded.
