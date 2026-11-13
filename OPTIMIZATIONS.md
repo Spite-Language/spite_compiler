@@ -878,7 +878,7 @@ func label_of(index: Integer): String {
 
 `" "` and `"r"` were counted up before the scan and down after it on every call, and `label_of`'s answer was
 counted up in it and down in its caller; now neither is counted. In the compiler's own build the locked count
-updates on a constant went from 55,561 to 0.
+updates on a constant's address went from 36,030 to 0, and its locked instructions from 235,476 to 156,320.
 
 **When it applies:** to every register every write of which is such an address, a `0`, a copy or pick of such
 registers or the answer of such a function, after every other pass and right before releases are written in place
