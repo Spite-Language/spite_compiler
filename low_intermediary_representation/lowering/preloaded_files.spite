@@ -1,0 +1,170 @@
+var no_state = FunctionLoweringState()
+var lowering = FunctionLowering(no_state)
+var _word = 8
+var _entry_size = 16
+
+func PreloadedFiles(starting_lowering: FunctionLowering) {
+    lowering = starting_lowering
+}
+
+# ../../../spite_documentation/programs.md#preloaded-files
+func is_one(key: String): Boolean {
+    return key == "Path._preloaded_count" or key == "Path._preloaded_path_at" or key == "Path._preloaded_bytes_at"
+}
+
+func lowered(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var key = call.function.key()
+    if key == "Path._preloaded_count" {
+        var count = lowering.state.program.preloaded_paths.count()
+        var counted = lowering.constant(count)
+        return lowering.single(counted)
+    }
+    var offset = 0
+    if key == "Path._preloaded_bytes_at" {
+        offset = _word
+    }
+    return entry_part(call, offset)
+}
+
+func entry_part(call: HighIntermediaryRepresentation.Values.Call, offset: Integer): Lowered {
+    var index_value = call.arguments[0]
+    var index = lowering.lower_value(index_value)
+    var label = table_label()
+    var table = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(table, label)
+    lowering.emit(addressed)
+    var size = lowering.constant(_entry_size)
+    var scaled = lowering.new_register()
+    var multiplied = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        scaled,
+        'multiply',
+        index.value,
+        size,
+        'bits_64',
+        true,
+        false,
+    )
+    lowering.emit(multiplied)
+    var entry = lowering.address_plus(table, scaled)
+    var object = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(object, entry, offset, 'bits_64', true, "", false)
+    lowering.emit(loaded)
+    return lowering.single(object)
+}
+
+# ../../../spite_documentation/programs.md#preloaded-files
+func table_label(): Integer {
+    var program = lowering.state.program
+    if program.volume_table >= 0 {
+        return program.volume_table
+    }
+    var layout = lowering.state.layout
+    var holds_texts_whole = layout.holds_texts_whole()
+    crash holds_texts_whole
+    var paths = program.preloaded_paths.copy()
+    var disk_paths = program.preloaded_disk_paths.copy()
+    var count = paths.count()
+    var bytes = Buffer(0)
+    pad_to(bytes, count * _entry_size)
+    var label = lowering.data_label(bytes)
+    program.volume_table = label
+    program.name_state(label, "volumes.table")
+    var empty = Buffer(0)
+    var empty_at = append_a_buffer(bytes, label, empty)
+    var index = 0
+    while index < count {
+        var path = paths[index]
+        var disk_path = disk_paths[index]
+        crash disk_path
+        var path_at = append_a_text(bytes, label, path)
+        program.note_a_pointer(label, index * _entry_size, path_at)
+        var bytes_at = empty_at
+        if not disk_path.is_empty() {
+            var content = read_the_file(disk_path)
+            bytes_at = append_a_buffer(bytes, label, content)
+        }
+        program.note_a_pointer(label, index * _entry_size + _word, bytes_at)
+        index = index + 1
+    }
+    return label
+}
+
+func read_the_file(disk_path: String): Buffer {
+    var place: Path? = disk_path
+    crash place
+    var file = File(place)
+    var content = file.read_as_buffer()
+    crash content
+    return content
+}
+
+# ../../OPTIMIZATIONS.md#a-text-literal-is-made-once-in-the-programs-data
+func append_a_text(bytes: Buffer, label: Integer, text: String): Integer {
+    var joins = TextJoins(lowering)
+    var layout = lowering.state.layout
+    var at = bytes.count()
+    var text_size = layout.size_of("String")
+    var characters_at = text_size + layout.inline_offset()
+    var length = text.length()
+    pad_to(bytes, at + characters_at + length + 1)
+    var text_class: Long = layout.class_id_of("String")
+    bytes.write_long_little_endian_at(at, text_class)
+    bytes.write_long_little_endian_at(at + _word, layout.immortal_count)
+    var length_at = joins.string_offset("_length")
+    bytes.write_integer_little_endian_at(at + length_at, length)
+    var text_flag_at = layout.text_flag_offset()
+    bytes[at + text_flag_at] = 1
+    var buffer_at = at + text_size
+    write_a_buffer_header(bytes, buffer_at, length)
+    var written = text.to_buffer()
+    write_the_bytes(bytes, at + characters_at, written)
+    var buffer_slot = joins.string_offset("_buffer")
+    lowering.state.program.note_a_pointer(label, at + buffer_slot, buffer_at)
+    var storage_slot = buffer_at + layout.storage_offset
+    lowering.state.program.note_a_pointer(label, storage_slot, at + characters_at)
+    return at
+}
+
+func append_a_buffer(bytes: Buffer, label: Integer, content: Buffer): Integer {
+    var layout = lowering.state.layout
+    var at = bytes.count()
+    var bytes_at = at + layout.inline_offset()
+    var length = content.count()
+    pad_to(bytes, bytes_at + length)
+    write_a_buffer_header(bytes, at, length)
+    write_the_bytes(bytes, bytes_at, content)
+    var storage_slot = at + layout.storage_offset
+    lowering.state.program.note_a_pointer(label, storage_slot, bytes_at)
+    return at
+}
+
+func write_a_buffer_header(bytes: Buffer, at: Integer, length: Integer) {
+    var joins = TextJoins(lowering)
+    var layout = lowering.state.layout
+    var buffer_class: Long = layout.class_id_of("Buffer")
+    bytes.write_long_little_endian_at(at, buffer_class)
+    bytes.write_long_little_endian_at(at + _word, layout.immortal_count)
+    var capacity_at = at + joins.buffer_offset("_capacity")
+    bytes.write_integer_little_endian_at(capacity_at, length)
+    var count_at = at + joins.buffer_offset("item_count")
+    bytes.write_integer_little_endian_at(count_at, length)
+    var embedded_at = at + layout.embedded_flag_offset()
+    bytes[embedded_at] = 1
+}
+
+func write_the_bytes(bytes: Buffer, at: Integer, content: Buffer) {
+    var index = 0
+    while index < content.count() {
+        var code = content[index]
+        crash code
+        bytes[at + index] = code
+        index = index + 1
+    }
+}
+
+func pad_to(bytes: Buffer, wanted: Integer) {
+    var padded = (wanted + _word - 1) / _word * _word
+    while bytes.count() < padded {
+        bytes.append(0)
+    }
+}
