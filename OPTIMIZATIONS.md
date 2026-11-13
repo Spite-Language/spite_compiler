@@ -853,6 +853,40 @@ is not counted either: it is the singleton, read as it is and let go of nothing 
 union or a shape that holds a singleton, one assigned again, and one in a step of a `Concurrent` work count it as
 before.
 
+## A data constant is never counted
+
+A text literal laid out in the program's data and a static object live for the whole run, so taking and letting go
+of their counts decides nothing. Where [a register holds a data constant](PROOFS.md#a-data-constant-is-never-counted)
+on every path, followed through copies, picks and joins and through the answers of functions that answer only
+constants, its retains and releases are left out. In a program with threads those were locked updates of count
+words every thread shares, so they also stop bouncing a cache line between the cores.
+
+```spite
+func holds_a_word(key: String, register: Integer): Boolean {
+    var words = key.split(" ")
+    return words.contains("r{register}")
+}
+
+func label_of(index: Integer): String {
+    if index % 2 == 0 {
+        return "even"
+    }
+    return "odd"
+}
+```
+
+`" "` and `"r"` were counted up before the scan and down after it on every call, and `label_of`'s answer was
+counted up in it and down in its caller; now neither is counted. In the compiler's own build the locked count
+updates on a constant went from 55,561 to 0.
+
+**When it applies:** to every register every write of which is such an address, a `0`, a copy or pick of such
+registers or the answer of such a function, after every other pass and right before releases are written in place
+(`low_optimization_passes/uncounted_constants`).
+
+**When it does not apply:** a constant read back from a list or an attribute, or handed in as a parameter, is
+counted as any text (a list that lets go of it takes its count down, which starts at 2^60 and never reaches zero);
+under `--hot-reload` no function is taken to answer only constants. What a user can observe: the time.
+
 ## Letting go of an object counts down in place
 
 A release of an object whose class is not known while compiling is written where it stands: the test for no
