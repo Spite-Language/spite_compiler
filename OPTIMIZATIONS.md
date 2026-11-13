@@ -1480,7 +1480,8 @@ only stop the program (a failed `crash` calling its [cold report](#a-crashs-repo
 and their call to the report does not count as a call, so a guard costs a function nothing toward its size. The
 address of a singleton's slot or of a function is copied like any other instruction, so a function that reads a
 singleton is inlined too. A function the compiler wrote (the scheduler's, a list's machinery) that calls others is
-inlined only up to 12 instructions, and not at all when it takes an address and calls anything but a singleton's
+inlined only up to 12 instructions (a [set's search](#a-list-used-as-a-set-keeps-a-hash-index) is not one: it
+carries the place of the list function it stands for), and not at all when it takes an address and calls anything but a singleton's
 maker, so the frames a call inside it reports stay those of the call it was written for. Its parameters become the caller's argument registers when the body never writes
 them, and a copy otherwise; its answers are copied into the call's answer registers; its blocks are added at the
 end of the caller and the call becomes a jump into them. A call to a function whose whole body is a bare `return`
@@ -1950,6 +1951,15 @@ searches of the list did, so a list searched rarely (made and dropped after a fe
 subexpressions make theirs) never pays for one, and a list searched often pays once. A list that came from
 elsewhere (a copy, a reader) starts with no index, like a new one.
 
+A search with no index yet costs what the plain search costs, plus a few counts. `contains$set`, `index_of$set` and
+the test of whether the index is paid for (`_index_paid_for$set`) carry the place of the list function they stand
+for, so they are [inlined](#small-functions-are-inlined) like a function written in the program, and so is the
+plain search inside them: where the search is written there is a test of the index, the count and the items read so
+far, then the plain scan, with no call. Only building the index (`_index_built$set`) and asking it stay calls. The
+items of a list literal are appended with the plain `append`, since a list just made has no index and only a search
+builds one: a run of `append`s of texts or whole numbers right after the list is made, before anything else reads
+it.
+
 **What a program can observe:** only time and memory: the index is a `Dictionary` the list holds and lets go with
 it, made once the searches have paid for it, and `--debug-memory` counts it.
 
@@ -1973,7 +1983,9 @@ decimals. So does a list whose `append` or `count`, or whose `Dictionary<Item, I
 functions could write it after the proof.
 
 It is proven by `proofs/set_lists` and made by the high pass `high_optimization_passes/indexed_lists`, which writes
-`contains$set`, `index_of$set` and `append$set` for each indexed list class; they are in the function map.
+`contains$set`, `index_of$set`, `append$set`, `_index_paid_for$set` and `_index_built$set` for each indexed list
+class; they are in the function map. `tests/small_set_searched_in_a_loop` searches a 22-item set made from a literal
+three million times and checks it takes no longer than the same search of a list that is not a set.
 
 ### A search loop over such a list is one lookup
 
