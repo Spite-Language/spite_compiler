@@ -51,6 +51,8 @@ like "is this call ever reached" or "may this value be null" has no answer on th
 - `layout.spite`, `waits.spite`, `assignments.spite`, `singleton_forms.spite`, `coarse_loops.spite`, `quiet_values.spite`,
   `list_gets.spite` and `setup_list_walk.spite`: what the high passes record on the program for the lowering.
 - `presence_facts.spite` and `narrowed_read.spite`: what is proven present and what is narrowed; `writes.spite`: which write undoes a narrowed read, for the proofs that ask.
+- `run_at_once.spite`: which functions may run at once with other code and which run alone, for the proofs that ask
+  (`set_lists`, `alone_counts`).
 
 ## What the builder does
 
