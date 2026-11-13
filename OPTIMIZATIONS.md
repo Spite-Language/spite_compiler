@@ -667,7 +667,12 @@ in place (`text = "{text}more"`) starts from the literal in the data and copies 
 its count is never 1. The compile-time evaluation reads such a text as a fresh one.
 
 **What a program can observe:** fewer allocations under `--debug-memory`, `program.live_allocations()` and
-`program.live_bytes()`, and the time. Two evaluations of one literal answer the same object.
+`program.live_bytes()`, and the time. Two evaluations of one literal answer the same object. `--optimization-report`
+lists each literal of the program still made, under "Text literals made on each evaluation", with the local it
+starts that is written (or the function that answers it); when the proof breaks or the build is inspected, it lists
+one line instead, at the place that breaks it or at the entry
+(`tests/text_literals_made_on_each_evaluation`, `tests/text_literals_all_made_when_a_text_is_shared`). An
+`--optimization-report` asked with `--check` runs the proof too, so the report says what a build would do.
 
 ## A text split only to search it is scanned in place
 

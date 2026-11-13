@@ -26,6 +26,10 @@ var most_rounds = 3
 var escapes_counted = 0
 var mutations_counted = 0
 var holds = true
+var walked_line = 0
+var written_local = ""
+var answering_function = ""
+var start_lines = List<Integer>()
 
 func WrittenTexts(high: HighIntermediaryRepresentation.HighProgram) {
     program = high
@@ -84,8 +88,25 @@ func wake_the_callers(key: String) {
     }
 }
 
-func fail() {
+func fail(why: String) {
+    fallback holds
     holds = false
+    var function = bodies[walked_key]
+    fallback function
+    fallback function.function.declaration
+    var line = walked_line
+    if line <= 0 {
+        line = function.function.declaration.line
+    }
+    program.fresh_literal_paths.append(function.function.declaration.path)
+    program.fresh_literal_lines.append(line)
+    program.fresh_literal_texts.append("every text literal is made on each evaluation: {why}")
+}
+
+func fail_at(function: HighIntermediaryRepresentation.HighFunction, why: String) {
+    walked_key = function.function.key()
+    walked_line = 0
+    fail(why)
 }
 
 func start_walking(function: HighIntermediaryRepresentation.HighFunction) {
@@ -95,6 +116,7 @@ func start_walking(function: HighIntermediaryRepresentation.HighFunction) {
     aliases = Dictionary<String, SpiteCompiler.Value>()
     mutated_names = List<String>()
     guarded = ""
+    walked_line = 0
 }
 
 func note_a_parameter(parameter: Model.ParameterModel) {
@@ -143,7 +165,7 @@ func escape(name: String) {
         escapes_counted = escapes_counted + 1
     }
     if aliases[name] {
-        fail()
+        fail("the bytes of the text in `{name}` are handed on, so a text may be written while another holds it")
         return
     }
     if is_a_slot(name) {
@@ -187,6 +209,7 @@ func walk_block(block: HighIntermediaryRepresentation.Statements.Block?) {
 }
 
 func walk_statement(statement: SpiteCompiler.Statement) {
+    walked_line = statement.line
     var guarding = guarded
     guarded = ""
     switch statement {
@@ -215,7 +238,9 @@ func walk_a_declaration(declared: HighIntermediaryRepresentation.Statements.Decl
 
 func walk_an_assignment(assigned: HighIntermediaryRepresentation.Statements.Assign.Assign) {
     if aliases[assigned.name] {
-        fail()
+        fail(
+            "`{assigned.name}` reads the bytes of a text and is given other bytes, so a text may be written while another holds it",
+        )
     }
     kept(assigned.value)
     fallback assigned.value
@@ -248,7 +273,7 @@ func walk_a_shape_write(written: HighIntermediaryRepresentation.Statements.Assig
     kept(written.value)
     fallback written.object
     if is_text(written.object.value_type) {
-        fail()
+        fail("a text is written through a shape, so it may be written while another holds it")
     }
     kept(written.object)
 }
@@ -331,7 +356,7 @@ func kept_both(first: SpiteCompiler.Value?, second: SpiteCompiler.Value?) {
 
 func attribute_kept(read_attribute: HighIntermediaryRepresentation.Values.AttributeRead) {
     if is_text_bytes(read_attribute) {
-        fail()
+        fail("the bytes of a text are kept, so a text may be written while another holds it")
         return
     }
     read(read_attribute.object)
@@ -427,7 +452,9 @@ func mutation(value: SpiteCompiler.Value) {
     }
     var is_readied = value.class == HighIntermediaryRepresentation.Values.Call and is_ready_to_grow(value.function)
     if is_text(value.value_type) and not is_readied {
-        fail()
+        fail(
+            "a text that is not held by a local alone is written in place, so it may be written while another holds it",
+        )
     }
 }
 
@@ -464,9 +491,14 @@ func walk_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
 }
 
 func check_a_value_function(function: Model.FunctionModel) {
-    if writes_a_text(function) {
-        fail()
-    }
+    fallback writes_a_text(function)
+    var key = function.key()
+    var body = bodies[key]
+    fallback body
+    fail_at(
+        body,
+        "`{function.name}` is passed as a function value and writes a text it is handed, so a text may be written while another holds it",
+    )
 }
 
 func writes_a_text(function: Model.FunctionModel): Boolean {
@@ -496,7 +528,10 @@ func check_the_shape_members() {
         var key = keys[index]
         var function = bodies[key]
         if function and shape_members.contains(function.function.name) and writes_a_text(function.function) {
-            fail()
+            fail_at(
+                function,
+                "`{function.function.name}` is called through a shape and writes a text it is handed, so a text may be written while another holds it",
+            )
         }
         index = index + 1
     }
@@ -509,6 +544,7 @@ func check_the_written_locals(function: HighIntermediaryRepresentation.HighFunct
     var index = 0
     while index < written.count() {
         var name = written[index]
+        written_local = name
         check_the_starts(function, name)
         if not walked_parameters.contains(name) {
             check_the_holding(function.body, name)
@@ -519,12 +555,17 @@ func check_the_written_locals(function: HighIntermediaryRepresentation.HighFunct
 
 func check_the_starts(function: HighIntermediaryRepresentation.HighFunction, name: String) {
     var starts = List<SpiteCompiler.Value>()
+    start_lines = List<Integer>()
     gather_the_starts(function.body, name, starts)
+    var lines = start_lines.copy()
     var index = 0
     while index < starts.count() {
         var start = starts[index]
         if not is_fresh(start) {
-            fail()
+            var line = lines[index]
+            crash line
+            walked_line = line
+            fail("`{name}` is written in place, but it starts from a text something else may hold")
         }
         index = index + 1
     }
@@ -547,9 +588,11 @@ func gather_the_starts(
 func gather_a_start(statement: SpiteCompiler.Statement, name: String, starts: List<SpiteCompiler.Value>) {
     if statement.class == HighIntermediaryRepresentation.Statements.Declare and statement.name == name and statement.value {
         starts.append(statement.value)
+        start_lines.append(statement.line)
     }
     if statement.class == HighIntermediaryRepresentation.Statements.Assign.Assign and statement.name == name and statement.value {
         starts.append(statement.value)
+        start_lines.append(statement.line)
     }
     if statement.class == HighIntermediaryRepresentation.Statements.If {
         gather_the_starts(statement.then_branch, name, starts)
@@ -569,6 +612,9 @@ func is_fresh(value: SpiteCompiler.Value): Boolean {
     }
     if value.class == HighIntermediaryRepresentation.Values.TextConstant {
         value.stays_fresh = true
+        if value.fresh_reason.is_empty() {
+            value.fresh_reason = why_it_stays_fresh()
+        }
         return true
     }
     if value.class == HighIntermediaryRepresentation.Values.Call {
@@ -592,12 +638,17 @@ func answers_fresh(function: Model.FunctionModel): Boolean {
     var returned = List<SpiteCompiler.Value>()
     gather_the_answers(body.body, returned)
     var fresh = not returned.is_empty()
+    var outer_answering = answering_function
+    if outer_answering.is_empty() {
+        answering_function = function.name
+    }
     var index = 0
     while index < returned.count() and fresh {
         var answer = returned[index]
         fresh = is_a_fresh_answer(body, answer)
         index = index + 1
     }
+    answering_function = outer_answering
     if fresh {
         answers[key] = answers_fresh_text
     }
@@ -649,6 +700,7 @@ func is_a_fresh_local(function: HighIntermediaryRepresentation.HighFunction, nam
     var outer_counting = counting
     var outer_escapes = escapes_counted
     var outer_mutations = mutations_counted
+    var outer_line = walked_line
     start_walking(function)
     counting = name
     escapes_counted = 0
@@ -673,7 +725,15 @@ func is_a_fresh_local(function: HighIntermediaryRepresentation.HighFunction, nam
     counting = outer_counting
     escapes_counted = outer_escapes
     mutations_counted = outer_mutations
+    walked_line = outer_line
     return escapes == answered
+}
+
+func why_it_stays_fresh(): String {
+    if answering_function.is_empty() {
+        return "it starts `{written_local}`, which is written in place, so each evaluation makes a text of its own"
+    }
+    return "`{answering_function}()` answers it, and that answer starts `{written_local}`, which is written in place, so each evaluation makes a text of its own"
 }
 
 func names_a_parameter(function: Model.FunctionModel, name: String): Boolean {
@@ -740,6 +800,7 @@ func held_after(statement: SpiteCompiler.Statement, state: Integer): Integer {
     if state == held_by_nothing {
         return state
     }
+    walked_line = statement.line
     if statement.class == HighIntermediaryRepresentation.Statements.If {
         var tested = held_after_a_value(statement.condition, state)
         var then_state = held_in_a_block(statement.then_branch, tested)
@@ -823,7 +884,7 @@ func held_after_a_statement(statement: SpiteCompiler.Statement, state: Integer):
 
 func counted_state(state: Integer): Integer {
     if mutations_counted > 0 and (state == handed_on or escapes_counted > 0) {
-        fail()
+        fail("`{counting}` is written in place while something else holds it")
     }
     if escapes_counted > 0 {
         return handed_on
