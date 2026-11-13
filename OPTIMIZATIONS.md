@@ -4070,6 +4070,10 @@ order. Only what can lead to a write is walked: a pass that writes only its bloc
 frames; when several would crash, the one reported may be another than the first in the list's order. Not in
 `--hot-reload`, `--repl` or `--development` builds, and not in the standard library.
 
+**When it does not band**, `--optimization-report` lists the loop under "Loops run in order" with what refused it
+(`` a loop over the positions of a `List<Shape>` runs in order: `Worker.note_a_value` takes a `fallback`, which
+writes the fallback ring under its lock ``). Only loops of this shape that weigh enough for bands are listed.
+
 ## A band that finishes early takes the next chunk
 
 The passes of a banded loop are rarely even: the compiler's per-function passes over a list of functions spend most of

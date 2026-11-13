@@ -1502,11 +1502,16 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   one is held once), a taken `fallback`, reading singletons that never change, function values, the compiler's
   own form of a loop over a list's positions that hands each item to a fresh worker and writes its answer back
   to the item's slot, and appends to shared lists joined in item order.
-- **Falls back**: the loop in order, as written.
+- **Falls back**: the loop in order, as written. A loop over a list's positions heavy enough for bands that the
+  proof refuses is listed by `--optimization-report` under "Loops run in order", with the first thing that refused
+  it and the function it was in (and the program's own function that reached it, when that one is the library's).
+  A taken `fallback` does not stop the study: the proof reads on, so a pass named for its fallback is held by
+  nothing else in the first round (`Writes.why_refused`).
 - **Lives in**: `high_optimization_passes/banded_loops/owned/writes.spite`, tried by the high pass `banded_loops` (and by `position_loops.spite` for a loop over positions)
   when `pass_weights.spite` refuses; the pass is weighed as [calls in a row](OPTIMIZATIONS.md#independent-calls-in-a-row-run-at-once)
   weigh theirs (`overlapped_work/work_weights.spite`), every function it reaches included.
-- **Checked by**: tests/band_passes_that_make_objects.
+- **Checked by**: tests/band_passes_that_make_objects, tests/loops_run_in_order_reported (the report names a
+  pass's fallback and a write into a list the pass does not own).
 
 ### An object made for its owner is told apart
 

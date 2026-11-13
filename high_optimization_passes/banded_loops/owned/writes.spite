@@ -9,6 +9,11 @@ var answers = Dictionary<String, Integer>()
 var studying = List<String>()
 var element_class = ""
 var gave_up = false
+var refusal = ""
+var fallback_taken_in = ""
+var studying_names = List<String>()
+var studying_the_programs = List<String>()
+var library = Mapping.LibraryFile()
 var stored_changed = false
 var studied = 0
 var fresh = 1
@@ -41,8 +46,12 @@ func proves(element_key: String, pass: Model.FunctionModel): Boolean {
         var answered = study(pass, item, no_arguments, no_bindings)
         fallback is_known(answered)
         round = round + 1
+        fallback fallback_taken_in.is_empty()
     }
-    return not gave_up and not stored_changed
+    if stored_changed {
+        give_up("what its passes store did not settle in {most_rounds} rounds")
+    }
+    return not gave_up and fallback_taken_in.is_empty()
 }
 
 func proves_a_loop(
@@ -78,15 +87,62 @@ func proves_a_loop(
             local_round = local_round + 1
         }
         if current.changed {
-            give_up()
+            give_up("the origins of its names did not settle in {most_local_rounds} rounds")
         }
         round = round + 1
+        fallback fallback_taken_in.is_empty()
     }
-    return not gave_up and not stored_changed
+    if stored_changed {
+        give_up("what its passes store did not settle in {most_rounds} rounds")
+    }
+    return not gave_up and fallback_taken_in.is_empty()
 }
 
-func give_up() {
+func give_up(reason: String) {
+    if not gave_up {
+        var place = studied_place()
+        refusal = "{reason}{place}"
+    }
     gave_up = true
+}
+
+func studied_place(): String {
+    var last = studying_names.last()
+    fallback last
+    var programs = studying_the_programs.last()
+    if programs and programs != last {
+        return " (in `{last}`, reached from `{programs}`)"
+    }
+    return " (in `{last}`)"
+}
+
+func shown_name(function: Model.FunctionModel): String {
+    var parts = function.owner.split(".")
+    var owner = parts.last()
+    crash owner
+    return "{owner}.{function.name}"
+}
+
+func is_the_programs_own(function: Model.FunctionModel): Boolean {
+    var owner = high.model.class_named(function.owner)
+    fallback owner
+    return not library.holds(owner.file.path)
+}
+
+func take_a_fallback() {
+    fallback fallback_taken_in.is_empty()
+    fallback_taken_in = "the loop's body"
+    var last = studying_names.last()
+    fallback last
+    fallback_taken_in = "`{last}`"
+}
+
+func why_refused(): String {
+    if gave_up {
+        return refusal
+    }
+    fallback not fallback_taken_in.is_empty()
+    return "{fallback_taken_in} takes a `fallback`, which writes the fallback ring under its lock"
 }
 
 func has(origin: Integer, bit: Integer): Boolean {
@@ -124,7 +180,7 @@ func checked(origin: Integer, of_type: Model.Type?): Integer {
     fallback not is_plain(of_type)
     crash of_type
     if has(origin, shared) and may_hold_an_element(of_type) {
-        give_up()
+        give_up("it reads a `{of_type.name}` it does not own, which could be another pass's element")
     }
     return origin
 }
@@ -163,13 +219,14 @@ func study(
         return shared
     }
     if gave_up or studied >= most_studied {
-        give_up()
+        give_up("it reaches more than {most_studied} functions")
         return shared
     }
     var function_key = function.key()
     var built = built_by_key[function_key]
     if not built {
-        give_up()
+        var missing = shown_name(function)
+        give_up("it calls `{missing}`, which has no built body")
         return shared
     }
     studied = studied + 1
@@ -183,6 +240,12 @@ func study(
         index = index + 1
     }
     studying.append(key)
+    var studied_name = shown_name(function)
+    studying_names.append(studied_name)
+    var is_the_programs = is_the_programs_own(function)
+    if is_the_programs {
+        studying_the_programs.append(studied_name)
+    }
     var round = 0
     current.changed = true
     while current.changed and not gave_up and round < most_local_rounds {
@@ -191,7 +254,11 @@ func study(
         round = round + 1
     }
     if current.changed {
-        give_up()
+        give_up("the origins of its names did not settle in {most_local_rounds} rounds")
+    }
+    crash studying_names.remove_last()
+    if is_the_programs {
+        crash studying_the_programs.remove_last()
     }
     crash studying.remove_last()
     answers[key] = current.answer
@@ -226,7 +293,7 @@ func supplied(
     fallback not only_reads
     var writes = name.starts_with("_write") or name.starts_with("_forget") or name.starts_with("_reserve") or name.starts_with("_resize") or name == "_copy_bytes"
     if not writes {
-        give_up()
+        give_up("it calls `{name}`, which the compiler supplies and the proof does not know")
         return shared
     }
     write_through(this_origin, receiver, function.owner)
@@ -256,7 +323,8 @@ func store(key: String, origin: Integer) {
 
 func write_through(origin: Integer, target: SpiteCompiler.Value?, class_key: String) {
     if has(origin, shared) {
-        give_up()
+        var shown_class = shown_class_of(class_key)
+        give_up("it writes into a `{shown_class}` it does not own")
     }
     fallback has(origin, owned)
     var edge = edge_of(target)
@@ -265,6 +333,14 @@ func write_through(origin: Integer, target: SpiteCompiler.Value?, class_key: Str
         return
     }
     add_once(walked_edges, edge)
+}
+
+func shown_class_of(class_key: String): String {
+    var model = high.model.class_named(class_key)
+    if not model {
+        return class_key
+    }
+    return model.shown
 }
 
 func edge_of(target: SpiteCompiler.Value?): String {
@@ -320,7 +396,7 @@ func read_statement(current: HighOptimizationPasses.BandedLoops.Owned.Study, sta
         HighIntermediaryRepresentation.Statements.Declare: read_a_declaration(current, statement)
         HighIntermediaryRepresentation.Statements.Assign.Assign: read_a_local_write(current, statement)
         HighIntermediaryRepresentation.Statements.Assign.Attribute: read_an_attribute_write(current, statement)
-        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: give_up()
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: give_up("it writes through a shape")
         HighIntermediaryRepresentation.Statements.Evaluate: read_an_evaluation(current, statement)
         HighIntermediaryRepresentation.Statements.If: read_a_branch(current, statement)
         HighIntermediaryRepresentation.Statements.While: read_a_loop(current, statement)
@@ -344,7 +420,7 @@ func read_a_local_write(
 ) {
     var origin = origin_of(current, assigned.value)
     if current.is_a_loop_body and not current.declared_names.contains(assigned.name) {
-        give_up()
+        give_up("it assigns `{assigned.name}`, declared outside the loop")
     }
     note_a_local(current, assigned.name, origin)
 }
@@ -367,7 +443,7 @@ func read_an_evaluation(
     evaluated: HighIntermediaryRepresentation.Statements.Evaluate,
 ) {
     if evaluated.waited {
-        give_up()
+        give_up("it waits")
     }
     var value = evaluated.value
     if current.is_a_loop_body and value.class == HighIntermediaryRepresentation.Values.Call and is_the_slot_write(current, value) {
@@ -413,7 +489,7 @@ func read_an_answer(
 ) {
     var origin = origin_of(current, returned.value)
     if current.is_a_loop_body {
-        give_up()
+        give_up("it returns from inside the loop")
     }
     current.answer = joined(current.answer, origin)
 }
@@ -458,10 +534,10 @@ func origin_of_a_value(current: HighOptimizationPasses.BandedLoops.Owned.Study, 
         HighIntermediaryRepresentation.Values.EnumText: return origin_of_a_text(current, value.number)
         HighIntermediaryRepresentation.Values.Class.OfValue: return origin_of_a_text(current, value.described)
         HighIntermediaryRepresentation.Values.Conversion: return origin_of_a_conversion(current, value)
-        HighIntermediaryRepresentation.Values.ForeignCall: return given_up_origin()
+        HighIntermediaryRepresentation.Values.ForeignCall: return given_up_origin("it makes a foreign call")
         HighIntermediaryRepresentation.Values.Function.Value: return origin_of_both(current, value.receiver, null)
         HighIntermediaryRepresentation.Values.Function.ValueCall: return origin_of_a_value_call(current, value)
-        HighIntermediaryRepresentation.Values.ShapeCall: return given_up_origin()
+        HighIntermediaryRepresentation.Values.ShapeCall: return given_up_origin("it calls through a shape")
         HighIntermediaryRepresentation.Values.NumberRoom: return origin_of_a_room(current, value)
     }
 }
@@ -483,8 +559,8 @@ func is_known(origin: Integer): Boolean {
     return not gave_up and origin < owned * 2
 }
 
-func given_up_origin(): Integer {
-    give_up()
+func given_up_origin(reason: String): Integer {
+    give_up(reason)
     return shared
 }
 
@@ -529,7 +605,7 @@ func origin_of_a_conversion(
 ): Integer {
     var kind = conversion.kind
     if kind == 'join' or kind == 'into_handle' or kind == 'address' or kind == 'into_shape' {
-        give_up()
+        give_up("it holds a `{kind}` conversion")
         return shared
     }
     return origin_of(current, conversion.converted)
@@ -539,6 +615,10 @@ func origin_of_a_call(
     current: HighOptimizationPasses.BandedLoops.Owned.Study,
     call: HighIntermediaryRepresentation.Values.Call,
 ): Integer {
+    if is_the_fallback_ring(call.receiver) {
+        take_a_fallback()
+        return 0
+    }
     var receiver_origin = origin_of(current, call.receiver)
     var argument_origins = origins_of(current, call.arguments)
     var function_key = call.function.key()
@@ -585,6 +665,11 @@ func bind_an_argument(
     bindings.bind(name, bound, bound_origin)
 }
 
+func is_the_fallback_ring(receiver: SpiteCompiler.Value?): Boolean {
+    fallback receiver and receiver.class == HighIntermediaryRepresentation.Values.MakeObject
+    return receiver.value_type.name == "Spite.Asserts"
+}
+
 func origin_of_a_value_call(
     current: HighOptimizationPasses.BandedLoops.Owned.Study,
     call: HighIntermediaryRepresentation.Values.Function.ValueCall,
@@ -592,7 +677,7 @@ func origin_of_a_value_call(
     if call.called and call.called.class == HighIntermediaryRepresentation.Values.LocalRead {
         return origin_of_a_bound_call(current, call, call.called.name)
     }
-    return given_up_origin()
+    return given_up_origin("it calls a function value it cannot name")
 }
 
 func origin_of_a_bound_call(
@@ -602,7 +687,7 @@ func origin_of_a_bound_call(
 ): Integer {
     var bound = current.bindings.function_of(name)
     if not bound {
-        return given_up_origin()
+        return given_up_origin("it calls a function value it cannot name")
     }
     var receiver_origin = current.bindings.origin_of(name)
     var argument_origins = origins_of(current, call.arguments)
@@ -637,8 +722,12 @@ func origin_of_a_making(
     var argument_origins = origins_of(current, made.arguments)
     var class_key = made.value_type.name
     var model = high.model.class_named(class_key)
-    if not model or model.is_singleton or not made.foreign_place.is_empty() {
-        give_up()
+    if not model or not made.foreign_place.is_empty() {
+        give_up("it makes a `{class_key}` it cannot follow")
+        return shared
+    }
+    if model.is_singleton {
+        give_up("it reaches the singleton `{model.shown}`")
         return shared
     }
     if not made.skips_the_defaults {
