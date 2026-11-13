@@ -480,7 +480,8 @@ walks up through the frame pointers; without the file it prints only the fault l
 
 The repositories sit side by side under one folder, as `gh repo clone` names them: this one as `spite_compiler`
 and [spite_standard_library](https://github.com/Spite-Language/spite_standard_library) beside it. The source is
-written to the language this compiler checks: its entry file loads `../spite_standard_library/windows`, and every
+written to the language this compiler checks: it reads the standard library beside it (the `spite_standard_library`
+folder nearest above the compiler's executable, or `--standard-library=<folder>`), and every
 rule the programs of [spite_spec](https://github.com/Spite-Language/spite_spec) check holds in it.
 Nothing else is needed: no link, no copied file, no older compiler. `bash scripts/bootstrap.sh --install` builds
 it from a fresh clone:
@@ -567,7 +568,7 @@ validator only ever sees what stays an error:
 |---|---|---|
 | tokens | `fixes/tokens/every_fix.spite`'s `fixed`, per file between the lexer and the parser (`AbstractSyntaxTree.run`) | `misspelt_keyword` |
 | syntax tree | `fixes/abstract_syntax_tree/every_fix.spite`'s `fixed`, per file as it is read (`SymbolTable.read_class`) | `misplaced_comment`, `declaration_order` (the printer prints declarations in the enforced order), `type_member_form`, `after_return`, `local_names`, `default_guard` |
-| symbols | `fixes/symbols/every_fix.spite`'s `fixed`, once, when every class is read (`Symbols.run`), and it writes and restarts right there | `misnamed_path` (a file or folder of the program the mapping noted as having one right spelling is renamed, with the last segment of every `load` naming it, unless a `load` it cannot rewrite reaches it; what stays is refused by `validators/mapping/misnamed_path`), `platform_load` (a load of the library's `common` alone becomes a load of `windows`, which loads `common`), `unneeded_load`, `repeated_declaration` (a `union` or `type` two classes of a root declare with one name and content moves to the entry class of the lowest namespace holding every copy) |
+| symbols | `fixes/symbols/every_fix.spite`'s `fixed`, once, when every class is read (`Symbols.run`), and it writes and restarts right there | `misnamed_path` (a file or folder of the program the mapping noted as having one right spelling is renamed, with the last segment of every `load` naming it, unless a `load` it cannot rewrite reaches it; what stays is refused by `validators/mapping/misnamed_path`), `library_load` (a `load` of the standard library in use goes: every program has it), `unneeded_load`, `repeated_declaration` (a `union` or `type` two classes of a root declare with one name and content moves to the entry class of the lowest namespace holding every copy) |
 | after building | `fixes/after_building/every_fix.spite`: `fixed_a_check` from the proof `proven_checks` before each refusal, `fixed_a_terminal_if` from `guard_asserts`, `fixed_a_walk` before the rules after building, `fixed_an_attribute` from `every_attribute_is_read` | `proven_check` (a `crash` or `fallback` line that proves nothing), `decided_condition` (an `if`, a `while` or a `fallback` decided while compiling), `known_if` (an `if` on what is already narrowed, proven or a decided class test), `terminal_if`, `copy_to_narrow`, `unread_plain_local`, `unread_attribute` |
 
 A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it, a
@@ -580,9 +581,9 @@ meant, the name without its underscore, the statement at a site, the writes to r
 `copy_to_narrow`), `guard_assert` (`terminal_if`), `default_order`, `read_attribute` (`unread_attribute`) and the syntax
 tree's `unused_names` (`unread_plain_local`); what they share about a site (its tree, whether its line was fixed, whether
 replacing an `if` moves a name onto another) is `HighIntermediaryRepresentation.Building.FixableSite`. The symbols rules
-are `validators/mapping/` `misnamed_path`, `platform_load` (it reads whether the system's folder beside a loaded `common`
-exists from `Symbols.SymbolTable.platforms_beside_common`, which `read_one_load` records with the load's own IO),
-`unneeded_load` and `repeated_declaration`. A proof or step asks the rule, calls the fix when the answer is fixable, and
+are `validators/mapping/` `misnamed_path`, `library_load` (handed a `Mapping.LibraryLoad`, the load's folder and
+whether another library holds it, which `read_one_load` finds with the load's own IO), `unneeded_load` and
+`repeated_declaration`. A proof or step asks the rule, calls the fix when the answer is fixable, and
 tells the answer otherwise. A fix never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`, `cut_later`, `renamed_with_the_last_fix`), which makes it right before writing. A rename changes only the name a declaration or an identifier holds, so nothing proven about a value's slot is assigned again. A library file, a pinned
 package's file, a generated class, a generic class, a walk and a file holding breakpoints are never fixed: their
 mistakes stay errors.
