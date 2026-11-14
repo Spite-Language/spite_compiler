@@ -1821,16 +1821,22 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 ### A write to an object only this function holds must be read
 
 - **Status**: built.
-- **Rule**: a write to a local only this function holds (a constructor's result, a copy, an always-new result),
-  never read after it, is refused ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
-  A write inside a branch of an `if` or a `switch` to a local an outer block made is judged the same way, when
-  nothing after it in any block around it names the local and nothing from the declaration to the write (the
-  conditions and the other branches included) can let the object go; a loop between them stops the search, since
-  its next pass may read the write.
-- **Falls back**: not refused where the always-new answer comes from another class.
+- **Rule**: a write to a local only this function holds, never read after it, is refused
+  ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)). The local holds a constructor's result,
+  a copy, or the answer of a function (its own class's, `this`'s or another object's, up to four calls deep) whose
+  every `return` is such a result or a local made so that it only reads or writes through; the last whole
+  assignment before the write (`made = Tally()`) says what it holds. A write inside a branch of an `if` or a
+  `switch` to a local an outer block made is judged the same way, when nothing after it in any block around it
+  names the local and nothing from the declaration to the write (the conditions and the other branches included)
+  can let the object go. A loop between them is crossed only when the loop names the local just to write it
+  (`tally.count = round`, `first = round` for a local read from a list item); any other mention in the loop may be
+  its next pass reading the write.
+- **Falls back**: not refused for a library class's answer or a loop that reads the local.
 - **Lives in**: the proof `proofs/lost_writes`, judging every assignment the builder recorded (a `StatementSite`),
   and `validators/high_intermediary_representation/lost_write`, handed whether anything lets the object go.
-- **Checked by**: conformance/lost_writes, conformance/lost_write_in_a_branch.
+- **Checked by**: conformance/lost_writes, conformance/lost_write_in_a_branch, conformance/lost_write_in_a_loop,
+  conformance/lost_item_in_a_loop, conformance/lost_write_answered_elsewhere, conformance/lost_write_after_a_new_object,
+  conformance/lost_write_made_by_a_function; tests/lost_writes_read_later keeps writes that are read.
 
 ### A name read from a list, assigned and never read, is an error
 

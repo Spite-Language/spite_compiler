@@ -130,22 +130,75 @@ func check_an_enclosed_item(
     name: String,
     enclosing: List<HighIntermediaryRepresentation.Building.EnclosingBlock>,
 ) {
+    var level = declared_level(enclosing, name)
+    fallback level >= 0
+    fallback only_written_in_its_loops(enclosing, level, name)
+    var outer = enclosing[level]
+    crash outer
+    var declared_at = declaration_of(outer.statements, outer.index, name)
+    check_an_outer_item(context, written, index, statement, enclosing, level, declared_at)
+}
+
+func declared_level(enclosing: List<HighIntermediaryRepresentation.Building.EnclosingBlock>, name: String): Integer {
     var level = enclosing.count() - 1
-    var searching = true
-    while level >= 0 and searching {
+    while level >= 0 {
         var outer = enclosing[level]
         crash outer
-        var holder = outer.statements[outer.index]
-        if holder.class == AbstractSyntaxTree.Shapes.Statements.WhileStatement {
-            searching = false
-        }
         var declared_at = declaration_of(outer.statements, outer.index, name)
-        if searching and declared_at >= 0 {
-            check_an_outer_item(context, written, index, statement, enclosing, level, declared_at)
-            searching = false
+        if declared_at >= 0 {
+            return level
         }
         level = level - 1
     }
+    return -1
+}
+
+func only_written_in_its_loops(
+    enclosing: List<HighIntermediaryRepresentation.Building.EnclosingBlock>,
+    level: Integer,
+    name: String,
+): Boolean {
+    var current = level
+    while current < enclosing.count() {
+        var block = enclosing[current]
+        var holder = block.statements[block.index]
+        if holder.class == AbstractSyntaxTree.Shapes.Statements.WhileStatement {
+            var loop = walk_of(block.statements, block.index, block.index + 1)
+            fallback only_written(loop, name)
+        }
+        current = current + 1
+    }
+    return true
+}
+
+func only_written(walk: AbstractSyntaxTree.Walk.Walk, name: String): Boolean {
+    var named = 0
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        if is_the_name(found.expression, name) {
+            named = named + 1
+        }
+        index = index + 1
+    }
+    var writes = 0
+    index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        if writes_the_name(found.statement, name) {
+            writes = writes + 1
+        }
+        index = index + 1
+    }
+    return named == writes
+}
+
+func writes_the_name(statement: SpiteCompiler.WrittenStatement?, name: String): Boolean {
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        var target = statement.target
+        return is_the_name(target, name) or reads_through(target, name)
+    }
+    return false
 }
 
 func check_an_outer_item(
@@ -549,17 +602,56 @@ func check_a_held_write(
         check_an_enclosed_write(context, written, index, statement, member, name, enclosing)
     }
     fallback declared_at >= 0
-    var declaration = written[declared_at]
-    if declaration.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
-        fallback is_made_new(context, declaration.value, 0)
-    }
+    var origin = origin_of(written, declared_at, index, name)
+    fallback is_made_at(context, written, origin)
     fallback is_a_judged_attribute(context, member, name)
     var statement_count = written.count()
     var after = walk_of(written, index + 1, statement_count)
     fallback not after.names(name)
-    var between = walk_of(written, declared_at + 1, index)
+    var between = walk_of(written, origin + 1, index)
     between.read_expression(statement.value)
     check_the_lost_write(context, statement, member, name, between)
+}
+
+func origin_of(
+    written: List<SpiteCompiler.WrittenStatement>,
+    declared_at: Integer,
+    ending_at: Integer,
+    name: String,
+): Integer {
+    var at = ending_at - 1
+    while at > declared_at {
+        var earlier = written[at]
+        if writes_the_whole_name(earlier, name) {
+            return at
+        }
+        at = at - 1
+    }
+    return declared_at
+}
+
+func writes_the_whole_name(statement: SpiteCompiler.WrittenStatement?, name: String): Boolean {
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        return is_the_name(statement.target, name)
+    }
+    return false
+}
+
+func is_made_at(
+    context: HighIntermediaryRepresentation.Building.Context,
+    written: List<SpiteCompiler.WrittenStatement>,
+    origin: Integer,
+): Boolean {
+    var statement = written[origin]
+    crash statement
+    var value: SpiteCompiler.Expression? = null
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
+        value = statement.value
+    }
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        value = statement.value
+    }
+    return is_made_new(context, context.current_class, value, 0)
 }
 
 func is_a_judged_attribute(
@@ -616,38 +708,20 @@ func check_an_enclosed_write(
     name: String,
     enclosing: List<HighIntermediaryRepresentation.Building.EnclosingBlock>,
 ) {
-    var level = enclosing.count() - 1
-    var found_at = -1
-    var declared_at = -1
-    var searching = true
-    while level >= 0 and searching {
-        var outer = enclosing[level]
-        crash outer
-        var holder = outer.statements[outer.index]
-        if holder.class == AbstractSyntaxTree.Shapes.Statements.WhileStatement {
-            searching = false
-        }
-        var declared = declaration_of(outer.statements, outer.index, name)
-        if searching and declared >= 0 {
-            found_at = level
-            declared_at = declared
-            searching = false
-        }
-        level = level - 1
-    }
+    var found_at = declared_level(enclosing, name)
     fallback found_at >= 0
+    fallback only_written_in_its_loops(enclosing, found_at, name)
     var outer_block = enclosing[found_at]
     crash outer_block
-    var declaration = outer_block.statements[declared_at]
-    if declaration.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement {
-        fallback is_made_new(context, declaration.value, 0)
-    }
+    var declared_at = declaration_of(outer_block.statements, outer_block.index, name)
+    var origin = origin_of(outer_block.statements, declared_at, outer_block.index, name)
+    fallback is_made_at(context, outer_block.statements, origin)
     fallback is_a_judged_attribute(context, member, name)
     var statement_count = written.count()
     var after = walk_of(written, index + 1, statement_count)
     fallback not after.names(name)
     fallback not read_in_an_outer_block(enclosing, found_at, name)
-    var between = walk_of(outer_block.statements, declared_at + 1, outer_block.index + 1)
+    var between = walk_of(outer_block.statements, origin + 1, outer_block.index + 1)
     fallback not lets_it_go(between, name)
     var inner = found_at + 1
     while inner < enclosing.count() {
@@ -697,52 +771,118 @@ func calls_through(expression: SpiteCompiler.Expression?, name: String): Boolean
 
 func is_made_new(
     context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
     value: SpiteCompiler.Expression?,
     depth: Integer,
 ): Boolean {
     if value.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
-        return is_a_new_call(context, value, depth)
+        return is_a_new_call(context, model, value, depth)
     }
     return false
 }
 
 func is_a_new_call(
     context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     depth: Integer,
 ): Boolean {
     var callee = call.callee
     if callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
-        return callee.name == "copy" or callee.name == "deep_copy"
+        return is_a_new_member_call(context, model, callee, depth)
     }
     if callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        return is_a_new_own_call(context, callee.name, depth)
+        return is_a_new_own_call(context, model, callee.name, depth)
     }
     return false
 }
 
+func is_a_new_member_call(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    callee: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+    depth: Integer,
+): Boolean {
+    if callee.name == "copy" or callee.name == "deep_copy" {
+        return true
+    }
+    var held_model = class_held_by(context, model, callee.target, depth)
+    fallback held_model
+    var function = held_model.function_named(callee.name)
+    fallback function
+    return answers_new(context, held_model, function, depth)
+}
+
+func class_held_by(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    holder: SpiteCompiler.Expression?,
+    depth: Integer,
+): Model.ClassModel? {
+    if holder.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression and holder.kind == 'keyword_this' {
+        return model
+    }
+    var holder_name = ""
+    if holder.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        holder_name = holder.name
+    }
+    fallback not holder_name.is_empty()
+    var held_type = type_held_by(context, model, holder_name, depth)
+    fallback held_type
+    var present = held_type.present()
+    fallback present.kind == 'object' and context.has_a_class(present)
+    return context.class_of(present)
+}
+
+func type_held_by(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    name: String,
+    depth: Integer,
+): Model.Type? {
+    if depth == 0 {
+        return type_of_a_name(context, name)
+    }
+    var attribute = model.attribute_named(name)
+    fallback attribute
+    return attribute.attribute_type
+}
+
 func is_a_new_own_call(
     context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
     called: String,
     depth: Integer,
 ): Boolean {
-    var function = context.current_class.function_named(called)
+    var function = model.function_named(called)
     if not function {
         var initial = called.slice(0, 1)
         crash initial
         return initial != initial.lower_case()
     }
+    return answers_new(context, model, function, depth)
+}
+
+func answers_new(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    function: Model.FunctionModel,
+    depth: Integer,
+): Boolean {
     fallback depth < 4
+    var library = Mapping.LibraryFile()
+    fallback not library.holds(model.file.path)
     fallback function.declaration
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
     fallback declaration.body
     var walk = AbstractSyntaxTree.Walk.Walk(no_file)
     walk.read_block(declaration.body)
-    return every_return_is_new(context, walk, depth)
+    return every_return_is_new(context, model, walk, depth)
 }
 
 func every_return_is_new(
     context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
     walk: AbstractSyntaxTree.Walk.Walk,
     depth: Integer,
 ): Boolean {
@@ -753,9 +893,100 @@ func every_return_is_new(
         var statement = found.statement
         if statement.class == AbstractSyntaxTree.Shapes.Statements.ReturnStatement {
             returns = returns + 1
-            fallback is_made_new(context, statement.value, depth + 1)
+            fallback returns_a_new_object(context, model, walk, statement.value, depth + 1)
         }
         index = index + 1
     }
     return returns > 0
+}
+
+func returns_a_new_object(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    value: SpiteCompiler.Expression?,
+    depth: Integer,
+): Boolean {
+    if is_made_new(context, model, value, depth) {
+        return true
+    }
+    if value.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return is_a_made_local(context, model, walk, value.name, depth)
+    }
+    return false
+}
+
+func is_a_made_local(
+    context: HighIntermediaryRepresentation.Building.Context,
+    model: Model.ClassModel,
+    walk: AbstractSyntaxTree.Walk.Walk,
+    name: String,
+    depth: Integer,
+): Boolean {
+    var declared = declared_in(walk, name)
+    fallback declared
+    fallback is_made_new(context, model, declared.value, depth)
+    return only_reached_or_returned(walk, name)
+}
+
+func declared_in(
+    walk: AbstractSyntaxTree.Walk.Walk,
+    name: String,
+): AbstractSyntaxTree.Shapes.Statements.VariableStatement? {
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        var statement = found.statement
+        if statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement and statement.name == name {
+            return statement
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func only_reached_or_returned(walk: AbstractSyntaxTree.Walk.Walk, name: String): Boolean {
+    fallback not calls_through_in(walk, name)
+    var named = 0
+    var reached = 0
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        if is_the_name(found.expression, name) {
+            named = named + 1
+        }
+        if reads_through(found.expression, name) {
+            reached = reached + 1
+        }
+        index = index + 1
+    }
+    var returned = 0
+    index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        if returns_the_name(found.statement, name) {
+            returned = returned + 1
+        }
+        index = index + 1
+    }
+    return named == reached + returned
+}
+
+func calls_through_in(walk: AbstractSyntaxTree.Walk.Walk, name: String): Boolean {
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        if calls_through(found.expression, name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func returns_the_name(statement: SpiteCompiler.WrittenStatement?, name: String): Boolean {
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.ReturnStatement {
+        return is_the_name(statement.value, name)
+    }
+    return false
 }
