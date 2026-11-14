@@ -48,7 +48,10 @@ and `List_of_Integer` in the instance `List_of_Integer`.
 - A member of a type that is not there: `validators/name_resolution/type_member`.
 - A class's `enum`, `union` or `type` named plainly outside the class, or through a namespace instead of its
   class: `validators/name_resolution/class_member`. A namespace holds classes and namespaces only, so a plain
-  name looks in the class's own declarations and then for a class, never in another class's declarations. A union
+  name looks in the class's own declarations and then for a class, never in another class's declarations. From
+  outside a namespace, `Game.Job` reaches the entry class `Game.Game` through the namespace even when a loaded
+  root makes `Game` answer that class, so it is refused there too (and `fixes/symbols/entry_class_member` rewrites
+  it to `Game.Game.Job` first wherever the file may be rewritten). A union
   or a `type` named through its class needs that class to be the one using it, or the entry class of a namespace
   holding it (`Symbols.SymbolTable.is_the_entry_class_over`).
 - A type that names nothing, `Symbol`, a removed form or a value known only at run time:
