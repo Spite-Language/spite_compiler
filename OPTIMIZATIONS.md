@@ -1539,6 +1539,10 @@ is inlined into its caller as a compare, a branch to `checked_half$cold0(value)`
 the same: the cold function's calls carry no frame line of their own, and the call to it carries the guard's line,
 so `spite.frame` lines name the guard's function and its callers as before.
 
+Every register the moved blocks write is renamed in one step, past the values passed in, so a call that answers a
+value and its presence (`Boolean?`) keeps the two apart: renamed one at a time, the value's new number was the
+presence's old one, and the report read a present `false` as missing (#488).
+
 ## A reported call's answer is let go after its check
 
 A call in a `crash` condition is run once, into a hidden local the check and the report both read
