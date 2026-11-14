@@ -4655,7 +4655,10 @@ so that moment cannot be seen (`defaults_the_constructor_replaces_are_never_made
 
 The parameters a function keeps are found by the high pass `high_optimization_passes/taken_parameters`, and the
 slots a constructor fills with a fresh object by `high_optimization_passes/replaced_defaults`; both record them for
-the lowering.
+the lowering. A function taken as a value, and one the compiler writes, takes nothing, since a call through its
+address hands it no count; so a call that compile-time evaluation or `direct_calls` turns direct from a known
+address hands nothing over either, as the call through the address did
+(`tests/a_function_taken_as_a_value_takes_nothing`).
 
 ## An item written back to the slot it came from is not written
 
