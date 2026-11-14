@@ -1,0 +1,175 @@
+var gathered = Validators.Answer()
+var path = ""
+var types = AbstractSyntaxTree.Markup.VisibleTypes()
+
+# ../../../../spite_documentation/markup.md#what-the-compiler-refuses
+func check(file: AbstractSyntaxTree.Shapes.SourceFile): Validators.Answer {
+    gathered = Validators.Answer()
+    path = file.path
+    types = AbstractSyntaxTree.Markup.VisibleTypes()
+    types.learn_the_file(file)
+    file.declarations.each(check_a_declaration)
+    return gathered
+}
+
+func check_a_declaration(declaration: SpiteCompiler.Declaration) {
+    if declaration.class == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration {
+        types.learn_the_function(declaration)
+        check_a_block(declaration.body)
+    }
+}
+
+func check_a_block(block: AbstractSyntaxTree.Shapes.Statements.Block?) {
+    fallback block
+    block.statements.each(check_a_statement)
+}
+
+func check_a_statement(statement: SpiteCompiler.WrittenStatement) {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: check_an_element(statement.markup)
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: check_an_element(statement.markup)
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: check_the_branches(statement)
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: check_a_block(statement.body)
+        AbstractSyntaxTree.Shapes.Statements.SwitchStatement: statement.cases.each(check_a_case)
+        AbstractSyntaxTree.Shapes.Statements.Block: check_a_block(statement)
+        AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: return
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: return
+        AbstractSyntaxTree.Shapes.Statements.FallbackStatement: return
+        AbstractSyntaxTree.Shapes.Statements.CrashStatement: return
+        AbstractSyntaxTree.Shapes.Statements.LoadStatement: return
+    }
+}
+
+func check_the_branches(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    check_a_block(statement.then_branch)
+    check_a_block(statement.else_branch)
+}
+
+func check_a_case(switch_case: AbstractSyntaxTree.Shapes.Statements.SwitchCase) {
+    check_a_block(switch_case.body)
+}
+
+func check_an_element(element: AbstractSyntaxTree.Shapes.Markup.Element?) {
+    fallback element
+    check_the_attributes(element)
+    if element.calls_a_function() {
+        check_a_function_tag(element)
+    }
+    var index = 0
+    while index < element.children.count() {
+        var child = element.children[index]
+        check_a_child(element, child)
+        index = index + 1
+    }
+}
+
+func check_the_attributes(element: AbstractSyntaxTree.Shapes.Markup.Element) {
+    var seen = List<String>()
+    var index = 0
+    while index < element.written_attributes.count() {
+        var attribute = element.written_attributes[index]
+        if seen.contains(attribute.name) {
+            refuse(attribute.line, "'{attribute.name}' is set twice on '<{element.tag}>': keep one")
+        }
+        seen.append(attribute.name)
+        index = index + 1
+    }
+}
+
+func check_a_child(element: AbstractSyntaxTree.Shapes.Markup.Element, child: AbstractSyntaxTree.Shapes.Markup.Child) {
+    if child.element {
+        check_an_element(child.element)
+        return
+    }
+    if child.kind == 'text' {
+        check_a_text(element, child)
+        return
+    }
+    fallback child.expression
+    if types.is_a_boolean(child.expression) {
+        var printer = Printers.Spite.ExpressionPrinter(child.expression)
+        var written = printer.text()
+        refuse(
+            child.line,
+            "'\{{written}}' is a Boolean, and a child is an object, a list of them or null: there is no 'condition && <Tag/>', so answer null from a 'render_' function when there is nothing to show",
+        )
+        return
+    }
+    if element.calls_a_function() and types.is_a_list(child.expression) {
+        var printer = Printers.Spite.ExpressionPrinter(child.expression)
+        var written = printer.text()
+        refuse(
+            child.line,
+            "'\{{written}}' is a list, and '<{element.tag}>' takes its children one by one into 'children': hand the list as an attribute instead",
+        )
+    }
+}
+
+func check_a_text(element: AbstractSyntaxTree.Shapes.Markup.Element, child: AbstractSyntaxTree.Shapes.Markup.Child) {
+    fallback element.calls_a_function()
+    var called = element.function_name()
+    refuse(
+        child.line,
+        "'<{element.tag}>' holds text, and only a class's tag takes text, as its 'content': hand it to '{called}' as an attribute",
+    )
+}
+
+# ../../../../spite_documentation/markup.md#a-lowercase-tag-calls-a-function
+func check_a_function_tag(element: AbstractSyntaxTree.Shapes.Markup.Element) {
+    var function = types.function_of(element)
+    var called = element.function_name()
+    if not function {
+        refuse(
+            element.line,
+            "'<{element.tag}>' calls '{called}', and this class declares no '{called}': declare it, or name a class to make an object",
+        )
+        return
+    }
+    var names = List<String>()
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        names.append(parameter.name)
+        check_a_parameter(element, parameter.name)
+        index = index + 1
+    }
+    index = 0
+    while index < element.written_attributes.count() {
+        var attribute = element.written_attributes[index]
+        if not names.contains(attribute.name) or attribute.name == "children" {
+            var listed = names.join(", ")
+            refuse(
+                attribute.line,
+                "'<{element.tag}>' sets '{attribute.name}', and '{called}' has no parameter '{attribute.name}': it takes {listed}",
+            )
+        }
+        index = index + 1
+    }
+    var takes_children = names.contains("children")
+    if not element.children.is_empty() and not takes_children {
+        refuse(
+            element.line,
+            "'<{element.tag}>' holds children, and '{called}' has no parameter 'children: List<Anything>' to take them",
+        )
+    }
+}
+
+func check_a_parameter(element: AbstractSyntaxTree.Shapes.Markup.Element, name: String) {
+    fallback name != "children"
+    var index = 0
+    while index < element.written_attributes.count() {
+        var attribute = element.written_attributes[index]
+        fallback attribute.name != name
+        index = index + 1
+    }
+    var called = element.function_name()
+    refuse(
+        element.line,
+        "'<{element.tag}>' leaves out '{name}', a parameter of '{called}': set it on the tag, as in '{name}=\{value}'",
+    )
+}
+
+func refuse(line: Integer, text: String) {
+    var problem = Diagnostics.Problem(path, line, text)
+    gathered.mistakes.append(problem)
+}
