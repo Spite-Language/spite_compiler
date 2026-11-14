@@ -1421,18 +1421,36 @@ refuses nothing (D1781).
   constructor and attribute defaults of what it makes, every function handed straight to the parameter whose value
   it calls (every function taken as a value when it calls one that is not a parameter, a parameter that was handed
   on or reassigned, or once any function value goes to a call through a shape, a function value or a foreign
-  function), and every `drop`. The passes that start work run before this proof and leave each start in the
+  function), and every `drop`. A function that code run at once enters only by calls (a call or a constructor,
+  never as a value, a `drop`, a whole starter or a filler) calls through its parameter only what those calls hand
+  it, which they reach themselves, so `list.each(f)` run at once reaches `f` and not every function the program
+  hands to `each` elsewhere (D2290). The passes that start work run before this proof and leave each start in the
   IR (`Conversion` of kind `into_handle`), so the proof reads them there; nothing else records them.
+  A search or an `append` in a band of a loop over a list's positions does not count when the band's own proof
+  ([passes that write only what they alone reach](#passes-that-write-only-what-they-alone-reach)) saw its list, in
+  every study of it, only as a list the pass made (made in the pass, or read from an attribute of something the pass
+  made into which the pass stored only lists it made), and the function holding it runs at once only in such bands,
+  outside a starter's region: no other band, and no other thread, reaches a list a pass made, so the count and the
+  index its searches write are the band's own (D2290). Everything else that runs at once still counts: overlapped
+  work, a frame loop, a band of `list.each_f()`, a starter until its join, a `drop`, a function value, and what a
+  band reaches only through a block that ends the program, which its proof does not study.
 - **Buys**: [a list used as a set keeps a hash index](OPTIMIZATIONS.md#a-list-used-as-a-set-keeps-a-hash-index): it
   marks each `contains`, `index_of` and `append` of the family (`Call.is_on_a_set`) and each search loop over it
   (`While.searches_a_set`).
 - **Falls back**: the list as written, searched item by item; nothing is refused.
 - **Lives in**: the proof `proofs/set_lists`, registered among the high passes through `HighOptimizationPasses.Proving`
   right before `indexed_lists`, which acts on its marks; a search loop's shape is
-  `high_intermediary_representation/search_loop.spite`; what runs at once is `high_intermediary_representation/run_at_once.spite`.
+  `high_intermediary_representation/search_loop.spite`; what runs at once is `high_intermediary_representation/run_at_once.spite`
+  with `reaches_only_handed_values` on, walked
+  twice: once from every start, and once leaving out the bands whose proof followed every list (`HighProgram.band_fresh_classes`)
+  but walking the blocks their proof skipped (`HighProgram.band_ending_blocks`). The band proof marks each search and
+  `append` it studied by the lists it saw there (`Call.receiver_made_in_a_band`, `Call.receiver_not_made_in_a_band`,
+  `Owned.Writes.keep_the_set_calls`) once the loop is banded.
 - **Checked by**: tests/lists_used_as_sets (a 100,000-item set answers `contains` about as fast as a 1,000-item one,
   and a list that stops being a set keeps its answers), tests/set_searched_in_bands (a set every band searches
-  keeps its plain `contains` and answers the same every run).
+  keeps its plain `contains` and answers the same every run), tests/set_private_to_a_band (a set each pass of a
+  band makes keeps its index, read from the high representation), tests/set_shared_between_bands (a set made
+  before the loop and searched by every band keeps its plain `contains`).
 
 ## Threads and locks
 
@@ -1521,7 +1539,7 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   through a shape, a wait or a handle, recursion, and a function the compiler supplies outside that list. A block
   that only ends the program (a `crash` and its report) is not studied: the pass may halt (D1747).
   A `contains` of a shared list stays a read: [a list used only as a set](#a-list-used-only-as-a-set) keeps no
-  index for a list that code run at once searches.
+  index for a list that code run at once searches, unless the pass made that list itself.
 - **Buys**: [bands](OPTIMIZATIONS.md#a-loop-whose-passes-write-only-their-own-item-runs-in-bands) for a pass that
   makes objects, lists and texts per element and writes any attribute of its element.
 - **Missing** (spite_compiler#411): writes through objects the element alone reaches (a run-time walk that every
@@ -1568,7 +1586,9 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 
 - **Status**: built.
 - **Rule**: a function runs alone when no code that may run at once with other code reaches it, by the walk of
-  [a list used only as a set](#a-list-used-only-as-a-set) (`high_intermediary_representation/run_at_once.spite`):
+  [a list used only as a set](#a-list-used-only-as-a-set) (`high_intermediary_representation/run_at_once.spite`,
+  with `reaches_only_handed_values` off, so a function run at once that calls through its parameter reaches every
+  function the program hands to it anywhere, not only what the calls run at once hand it as D2290 lets the set walk do):
   not a function the compiler starts on the pool, nor one they reach, nor a `drop`, nor a function that starts work
   itself. Such a function only ever runs while no other thread the compiler made runs: every start is joined in the
   block that made it, and the join waits for the work and everything it let go, so what the bands counted is

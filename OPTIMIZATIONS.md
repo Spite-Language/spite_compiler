@@ -2053,7 +2053,10 @@ are one family, and a family is indexed when it is searched (`contains`, `index_
 - no code that may run at once with other code searches it or appends to it: a band of a banded loop, a call of
   overlapped work, a frame loop's started call, what their starter does until the join, and everything those
   reach. An indexed search writes the list (its count of items read, and the index it builds), so bands searching
-  one shared list would build it at the same time; such a family keeps its `contains` as written, a read;
+  one shared list would build it at the same time; such a family keeps its `contains` as written, a read. A search
+  or an `append` in a band of a loop over a list's positions, on a list the band's pass made itself, does not
+  count: no other thread reaches that list, so its index is the band's own. A function called through a parameter is reached from such code only when a call run at once hands it, so
+  `list.each(f)` in a band does not bring in every function handed to `each` elsewhere;
 - the build is not inspectable.
 
 Reading in order does not stop it, since the items stay where they were, and an `append` with no `contains` before it
