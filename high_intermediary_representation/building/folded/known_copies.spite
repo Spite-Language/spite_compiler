@@ -6,6 +6,7 @@ var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
 var context = Context(no_program, no_resolver)
 var values = Values(context)
 var constants = Constants(context, values)
+var described_names = DescribedNames()
 var _deepest_copy = 8
 var _read_names = [
     "count"
@@ -32,6 +33,9 @@ func takes_a_known_item(walker: Model.FunctionModel, listed: Model.KnownValue): 
     var first = listed.items[0]
     fallback first
     fallback not assigns_in(walker.declaration, parameter.name)
+    if first.kind == 'class' {
+        return true
+    }
     return stays_as_it_was(walker.declaration, parameter.name, first, 0)
 }
 
@@ -42,7 +46,7 @@ func walk_copy(walker: Model.FunctionModel, item: Model.KnownValue): Model.Funct
     knowns[parameter.name] = item
     var no_parameters = List<Model.ParameterModel>()
     var current_copy = context.current_function.walk_copy_or_empty()
-    return copy_knowing(walker, knowns, no_parameters, current_copy.known_depth + 1)
+    return copy_knowing(walker, context.current_class, knowns, no_parameters, current_copy.known_depth + 1)
 }
 
 func called_with_knowns(
@@ -50,35 +54,131 @@ func called_with_knowns(
     name: String,
 ): SpiteCompiler.Value? {
     var literals = Literals(values.context, values)
+    fallback call.generic_arguments.is_empty()
+    var called = context.current_class.function_named(name)
+    fallback called
+    var own = literals.this_value()
+    return called_on_with_knowns(called, context.current_class, own, call.arguments)
+}
+
+# ../../../../spite_documentation/reflection.md#known-while-compiling
+func called_on_with_knowns(
+    called: Model.FunctionModel,
+    holder: Model.ClassModel,
+    receiver: SpiteCompiler.Value,
+    written: List<SpiteCompiler.Expression>,
+): SpiteCompiler.Value? {
     var calls = Calls(values.context, values)
     var caller = context.current_function
     var caller_copy = caller.walk_copy_or_empty()
-    fallback caller.is_a_walk_copy() and caller_copy.known_depth < _deepest_copy and not call.arguments.is_empty()
-    fallback call.generic_arguments.is_empty()
-    var called = context.current_class.function_named(name)
-    fallback called and takes_knowns(called)
-    fallback called.parameters.count() == call.arguments.count()
+    var is_in_a_copy = caller.is_a_walk_copy()
+    fallback caller_copy.known_depth < _deepest_copy and not written.is_empty()
+    fallback takes_knowns(called) and called.parameters.count() == written.count()
+    fallback is_in_a_copy or takes_a_described_place(called)
     var knowns = Dictionary<String, Model.KnownValue>()
     var kept_parameters = List<Model.ParameterModel>()
     var kept_arguments = List<SpiteCompiler.Expression>()
+    var class_place = -1
     var index = 0
-    while index < call.arguments.count() {
-        var written = call.arguments[index]
+    while index < written.count() {
+        var argument = written[index]
         var parameter = called.parameters[index]
         crash parameter
-        var known = known_for(called, parameter, written)
+        var known = known_for(called, parameter, argument, is_in_a_copy)
         if known {
             knowns[parameter.name] = known
+            if known.kind == 'class' {
+                class_place = index
+            }
         } else {
             kept_parameters.append(parameter)
-            kept_arguments.append(written)
+            kept_arguments.append(argument)
         }
         index = index + 1
     }
-    fallback not knowns.keys().is_empty()
-    var made = copy_knowing(called, knowns, kept_parameters, caller_copy.known_depth + 1)
-    var own = literals.this_value()
-    return calls.called(made, own, kept_arguments)
+    var known_names = knowns.keys()
+    fallback not known_names.is_empty()
+    var depth = caller_copy.known_depth + 1
+    var made: Model.FunctionModel? = null
+    if known_names.count() == 1 and class_place >= 0 {
+        made = class_copy(called, holder, class_place, knowns, depth)
+    }
+    if not made {
+        fallback knowns_stay(called, knowns)
+        made = copy_knowing(called, holder, knowns, kept_parameters, depth)
+    }
+    crash made
+    return calls.called(made, receiver, kept_arguments)
+}
+
+# ../../../PROOFS.md#a-walk-over-known-classes-is-decided-while-compiling
+func knowns_stay(called: Model.FunctionModel, knowns: Dictionary<String, Model.KnownValue>): Boolean {
+    crash called.declaration
+    var names = knowns.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var known = knowns[name]
+        crash known
+        fallback stays_as_it_was(called.declaration, name, known, 0)
+        index = index + 1
+    }
+    return true
+}
+
+# ../../../../spite_documentation/reflection.md#known-while-compiling
+func takes_a_described_place(function: Model.FunctionModel): Boolean {
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var taken = parameter.parameter_type
+        var describes = taken.name == "Spite.Class" or taken.name == "Spite.Namespace"
+        if describes and taken.kind == 'object' and not taken.is_nullable {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+# ../../../../spite_documentation/reflection.md#known-while-compiling
+func class_copy(
+    function: Model.FunctionModel,
+    holder: Model.ClassModel,
+    place: Integer,
+    knowns: Dictionary<String, Model.KnownValue>,
+    depth: Integer,
+): Model.FunctionModel? {
+    var names = knowns.keys()
+    var name = names[0]
+    crash name
+    var known = knowns[name]
+    crash known
+    var class_key = known.text
+    fallback not values.scalars.is_a_scalar(class_key)
+    var model = context.resolver.monomorphiser.class_model_named(class_key)
+    fallback model
+    var owner_name = class_key.replace(".", "_")
+    var called_name = "{function.name}_over_{owner_name}"
+    var made = holder.function_named(called_name)
+    if made {
+        return made
+    }
+    var member_type = Model.Type('object', model.key)
+    var simple = described_names.simple_name_of(model.shown)
+    var bound = Model.TemplateBinding(place, simple, member_type, false, 0, "", "", null, null)
+    var binding_copy = Model.WalkCopy(null, "", true, null, depth)
+    var copied = context.resolver.reading.specialized(
+        function.declaration,
+        function.owner,
+        bound,
+        binding_copy,
+        null,
+        called_name,
+        holder,
+    )
+    holder.declared_functions.append(copied)
+    return copied
 }
 
 func takes_knowns(function: Model.FunctionModel): Boolean {
@@ -95,11 +195,19 @@ func known_for(
     called: Model.FunctionModel,
     parameter: Model.ParameterModel,
     written: SpiteCompiler.Expression,
+    is_in_a_copy: Boolean,
 ): Model.KnownValue? {
     var known = constants.known_of(written)
+    if not known {
+        known = constants.known_described(written)
+    }
     fallback known and known.is_reflected and fits_the_parameter(known, parameter)
+    fallback is_in_a_copy or known.kind == 'class' or known.kind == 'namespace'
     crash called.declaration
     fallback not assigns_in(called.declaration, parameter.name)
+    if known.kind == 'class' {
+        return known
+    }
     fallback stays_as_it_was(called.declaration, parameter.name, known, 0)
     return known
 }
@@ -141,6 +249,7 @@ func assigns_in(declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDecl
 
 func copy_knowing(
     function: Model.FunctionModel,
+    holder: Model.ClassModel,
     knowns: Dictionary<String, Model.KnownValue>,
     kept_parameters: List<Model.ParameterModel>,
     depth: Integer,
@@ -168,7 +277,7 @@ func copy_knowing(
         false,
     )
     made.parameters = kept_parameters
-    context.current_class.declared_functions.append(made)
+    holder.declared_functions.append(made)
     context.known_copies[key] = made
     return made
 }
