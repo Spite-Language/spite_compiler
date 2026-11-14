@@ -244,7 +244,8 @@ the lowering and the outputs read is what the reached functions made, and the ex
 
 The validators the builder calls refuse in every function. The proofs that run after building
 (`proven_present`, `every_attribute_is_read`, the rules after building) read the reached functions only, since
-they prove facts the executable relies on. A context field or a model collection that the builder writes and a
+they prove facts the executable relies on; `every_attribute_is_read` also counts the reads of the checked ones,
+which the check keeps aside in `HighProgram.checked_functions`. A context field or a model collection that the builder writes and a
 later stage reads is put back here; one that is not would let an uncalled function change the executable.
 
 ### The low passes, in order
