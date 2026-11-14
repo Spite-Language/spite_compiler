@@ -277,7 +277,9 @@ func called_on_value_of(
     crash parameter_type
     var arguments_type = signature.parameters[1]
     crash arguments_type
-    var wrapper = calling_on_wrapper(model, declared, parameter_type, arguments_type)
+    crash signature.answer
+    var answer_type: Model.Type = signature.answer
+    var wrapper = calling_on_wrapper(model, declared, parameter_type, arguments_type, answer_type)
     return HighIntermediaryRepresentation.Values.Function.Value(wanted, wrapper, receiver)
 }
 
@@ -286,6 +288,7 @@ func calling_on_wrapper(
     declared: Model.FunctionModel,
     instance_type: Model.Type,
     arguments_type: Model.Type,
+    answer_type: Model.Type,
 ): Model.FunctionModel {
     var name = "_call_{declared.name}_on"
     var known = model.function_named(name)
@@ -296,7 +299,7 @@ func calling_on_wrapper(
     var made = Model.FunctionModel(
         name,
         model.key,
-        null,
+        answer_type,
         null,
         null,
         null,
@@ -314,8 +317,12 @@ func calling_on_wrapper(
     model.declared_functions.append(made)
     var body = HighIntermediaryRepresentation.Statements.Block(0)
     var passed = first_unpassed_parameter(declared)
-    if passed.is_empty() {
-        called_on_its_instance(body, model, declared, instance_type, arguments_type)
+    if passed.is_empty() and not answers_a_value(declared) {
+        var unanswered = "spite: call() cannot hand back the answer of '{model.shown}.{declared.name}' when the call is known only at run time, since a value of its type is not told apart while the program runs: build the call from a function named in the code, 'Spite.Call({model.shown}.functions[\"{declared.name}\"], instance)'"
+        var stopped = HighIntermediaryRepresentation.Statements.Stop(unanswered, 0)
+        body.statements.append(stopped)
+    } else if passed.is_empty() {
+        called_on_its_instance(body, model, declared, instance_type, arguments_type, answer_type)
     } else {
         var message = "spite: call() cannot pass the argument '{passed}' of '{model.shown}.{declared.name}' when the call is known only at run time, since a value of its type is not told apart while the program runs: build the call from a function named in the code, 'Spite.Call({model.shown}.functions[\"{declared.name}\"], instance)'"
         var refused = HighIntermediaryRepresentation.Statements.Stop(message, 0)
@@ -324,6 +331,17 @@ func calling_on_wrapper(
     var function = HighIntermediaryRepresentation.HighFunction(made, body)
     state.context.synthetic_functions.append(function)
     return made
+}
+
+# ../../../spite_documentation/reflection.md#a-call-built-before-it-runs
+func answers_a_value(declared: Model.FunctionModel): Boolean {
+    if not declared.answer {
+        return true
+    }
+    var answer: Model.Type = declared.answer
+    var kind = answer.kind
+    var is_held = kind == 'scalar' or kind == 'enumeration' or kind == 'object'
+    return is_held or kind == 'union' or kind == 'shape' or kind == 'nothing'
 }
 
 func first_unpassed_parameter(declared: Model.FunctionModel): String {
@@ -341,38 +359,44 @@ func first_unpassed_parameter(declared: Model.FunctionModel): String {
     return ""
 }
 
+# ../../../spite_documentation/reflection.md#a-call-built-before-it-runs
 func called_on_its_instance(
     body: HighIntermediaryRepresentation.Statements.Block,
     model: Model.ClassModel,
     declared: Model.FunctionModel,
     instance_type: Model.Type,
     arguments_type: Model.Type,
+    answer_type: Model.Type,
 ) {
+    var fitting = Fitting(state.values.context, state.values)
     state.context.need(declared)
     var own_type = model.type_of_an_instance()
     var instance = HighIntermediaryRepresentation.Values.LocalRead(instance_type, "instance")
     var tested = HighIntermediaryRepresentation.Values.Class.Membership(instance, own_type)
     var narrowed = HighIntermediaryRepresentation.Values.Conversion(own_type, 'present', instance, "")
-    var running = HighIntermediaryRepresentation.Statements.Block(0)
+    var message = "spite: call() runs '{declared.name}', declared by '{model.shown}', on an instance of another class: a call runs a declaration on an instance of its own class"
+    var other_class = HighIntermediaryRepresentation.Values.Negation(tested)
+    stop_when(body, other_class, message)
     var passed_arguments = List<SpiteCompiler.Value>()
     var shown = "{model.shown}.{declared.name}"
     var index = 0
     while index < declared.parameters.count() {
         var parameter = declared.parameters[index]
-        var argument = passed_argument(running, parameter, arguments_type, shown)
+        var argument = passed_argument(body, parameter, arguments_type, shown)
         passed_arguments.append(argument)
         index = index + 1
     }
-    stop_an_argument_too_many(running, declared, arguments_type, shown)
+    stop_an_argument_too_many(body, declared, arguments_type, shown)
     var call = HighIntermediaryRepresentation.Values.Call(declared, narrowed, passed_arguments, "", "")
-    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(call, 0)
-    running.statements.append(evaluated)
-    var message = "spite: call() runs '{declared.name}', declared by '{model.shown}', on an instance of another class: a call runs a declaration on an instance of its own class"
-    var refused = HighIntermediaryRepresentation.Statements.Stop(message, 0)
-    var refusing = HighIntermediaryRepresentation.Statements.Block(0)
-    refusing.statements.append(refused)
-    var branch = HighIntermediaryRepresentation.Statements.If(tested, running, refusing, 0, "")
-    body.statements.append(branch)
+    var answered: SpiteCompiler.Value = HighIntermediaryRepresentation.Values.NullConstant(answer_type)
+    if declared.answer {
+        answered = fitting.fitted(call, answer_type)
+    } else {
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(call, 0)
+        body.statements.append(evaluated)
+    }
+    var returned = HighIntermediaryRepresentation.Statements.Return(answered, 0)
+    body.statements.append(returned)
 }
 
 func passed_argument(
