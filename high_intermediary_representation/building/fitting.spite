@@ -130,6 +130,10 @@ func fitted(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value
             return fitted(reflected, wanted)
         }
     }
+    var list_cast = list_cast_of(value, wanted)
+    if list_cast {
+        return list_cast
+    }
     var specialised = Validators.HighIntermediaryRepresentation.SpecialisedValue.Validator()
     var specialised_answer = specialised.check(context, value, wanted)
     context.tell(specialised_answer)
@@ -148,6 +152,98 @@ func fitted(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value
     mismatch_answer = mismatch.check(context, given, wanted, converted)
     context.tell(mismatch_answer)
     return value
+}
+
+# ../../../spite_documentation/collections.md#a-list-is-cast-to-a-wider-list
+func list_cast_of(value: SpiteCompiler.Value, wanted: Model.Type): SpiteCompiler.Value? {
+    var given = value.value_type
+    fallback not given.is_nullable and not wanted.is_nullable
+    var given_model = list_model_of(given)
+    var wanted_model = list_model_of(wanted)
+    fallback given_model and wanted_model
+    var given_element = given_model.bound_types["$element_type"]
+    var wanted_element = wanted_model.bound_types["$element_type"]
+    fallback given_element and wanted_element
+    fallback element_fits(given_element, wanted_element)
+    return cast_list(value, given_model, wanted, wanted_element)
+}
+
+func list_model_of(list_type: Model.Type): Model.ClassModel? {
+    fallback list_type.kind == 'object'
+    var model = context.program.class_named(list_type.name)
+    fallback model and model.file.namespace == "List"
+    var library = Mapping.LibraryFile()
+    fallback library.holds(model.file.path)
+    return model
+}
+
+func element_fits(given: Model.Type, wanted: Model.Type): Boolean {
+    fallback wanted.is_nullable or not given.is_nullable
+    var given_present = given.present()
+    var wanted_present = wanted.present()
+    if values.is_the_same_type(given_present, wanted_present) or is_wider(wanted_present, given_present) {
+        return true
+    }
+    var given_list = list_model_of(given_present)
+    var wanted_list = list_model_of(wanted_present)
+    if given_list and wanted_list {
+        var given_inside = given_list.bound_types["$element_type"]
+        var wanted_inside = wanted_list.bound_types["$element_type"]
+        fallback given_inside and wanted_inside
+        return element_fits(given_inside, wanted_inside)
+    }
+    if given_present.kind == 'union' and wanted_present.kind == 'union' {
+        return is_a_part_of(given_present, wanted_present)
+    }
+    return fits_the_needed_type(given_present, wanted_present)
+}
+
+# ../../../spite_documentation/collections.md#a-list-is-cast-to-a-wider-list
+func cast_list(
+    value: SpiteCompiler.Value,
+    given_model: Model.ClassModel,
+    wanted: Model.Type,
+    wanted_element: Model.Type,
+): SpiteCompiler.Value {
+    var collections = Collections(context, values)
+    var calls = Calls(context, values)
+    var integer = context.scalar_type("Integer")
+    var boolean = context.boolean()
+    var given = value.value_type
+    values.temporary_count = values.temporary_count + 1
+    var source_name = context.scope.declare("cast_{values.temporary_count}", given)
+    var source_declared = HighIntermediaryRepresentation.Statements.Declare(source_name, given, value, context.line, "")
+    context.pending.append(source_declared)
+    var source = HighIntermediaryRepresentation.Values.LocalRead(given, source_name)
+    var made = collections.new_list(wanted)
+    var index_name = context.scope.declare("cast_index_{values.temporary_count}", integer)
+    var start = HighIntermediaryRepresentation.Values.WholeNumber(integer, 0, false)
+    var index_declared = HighIntermediaryRepresentation.Statements.Declare(index_name, integer, start, context.line, "")
+    context.pending.append(index_declared)
+    var index_read = HighIntermediaryRepresentation.Values.LocalRead(integer, index_name)
+    var no_arguments = List<SpiteCompiler.Value>()
+    var counted = calls.method_call(source, "count", no_arguments)
+    var going_on = HighIntermediaryRepresentation.Values.MachineOperation(boolean, 'less', index_read, counted, null)
+    var outer_pending = context.pending
+    context.pending = List<SpiteCompiler.Statement>()
+    var reader = given_model.function_named("_read_value")
+    crash reader
+    context.need(reader)
+    var positions = List<SpiteCompiler.Value>()
+    positions.append(index_read)
+    var item = HighIntermediaryRepresentation.Values.Call(reader, source, positions, "", "")
+    var fitted_item = fitted(item, wanted_element)
+    collections.append_to(made, fitted_item)
+    var one = HighIntermediaryRepresentation.Values.WholeNumber(integer, 1, false)
+    var stepped = HighIntermediaryRepresentation.Values.MachineOperation(integer, 'add', index_read, one, null)
+    var index_assigned = HighIntermediaryRepresentation.Statements.Assign.Assign(index_name, stepped, context.line)
+    context.pending.append(index_assigned)
+    var body = HighIntermediaryRepresentation.Statements.Block(context.line)
+    body.statements = context.pending
+    context.pending = outer_pending
+    var loop = HighIntermediaryRepresentation.Statements.While(going_on, body, context.line)
+    context.pending.append(loop)
+    return made
 }
 
 func can_be_converted(given: Model.Type, wanted: Model.Type): Boolean {
