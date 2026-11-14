@@ -1215,9 +1215,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   its parameters replaced by the call's receiver and arguments, so `team.recruit(player)` beside `player.play_for(team)`
   links the two as `team.players.append(player)` beside `player.team = team` would (D1396). A function's own stores
   include those of the program functions it calls, followed to a fixed point: one round over the program, then
-  rounds over only the callers of a function whose summary grew, until none grows (at most 64 rounds; past them
-  the links found so far stand and the rest keep their counts), so a link made any number of
-  calls down counts (D1663, spite_compiler#26). An object a function makes is named by that function and its place
+  rounds over only the callers of a function whose summary grew, until none grows, so a link made any number of
+  calls down counts (D1663, spite_compiler#26, #495). A partial reading is never used: a link found only in a later
+  round can decide that an attribute pointing both ways keeps its counts. An object a function makes is named by that function and its place
   in it (`#Team:sign:1`), the same on every reading, so a summary read again is equal and the rounds end; a summary
   keeps each store once, and only stores whose keys reach at most four parts deep (`this.a.b.c`), so it cannot grow
   without end. A call whose summary names an object the reading function itself makes (through recursion) adds
@@ -1230,7 +1230,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
 - **Lives in**: `model/back_references.spite`, asked by `ProgramModel.holds_no_count`.
 - **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls,
-  tests/back_reference_two_levels.
+  tests/back_reference_two_levels, tests/a_back_reference_found_many_calls_down (73 calls down).
 
 ### A deep copy copies a graph with its shape
 
