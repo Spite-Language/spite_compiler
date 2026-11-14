@@ -22,7 +22,8 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
     symbols                                the entry class and every class it names, a class at a time as names ask
                                            for it, each read through abstract_syntax_tree's `run` (lexed, parsed,
                                            fixed by fixes/abstract_syntax_tree, written by `Fixes.Fixes` through
-                                           printers/spite's Printer and read again); then
+                                           printers/spite's Printer and read again, its tags desugared
+                                           by abstract_syntax_tree/markup); then
                                            validators/abstract_syntax_tree; once every class is read, fixes/symbols,
                                            then validators/mapping
     name_resolution                        the model; then validators/name_resolution
