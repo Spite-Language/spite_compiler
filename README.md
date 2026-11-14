@@ -35,7 +35,7 @@ answers. `--high-ir` and `--low-ir` also write the program's representations bes
 `<name>.low_ir.txt`.
 
 Every program has the standard library with no `load` line: the `spite_standard_library` folder nearest above
-`spite.exe`, the clone beside this one, or the folder `--standard-library=<folder>` names. There is no launcher:
+`spite.exe`, the clone beside this one, or the folder `--standard-library-path=<folder>` names. There is no launcher:
 
     func ExitCode(): Integer {
 

@@ -481,7 +481,7 @@ walks up through the frame pointers; without the file it prints only the fault l
 The repositories sit side by side under one folder, as `gh repo clone` names them: this one as `spite_compiler`
 and [spite_standard_library](https://github.com/Spite-Language/spite_standard_library) beside it. The source is
 written to the language this compiler checks: it reads the standard library beside it (the `spite_standard_library`
-folder nearest above the compiler's executable, or `--standard-library=<folder>`), and every
+folder nearest above the compiler's executable, or `--standard-library-path=<folder>`), and every
 rule the programs of [spite_spec](https://github.com/Spite-Language/spite_spec) check holds in it.
 Nothing else is needed: no link, no copied file, no older compiler. `bash scripts/bootstrap.sh --install` builds
 it from a fresh clone:
