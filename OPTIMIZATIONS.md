@@ -2179,6 +2179,41 @@ func largest_remainder(round: Integer): Integer {
 Both lists live in the frame: four stores each, a count of 4 and loads at fixed offsets
 (`a_local_list_of_known_size_lives_in_the_frame`: 695 ms before, 98 ms after).
 
+## A list made only to be walked is never made
+
+A list literal of at most 8 items (`[face]`, or the one-item `List<Anything?>` a JSX `{face}` child becomes, D2302),
+held by at most one more name and handed straight to a call, is never made when the callee only walks it: every
+statement of the callee's body is `items.each(walker)`, with `walker` a function of the callee's own class taking one
+item. The call becomes a call of the callee's copy for that many items (`append_children$walked1_0`), which takes
+each item as a parameter and calls each walker with each item, in order. No list, no buffer and no appends are made,
+and the callee, `each` and `append` go when nothing else calls them
+([PROOFS.md](PROOFS.md#a-list-its-callee-only-walks-is-never-made)).
+
+```spite
+func render(): Anything? {
+    var face = character.object(face_name)
+    return <Framework.Skeleton rig={rig}>
+        {face}
+    </Framework.Skeleton>
+}
+```
+
+`{face}` lowers to `skeleton.append_children(children_7)` with `children_7: List<Anything?> = [face]`, and
+`append_children` is `items.each(append_child)`: the call is `append_children$walked1_0(skeleton, face)`, whose body
+is `append_child(face)`, the code the hand-written `skeleton.append_child(face)` made.
+
+**When it applies:** to a list made in the function with `List()` or a literal, filled by `append`s of plain values
+(names, `this`, attributes of them, literals, and their conversions) right where it is made, read by nothing else in
+the function, and passed as an argument of a call statement whose receiver and other arguments are plain too, to a
+function of a class that is not a singleton, answering nothing, whose body is only walks of that parameter. A callee
+that also counts, indexes, keeps or hands on the list, a walker that is a function value it was given, or more items
+keep the list. A build that can be inspected or reloaded (`--repl`, `--development`, `--hot-reload`) keeps every call
+as written.
+
+**What a program can observe:** fewer allocations under `--debug-memory`, and the copy, named
+`<function>$walked<items>_<position>`, in the executable's function map. A crash report names the callee, as before
+(`tests/walked_lists`).
+
 ## Maths left on constants after lowering is worked out too
 
 An arithmetic instruction or a comparison whose two operands are constants (a register written once, by a

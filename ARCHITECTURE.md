@@ -137,6 +137,9 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
 ### The high passes, in order
 
 0. `literal_answers`: a number or an enum value the proof `literal_conversions` worked out replaces its call.
+   Right after it, `walked_lists`: a list of a few plain items made only to be handed to a function whose body only
+   walks it (`proofs/walked_lists`, asked per call) is a call of the function's copy taking the items
+   ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-list-made-only-to-be-walked-is-never-made)).
 1. `setup_list_calls`: each recorded loop over a setup's list is one direct call per item, to the function of the
    item's class. This is what makes a stage's `run` direct calls in order.
 2. `fused_chains`: a `List` or `Vector` template called on the answer of `filter_` and `map_` steps is one call to

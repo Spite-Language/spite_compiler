@@ -1151,6 +1151,23 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: tests/frame_lists, tests/frame_lists_of_decimals, tests/variadic_answers_in_frame,
   tests/text_building (output only).
 
+### A list its callee only walks is never made
+
+- **Status**: built for literal lists of at most 8 items (spite_compiler#486).
+- **Rule**: a list made, filled with plain values and read only by one call, whose callee's whole body is
+  `parameter.each(walker)` with a walker of the callee's own class, is the callee's copy taking the items, each walk
+  one call per item in order ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-list-made-only-to-be-walked-is-never-made)).
+- **Why it holds**: the list is fresh and no other name reaches it, so the walker cannot change it; `each` reads its
+  items in order and calls the walker once for each; the callee keeps, answers and hands on nothing of the list. The
+  copy shows the callee's place, so a crash report names the same frames.
+- **Buys**: no list, buffer or appends per call; the call costs what the hand-written calls of the walker cost.
+- **Missing**: a callee that does more than walk (a count, an index, a test); a walker passed in; a list built in
+  a loop.
+- **Falls back**: the list is made and walked.
+- **Lives in**: `proofs/walked_lists`, which the high pass `walked_lists` asks for each candidate call before it
+  writes the copy.
+- **Checked by**: tests/walked_lists.
+
 ### A function value its callee only calls lives in the frame
 
 - **Status**: partly built (only through inlining and known closures, D1043).

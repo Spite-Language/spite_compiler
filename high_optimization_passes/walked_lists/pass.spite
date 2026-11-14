@@ -1,0 +1,317 @@
+# ../../OPTIMIZATIONS.md#a-list-made-only-to-be-walked-is-never-made
+
+var no_program = Model.ProgramModel()
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
+var proof = Proofs.WalkedLists.Proof(program)
+var uses = HighIntermediaryRepresentation.Ownership.Uses()
+var no_function = Model.FunctionModel("", "", null, null, null, null, null, null, false, false, false, false)
+var no_body = HighIntermediaryRepresentation.Statements.Block(0)
+var walking = HighIntermediaryRepresentation.HighFunction(no_function, no_body)
+var built_by_key = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var copies = List<HighIntermediaryRepresentation.HighFunction>()
+var list_type = Model.Type('nothing', "")
+var element_type = Model.Type('nothing', "")
+var appending: Model.FunctionModel = no_function
+var list_name = ""
+var passed_name = ""
+var items = List<SpiteCompiler.Value>()
+var most_items = 8
+
+func optimized(high: HighIntermediaryRepresentation.HighProgram) {
+    fallback high.will_be_lowered()
+    crash high.context
+    var inspection = CommandLine.Inspection()
+    fallback not inspection.holds(high.context.build_flags)
+    program = high
+    proof = Proofs.WalkedLists.Proof(high)
+    high.built_functions.each(note_a_function)
+    var built = high.built_functions.copy()
+    var index = 0
+    while index < built.count() {
+        var function = built[index]
+        walking = function
+        walk_a_block(function.body)
+        index = index + 1
+    }
+    fallback not copies.is_empty()
+    place_the_copies()
+}
+
+func note_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    var key = function.function.key()
+    built_by_key[key] = function
+}
+
+func walk_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        walk_inside(statement)
+        rewrite_at(block.statements, index)
+        index = index + 1
+    }
+}
+
+func walk_inside(statement: SpiteCompiler.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.If: walk_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: walk_a_block(statement.body)
+        HighIntermediaryRepresentation.Statements.Block: walk_a_block(statement)
+        HighIntermediaryRepresentation.Statements.Declare: return
+        HighIntermediaryRepresentation.Statements.Assign.Assign: return
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: return
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: return
+        HighIntermediaryRepresentation.Statements.Evaluate: return
+        HighIntermediaryRepresentation.Statements.Return: return
+        HighIntermediaryRepresentation.Statements.Stop: return
+    }
+}
+
+func walk_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    walk_a_block(branch.then_branch)
+    walk_a_block(branch.else_branch)
+}
+
+func rewrite_at(statements: List<SpiteCompiler.Statement>, at: Integer) {
+    fallback is_a_fresh_list(statements, at)
+    var next = at + 1
+    var appends = true
+    items = List<SpiteCompiler.Value>()
+    while appends and next < statements.count() {
+        var statement = statements[next]
+        appends = appends_an_item(statement)
+        if appends {
+            next = next + 1
+        }
+    }
+    fallback not items.is_empty() and items.count() <= most_items and next < statements.count()
+    passed_name = list_name
+    var expected_reads = items.count() + 1
+    var held = statements[next]
+    if holds_the_list(held) {
+        next = next + 1
+    }
+    fallback next < statements.count() and is_read_only_here(list_name, expected_reads)
+    fallback passed_name == list_name or is_read_only_here(passed_name, 1)
+    var calling = statements[next]
+    var copied = copied_call(calling)
+    fallback copied
+    statements[at] = copied
+    var removed = at + 1
+    while removed <= next {
+        statements.remove_at(at + 1)
+        removed = removed + 1
+    }
+}
+
+func is_a_fresh_list(statements: List<SpiteCompiler.Statement>, at: Integer): Boolean {
+    var statement = statements[at]
+    fallback statement and statement.class == HighIntermediaryRepresentation.Statements.Declare
+    fallback statement.value and statement.value.class == HighIntermediaryRepresentation.Values.MakeObject
+    fallback not statement.value.constructor and statement.value.arguments.is_empty()
+    var owner = program.model.class_named(statement.value.value_type.name)
+    fallback owner and owner.file.namespace == "List"
+    list_type = statement.value.value_type
+    list_name = statement.name
+    return true
+}
+
+func appends_an_item(statement: SpiteCompiler.Statement): Boolean {
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Evaluate and not statement.waited
+    fallback statement.value and statement.value.class == HighIntermediaryRepresentation.Values.Call
+    fallback statement.value.function.name == "append" and statement.value.function.owner == list_type.name
+    fallback uses.is_the_local(statement.value.receiver, list_name) and statement.value.arguments.count() == 1
+    var item = statement.value.arguments[0]
+    fallback is_plain(item) and uses.in_value(item, list_name) == 0
+    var taken = statement.value.function.parameters[0]
+    crash taken
+    appending = statement.value.function
+    element_type = taken.parameter_type
+    items.append(item)
+    return true
+}
+
+func holds_the_list(statement: SpiteCompiler.Statement): Boolean {
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Declare
+    fallback uses.is_the_local(statement.value, list_name) and statement.declared_type.is_the_same_as(list_type)
+    passed_name = statement.name
+    return true
+}
+
+func is_read_only_here(name: String, reads: Integer): Boolean {
+    var found = uses.in_block(walking.body, name)
+    return found == uses.many + reads
+}
+
+func copied_call(statement: SpiteCompiler.Statement): HighIntermediaryRepresentation.Statements.Evaluate? {
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Evaluate and not statement.waited
+    fallback statement.value and statement.value.class == HighIntermediaryRepresentation.Values.Call
+    fallback is_plain(statement.value.receiver)
+    var position = passed_position(statement.value.arguments)
+    fallback position >= 0
+    var callee_key = statement.value.function.key()
+    var callee = built_by_key[callee_key]
+    fallback callee
+    var walkers = proof.walkers_of(callee, position, element_type)
+    fallback not walkers.is_empty()
+    var copy = copy_of(callee, position, walkers)
+    var arguments = List<SpiteCompiler.Value>()
+    var index = 0
+    while index < statement.value.arguments.count() {
+        var argument = statement.value.arguments[index]
+        if index == position {
+            items.each(arguments.append)
+        } else {
+            arguments.append(argument)
+        }
+        index = index + 1
+    }
+    program.replaced_functions.append(callee.function)
+    program.replaced_functions.append(appending)
+    proof.walks.each(program.replaced_functions.append)
+    var direct = HighIntermediaryRepresentation.Values.Call(copy, statement.value.receiver, arguments, "", "")
+    return HighIntermediaryRepresentation.Statements.Evaluate(direct, statement.line)
+}
+
+func passed_position(arguments: List<SpiteCompiler.Value>): Integer {
+    var position = -1
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        if uses.is_the_local(argument, passed_name) {
+            position = index
+        } else if not is_plain(argument) {
+            return -1
+        }
+        index = index + 1
+    }
+    return position
+}
+
+func is_plain(value: SpiteCompiler.Value?): Boolean {
+    fallback value
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        return is_plain(value.converted)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        return is_plain(value.object)
+    }
+    var is_a_read = value.class == HighIntermediaryRepresentation.Values.LocalRead
+    var is_this = value.class == HighIntermediaryRepresentation.Values.ThisRead
+    var is_a_number = value.class == HighIntermediaryRepresentation.Values.WholeNumber
+    var is_a_decimal = value.class == HighIntermediaryRepresentation.Values.DecimalNumber
+    var is_a_text = value.class == HighIntermediaryRepresentation.Values.TextConstant
+    var is_null = value.class == HighIntermediaryRepresentation.Values.NullConstant
+    return is_a_read or is_this or is_a_number or is_a_decimal or is_a_text or is_null
+}
+
+func copy_of(
+    callee: HighIntermediaryRepresentation.HighFunction,
+    position: Integer,
+    walkers: List<HighIntermediaryRepresentation.Values.Function.Value>,
+): Model.FunctionModel {
+    var owner = program.model.class_named(callee.function.owner)
+    crash owner
+    var name = "{callee.function.name}$walked{items.count()}_{position}"
+    var known = owner.function_named(name)
+    if known {
+        return known
+    }
+    var is_synthetic = true
+    var made = Model.FunctionModel(
+        name,
+        owner.key,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        is_synthetic,
+        false,
+        false,
+        false,
+    )
+    var list_parameter = callee.function.parameters[position]
+    crash list_parameter
+    var index = 0
+    while index < callee.function.parameters.count() {
+        var parameter = callee.function.parameters[index]
+        if index == position {
+            add_the_item_parameters(made, list_parameter.name)
+        } else {
+            made.parameters.append(parameter)
+        }
+        index = index + 1
+    }
+    owner.declared_functions.append(made)
+    var body = HighIntermediaryRepresentation.Statements.Block(0)
+    var walk = 0
+    while walk < walkers.count() {
+        var walker = walkers[walk]
+        var line = proof.lines[walk]
+        crash line
+        walk_each_item(body, walker, list_parameter.name, line)
+        walk = walk + 1
+    }
+    var copy = HighIntermediaryRepresentation.HighFunction(made, body)
+    copy.placed_as = callee.function
+    copies.append(copy)
+    return made
+}
+
+func add_the_item_parameters(made: Model.FunctionModel, list_parameter: String) {
+    var index = 0
+    while index < items.count() {
+        var name = item_name(list_parameter, index)
+        var parameter = Model.ParameterModel(name, element_type, false)
+        made.parameters.append(parameter)
+        index = index + 1
+    }
+}
+
+func item_name(list_parameter: String, index: Integer): String {
+    return "{list_parameter}${index}"
+}
+
+func walk_each_item(
+    body: HighIntermediaryRepresentation.Statements.Block,
+    walker: HighIntermediaryRepresentation.Values.Function.Value,
+    list_parameter: String,
+    line: Integer,
+) {
+    crash walker.receiver
+    var index = 0
+    while index < items.count() {
+        var name = item_name(list_parameter, index)
+        var item = HighIntermediaryRepresentation.Values.LocalRead(element_type, name)
+        var passed = List<SpiteCompiler.Value>()
+        passed.append(item)
+        var own = HighIntermediaryRepresentation.Values.ThisRead(walker.receiver.value_type)
+        var called = HighIntermediaryRepresentation.Values.Call(walker.function, own, passed, "", "")
+        var calling = HighIntermediaryRepresentation.Statements.Evaluate(called, line)
+        body.statements.append(calling)
+        index = index + 1
+    }
+}
+
+func place_the_copies() {
+    var placed = List<HighIntermediaryRepresentation.HighFunction>()
+    var index = 0
+    while index < program.built_functions.count() {
+        var function = program.built_functions[index]
+        placed.append(function)
+        var copied = 0
+        while copied < copies.count() {
+            var copy = copies[copied]
+            crash copy.placed_as
+            if copy.placed_as.key() == function.function.key() {
+                placed.append(copy)
+            }
+            copied = copied + 1
+        }
+        index = index + 1
+    }
+    program.built_functions = placed
+}
