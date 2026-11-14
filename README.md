@@ -34,8 +34,8 @@ runs in, and every value is a named setting. The executable goes to `<program>/.
 answers. `--high-ir` and `--low-ir` also write the program's representations beside it, `<name>.high_ir.txt` and
 `<name>.low_ir.txt`.
 
-Every program has the standard library with no `load` line: the `spite_standard_library` folder nearest above
-`spite.exe`, the clone beside this one, or the folder `--standard-library-path=<folder>` names. There is no launcher:
+Every program has the standard library with no `load` line: the one `spite.exe` carries inside it (the clone beside
+this one, preloaded when the compiler is built), or the folder `--standard-library-path=<folder>` names. There is no launcher:
 
     func ExitCode(): Integer {
 
