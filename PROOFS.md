@@ -949,7 +949,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built, for what `building/folded/constants.spite` answers.
 - **Rule**: a class or namespace named in the code, `$T`, `class`, the parameter of a walk over classes or namespaces,
   and a `var` or a parameter given one of these and never assigned again are constants, and so are their `name`,
-  `name_with_namespaces`, `classes`, `namespaces` and `functions`, `Spite.Namespace.instances`, a list literal that only names classes or only names namespaces; `count()`, `is_empty()`, `map_names()`,
+  `name_with_namespaces`, `classes`, `namespaces` and `functions`, `Spite.Namespace.instances` and `Spite.Class.instances` (the
+  program's namespaces and classes, which no code can add to or take from while it runs), a list literal that only names classes or only names namespaces; `count()`, `is_empty()`, `map_names()`,
   `contains`, `count_name_starts_with` and `count_name_ends_with` of a constant list; `first()`, `last()`, `[n]` written as a
   whole number and `["Name"]` of a constant list of classes or namespaces, which are the item (`first()`, `last()` and a name
   a constant `T?` holding it, proven present, so a `crash` on a local holding one is removed as proven, as after
@@ -957,18 +958,23 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `contains`, `split` and `length()` of a constant text; and `==`, `!=`, the orders, `and`, `or` and `not` over them.
   Each answers what the object made at run time would answer, from the same names (`DescribedNames`, `namespaces_of_the_program`).
 - **Walks**: `each` over a constant list of classes or namespaces with a walker of the class is one call per item, of a copy
-  of the walker that knows it (`known_arguments`); inside any walk copy, a call of a function of the class with a constant argument is a
-  copy that knows the argument, at most eight copies deep (`_deepest_copy`), past which it stays a run-time call.
+  of the walker that knows it: over classes the copy binds the class as `Theme.classes.each(...)` does (`walked_class_keys`),
+  so inside it the class is a type, makes its objects and narrows `value.class == part`; over namespaces it knows the
+  namespace (`known_arguments`). A call of a function, of this class or of another object, handed a class or a namespace
+  constant is a copy for that value (a class alone binds it the same way, `_over_<Class>`), and inside any walk copy so is
+  a call handed any constant, at most eight copies deep (`_deepest_copy`), past which it stays a run-time call. A
+  function that takes a namespace or a class is never built on its own as an uncalled function (`is_a_walked_member`).
 - **A list stays known only while nothing can write to it**: a local or parameter holding a known list is known only when each
   mention in the function is a read (`stays_as_it_was`) or an argument of a function that only reads it. Anything else is
   built as it was written, at run time, undecided.
 - **Buys**: a walk whose every check folds costs nothing at run time: no reflection object is made for it, and a `crash` that
   holds is not written. A walk over `Spite.Namespace.instances` that checks the program's layout refuses the build, as the compiler's own `folder_layout` does (`tests/compiler_folder_layout_broken`).
-- **Falls back**: what does not fold (an attribute's list, a call on another object, a text with holes, an index that is not written as a number or a name, or names no item) is run time, so
+- **Falls back**: what does not fold (an attribute's list, a call on another object handed no class or namespace, a filter over a constant list, a text with holes, an index that is not written as a number or a name, or names no item) is run time, so
   a `crash` under it is not decided.
 - **Lives in**: `building/folded/constants.spite`, `building/folded/known_copies.spite`, asked first by `Values.value_of`.
 - **Checked by**: tests/reflection_names_fold, tests/reflection_list_first_folds, tests/reflection_list_last_folds,
   tests/reflection_list_index_folds, tests/reflection_list_name_folds, tests/namespace_walk_decided, tests/known_list_walk, tests/class_name_is_short; conformance/reflection_name_crash, conformance/known_list_walk_crash, conformance/walk_name_crash,
+  tests/registry_finds_components, tests/namespace_argument_folds,
   conformance/reflection_count_crash, conformance/reflection_names_contains_crash, conformance/namespace_walk_crash,
   conformance/namespace_walk_helper_crash.
 

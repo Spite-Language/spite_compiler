@@ -1490,10 +1490,14 @@ before these passes run, and a value must be in the frame when the function resu
 ## A walk over known classes makes no reflection object
 
 `Monster.name`, `Part.classes.count()`, `Part.classes.map_names().contains("Alpha")` and a walk over
-`Spite.Namespace.instances` are answered while the function is built (`building/folded/constants.spite`,
+`Spite.Namespace.instances` or `Spite.Class.instances` are answered while the function is built (`building/folded/constants.spite`,
 [PROOFS.md](PROOFS.md#a-walk-over-known-classes-is-decided-while-compiling)), so no `Spite.Class` or `Spite.Namespace` is made for
 them and no table is filled; `Part.classes.first()`, `.last()`, `[0]` and `["Alpha"]` make only the item's object, never the list. A `crash` that holds there writes nothing, a `fallback` a walk copy folds false records no trace, and the local holding a
-known list is not declared. What such a walk leaves is a call of a copy per item that does next to nothing; not every copy is inlined away yet (spite_compiler#299's check leaves about 1600 of them).
+known list is not declared. A walk over every class of the program, `Spite.Class.instances.each(bind)`, is one call per
+class of a copy of `bind` that binds it, so a `has_function("render")` test folds in each copy and a class it does not
+take leaves an empty copy; a namespace or class handed to a function (`window.register_namespace(Theme)`) makes that
+function's copy for it, so the walk inside folds the same way. The list of every class and the table behind it are not
+made unless something else reads them. What such a walk leaves is a call of a copy per item that does next to nothing; not every copy is inlined away yet (spite_compiler#299's check leaves about 1600 of them).
 
 The compile-time evaluation's budget (`fits`, in `partial_evaluation.spite`) compares a function's registers with
 `most_cells / blocks` rather than multiplying them, so a function too large for the evaluation is one it leaves alone, whatever its size,
