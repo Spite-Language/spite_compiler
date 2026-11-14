@@ -687,6 +687,13 @@ func variable_statement(): SpiteCompiler.WrittenStatement {
         keep_unfit('variable_equals')
     }
     step()
+    if markup_here("<") {
+        var placeholder = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+        var built = AbstractSyntaxTree.Shapes.Statements.VariableStatement(name, declared, placeholder)
+        built.markup = markup_element()
+        built.line = start.line
+        return built
+    }
     var value = expression()
     var written = AbstractSyntaxTree.Shapes.Statements.VariableStatement(name, declared, value)
     written.line = start.line
@@ -696,6 +703,13 @@ func variable_statement(): SpiteCompiler.WrittenStatement {
 func return_statement(): SpiteCompiler.WrittenStatement {
     var start = advance()
     var value: SpiteCompiler.Expression? = null
+    if markup_here("<") {
+        var placeholder = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+        var built = AbstractSyntaxTree.Shapes.Statements.ReturnStatement(placeholder)
+        built.markup = markup_element()
+        built.line = start.line
+        return built
+    }
     if not at_end_of_statement() {
         value = expression()
     }
@@ -880,17 +894,22 @@ func block(): AbstractSyntaxTree.Shapes.Statements.Block {
 func stop_before_a_statement(statements: List<SpiteCompiler.WrittenStatement>) {
     fallback not stops.is_empty()
     var start = current()
-    var site = stops[start.line]
+    stop_on_line(statements, start.line)
+}
+
+# ../../../spite_documentation/repl.md#the-wire-protocol
+func stop_on_line(statements: List<SpiteCompiler.WrittenStatement>, line: Integer) {
+    var site = stops[line]
     fallback site
-    fallback not placed_stops.contains(start.line)
-    placed_stops.append(start.line)
-    var name = "spite_breakpoint_on_line_{start.line}"
-    var made = parsed_on_line("var {name} = Spite.Breakpoint()", start.line)
+    fallback not placed_stops.contains(line)
+    placed_stops.append(line)
+    var name = "spite_breakpoint_on_line_{line}"
+    var made = parsed_on_line("var {name} = Spite.Breakpoint()", line)
     statements.append(made)
-    var listed = "spite_locals_on_line_{start.line}"
-    var listing = parsed_on_line("var {listed} = List<String>()", start.line)
+    var listed = "spite_locals_on_line_{line}"
+    var listing = parsed_on_line("var {listed} = List<String>()", line)
     statements.append(listing)
-    var called = parsed_on_line("{name}.pause_at(\"{site}\", {listed})", start.line)
+    var called = parsed_on_line("{name}.pause_at(\"{site}\", {listed})", line)
     if called.class == AbstractSyntaxTree.Shapes.Statements.ExpressionStatement {
         called.shows_the_locals = true
     }
@@ -1386,7 +1405,7 @@ func primary_expression(): SpiteCompiler.Expression {
         'percent': return unfit_value()
         'equal_equal': return unfit_value()
         'not_equal': return unfit_value()
-        'less': return unfit_value()
+        'less': return misplaced_markup()
         'greater': return unfit_value()
         'less_or_equal': return unfit_value()
         'greater_or_equal': return unfit_value()
@@ -1825,11 +1844,160 @@ func safe_point_after(start: Integer, unfit_at: Integer, inside_a_block: Boolean
 }
 
 func depth_after(token: AbstractSyntaxTree.Tokens.Token, depth: Integer): Integer {
-    if token.kind == 'open_brace' {
+    var kind = token.kind
+    var opens_a_tag = token.is_markup and token.lexeme == "<"
+    if kind == 'open_brace' or opens_a_tag {
         return depth + 1
     }
-    if token.kind == 'close_brace' and depth > 0 {
+    var closes_a_tag = token.is_markup and token.lexeme != "<" and token.lexeme != ">" and kind != 'text_literal'
+    var closes = kind == 'close_brace' or closes_a_tag
+    if closes and depth > 0 {
         return depth - 1
     }
     return depth
+}
+
+# ../../../spite_documentation/markup.md#where-a-tag-stands
+func misplaced_markup(): SpiteCompiler.Expression {
+    if not markup_here("<") {
+        return unfit_value()
+    }
+    keep_unfit('markup_place')
+    return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+}
+
+func markup_here(lexeme: String): Boolean {
+    var token = current()
+    return token.is_markup and token.lexeme == lexeme
+}
+
+# ../../../spite_documentation/markup.md
+func markup_element(): AbstractSyntaxTree.Shapes.Markup.Element {
+    var opening = advance()
+    var tag = markup_tag_name()
+    var element = AbstractSyntaxTree.Shapes.Markup.Element(tag)
+    element.line = opening.line
+    read_markup_attributes(element)
+    if markup_here("/>") {
+        step()
+        return element
+    }
+    if not markup_here(">") {
+        keep_unfit('markup_tag')
+        return element
+    }
+    step()
+    read_markup_children(element)
+    if lost or not markup_here("</") {
+        keep_unfit('markup_closing_tag')
+        return element
+    }
+    step()
+    var closing_tag = markup_tag_name()
+    if closing_tag != tag or not markup_here(">") {
+        lost = false
+        keep_unfit('markup_closing_tag')
+        return element
+    }
+    step()
+    return element
+}
+
+func markup_tag_name(): String {
+    var first = current()
+    if not names_a_tag(first) {
+        keep_unfit('markup_tag')
+        return ""
+    }
+    step()
+    var tag = first.text
+    while check('dot') and not lost {
+        step()
+        var segment = current()
+        if names_a_tag(segment) {
+            tag = "{tag}.{segment.text}"
+            step()
+        } else {
+            keep_unfit('markup_tag')
+        }
+    }
+    return tag
+}
+
+func names_a_tag(token: AbstractSyntaxTree.Tokens.Token): Boolean {
+    return token.kind == 'name' or token.kind == 'class_name'
+}
+
+func read_markup_attributes(element: AbstractSyntaxTree.Shapes.Markup.Element) {
+    while check('name') and not lost {
+        var attribute = markup_attribute()
+        element.written_attributes.append(attribute)
+    }
+}
+
+func markup_attribute(): AbstractSyntaxTree.Shapes.Markup.Attribute {
+    var token = advance()
+    var attribute = AbstractSyntaxTree.Shapes.Markup.Attribute(token.text)
+    attribute.line = token.line
+    if not check('equals') {
+        return attribute
+    }
+    step()
+    attribute.value = markup_attribute_value()
+    return attribute
+}
+
+func markup_attribute_value(): SpiteCompiler.Expression {
+    var token = current()
+    if token.kind == 'open_brace' {
+        return markup_braced()
+    }
+    if token.kind == 'text_literal' or token.kind == 'symbol_literal' {
+        return primary_expression()
+    }
+    keep_unfit('markup_tag')
+    return AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("")
+}
+
+func markup_braced(): SpiteCompiler.Expression {
+    step()
+    var inner = expression()
+    if check('close_brace') {
+        step()
+    } else {
+        keep_unfit('markup_tag')
+    }
+    return inner
+}
+
+func read_markup_children(element: AbstractSyntaxTree.Shapes.Markup.Element) {
+    while not lost and not finished() and not markup_here("</") {
+        var child = markup_child()
+        element.children.append(child)
+    }
+}
+
+func markup_child(): AbstractSyntaxTree.Shapes.Markup.Child {
+    var token = current()
+    if token.is_markup and token.kind == 'text_literal' {
+        step()
+        var text = AbstractSyntaxTree.Shapes.Markup.Child('text')
+        text.text = token.text
+        text.line = token.line
+        return text
+    }
+    if token.kind == 'open_brace' {
+        var held = AbstractSyntaxTree.Shapes.Markup.Child('expression')
+        held.line = token.line
+        held.expression = markup_braced()
+        return held
+    }
+    var nested = AbstractSyntaxTree.Shapes.Markup.Child('element')
+    nested.line = token.line
+    if markup_here("<") {
+        nested.element = markup_element()
+    } else {
+        keep_unfit('markup_tag')
+    }
+    return nested
 }
