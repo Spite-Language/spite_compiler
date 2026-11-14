@@ -621,7 +621,7 @@ every copy. What cannot move stays in `SymbolTable.repeated_declarations` for `v
 A fix of a check (`proven_check`, `decided_condition`, `known_if`) rests on what building narrowed, and a later proof
 may still take that narrowing back: `narrowings_kept_across_calls` (a call or a write between the check and a read,
 a loop's next pass) or a loop's narrowing (`loop_narrowing`, `refuse_undone_loop_proof`). So `fixed_a_check` marks
-each such fix (`rests_on_a_narrowing`), and a refusal of those proofs drops every marked fix before it stops
+each such fix, with the renamings it made (`rests_on_a_narrowing`), and a refusal of those proofs drops every marked fix before it stops
 (`a_narrowing_was_taken_back`): the compile fails with those lines as they were, and prints no `fixed:` line for
 them. Every other fix is still written by a failing compile, so an error in code a decided test removes goes with it.
 `copy_to_narrow` is not marked: it rests on nothing changing the source between the copy and its reads, which is
