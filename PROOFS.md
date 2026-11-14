@@ -1601,7 +1601,9 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   functions the compiler writes itself among them, but `_start`, which runs before any thread), it follows every
   call, function address and thread start it wrote; a function counted plainly that one of those reaches is
   counted atomically again, and so on from it, so a call the lowering adds that the walk did not see never runs a
-  plain count beside another thread.
+  plain count beside another thread. A band's `<key>$logged` copy
+  ([a call that only changes a singleton waits for the join](OPTIMIZATIONS.md#a-call-that-only-changes-a-singleton-waits-for-the-join))
+  never counts alone, whatever its function's mark: only bands call it, and they run at once.
   A function both kinds of code call is written twice: from every function that runs alone (and `_start`, which
   runs before any thread), each direct call the generator writes to a function that does not run alone reaches a
   copy of it, `<key>$alone`, written from the same low function with no `lock` on its count updates (a retain, and
