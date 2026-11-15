@@ -1923,7 +1923,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   of the same name never hides it. A function no call reaches counts the same way, from the functions
   `Builder.check_the_unreached` builds before it puts them back (`HighProgram.checked_functions`). Code the
   builder does not build still counts from the syntax tree: a bare name as its own class's attribute, and `x.name`
-  by name for every class; that is a function the unreached check skips (a generic class's, one taking a
+  by name for every class, while a call `x.name()` counts only for an attribute holding a function, so an
+  uncalled `list.count()` cannot hide a program's unread `count`; that is a function the unreached check skips (a generic class's, one taking a
   function, a shape or a walked member), an attribute default of a class never made, and a
   whole function from which the builder folded a branch away (it records each one, `Context.folded_functions`).
   Standard library code the builder neither built nor folded counts no `x.name`: it never runs, and the library's
@@ -1935,7 +1936,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   `validators/high_intermediary_representation/read_attribute`.
 - **Checked by**: conformance/unused_names, written_not_read, unused_attributes, attribute_read_in_another_class,
   loaded_singleton_unread, template_unused_attribute, template_unused_function,
-  attribute_hidden_by_an_uncalled_read, attribute_hidden_by_an_uncalled_library_read;
+  attribute_hidden_by_an_uncalled_read, attribute_hidden_by_an_uncalled_library_read,
+  attribute_hidden_by_an_uncalled_call;
   tests/attribute_read_by_an_uncalled_function.
 
 ### A constructed object must be kept and used
