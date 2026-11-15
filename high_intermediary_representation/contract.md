@@ -44,6 +44,8 @@ like "is this call ever reached" or "may this value be null" has no answer on th
   inflection; `building/questions.spite` value calls, reflection questions, waits and writes questions and folded counts.
 - `building/folded/constants.spite` and `building/folded/known_copies.spite`: what a question on a class or namespace known while
   compiling answers, and the copy of a function that knows it.
+- `building/writers.spite`: the writer each attribute listed at run time carries, which `Spite.Attribute.set_value` calls
+  to write the owner's field, cast as an assignment casts; its body is filled once a program calls `set_value`.
 - `building/typed_copies.spite`: the copy of a function whose parameter is a union or a `type` (or a generic holding
   one) for the types a call hands it (`Model.TypedCopy` on the copy), which the builder builds like any function, so
   each copy is checked as written for its types ([ARCHITECTURE.md](../ARCHITECTURE.md#a-call-copies-a-function-taking-a-union-or-a-type)).
