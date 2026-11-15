@@ -55,6 +55,8 @@ and `List_of_Integer` in the instance `List_of_Integer`.
   its class (D2320); a plain name of an entry class's union or type below that entry class is refused with the
   path to write (`Symbols.SymbolTable.is_the_entry_class_over`).
 - A union member that is a `type` (`Anything` included), at the member's line: `validators/name_resolution/union_member`.
+  Every error on a union member names the member's line, and the unions of a generic class are read once from its
+  template after the classes are filled, so a union is checked even in a template nothing mints.
 - A type that names nothing, `Symbol`, a removed form or a value known only at run time:
   `validators/name_resolution/unknown_type`.
 - An attribute whose type is not written and not read from its value: `validators/name_resolution/attribute_type`.
