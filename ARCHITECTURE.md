@@ -522,7 +522,11 @@ own handlers; the current foreign-call site and library are kept in two thread s
 the decision and the report's `foreign=` are the faulting thread's own, and a foreign call puts back the site it found
 when it returns, so after a foreign call made from a callback the outer call's site holds again; `_frame_handler` reports a watched fault that
 reaches a Spite frame and any unwinding through one; `_unhandled_fault`, the unhandled-exception filter, reports one
-that reaches the bottom of a thread with no Spite frame on the way.
+that reaches the bottom of a thread with no Spite frame on the way. All three call `_report_the_fault`
+(`fault_report_writing.spite`), which steps a copy of the faulting context out frame by frame with the same tables
+(`RtlLookupFunctionEntry`, `RtlVirtualUnwind`) and hands the report a chain of the return addresses that land in a
+Spite function (an entry of the program's own image that names `_frame_handler`), since `rbp` in a resumable
+function is its heap frame; a `--hot-reload` build, whose swapped-in code has no entries, hands it `rbp`.
 
 ## How the compiler is built
 
