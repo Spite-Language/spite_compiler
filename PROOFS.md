@@ -1957,6 +1957,22 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   generic_constraint_not_a_type, shape_operator_without_function, generic_constraint_mistyped,
   tests/nullable_meets_printable.
 
+### A value written through a `type` fits the attribute
+
+- **Status**: built (spite_compiler#414).
+- **Rule**: an assignment through a `type`, `keeper.pet = other`, stores a value known only as the member's type
+  into the attribute of whichever class the value really is, so it can never store what that attribute does not hold.
+- **How**: once the program assigns a member through a `type`, every class that fits the `type` must hold the member's
+  own type in that attribute (the member's type fits the attribute's, and an attribute that may hold nothing meets
+  a member written with `?`), checked for the classes that already fit when the assignment is built and for each
+  class that fits later. Reading alone keeps the wider rule of [a value fits a `type`](#a-value-fits-a-type): a `Cat`
+  attribute meets a `pet: Named` member until the program writes `pet` through the `type`.
+- **Missing**: nothing known.
+- **Falls back**: refused, "'CatKeeper' does not fit type 'Keeper': this program assigns 'pet' through the type,
+  which can store a Zoo.Named there, but attribute 'pet' is a Cat".
+- **Lives in**: `fitting.spite` (`judge_the_assigned_members`), `validators/high_intermediary_representation/shape_fit`.
+- **Checked by**: conformance/type_member_written_wider.
+
 ### A member template fits
 
 - **Status**: built (D1441, D1443).
