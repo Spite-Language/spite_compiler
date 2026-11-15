@@ -3960,8 +3960,9 @@ through a function value could call any function the program takes as a value, s
 function whose parameters and answer have the same types as the value called, not into all of them: a function
 taken as a value only for another shape of call (`amounts.filter(ledger.is_large)` takes a `func(Integer):
 Boolean`, while the work calls a `func(): Integer`) is not reached through it, and a singleton nothing else in the
-work reaches takes no lock. A call through a value whose shape no function taken so far has is followed into every
-function taken as a value.
+work reaches takes no lock. The shapes are gathered from the whole program before any call is followed, so the
+order the functions are read in changes nothing; a call through a value whose shape no function of the program is
+taken with is followed into every function taken as a value.
 
 ```spite
 var ledger = Ledger()
