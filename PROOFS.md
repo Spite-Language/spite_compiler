@@ -316,7 +316,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: the proof `proofs/proven_checks`, judging each copy `statements.spite` recorded when the copy is
   narrowed (`note_a_copy`, `note_a_narrowed_copy`, `note_a_loop_copy`, `note_a_tested_copy`, `build_switch`), and
   refused by `validators/high_intermediary_representation/proven_check`.
-- **Checked by**: conformance/copy_to_narrow, conformance/copy_to_narrow_conditions,
+- **Checked by**: conformance/copy_to_narrow, conformance/library_copy_to_narrow, conformance/copy_to_narrow_conditions,
   conformance/copy_to_narrow_not_leaving, conformance/copy_to_narrow_of_a_copy, conformance/copy_to_narrow_of_a_kept_copy; tests/narrowing_snapshot_copy, tests/copy_of_a_getter_with_an_effect_is_kept,
   tests/copy_of_a_path_holding_a_call_is_kept, tests/copy_of_a_getter_before_a_change_is_kept, conformance/namespace_nullable.
 
@@ -428,7 +428,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   (`note_a_terminal_if`), and `validators/abstract_syntax_tree/default_guard`.
 - **Checked by**: tests/fallback_answers, conformance/default_answer_enum,
   conformance/fallback_built_with_arguments, conformance/default_guard, conformance/returning_guard,
-  conformance/empty_collection_guard, conformance/terminal_if, conformance/assert_in_constructor,
+  conformance/empty_collection_guard, conformance/terminal_if, conformance/library_terminal_if, conformance/assert_in_constructor,
   conformance/constructor_guard, conformance/guard_de_morgan, conformance/guard_inside_loop,
   conformance/assert_is_fallback.
 
