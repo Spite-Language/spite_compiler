@@ -16,6 +16,9 @@ var _illegal_instruction_code: Long = 3221225501
 var _heap_corruption_code: Long = 3221226356
 var _integer_divide_by_zero_code: Long = 3221225620
 var _context_frame_pointer_offset = 160
+var _continue_searching = 0
+var _frame_continues_the_search = 1
+var _unwinding_flags = 6
 
 func Lowering(starting_high: HighIntermediaryRepresentation.HighProgram) {
     high = starting_high
@@ -715,6 +718,19 @@ func listen_for_faults(lowering: FunctionLowering) {
     adding.append(handler)
     var added = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "AddVectoredExceptionHandler", adding, "", 0)
     lowering.emit(added)
+    var filter = lowering.new_register()
+    var found_filter = LowIntermediaryRepresentation.Instructions.FunctionAddress(filter, "_unhandled_fault")
+    lowering.emit(found_filter)
+    var filtering = List<Integer>()
+    filtering.append(filter)
+    var filtered = LowIntermediaryRepresentation.Instructions.ImportCall(
+        -1,
+        "SetUnhandledExceptionFilter",
+        filtering,
+        "",
+        0,
+    )
+    lowering.emit(filtered)
     var room = Buffer(0)
     room.append(0)
     room.append(0)
@@ -740,21 +756,54 @@ func listen_for_faults(lowering: FunctionLowering) {
     lowering.emit(guaranteed)
 }
 
+# ../../../spite_documentation/failure.md#a-fault-a-foreign-library-catches-itself
 func lower_the_fault_handler() {
+    lower_the_vectored_handler()
+    lower_the_frame_handler()
+    lower_the_unhandled_fault()
+}
+
+func fault_handling(key: String): FunctionLowering {
     var handling_state = FunctionLoweringState()
     handling_state.start_from(layout, program, singleton_slots)
     var handling = FunctionLowering(handling_state)
-    handling.start("_fault_handler")
-    var pointers = handling.new_register()
-    handling.state.function.parameter_count = 1
-    var record = handling.new_register()
-    var loaded_record = LowIntermediaryRepresentation.Instructions.Load(record, pointers, 0, 'bits_64', true, "", false)
-    handling.emit(loaded_record)
+    handling.start(key)
+    return handling
+}
+
+func parameters_of(handling: FunctionLowering, count: Integer): List<Integer> {
+    var registers = List<Integer>()
+    var index = 0
+    while index < count {
+        var register = handling.new_register()
+        registers.append(register)
+        index = index + 1
+    }
+    handling.state.function.parameter_count = count
+    return registers
+}
+
+func loaded_at(handling: FunctionLowering, base: Integer, offset: Integer): Integer {
+    var value = handling.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(value, base, offset, 'bits_64', true, "", false)
+    handling.emit(loaded)
+    return value
+}
+
+func code_of(handling: FunctionLowering, record: Integer): Integer {
     var code = handling.new_register()
     var loaded_code = LowIntermediaryRepresentation.Instructions.Load(code, record, 0, 'bits_32', false, "", false)
     handling.emit(loaded_code)
-    var reporting = handling.new_block()
-    var passing = handling.new_block()
+    return code
+}
+
+func answer(handling: FunctionLowering, value: Integer) {
+    var answered = handling.constant(value)
+    var returned = LowIntermediaryRepresentation.Instructions.Return(answered, -1, false)
+    handling.emit(returned)
+}
+
+func branch_on_the_watched_codes(handling: FunctionLowering, code: Integer, watching: Integer, passing: Integer) {
     var watched: List<Long> = [
         _access_violation_code
         _stack_overflow_code
@@ -770,64 +819,19 @@ func lower_the_fault_handler() {
         var compared = LowIntermediaryRepresentation.Instructions.Compare(matches, 'equal', code, wanted, true)
         handling.emit(compared)
         var next = handling.new_block()
-        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, reporting, next)
+        var test = LowIntermediaryRepresentation.Instructions.Branch(matches, watching, next)
         handling.emit(test)
         handling.switch_to(next)
         index = index + 1
     }
     handling.jump_to(passing)
-    handling.switch_to(passing)
-    var continuing = handling.constant(0)
-    var passed = LowIntermediaryRepresentation.Instructions.Return(continuing, -1, false)
-    handling.emit(passed)
-    handling.switch_to(reporting)
-    var address = handling.new_register()
-    var loaded_address = LowIntermediaryRepresentation.Instructions.Load(
-        address,
-        record,
-        16,
-        'bits_64',
-        true,
-        "",
-        false,
-    )
-    handling.emit(loaded_address)
-    var detail = handling.new_register()
-    var loaded_detail = LowIntermediaryRepresentation.Instructions.Load(detail, record, 32, 'bits_64', true, "", false)
-    handling.emit(loaded_detail)
-    var accessed = handling.new_register()
-    var loaded_accessed = LowIntermediaryRepresentation.Instructions.Load(
-        accessed,
-        record,
-        40,
-        'bits_64',
-        true,
-        "",
-        false,
-    )
-    handling.emit(loaded_accessed)
-    var context = handling.new_register()
-    var loaded_context = LowIntermediaryRepresentation.Instructions.Load(
-        context,
-        pointers,
-        8,
-        'bits_64',
-        true,
-        "",
-        false,
-    )
-    handling.emit(loaded_context)
-    var frame = handling.new_register()
-    var loaded_frame = LowIntermediaryRepresentation.Instructions.Load(
-        frame,
-        context,
-        _context_frame_pointer_offset,
-        'bits_64',
-        true,
-        "",
-        false,
-    )
-    handling.emit(loaded_frame)
+}
+
+func report_the_fault(handling: FunctionLowering, record: Integer, code: Integer, context: Integer) {
+    var address = loaded_at(handling, record, 16)
+    var detail = loaded_at(handling, record, 32)
+    var accessed = loaded_at(handling, record, 40)
+    var frame = loaded_at(handling, context, _context_frame_pointer_offset)
     var nobody = handling.constant(0)
     var arguments = List<Integer>()
     arguments.append(nobody)
@@ -841,6 +845,142 @@ func lower_the_fault_handler() {
     var one = handling.constant(1)
     var exited = LowIntermediaryRepresentation.Instructions.Exit(one)
     handling.emit(exited)
+}
+
+func lower_the_vectored_handler() {
+    var handling = fault_handling("_fault_handler")
+    var parameters = parameters_of(handling, 1)
+    var pointers = parameters[0]
+    crash pointers
+    var record = loaded_at(handling, pointers, 0)
+    var code = code_of(handling, record)
+    var watching = handling.new_block()
+    var reporting = handling.new_block()
+    var passing = handling.new_block()
+    branch_on_the_watched_codes(handling, code, watching, passing)
+    handling.switch_to(passing)
+    answer(handling, _continue_searching)
+    handling.switch_to(watching)
+    if program.hot_reload or program.foreign_sites.is_empty() {
+        handling.jump_to(reporting)
+    } else {
+        pass_what_a_foreign_call_raised(handling, record, code, reporting, passing)
+    }
+    handling.switch_to(reporting)
+    var context = loaded_at(handling, pointers, 8)
+    report_the_fault(handling, record, code, context)
+    program.lowered_functions.append(handling.state.function)
+}
+
+func pass_what_a_foreign_call_raised(
+    handling: FunctionLowering,
+    record: Integer,
+    code: Integer,
+    reporting: Integer,
+    passing: Integer,
+) {
+    var heap = handling.constant(_heap_corruption_code)
+    var is_heap = handling.new_register()
+    var compared_heap = LowIntermediaryRepresentation.Instructions.Compare(is_heap, 'equal', code, heap, true)
+    handling.emit(compared_heap)
+    var checking_the_call = handling.new_block()
+    var tested_heap = LowIntermediaryRepresentation.Instructions.Branch(is_heap, reporting, checking_the_call)
+    handling.emit(tested_heap)
+    handling.switch_to(checking_the_call)
+    var handling_singletons = Singletons(handling.state)
+    var foreign_label = handling_singletons.record_label_of("_foreign")
+    var foreign = handling.new_register()
+    var addressed_foreign = LowIntermediaryRepresentation.Instructions.DataAddress(foreign, foreign_label)
+    handling.emit(addressed_foreign)
+    var site = loaded_at(handling, foreign, 0)
+    var zero = handling.constant(0)
+    var no_call = handling.new_register()
+    var compared_site = LowIntermediaryRepresentation.Instructions.Compare(no_call, 'equal', site, zero, true)
+    handling.emit(compared_site)
+    var checking_the_start = handling.new_block()
+    var tested_site = LowIntermediaryRepresentation.Instructions.Branch(no_call, reporting, checking_the_start)
+    handling.emit(tested_site)
+    handling.switch_to(checking_the_start)
+    var address = loaded_at(handling, record, 16)
+    var asking = List<Integer>()
+    asking.append(zero)
+    var own_start = handling.new_register()
+    var asked = LowIntermediaryRepresentation.Instructions.ImportCall(own_start, "GetModuleHandleA", asking, "", 0)
+    handling.emit(asked)
+    var below = handling.new_register()
+    var compared_start = LowIntermediaryRepresentation.Instructions.Compare(below, 'less', address, own_start, false)
+    handling.emit(compared_start)
+    var checking_the_end = handling.new_block()
+    var tested_start = LowIntermediaryRepresentation.Instructions.Branch(below, passing, checking_the_end)
+    handling.emit(tested_start)
+    handling.switch_to(checking_the_end)
+    var own_end = handling.new_register()
+    var addressed_end = LowIntermediaryRepresentation.Instructions.DataAddress(own_end, program.place_table)
+    handling.emit(addressed_end)
+    var inside = handling.new_register()
+    var compared_end = LowIntermediaryRepresentation.Instructions.Compare(inside, 'less', address, own_end, false)
+    handling.emit(compared_end)
+    var tested_end = LowIntermediaryRepresentation.Instructions.Branch(inside, reporting, passing)
+    handling.emit(tested_end)
+}
+
+func lower_the_frame_handler() {
+    var handling = fault_handling("_frame_handler")
+    var parameters = parameters_of(handling, 4)
+    var record = parameters[0]
+    var context = parameters[2]
+    crash record
+    crash context
+    var flags = handling.new_register()
+    var loaded_flags = LowIntermediaryRepresentation.Instructions.Load(flags, record, 4, 'bits_32', false, "", false)
+    handling.emit(loaded_flags)
+    var unwinding_flags = handling.constant(_unwinding_flags)
+    var unwinding = handling.new_register()
+    var masked = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        unwinding,
+        'bits_and',
+        flags,
+        unwinding_flags,
+        'bits_64',
+        false,
+        false,
+    )
+    handling.emit(masked)
+    var zero = handling.constant(0)
+    var is_unwinding = handling.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(is_unwinding, 'not_equal', unwinding, zero, true)
+    handling.emit(compared)
+    var reporting = handling.new_block()
+    var dispatching = handling.new_block()
+    var continuing = handling.new_block()
+    var tested = LowIntermediaryRepresentation.Instructions.Branch(is_unwinding, reporting, dispatching)
+    handling.emit(tested)
+    handling.switch_to(dispatching)
+    var code = code_of(handling, record)
+    branch_on_the_watched_codes(handling, code, reporting, continuing)
+    handling.switch_to(continuing)
+    answer(handling, _frame_continues_the_search)
+    handling.switch_to(reporting)
+    var reported_code = code_of(handling, record)
+    report_the_fault(handling, record, reported_code, context)
+    program.lowered_functions.append(handling.state.function)
+}
+
+func lower_the_unhandled_fault() {
+    var handling = fault_handling("_unhandled_fault")
+    var parameters = parameters_of(handling, 1)
+    var pointers = parameters[0]
+    crash pointers
+    var record = loaded_at(handling, pointers, 0)
+    var code = code_of(handling, record)
+    var reporting = handling.new_block()
+    var passing = handling.new_block()
+    branch_on_the_watched_codes(handling, code, reporting, passing)
+    handling.switch_to(passing)
+    answer(handling, _continue_searching)
+    handling.switch_to(reporting)
+    var context = loaded_at(handling, pointers, 8)
+    report_the_fault(handling, record, code, context)
     program.lowered_functions.append(handling.state.function)
 }
 

@@ -507,6 +507,18 @@ hexadecimal). Nothing of it is in the executable. When a native fault halts the 
 file and adds `spite.function\t<key>` for the function that faulted and one `spite.caller\t<key>` for each frame it
 walks up through the frame pointers; without the file it prints only the fault line.
 
+## The unwind tables
+
+Every executable carries the system's unwind data (`generators/windows_x64/unwind_tables.spite`): one entry per
+function, pointed to by the exception directory and written at the end of the data section, saying how to step out
+of it (`push rbp`, `mov rbp, rsp`; a resumable function pushes `rbp` and lowers the stack by its outgoing room), with
+`_frame_handler` as its handler, and one entry for the runtime routines before the first function, which step out
+through `rbp` to the function that called them. The lowering writes three handlers (`lowering.spite`):
+`_fault_handler`, the vectored one, reports at once unless a foreign call is running and the fault is outside the
+program's own code, and then leaves it to the library's own handlers; `_frame_handler` reports a watched fault that
+reaches a Spite frame and any unwinding through one; `_unhandled_fault`, the unhandled-exception filter, reports one
+that reaches the bottom of a thread with no Spite frame on the way.
+
 ## How the compiler is built
 
 The repositories sit side by side under one folder, as `gh repo clone` names them: this one as `spite_compiler`
