@@ -205,6 +205,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   built since its check (`statements.spite`: `log_the_calls_of`); what a call may assign is
   `high_intermediary_representation/assignments.spite` read for narrowings (`read_for_narrowings`).
 - **Checked by**: tests/receiver_call_effects, tests/same_name_call_effects, tests/foreign_callback_keeps_proofs,
+  tests/value_call_reaches_functions_taken_later,
   tests/narrowing_kept_across_harmless_call, tests/copy_right_before_a_loop_is_kept;
   conformance/call_in_loop_right_after_the_check_undoes_narrowing,
   conformance/own_call_in_loop_right_after_the_check_undoes_narrowing,
