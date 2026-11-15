@@ -1242,15 +1242,20 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 ### A back reference is picked from how the program links its objects
 
-- **Status**: partly built (D759, D1396).
+- **Status**: partly built (D759, D1396, D2525).
 - **Rule**: an attribute `a: T?` of a class `C` holds no count when one function both sets `c.a = t` and stores `c`
   into `t`'s attribute `f`, which holds a `C` ([memory.md](../spite_documentation/memory.md)); never from the class
-  graph alone, since taking an owning reference for a back one would free an object the program still holds.
+  graph alone, since taking an owning reference for a back one would free an object the program still holds. A
+  collection `f` holds a `C` when its items are `C`, a union with `C` among its members, or a `type` every member of
+  which `C` declares (D2525).
 - **How**: each function of the program is read for the stores it makes: `x.a = y`, `x.f.append(y)` (and
   `insert`, `prepend`, `add`, `set_at`), `x.f[k] = y`, and a constructor that keeps its argument in an attribute. A
-  call of a program function whose name only one class declares adds that function's own stores, with `this` and
-  its parameters replaced by the call's receiver and arguments, so `team.recruit(player)` beside `player.play_for(team)`
-  links the two as `team.players.append(player)` beside `player.team = team` would (D1396). A function's own stores
+  call of a program function adds that function's own stores, with `this` and its parameters replaced by the call's
+  receiver and arguments, so `team.recruit(player)` beside `player.play_for(team)` links the two as
+  `team.players.append(player)` beside `player.team = team` would (D1396). When two classes declare the name, the
+  call is followed only into the function of the receiver's class, known when the receiver is `this`, a parameter
+  of a class, an object the function makes, or an attribute of a class reached from one of these; any other
+  receiver is not followed (D2525). A function's own stores
   include those of the program functions it calls, followed to a fixed point: one round over the program, then
   rounds over only the callers of a function whose summary grew, until none grows, so a link made any number of
   calls down counts (D1663, spite_compiler#26, #495). A partial reading is never used: a link found only in a later
@@ -1260,14 +1265,19 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   without end. A call whose summary names an object the reading function itself makes (through recursion) adds
   nothing of that object, since it is another call's object under the same name. A link found in one
   function decides the attribute for the whole program.
-- **Missing**: a link through a function named by two classes (the library's included: a `join` is `String.join`'s name too), a store through keys more than four parts deep, two objects neither of which
-  the function made linked directly (not through a collection), one attribute pointing both ways (`partner`), a
-  cycle through a union or a `type`, and a back attribute that cannot be null: each keeps its counts and leaks,
-  which `--debug-memory` names at exit.
+- **Missing**: a call of a function two classes name on a receiver whose class is not known (a local that is not
+  made there), a store through keys more than four parts deep, two objects linked directly (not through a
+  collection) where no function made one without the other (both made side by side, as `tests/memory_leak_summary`),
+  one attribute pointing both ways (`partner`), a back attribute holding a union or a `type`, and a back attribute
+  that cannot be null: each keeps its counts and leaks, which `--debug-memory` names at exit. Nothing in the first
+  three proves which side outlives the other; a back attribute holding a union or a `type` would need the freed-object
+  check for every class it may hold, which the lowering builds only for one class; and one that cannot be null has no
+  `null` to answer once its object is freed (spite_compiler#26).
 - **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
 - **Lives in**: `model/back_references.spite`, asked by `ProgramModel.holds_no_count`.
 - **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls,
-  tests/back_reference_two_levels, tests/a_back_reference_found_many_calls_down (73 calls down).
+  tests/back_reference_two_levels, tests/a_back_reference_found_many_calls_down (73 calls down),
+  tests/back_reference_named_by_two_classes, tests/back_reference_union_items, tests/back_reference_type_items.
 
 ### A deep copy copies a graph with its shape
 
