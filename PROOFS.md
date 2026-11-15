@@ -175,7 +175,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   it is stored, copied, passed, called on, taken with a function or returned (for a local made before a loop, before
   the loop if the body hands it on), are not writes to anything a proof reads (`Assignments.hand_on`, which marks the write `is_to_a_fresh_object`); a wait writes nothing in a program that makes no `Concurrent` or
   `Parallel`, and anything in one that does; a call through a function value reaches the functions taken as values
-  with its signature, and a function that only calls its parameters reaches the functions each caller passes it; a
+  with its signature anywhere in the program, whichever function is read first (`Assignments.call_a_value`, and
+  every function taken as a value only when none is taken with it), and a function that only calls its parameters reaches the functions each caller passes it; a
   foreign call reaches the functions handed to a `ForeignCallback` (`Assignments.note_a_callback`), which C may call
   back, and through them what they call and take as values, never every function value; a
   `drop()` that may run is followed too. Inside a loop, a call anywhere in the body undoes a narrowing made before
