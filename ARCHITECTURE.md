@@ -248,6 +248,20 @@ they prove facts the executable relies on; `every_attribute_is_read` also counts
 which the check keeps aside in `HighProgram.checked_functions`. A context field or a model collection that the builder writes and a
 later stage reads is put back here; one that is not would let an uncalled function change the executable.
 
+### A call copies a function taking a union or a type
+
+A call of a function of the program's own classes whose parameter is a `union`, a `type` or a generic holding one
+(`List<Anything>`) keeps each argument whose type is a class that fits as it is (`Arguments.fitted_or_kept`), and
+calls the copy of the function for those types (`building/typed_copies.spite`), named `<name>_typed_<types>` and kept
+in `Context.known_function_copies`. The copy has the original's declaration with those parameters retyped, so the
+builder builds and checks it like hand-written code: a member read is direct, and a mistake that only that copy
+makes is told with the copy's types and the call (`EveryRule.text_in_its_copy`). The original is still checked as
+written as a function nobody calls. Crash texts and sites name the function as written (`FunctionModel.written_name`).
+Copies whose lowered code is the same are folded by `low_optimization_passes/identical_functions`, which compares
+the code itself. A library function, a generic class's function, a constructor, a variadic parameter and a copy
+more than eight copies deep are not copied, and a parameter the body assigns or copies into a local with no written
+type keeps its declared type (`TypedCopies.keeps_its_type`), since that local may later hold any value of it.
+
 ### The low passes, in order
 
 `low_optimization_passes/low_optimization_passes.spite` lists them, with the low proofs before the passes that

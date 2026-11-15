@@ -44,6 +44,9 @@ like "is this call ever reached" or "may this value be null" has no answer on th
   inflection; `building/questions.spite` value calls, reflection questions, waits and writes questions and folded counts.
 - `building/folded/constants.spite` and `building/folded/known_copies.spite`: what a question on a class or namespace known while
   compiling answers, and the copy of a function that knows it.
+- `building/typed_copies.spite`: the copy of a function whose parameter is a union or a `type` (or a generic holding
+  one) for the types a call hands it (`Model.TypedCopy` on the copy), which the builder builds like any function, so
+  each copy is checked as written for its types ([ARCHITECTURE.md](../ARCHITECTURE.md#a-call-copies-a-function-taking-a-union-or-a-type)).
 - `statements` and `values`: the representation itself, data only, one file per kind; the unions of both are
   declared in `spite_compiler.spite`. `values/written_operation.spite` is no value: it is the words a
   `MachineOperation` the source wrote holds.

@@ -1962,7 +1962,10 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Status**: built (spite_compiler#414).
 - **Rule**: an assignment through a `type`, `keeper.pet = other`, stores a value known only as the member's type
   into the attribute of whichever class the value really is, so it can never store what that attribute does not hold.
-- **How**: once the program assigns a member through a `type`, every class that fits the `type` must hold the member's
+- **How**: a call handing a class to a function taking the `type` calls its copy for that class
+  ([a function taking a union or a `type` is copied per argument type](#a-function-taking-a-union-or-a-type-is-copied-per-argument-type)),
+  where the write is checked as written for the class. What is left is a value whose class is known only while
+  running: once the program assigns a member through a `type`, every class that fits the `type` must hold the member's
   own type in that attribute (the member's type fits the attribute's, and an attribute that may hold nothing meets
   a member written with `?`), checked for the classes that already fit when the assignment is built and for each
   class that fits later. Reading alone keeps the wider rule of [a value fits a `type`](#a-value-fits-a-type): a `Cat`
@@ -1971,7 +1974,27 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Falls back**: refused, "'CatKeeper' does not fit type 'Keeper': this program assigns 'pet' through the type,
   which can store a Zoo.Named there, but attribute 'pet' is a Cat".
 - **Lives in**: `fitting.spite` (`judge_the_assigned_members`), `validators/high_intermediary_representation/shape_fit`.
-- **Checked by**: conformance/type_member_written_wider.
+- **Checked by**: conformance/type_member_written_wider, tests/type_member_written_where_the_attribute_holds_the_type.
+
+### A function taking a union or a `type` is copied per argument type
+
+- **Status**: built (spite_compiler#496, #414, D2500).
+- **Rule**: a call handing a class to a function of the program whose parameter is a `union`, a `type` or a generic
+  holding one calls a copy whose parameter is that class, and the copy is checked as if written for it, so nothing
+  tests the class while running and a body that does not fit the class is refused.
+- **How**: `Arguments.fitted_or_kept` keeps an argument whose type is a class that fits the parameter
+  (`TypedCopies.copied_type`: a member of the union, a class with the `type`'s members, the same generic with each
+  bound type the same or such a class), and `TypedCopies.copy_for` makes the copy with those parameters retyped,
+  which the builder builds from the same declaration. In the copy a class test on a value of one class is decided
+  (`Operators.copied_class_test`) and a `switch` on such a parameter builds the case naming its class
+  (`Switches.case_of_the_copied_class`); neither is a decided condition to fix, since the copy is walked. Copies whose
+  lowered code is the same are folded by `identical_functions`, which compares that code.
+- **Missing**: a value whose class is known only while running reaches the function as written.
+- **Falls back**: the copy's mistake with ", in its copy for (Link, Chain) that the call at line 10 in Zoo.Zoo makes".
+- **Lives in**: `high_intermediary_representation/building/typed_copies.spite`, `arguments.spite`, `calls.spite`.
+- **Checked by**: tests/type_parameter_copied_per_class, tests/union_parameter_copied_per_class,
+  tests/list_of_a_class_where_anything_is_wanted, tests/type_member_written_in_a_copy_that_fits,
+  conformance/list_copy_appends_what_does_not_fit, conformance/type_member_written_in_a_copy.
 
 ### A member template fits
 

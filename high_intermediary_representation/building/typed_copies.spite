@@ -1,0 +1,227 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+var _deepest_copy = 8
+
+func TypedCopies(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+# ../../../spite_documentation/functions_and_operators.md#a-function-taking-a-union-or-a-type-is-copied-per-argument-type
+func retyped_names(function: Model.FunctionModel): List<String> {
+    fallback is_copied_per_type(function)
+    var key = function.key()
+    var known = context.retyped_parameters[key]
+    if known {
+        return known
+    }
+    var names = List<String>()
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var is_retyped = not parameter.is_variadic and is_open(parameter.parameter_type)
+        if is_retyped and not keeps_its_type(function, parameter.name) {
+            names.append(parameter.name)
+        }
+        index = index + 1
+    }
+    context.retyped_parameters[key] = names
+    return names
+}
+
+# ../../../spite_documentation/functions_and_operators.md#a-function-taking-a-union-or-a-type-is-copied-per-argument-type
+func keeps_its_type(function: Model.FunctionModel, name: String): Boolean {
+    var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    crash function.declaration
+    walk.read_function(function.declaration)
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        if takes_the_name(found.statement, name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func takes_the_name(statement: SpiteCompiler.WrittenStatement?, name: String): Boolean {
+    var reads = Reads(context, values)
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement {
+        return reads.is_the_name(statement.target, name)
+    }
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement and not statement.declared_type {
+        return reads.is_the_name(statement.value, name)
+    }
+    return false
+}
+
+# ../../../spite_documentation/functions_and_operators.md#a-function-taking-a-union-or-a-type-is-copied-per-argument-type
+func is_copied_per_type(function: Model.FunctionModel): Boolean {
+    var is_plain = not function.is_a_constructor() and not function.is_a_member_template() and not function.is_synthetic
+    fallback is_plain and not function.is_written_by_the_compiler and not function.is_an_attribute
+    fallback not function.is_walked() and not function.fused and not function.typed_copy
+    fallback function.known_parameter_functions.is_empty() and function.has_a_body()
+    fallback not function.reflects_its_answer() and not is_a_conversion(function)
+    var owner = context.program.class_named(function.owner)
+    fallback owner and owner.bound_types.is_empty()
+    var library = Mapping.LibraryFile()
+    fallback not library.holds(owner.file.path)
+    return depth_of(context.current_function) < _deepest_copy
+}
+
+func is_a_conversion(function: Model.FunctionModel): Boolean {
+    fallback function.declared
+    return function.declared.is_a_conversion or function.declared.is_a_preset
+}
+
+func depth_of(function: Model.FunctionModel): Integer {
+    fallback function.typed_copy
+    return function.typed_copy.depth
+}
+
+# ../../../spite_documentation/functions_and_operators.md#a-function-taking-a-union-or-a-type-is-copied-per-argument-type
+func is_open(taken: Model.Type): Boolean {
+    if taken.kind == 'union' or taken.kind == 'shape' {
+        return true
+    }
+    fallback taken.kind == 'object' and context.has_a_class(taken)
+    var model = context.class_of(taken)
+    var bound = model.bound_types.values()
+    return bound.any(is_open)
+}
+
+# ../../../spite_documentation/functions_and_operators.md#a-function-taking-a-union-or-a-type-is-copied-per-argument-type
+func copied_type(given: Model.Type, wanted: Model.Type): Model.Type? {
+    fallback wanted.is_nullable or not given.is_nullable
+    var present = given.present()
+    var wanted_present = wanted.present()
+    fallback present.kind == 'object' or present.kind == 'scalar'
+    fallback not values.is_the_same_type(present, wanted_present)
+    fallback fits_as_a_copy(present, wanted_present)
+    if wanted.is_nullable {
+        return present.nullable()
+    }
+    return present
+}
+
+func fits_as_a_copy(given: Model.Type, wanted: Model.Type): Boolean {
+    var fitting = Fitting(context, values)
+    if wanted.kind == 'union' {
+        return values.is_a_member_of(given, wanted)
+    }
+    if wanted.kind == 'shape' {
+        return fitting.has_the_shape_members(given, wanted)
+    }
+    return fills_the_generic(given, wanted)
+}
+
+# ../../../spite_documentation/functions_and_operators.md#a-function-taking-a-union-or-a-type-is-copied-per-argument-type
+func fills_the_generic(given: Model.Type, wanted: Model.Type): Boolean {
+    fallback given.kind == 'object' and wanted.kind == 'object'
+    fallback context.has_a_class(given) and context.has_a_class(wanted)
+    var given_model = context.class_of(given)
+    var wanted_model = context.class_of(wanted)
+    fallback given_model.file.path == wanted_model.file.path and not wanted_model.bound_types.is_empty()
+    fallback given_model.bound_types.count() == wanted_model.bound_types.count()
+    var names = wanted_model.bound_types.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var wanted_inside = wanted_model.bound_types[name]
+        var given_inside = given_model.bound_types[name]
+        fallback wanted_inside and given_inside
+        fallback fits_inside(given_inside, wanted_inside)
+        index = index + 1
+    }
+    return true
+}
+
+func fits_inside(given: Model.Type, wanted: Model.Type): Boolean {
+    if values.is_the_same_type(given, wanted) {
+        return true
+    }
+    fallback is_open(wanted)
+    var copied = copied_type(given, wanted)
+    if copied {
+        return true
+    }
+    return false
+}
+
+# ../../../spite_documentation/functions_and_operators.md#a-function-taking-a-union-or-a-type-is-copied-per-argument-type
+func copy_for(function: Model.FunctionModel, arguments: List<SpiteCompiler.Value>): Model.FunctionModel {
+    var taken = List<Model.ParameterModel>()
+    var named = List<String>()
+    var shown = List<String>()
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        var argument = arguments[index]
+        var kept = parameter
+        if argument and not parameter.is_variadic and is_open(parameter.parameter_type) {
+            var argument_type = argument.value_type
+            if not argument_type.is_the_same_as(parameter.parameter_type) {
+                kept = Model.ParameterModel(parameter.name, argument_type, false)
+                var piece = named_piece(argument_type)
+                named.append(piece)
+            }
+        }
+        taken.append(kept)
+        var shown_type = context.shown(kept.parameter_type)
+        shown.append(shown_type)
+        index = index + 1
+    }
+    if named.is_empty() {
+        return function
+    }
+    var joined = named.join("_and_")
+    var copy_name = "{function.name}_typed_{joined}"
+    var copy_key = "{function.owner}.{copy_name}"
+    var known = context.known_function_copies[copy_key]
+    if known {
+        return known
+    }
+    var made = Model.FunctionModel(
+        copy_name,
+        function.owner,
+        function.answer,
+        function.declaration,
+        null,
+        null,
+        null,
+        null,
+        false,
+        false,
+        false,
+        false,
+    )
+    made.parameters = taken
+    var shown_types = shown.join(", ")
+    var rules = Validators.HighIntermediaryRepresentation.EveryRule()
+    var caller_class = rules.plain_class_name(context.current_class.shown)
+    var caller_function = rules.shown_function_name(context.current_function)
+    var depth = depth_of(context.current_function) + 1
+    made.typed_copy = Model.TypedCopy(
+        function.name,
+        "({shown_types})",
+        "{caller_class}.{caller_function}",
+        context.line,
+        depth,
+    )
+    context.known_function_copies[copy_key] = made
+    return made
+}
+
+func named_piece(taken: Model.Type): String {
+    var name = taken.name.replace(".", "_")
+    if taken.is_nullable {
+        return "{name}_or_null"
+    }
+    return name
+}
