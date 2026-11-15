@@ -518,7 +518,8 @@ leaves, and a call that never returns ends with `int3`, so its return address st
 lowering writes three handlers (`lowering.spite`): `_fault_handler`, the vectored one, reports at once unless this
 thread is in a foreign call and the fault is outside the program's own code, and then leaves it to the library's
 own handlers; the current foreign-call site and library are kept in two thread slots (`TlsAlloc` at the start), so
-the decision and the report's `foreign=` are the faulting thread's own; `_frame_handler` reports a watched fault that
+the decision and the report's `foreign=` are the faulting thread's own, and a foreign call puts back the site it found
+when it returns, so after a foreign call made from a callback the outer call's site holds again; `_frame_handler` reports a watched fault that
 reaches a Spite frame and any unwinding through one; `_unhandled_fault`, the unhandled-exception filter, reports one
 that reaches the bottom of a thread with no Spite frame on the way.
 
