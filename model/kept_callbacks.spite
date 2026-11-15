@@ -1,0 +1,305 @@
+var is_learned = false
+var kept_sites = List<String>()
+var owners = List<String>()
+var locals = List<String>()
+var waiting = Dictionary<String, String>()
+var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var reading = ClassModel("", "", no_file, false)
+var reading_key = ""
+var no_parameters = List<AbstractSyntaxTree.Shapes.Declarations.Parameter>()
+var no_declaration = AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration("", no_parameters, null, null)
+var reading_declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = no_declaration
+var stores = Dictionary<String, Integer>()
+var candidates = List<KeptCallback>()
+var held = ["address", "context"]
+
+func keeps_its_callback(program: ProgramModel, site: String): Boolean {
+    learn(program)
+    return kept_sites.contains(site)
+}
+
+func owners_of(program: ProgramModel): List<String> {
+    learn(program)
+    return owners
+}
+
+# ../PROOFS.md#a-foreigncallback-kept-by-the-object-it-calls-holds-that-object-back
+func learn(program: ProgramModel) {
+    fallback not is_learned
+    is_learned = true
+    program.order.each(read_the_class)
+    fallback not candidates.is_empty()
+    var walk = AbstractSyntaxTree.Walk.Walk(no_file)
+    var index = 0
+    while index < program.order.count() {
+        var model = program.order[index]
+        walk_the_class(walk, model)
+        index = index + 1
+    }
+    var leaving = List<String>()
+    index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        if not stays_in_its_owner(walk, candidate) {
+            leaving.append(candidate.site)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < candidates.count() {
+        var candidate = candidates[index]
+        if not leaving.contains(candidate.site) {
+            keep(candidate)
+        }
+        index = index + 1
+    }
+}
+
+func walk_the_class(walk: AbstractSyntaxTree.Walk.Walk, model: ClassModel) {
+    var index = 0
+    while index < model.declared_functions.count() {
+        var function = model.declared_functions[index]
+        if function.declaration {
+            walk.read_function(function.declaration)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if attribute.declaration {
+            walk.read_attribute(attribute.declaration)
+        }
+        index = index + 1
+    }
+}
+
+# ../PROOFS.md#a-foreigncallback-kept-by-the-object-it-calls-holds-that-object-back
+func stays_in_its_owner(walk: AbstractSyntaxTree.Walk.Walk, candidate: KeptCallback): Boolean {
+    fallback only_kept(walk, candidate.attribute, 0)
+    fallback not candidate.local.is_empty()
+    var walked = AbstractSyntaxTree.Walk.Walk(no_file)
+    walked.read_function(candidate.declaration)
+    var stored = stores[candidate.site]
+    crash stored
+    return only_kept(walked, candidate.local, stored)
+}
+
+func only_kept(walk: AbstractSyntaxTree.Walk.Walk, name: String, stored: Integer): Boolean {
+    var uses = 0
+    var kept = stored
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        crash found.expression
+        if is_the_name(found.expression, name) {
+            uses = uses + 1
+        }
+        if reads_a_number_of(found.expression, name) {
+            kept = kept + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        crash found.statement
+        if keeps_the_name(found.statement, name) {
+            kept = kept + 1
+        }
+        index = index + 1
+    }
+    return uses == kept
+}
+
+func is_the_name(expression: SpiteCompiler.Expression?, name: String): Boolean {
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return expression.name == name
+    }
+    if expression.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        return expression.name == name
+    }
+    return false
+}
+
+func reads_a_number_of(expression: SpiteCompiler.Expression, name: String): Boolean {
+    fallback expression.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    fallback held.contains(expression.name)
+    return is_the_name(expression.target, name)
+}
+
+func keeps_the_name(statement: SpiteCompiler.WrittenStatement, name: String): Boolean {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: return is_the_name(statement.target, name)
+        AbstractSyntaxTree.Shapes.Statements.FallbackStatement: return is_the_name(statement.condition, name)
+        AbstractSyntaxTree.Shapes.Statements.CrashStatement: return is_the_name(statement.condition, name)
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: return is_the_name(statement.condition, name)
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: return is_the_name(statement.condition, name)
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: return false
+        AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: return false
+        AbstractSyntaxTree.Shapes.Statements.SwitchStatement: return false
+        AbstractSyntaxTree.Shapes.Statements.Block: return false
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: return false
+        AbstractSyntaxTree.Shapes.Statements.LoadStatement: return false
+    }
+}
+
+func read_the_class(model: ClassModel) {
+    fallback not model.is_singleton and model.bound_types.count() == 0
+    reading = model
+    model.declared_functions.each(read_a_function)
+}
+
+func read_a_function(function: FunctionModel) {
+    fallback function.declaration
+    var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
+    reading_key = function.key()
+    reading_declaration = declaration
+    locals = List<String>()
+    waiting = Dictionary<String, String>()
+    declaration.parameters.each(note_a_parameter)
+    read_block(declaration.body)
+}
+
+func note_a_parameter(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
+    locals.append(parameter.name)
+}
+
+func read_block(block: AbstractSyntaxTree.Shapes.Statements.Block?) {
+    fallback block
+    block.statements.each(read_statement)
+}
+
+func read_statement(statement: SpiteCompiler.WrittenStatement) {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: read_variable(statement)
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: read_assignment(statement)
+        AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: return
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: read_if(statement)
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: read_block(statement.body)
+        AbstractSyntaxTree.Shapes.Statements.SwitchStatement: read_switch(statement)
+        AbstractSyntaxTree.Shapes.Statements.Block: read_block(statement)
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: return
+        AbstractSyntaxTree.Shapes.Statements.FallbackStatement: return
+        AbstractSyntaxTree.Shapes.Statements.CrashStatement: return
+        AbstractSyntaxTree.Shapes.Statements.LoadStatement: return
+    }
+}
+
+func read_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    read_block(statement.then_branch)
+    read_block(statement.else_branch)
+}
+
+func read_switch(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement) {
+    var index = 0
+    while index < statement.cases.count() {
+        var switch_case = statement.cases[index]
+        read_block(switch_case.body)
+        index = index + 1
+    }
+}
+
+func read_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    locals.append(statement.name)
+    fallback statement.value
+    var site = site_made_by(statement.value)
+    if site.is_empty() {
+        waiting.remove_at(statement.name)
+    } else {
+        waiting[statement.name] = site
+    }
+}
+
+func read_assignment(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    crash statement.target
+    crash statement.value
+    var attribute = own_attribute_of(statement.target)
+    if not attribute.is_empty() {
+        note_a_candidate(attribute, statement.value)
+        return
+    }
+    var target = statement.target
+    fallback target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    var site = site_made_by(statement.value)
+    if site.is_empty() {
+        waiting.remove_at(target.name)
+    } else {
+        waiting[target.name] = site
+    }
+}
+
+func own_attribute_of(target: SpiteCompiler.Expression): String {
+    var name = ""
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        fallback not locals.contains(target.name)
+        name = target.name
+    }
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        fallback is_this(target.target)
+        name = target.name
+    }
+    fallback reading.attribute_named(name)
+    return name
+}
+
+func note_a_candidate(attribute: String, value: SpiteCompiler.Expression) {
+    var local = ""
+    var site = ""
+    if value.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        var waited = waiting[value.name]
+        fallback waited
+        local = value.name
+        site = waited
+        var counted = stores[waited]
+        var count = 1
+        if counted {
+            count = counted + 1
+        }
+        stores[waited] = count
+    } else {
+        site = site_made_by(value)
+    }
+    fallback not site.is_empty()
+    var candidate = KeptCallback(site, reading, attribute, local, reading_declaration)
+    candidates.append(candidate)
+}
+
+func site_made_by(value: SpiteCompiler.Expression): String {
+    fallback value.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression
+    fallback value.callee
+    fallback value.callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    fallback value.callee.name == "ForeignCallback" and value.arguments.count() == 2
+    var handed = value.arguments[0]
+    fallback is_an_own_function(handed)
+    var line = value.line
+    var column = value.column
+    return "{reading_key}|{line}:{column}"
+}
+
+func is_an_own_function(handed: SpiteCompiler.Expression): Boolean {
+    var name = ""
+    if handed.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        fallback not locals.contains(handed.name)
+        name = handed.name
+    }
+    if handed.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        fallback is_this(handed.target)
+        name = handed.name
+    }
+    fallback reading.function_named(name)
+    return true
+}
+
+func is_this(target: SpiteCompiler.Expression?): Boolean {
+    fallback target.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression
+    return target.kind == 'keyword_this'
+}
+
+func keep(candidate: KeptCallback) {
+    fallback not kept_sites.contains(candidate.site)
+    kept_sites.append(candidate.site)
+    var owner = candidate.owner.key
+    fallback not owners.contains(owner)
+    owners.append(owner)
+}

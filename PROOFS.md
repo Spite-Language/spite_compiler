@@ -1288,6 +1288,38 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   tests/back_reference_named_by_two_classes, tests/back_reference_union_items, tests/back_reference_type_items,
   tests/back_reference_union_attribute, tests/back_reference_type_attribute.
 
+### A ForeignCallback kept by the object it calls holds that object back
+
+- **Status**: built (#473, D2536 to confirm).
+- **Rule**: a `ForeignCallback(f, ...)` made in a function of a class `C` (not a singleton, not generic) from `f` or
+  `this.f`, one of `C`'s own functions, and kept only in `C`'s own attributes holds its owner without a count, so
+  `C` holding the callback and the callback holding `C` is no cycle: `C` is freed when its last other holder goes,
+  its `drop()` runs (and tells C to stop) while the callback is alive, and then the callback is released with `C`'s
+  attributes ([foreign_libraries.md](../spite_documentation/foreign_libraries.md#calling-back-into-spite)). A
+  callback the program may also keep anywhere else keeps its count and so its owner (D232).
+- **How**: `model/kept_callbacks.spite` reads every function's written statements for such a making stored in an
+  own attribute, directly or through the local it was made in, and names its site (`function key|line:column`). The
+  site counts only when nothing lets the callback out: every mention of the attribute's name in the program (any
+  class, so a name another class also uses keeps the count) and of the local in its function is a read of
+  `.address` or `.context`, an assignment to it, a `fallback`, `crash`, `if` or `while` on it alone, or (the local)
+  one of those stores. `C` then gets a back slot in the layout like the target of a back reference, and the
+  function value made at the site is a `Spite.FunctionValueHoldingItsOwnerBack`: it points back at its owner
+  (`_point_back`) instead of counting it, keeps the slot's offset beside the receiver, and lets the owner go back
+  (`_let_go_back`) when it is freed. The trampoline reads the owner with `_back_counted`, holds it for the call and
+  lets it go after. A `copy()` of `C` shares the callback without naming the attribute; when the original is freed
+  first, a call from C stops the program: "spite: C called 'C.f' (file:line) after the C that keeps its
+  ForeignCallback was freed: ...", never a call on freed memory.
+- **Buys**: the pattern foreign_libraries.md teaches frees, with no `drop()` of the program skipped.
+- **Costs**: a back slot in `C`, and a count up and down around each call from C.
+- **Missing**: a callback stored in another object's attribute, kept in a list, made in an attribute's default, or
+  read for anything but its numbers keeps its count and leaks with its owner, which `--debug-memory` names at exit.
+  The `deep_copy()` of an object holding a `ForeignCallback` stops the compiler (`handed_over`, "passed is null").
+- **Lives in**: `model/kept_callbacks.spite`, `high_intermediary_representation/building/foreign_crossing.spite`
+  (`hold_the_owner_back`), `low_intermediary_representation/lowering/calls.spite` (`point_back_at_the_owner`),
+  `freeing.spite` (`let_the_owner_go_back`), `callbacks.spite` (`call_through_held_back`).
+- **Checked by**: tests/foreign_callback_kept_by_its_owner_is_freed, tests/foreign_callback_kept_by_its_owner_copied,
+  tests/foreign_callback_kept_elsewhere_keeps_its_owner.
+
 ### A deep copy copies a graph with its shape
 
 - **Status**: built (D724, D1252, D1397, D1754).
