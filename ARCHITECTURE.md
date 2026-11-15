@@ -512,10 +512,12 @@ walks up through the frame pointers; without the file it prints only the fault l
 Every executable carries the system's unwind data (`generators/windows_x64/unwind_tables.spite`): one entry per
 function, pointed to by the exception directory and written at the end of the data section, saying how to step out
 of it (`push rbp`, `mov rbp, rsp`; a resumable function pushes `rbp` and lowers the stack by its outgoing room), with
-`_frame_handler` as its handler, and one entry for the runtime routines before the first function, which step out
-through `rbp` to the function that called them. The lowering writes three handlers (`lowering.spite`):
-`_fault_handler`, the vectored one, reports at once unless a foreign call is running and the fault is outside the
-program's own code, and then leaves it to the library's own handlers; `_frame_handler` reports a watched fault that
+`_frame_handler` as its handler, and one entry for each part of a runtime routine (`runtime_routines.spite`,
+`small_blocks.spite`) that lowers the stack, saying by how much (`sub rsp, n` at its start); the parts that do not are
+leaves, and a call that never returns ends with `int3`, so its return address stays inside its routine. The
+lowering writes three handlers (`lowering.spite`): `_fault_handler`, the vectored one, reports at once unless a
+foreign call is running and the fault is outside the program's own code, and then leaves it to the library's own
+handlers; `_frame_handler` reports a watched fault that
 reaches a Spite frame and any unwinding through one; `_unhandled_fault`, the unhandled-exception filter, reports one
 that reaches the bottom of a thread with no Spite frame on the way.
 

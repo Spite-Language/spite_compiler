@@ -30,19 +30,25 @@ var _jump_if_equal_opcode = 132
 var _jump_if_not_equal_opcode = 133
 var _jump_if_below_or_equal_opcode = 134
 var _jump_if_above_opcode = 135
+var _call_room = 40
+var _kept_room = 56
+var _breakpoint = 204
 var data_fixups: List<Generators.X64.Fixup>
 var import_fixups: List<Generators.X64.Fixup>
+var unwind: UnwindTables
 
 func SmallBlocks(
     starting_encoder: Generators.X64.Encoder,
     starting_program: LowIntermediaryRepresentation.LoweredProgram,
     starting_data_fixups: List<Generators.X64.Fixup>,
     starting_import_fixups: List<Generators.X64.Fixup>,
+    starting_unwind: UnwindTables,
 ) {
     encoder = starting_encoder
     program = starting_program
     data_fixups = starting_data_fixups
     import_fixups = starting_import_fixups
+    unwind = starting_unwind
 }
 
 func emit_the_routines(starting_stop_routine: Integer) {
@@ -248,6 +254,13 @@ func stop(text: String) {
     var length = bytes.count()
     encoder.move_small_immediate(encoder.rdx, length)
     call_routine(stop_routine)
+    encoder.byte(_breakpoint)
+}
+
+# ../../ARCHITECTURE.md#the-unwind-tables
+func described_from(start: Integer, room: Integer) {
+    var end = encoder.position()
+    unwind.add_a_routine(start, end, room)
 }
 
 func leave() {
@@ -333,6 +346,7 @@ func emit_the_making_routine() {
     stop("the program ran out of memory")
     land(too_many)
     stop("the program ran more than 1024 threads that allocate memory at once")
+    described_from(making_routine, _call_room)
 }
 
 func emit_the_allocating_routine() {
@@ -398,6 +412,7 @@ func emit_the_allocating_routine() {
     land(no_large)
     code("31 C0")
     leave()
+    described_from(allocating_routine, _kept_room)
 }
 
 func emit_the_tracking_routines() {
@@ -465,6 +480,7 @@ func emit_the_tracked_allocating_routine() {
     land(failed)
     code("31 C0")
     leave()
+    described_from(tracked_allocating, _kept_room)
 }
 
 func emit_the_tracked_freeing_routine() {
@@ -479,6 +495,7 @@ func emit_the_tracked_freeing_routine() {
     back(untracked)
     land(small_live)
     land(large_live)
+    var framed = encoder.position()
     code("48 83 EC 38 48 89 4C 24 20")
     take_the_table_lock()
     code("48 8B 4C 24 20 48 8B 41 10")
@@ -497,6 +514,7 @@ func emit_the_tracked_freeing_routine() {
     give_the_table_lock_back()
     code("48 8B 4C 24 20 48 83 C4 38")
     back(untracked)
+    described_from(framed, _kept_room)
     land(nothing)
     code("31 C0 C3")
 }
@@ -507,15 +525,18 @@ func emit_the_tracked_resizing_routine() {
     var held = encoder.jump_if(_jump_if_not_equal_opcode)
     code("48 89 D1")
     if program.fills_fresh_memory {
+        var filling = encoder.position()
         code("48 83 EC 28")
         call_routine(allocating_routine)
         code("48 85 C0 74 07 31 D2")
         call_routine(filling_routine)
         code("48 83 C4 28 C3")
+        described_from(filling, _call_room)
     } else {
         back(allocating_routine)
     }
     land(held)
+    var kept = encoder.position()
     code("48 83 EC 38 48 89 4C 24 20 48 89 54 24 28 8B 41 D8 8D 90 FF FF EF A4 83 FA 40")
     var small_live = encoder.jump_if(_jump_if_below_opcode)
     code("3D 00 00 30 5B")
@@ -549,6 +570,7 @@ func emit_the_tracked_resizing_routine() {
     land(no_room)
     code("31 C0")
     leave()
+    described_from(kept, _kept_room)
 }
 
 func count_the_allocations() {
@@ -559,6 +581,7 @@ func count_the_allocations() {
     code("48 85 C0 74 08")
     at_label("F0 48 FF 05", program.allocation_count_label)
     code("48 83 C4 28 C3")
+    described_from(allocating_routine, _call_room)
 }
 
 func count_the_frees() {
@@ -614,6 +637,7 @@ func emit_the_freeing_routine() {
     land(twice_small)
     land(twice_large)
     stop("the program freed the same memory twice")
+    described_from(freeing_routine, _kept_room)
 }
 
 func emit_the_resizing_routine() {
@@ -623,6 +647,7 @@ func emit_the_resizing_routine() {
     code("48 89 D1")
     back(allocating_routine)
     land(held)
+    var kept = encoder.position()
     code("48 83 EC 38 48 89 D0 48 C1 E8 28")
     var too_large = encoder.jump_if(_jump_if_not_equal_opcode)
     code("8B 41 F8 3D 00 00 30 5B")
@@ -668,6 +693,7 @@ func emit_the_resizing_routine() {
     leave()
     land(not_held)
     stop("the program resized memory it freed or never allocated")
+    described_from(kept, _kept_room)
 }
 
 func emit_the_releasing_routine() {
