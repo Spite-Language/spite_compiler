@@ -1,0 +1,159 @@
+# ../../OPTIMIZATIONS.md#a-read-of-what-a-class-object-holds-is-its-answer
+
+var steady = Dictionary<String, SpiteCompiler.Value>()
+var getters = Dictionary<String, String>()
+var steady_locals = Dictionary<String, HighIntermediaryRepresentation.Values.Class.Object>()
+var declared_counts = Dictionary<String, Integer>()
+var assigned = Dictionary<String, Boolean>()
+var folded = List<Model.FunctionModel>()
+var folded_keys = Dictionary<String, Boolean>()
+
+func optimized(high: HighIntermediaryRepresentation.HighProgram) {
+    fallback high.will_be_lowered()
+    steady = high.steady_class_object_values
+    fallback not steady.is_empty()
+    high.built_functions.each(note_a_getter)
+    fallback not getters.is_empty()
+    var rewriting = HighOptimizationPasses.Rewriting(this)
+    var index = 0
+    while index < high.built_functions.count() {
+        var built = high.built_functions[index]
+        note_the_steady_locals(built.body)
+        rewriting.rewrite_block(built.body)
+        index = index + 1
+    }
+    var folded_index = 0
+    while folded_index < folded.count() {
+        var function = folded[folded_index]
+        high.replaced_functions.append(function)
+        folded_index = folded_index + 1
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-read-of-what-a-class-object-holds-is-its-answer
+func note_a_getter(built: HighIntermediaryRepresentation.HighFunction) {
+    var function = built.function
+    fallback function.parameters.is_empty() and not function.is_a_constructor()
+    fallback built.body.statements.count() == 1
+    var statement = built.body.statements[0]
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Return
+    fallback statement.value and statement.value.class == HighIntermediaryRepresentation.Values.AttributeRead
+    fallback statement.value.object and statement.value.object.class == HighIntermediaryRepresentation.Values.ThisRead
+    fallback statement.value.attribute.owner == function.owner
+    var key = function.key()
+    getters[key] = statement.value.attribute.name
+}
+
+func note_the_steady_locals(body: HighIntermediaryRepresentation.Statements.Block) {
+    steady_locals = Dictionary<String, HighIntermediaryRepresentation.Values.Class.Object>()
+    declared_counts = Dictionary<String, Integer>()
+    assigned = Dictionary<String, Boolean>()
+    count_the_names(body)
+    keep_the_steady(body)
+}
+
+func count_the_names(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(count_a_name)
+}
+
+func count_a_name(statement: SpiteCompiler.Statement) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Declare {
+        count_a_declaration(statement.name)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Assign.Assign {
+        assigned[statement.name] = true
+    } else if statement.class == HighIntermediaryRepresentation.Statements.If {
+        count_the_names(statement.then_branch)
+        count_the_names(statement.else_branch)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.While {
+        count_the_names(statement.body)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        count_the_names(statement)
+    }
+}
+
+func count_a_declaration(name: String) {
+    var count = declared_counts[name]
+    if count {
+        declared_counts[name] = count + 1
+    } else {
+        declared_counts[name] = 1
+    }
+}
+
+func keep_the_steady(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(keep_a_steady)
+}
+
+# ../../PROOFS.md#what-a-class-object-holds-is-known-while-compiling
+func keep_a_steady(statement: SpiteCompiler.Statement) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Declare {
+        var is_once = declared_counts[statement.name] == 1 and not assigned.contains(statement.name)
+        fallback is_once
+        var object = known_object_of(statement.value)
+        if object {
+            steady_locals[statement.name] = object
+        }
+    } else if statement.class == HighIntermediaryRepresentation.Statements.If {
+        keep_the_steady(statement.then_branch)
+        keep_the_steady(statement.else_branch)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.While {
+        keep_the_steady(statement.body)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        keep_the_steady(statement)
+    }
+}
+
+func rewritten(value: SpiteCompiler.Value): SpiteCompiler.Value {
+    var answer = steady_answer_of(value)
+    if answer {
+        return answer
+    }
+    return value
+}
+
+# ../../OPTIMIZATIONS.md#a-read-of-what-a-class-object-holds-is-its-answer
+func steady_answer_of(value: SpiteCompiler.Value): SpiteCompiler.Value? {
+    fallback value.class == HighIntermediaryRepresentation.Values.Call
+    fallback value.arguments.is_empty()
+    var key = value.function.key()
+    var attribute_name = getters[key]
+    fallback attribute_name
+    var object = known_object_of(value.receiver)
+    fallback object and object.reflection_kind == value.function.owner
+    var given = steady["{object.reflection_kind}:{object.described}.{attribute_name}"]
+    fallback given
+    if not folded_keys.contains(key) {
+        folded_keys[key] = true
+        folded.append(value.function)
+    }
+    return fresh(given)
+}
+
+func known_object_of(value: SpiteCompiler.Value?): HighIntermediaryRepresentation.Values.Class.Object? {
+    fallback value
+    if value.class == HighIntermediaryRepresentation.Values.Class.Object {
+        return value
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return steady_locals[value.name]
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        fallback value.kind == 'present' or value.kind == 'nullable' or value.kind == 'proven'
+        return known_object_of(value.converted)
+    }
+    var answer = steady_answer_of(value)
+    fallback answer
+    return known_object_of(answer)
+}
+
+func fresh(given: SpiteCompiler.Value): SpiteCompiler.Value {
+    if given.class == HighIntermediaryRepresentation.Values.Conversion {
+        crash given.converted
+        var copied = given.copy()
+        copied.converted = fresh(given.converted)
+        return copied
+    }
+    return given.copy()
+}

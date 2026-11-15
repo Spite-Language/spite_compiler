@@ -1,0 +1,201 @@
+# ../../PROOFS.md#what-a-class-object-holds-is-known-while-compiling
+
+var no_program = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(no_program)
+var kinds = List<String>()
+var shape_members = Dictionary<String, Boolean>()
+var changed = Dictionary<String, Boolean>()
+var given_from = Dictionary<String, String>()
+var reassigned = Dictionary<String, Boolean>()
+var walked: Model.FunctionModel? = null
+
+func check(high_program: HighIntermediaryRepresentation.HighProgram) {
+    high = high_program
+    high.steady_class_object_values = Dictionary<String, SpiteCompiler.Value>()
+    fallback high.will_be_lowered()
+    crash high.context
+    var inspection = CommandLine.Inspection()
+    fallback not inspection.holds(high.context.build_flags)
+    var context = high.context
+    context.fills.each(note_a_kind)
+    fallback not kinds.is_empty()
+    var shapes = high.model.shapes.values()
+    shapes.each(note_a_shape)
+    high.built_functions.each(note_the_writes)
+    var index = 0
+    while index < context.fills.count() {
+        var fill = context.fills[index]
+        var known = context.filled[index]
+        crash known
+        note_what_it_gave(fill, known)
+        index = index + 1
+    }
+}
+
+func note_a_kind(fill: HighIntermediaryRepresentation.HighFunction) {
+    var kind = fill.function.owner
+    if not kinds.contains(kind) {
+        kinds.append(kind)
+    }
+}
+
+func note_a_shape(shape: Model.ShapeModel) {
+    shape.members.each(note_a_shape_member)
+}
+
+func note_a_shape_member(member: Model.FunctionModel) {
+    shape_members[member.name] = true
+}
+
+func note_the_writes(function: HighIntermediaryRepresentation.HighFunction) {
+    walked = function.function
+    var is_a_kinds_constructor = function.function.is_a_constructor() and kinds.contains(function.function.owner)
+    note_a_block(function.body, is_a_kinds_constructor)
+}
+
+func note_a_block(block: HighIntermediaryRepresentation.Statements.Block?, is_the_top: Boolean) {
+    fallback block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        note_a_statement(statement, is_the_top)
+        index = index + 1
+    }
+}
+
+func note_a_statement(statement: SpiteCompiler.Statement, is_the_top: Boolean) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        note_an_attribute_write(statement, is_the_top)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Assign.Assign {
+        note_a_name_write(statement)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.If {
+        note_a_block(statement.then_branch, false)
+        note_a_block(statement.else_branch, false)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.While {
+        note_a_block(statement.body, false)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        note_a_block(statement, false)
+    }
+}
+
+func note_a_name_write(written: HighIntermediaryRepresentation.Statements.Assign.Assign) {
+    crash walked
+    fallback walked.is_a_constructor() and kinds.contains(walked.owner)
+    reassigned["{walked.owner}:{written.name}"] = true
+}
+
+# ../../PROOFS.md#what-a-class-object-holds-is-known-while-compiling
+func note_an_attribute_write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute, is_the_top: Boolean) {
+    crash walked
+    var owner = written.attribute.owner
+    fallback kinds.contains(owner)
+    var key = "{owner}.{written.attribute.name}"
+    var is_its_constructor = walked.is_a_constructor() and walked.owner == owner
+    if is_its_constructor and is_the_top and not given_from.contains(key) {
+        var parameter = parameter_written(written)
+        if not parameter.is_empty() {
+            given_from[key] = parameter
+            return
+        }
+    }
+    var is_its_defaults = walked.owner == owner and is_a_defaults_function(walked)
+    fallback not is_its_defaults
+    changed[key] = true
+}
+
+func is_a_defaults_function(function: Model.FunctionModel): Boolean {
+    return function.name == "_attribute_defaults" or function.name.ends_with("$defaults")
+}
+
+func parameter_written(written: HighIntermediaryRepresentation.Statements.Assign.Attribute): String {
+    crash walked
+    fallback written.object and written.object.class == HighIntermediaryRepresentation.Values.ThisRead
+    fallback written.value and written.value.class == HighIntermediaryRepresentation.Values.LocalRead
+    var index = 0
+    while index < walked.parameters.count() {
+        var parameter = walked.parameters[index]
+        if parameter.name == written.value.name {
+            return written.value.name
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func note_what_it_gave(fill: HighIntermediaryRepresentation.HighFunction, known: String) {
+    var kind = fill.function.owner
+    var made = constructor_call_of(fill)
+    fallback made
+    var model = high.model.class_named(kind)
+    fallback model
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var given = given_to(attribute, made)
+        if given {
+            high.steady_class_object_values["{known}.{attribute.name}"] = given
+        }
+        index = index + 1
+    }
+}
+
+func constructor_call_of(
+    fill: HighIntermediaryRepresentation.HighFunction,
+): HighIntermediaryRepresentation.Values.Call? {
+    var index = 0
+    while index < fill.body.statements.count() {
+        var statement = fill.body.statements[index]
+        var made = constructor_call_in(statement, fill.function.owner)
+        if made {
+            return made
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func constructor_call_in(
+    statement: SpiteCompiler.Statement,
+    kind: String,
+): HighIntermediaryRepresentation.Values.Call? {
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Evaluate
+    fallback statement.value and statement.value.class == HighIntermediaryRepresentation.Values.Call
+    var is_on_itself = statement.value.receiver and statement.value.receiver.class == HighIntermediaryRepresentation.Values.ThisRead
+    fallback is_on_itself and statement.value.function.is_a_constructor() and statement.value.function.owner == kind
+    return statement.value
+}
+
+# ../../PROOFS.md#what-a-class-object-holds-is-known-while-compiling
+func given_to(attribute: Model.AttributeModel, made: HighIntermediaryRepresentation.Values.Call): SpiteCompiler.Value? {
+    var key = "{attribute.owner}.{attribute.name}"
+    fallback not changed.contains(key) and not shape_members.contains(attribute.name)
+    var parameter_name = given_from[key]
+    fallback parameter_name
+    fallback not reassigned.contains("{attribute.owner}:{parameter_name}")
+    var parameters = made.function.parameters
+    fallback parameters.count() == made.arguments.count()
+    var index = 0
+    while index < parameters.count() {
+        var parameter = parameters[index]
+        if parameter.name == parameter_name {
+            var argument = made.arguments[index]
+            crash argument
+            fallback is_constant(argument)
+            return argument
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func is_constant(value: SpiteCompiler.Value): Boolean {
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        fallback value.converted
+        fallback value.kind == 'nullable' or value.kind == 'present'
+        return is_constant(value.converted)
+    }
+    var is_a_number = value.class == HighIntermediaryRepresentation.Values.WholeNumber or value.class == HighIntermediaryRepresentation.Values.DecimalNumber
+    var is_a_text = value.class == HighIntermediaryRepresentation.Values.TextConstant
+    var is_reflected = value.class == HighIntermediaryRepresentation.Values.Class.Object
+    return is_a_number or is_a_text or is_reflected or value.class == HighIntermediaryRepresentation.Values.NullConstant
+}

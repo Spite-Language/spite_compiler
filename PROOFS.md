@@ -1011,6 +1011,28 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: none.
 - **Checked by**: none.
 
+### What a class object holds is known while compiling
+
+- **Status**: built (spite_compiler#54), for the attributes a class object's fill gives a constant.
+- **Rule**: a class object (`Spite.Class`, `Spite.Namespace`, `Spite.Enum`, `Spite.Union`, `Spite.Type`) is made
+  once, by the fill the compiler writes for it, which runs the reflection class's defaults and then its constructor
+  on the new object. An attribute of the reflection class that its constructor writes once, at the top of its body,
+  from a parameter it never assigns, and that no other function of the program writes (its defaults aside, which run
+  before the constructor) nor any `type` member of its name can reach, holds for the object's whole life what the
+  fill handed that parameter. Where that is a whole number, a decimal, a text, `null` or another class object, it is
+  known while compiling. The facts are proven from the built program at each compile, never taken from the library
+  ([reflection.md](../spite_documentation/reflection.md#the-spite-classes)).
+- **Buys**: a call of a function that only answers such an attribute (`get_name`, `get_is_singleton`, `to_string`,
+  `fits_vector`), on a class object written in the code, on another such answer (`Monster.namespace.name`) or on a
+  local given one and never assigned again, is the attribute's value, with no test of the object's slot and no fill
+  (`high_optimization_passes/class_object_reads`).
+- **Falls back**: an attribute that is a list or a dictionary, one the fill works out from a late answer
+  (`is_stateful` of a program class), a class object read from a list, an attribute or a parameter, and any build
+  that keeps everything (`CommandLine.Inspection`) read the object at run time, as before.
+- **Lives in**: the proof `proofs/steady_class_objects`, registered among the high passes right before
+  `class_object_reads` (`HighProgram.steady_class_object_values`).
+- **Checked by**: tests/class_object_reads_fold, tests/reflection_names_fold, tests/enum_reflection (output only).
+
 ## Memory
 
 ### A buffer freed in its block lives in the frame

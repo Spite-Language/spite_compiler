@@ -1503,6 +1503,35 @@ The compile-time evaluation's budget (`fits`, in `partial_evaluation.spite`) com
 `most_cells / blocks` rather than multiplying them, so a function too large for the evaluation is one it leaves alone, whatever its size,
 and never an `Integer` that does not fit.
 
+## A read of what a class object holds is its answer
+
+A class object is made at run time by the fill the compiler writes for it, the first time something reads it: each
+read tests the object's slot and runs the fill when it is empty. What the fill gives most attributes is written in
+it as a constant (the class's name, whether it is a singleton, an enum, a list or optional, its namespace), and
+[nothing changes it afterwards](PROOFS.md#what-a-class-object-holds-is-known-while-compiling), so the compiler reads
+it there instead: a call of a function that only answers such an attribute, on a class object it knows, is that
+constant.
+
+```spite
+func describe(monster: Monster) {
+    var alone = Monster.is_singleton
+    var described: Spite.Class = Monster
+    var its = monster.class
+    console.print(alone, described.name, described.is_enum, its.name_with_namespaces)
+}
+```
+
+`describe` reads no class object: `false`, `"Monster"`, `false` and `"Monster"` are its constants, and once nothing
+else reads it, `Monster`'s class object is never filled. A known class object is one written in the code, one
+another such read answers (`Monster.namespace.name`, the namespace's name), and a local given one and never
+assigned again (`high_optimization_passes/class_object_reads`, after `folded_dictionaries` and before
+`unread_fields`).
+
+When it does not apply: an attribute that is a list or a dictionary (`attributes`, `functions`, `generics`), one the
+fill works out from a late answer (`is_stateful` of a program class), a class object read from a list, an
+attribute or a parameter, and builds that keep everything (`--development`, `--repl`, `--hot-reload`). What a user
+can observe: nothing but the time; `--high-ir` shows the constants where the calls were (`tests/class_object_reads_fold`).
+
 ## A late answer keeps only its taken branch
 
 `function_waits` and `function_writes_parameter` are answered only once every function is built (D673), so both
