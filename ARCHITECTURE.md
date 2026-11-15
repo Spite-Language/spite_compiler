@@ -526,7 +526,10 @@ that reaches the bottom of a thread with no Spite frame on the way. All three ca
 (`fault_report_writing.spite`), which steps a copy of the faulting context out frame by frame with the same tables
 (`RtlLookupFunctionEntry`, `RtlVirtualUnwind`) and hands the report a chain of the return addresses that land in a
 Spite function (an entry of the program's own image that names `_frame_handler`), since `rbp` in a resumable
-function is its heap frame; a `--hot-reload` build, whose swapped-in code has no entries, hands it `rbp`. An
+function is its heap frame; a `--hot-reload` build, whose swapped-in code has no entries, hands it `rbp`. A stop's
+`spite.frame` lines walk the same way: `_callers`, which `Spite.Fault.frames` reads, captures the current context
+(`RtlCaptureContext`) and steps it out into a chain of up to 257 callers on the heap, so a walk deeper than the 256
+the library reads still says `more`; under `--hot-reload` it is `rbp`. An
 unwinding by Microsoft's C++ runtime carries the thrown exception's record inside its own, and the report names
 that one.
 
