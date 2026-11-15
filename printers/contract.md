@@ -36,8 +36,10 @@ To come: `machine_code`.
 
 They are for people reading what a pass did, and nothing reads them back, so they may change with any commit.
 The high one writes a value the way Spite would, with every operation in parentheses so the order is seen, and a
-call with the class that owns it: `ExitCode.double_value(this, (total + index))`. A call whose class the builder
-could not tell says so: `reset(this), its class unknown`. The low one writes `rN` for a virtual register and `pN`
+call with the class that owns it: `ExitCode.double_value(this; (total add index))`. A call whose class the builder
+could not tell says so: `reset(this), its class unknown`. An operation shows what lowering does with it: one the
+ranges proof folded is its number with the source after it, `(6 folded from cut subtract 1)`, and one it proved
+safe says which check it dropped, `(index add 1, proven to fit)` or `(total divide count, divisor proven)`. The low one writes `rN` for a virtual register and `pN`
 for a place in the frame, and a jump names the index of the instruction it goes to. Both end each line (an
 instruction, a statement, a `function` line) with ` | ` and every field of what it shows, found by a walk over its
 attributes, so a field a copy forgets shows; the high one writes a value it holds as its own fields in braces
