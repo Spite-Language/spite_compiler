@@ -1306,19 +1306,40 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   function value made at the site is a `Spite.FunctionValueHoldingItsOwnerBack`: it points back at its owner
   (`_point_back`) instead of counting it, keeps the slot's offset beside the receiver, and lets the owner go back
   (`_let_go_back`) when it is freed. The trampoline reads the owner with `_back_counted`, holds it for the call and
-  lets it go after. A `copy()` of `C` shares the callback without naming the attribute; when the original is freed
-  first, a call from C stops the program: "spite: C called 'C.f' (file:line) after the C that keeps its
-  ForeignCallback was freed: ...", never a call on freed memory.
+  lets it go after. No copy can share or remake the callback: `copy()` and `deep_copy()` of a class holding a
+  `ForeignCallback` are refused while compiling (below), so the owner is alive whenever C can call, with no check
+  while running.
 - **Buys**: the pattern foreign_libraries.md teaches frees, with no `drop()` of the program skipped.
 - **Costs**: a back slot in `C`, and a count up and down around each call from C.
 - **Missing**: a callback stored in another object's attribute, kept in a list, made in an attribute's default, or
   read for anything but its numbers keeps its count and leaks with its owner, which `--debug-memory` names at exit.
-  The `deep_copy()` of an object holding a `ForeignCallback` stops the compiler (`handed_over`, "passed is null").
 - **Lives in**: `model/kept_callbacks.spite`, `high_intermediary_representation/building/foreign_crossing.spite`
   (`hold_the_owner_back`), `low_intermediary_representation/lowering/calls.spite` (`point_back_at_the_owner`),
   `freeing.spite` (`let_the_owner_go_back`), `callbacks.spite` (`call_through_held_back`).
-- **Checked by**: tests/foreign_callback_kept_by_its_owner_is_freed, tests/foreign_callback_kept_by_its_owner_copied,
+- **Checked by**: tests/foreign_callback_kept_by_its_owner_is_freed,
   tests/foreign_callback_kept_elsewhere_keeps_its_owner.
+
+### A copy never shares or remakes a C registration
+
+- **Status**: built (#512, Mortaro 2026-11-15, reach D2537 to confirm).
+- **Rule**: a `copy()` or `deep_copy()` the compiler makes for a class is refused when the copy would reach a
+  `ForeignCallback`: for `copy()`, an attribute of the class whose type is `ForeignCallback`, holds one as a type
+  argument (`List<ForeignCallback>`) or is a union with it as a member; for `deep_copy()` also any class it reaches
+  through attributes, type arguments, union members and the classes that fill a `type`, stopping at a class that
+  declares its own `deep_copy()`. A copy of a `ForeignCallback` itself is refused too. The words name the class, the
+  attribute and, when it is reached, the attribute it is reached through: "a copy of Window would share the C
+  registration in '_on_close': ...".
+- **How**: `Values.made_copy` and `made_copy_in`, the one place a class's copy is made, ask
+  `validators/high_intermediary_representation/copied_registration` before making it, at the line being built: a
+  written `x.copy()`, a bare `copy()`, a copy through a union or `type`, and the deep copy of a list of such objects
+  all pass there. A class that declares its own `copy()` or `deep_copy()` is copied by it and not judged.
+- **Buys**: the owner of a `ForeignCallback` it holds back (above) is the only object C can call, so the trampoline
+  needs no run-time check, and `deep_copy()` no longer stops the compiler in `handed_over`.
+- **Missing**: a copy through a `type` is judged by every class known to fill it, even one the program never copies.
+- **Lives in**: `high_intermediary_representation/building/values.spite` (`judge_a_copied_registration`),
+  `validators/high_intermediary_representation/copied_registration/validator.spite`.
+- **Checked by**: conformance/foreign_callback_owner_copied, conformance/foreign_callback_owner_deep_copied,
+  conformance/foreign_callback_reached_by_a_deep_copy.
 
 ### A deep copy copies a graph with its shape
 
