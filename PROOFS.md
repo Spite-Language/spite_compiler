@@ -715,6 +715,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `operators.spite` (`binary_value`, `judge_a_cut`); `calls.spite` hands the built call to
   `validators/high_intermediary_representation/wider_bitwise_operand`.
 - **Checked by**: conformance/wider_right_operand, conformance/wider_comparison, conformance/wider_bitwise_operand,
+  conformance/library_wider_bitwise_operand,
   conformance/wider_decimal_right, conformance/wider_multiplication_order, conformance/wider_subtraction;
   tests/signedness_not_wider.
 
