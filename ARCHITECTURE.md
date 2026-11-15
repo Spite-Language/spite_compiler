@@ -526,7 +526,9 @@ that reaches the bottom of a thread with no Spite frame on the way. All three ca
 (`fault_report_writing.spite`), which steps a copy of the faulting context out frame by frame with the same tables
 (`RtlLookupFunctionEntry`, `RtlVirtualUnwind`) and hands the report a chain of the return addresses that land in a
 Spite function (an entry of the program's own image that names `_frame_handler`), since `rbp` in a resumable
-function is its heap frame; a `--hot-reload` build, whose swapped-in code has no entries, hands it `rbp`.
+function is its heap frame; a `--hot-reload` build, whose swapped-in code has no entries, hands it `rbp`. An
+unwinding by Microsoft's C++ runtime carries the thrown exception's record inside its own, and the report names
+that one.
 
 ## How the compiler is built
 
