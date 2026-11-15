@@ -1923,9 +1923,11 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   of the same name never hides it. A function no call reaches counts the same way, from the functions
   `Builder.check_the_unreached` builds before it puts them back (`HighProgram.checked_functions`). Code the
   builder does not build still counts from the syntax tree: a bare name as its own class's attribute, and `x.name`
-  by name for every class; that is a function the unreached check skips (a generic class's, the standard
-  library's, one taking a function, a shape or a walked member), an attribute default of a class never made, and a
-  whole function from which the builder folded a branch away (it records each one, `Context.folded_functions`). A member of a shape a class fills is read. In a folder the
+  by name for every class; that is a function the unreached check skips (a generic class's, one taking a
+  function, a shape or a walked member), an attribute default of a class never made, and a
+  whole function from which the builder folded a branch away (it records each one, `Context.folded_functions`).
+  Standard library code the builder neither built nor folded counts no `x.name`: it never runs, and the library's
+  own attributes are not checked, so its uncalled `other.red` cannot hide a program's unread `red`. A member of a shape a class fills is read. In a folder the
   program loads only singleton bindings are checked, counting reads from inside that folder.
 - **Falls back**: an unread attribute is refused (`the attribute 'label' is never read: remove it`).
 - **Lives in**: `validators/abstract_syntax_tree/unused_names`, and the proof `proofs/every_attribute_is_read`
@@ -1933,7 +1935,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   `validators/high_intermediary_representation/read_attribute`.
 - **Checked by**: conformance/unused_names, written_not_read, unused_attributes, attribute_read_in_another_class,
   loaded_singleton_unread, template_unused_attribute, template_unused_function,
-  attribute_hidden_by_an_uncalled_read; tests/attribute_read_by_an_uncalled_function.
+  attribute_hidden_by_an_uncalled_read, attribute_hidden_by_an_uncalled_library_read;
+  tests/attribute_read_by_an_uncalled_function.
 
 ### A constructed object must be kept and used
 
