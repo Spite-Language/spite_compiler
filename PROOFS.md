@@ -651,6 +651,11 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Falls back**: the check stays and is listed by `--optimization-report`.
 - **Lives in**: the proof `proofs/ranges`, a speed proof run after the acceptance proofs, over every function built from
   the source; it records its fact on each operation (`proves_no_ranges`, the unchecked arithmetic) for the lowering.
+  An operation is lowered once wherever the tree holds it, so one the proof visits again (a value two places share)
+  keeps only what every visit proves: it fits, its divisor is safe or it folds (to the same number) only when each
+  visit says so, and its operands' ranges for the report are the widest any visit saw (`prove_a_visit_again`).
+  No builder shares an operation today (#314 removed the last), so no program reaches a second visit and no test
+  can; the rule stands so that a builder sharing one later cannot fold it wrongly.
 - **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room, tests/down_counter_ranges,
   tests/leaving_or_proves_ranges, tests/named_bounds_prove_ranges.
 
