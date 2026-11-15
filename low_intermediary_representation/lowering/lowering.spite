@@ -19,6 +19,8 @@ var _context_frame_pointer_offset = 160
 var _continue_searching = 0
 var _frame_continues_the_search = 1
 var _unwinding_flags = 6
+var _foreign_slots_size = 16
+var _thread_storage_out_of_indexes: Long = 4294967295
 
 func Lowering(starting_high: HighIntermediaryRepresentation.HighProgram) {
     high = starting_high
@@ -62,6 +64,8 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
         program.data.append(placeholder)
         program.place_table = program.data.count() - 1
         program.name_state(program.place_table, "table.places")
+        program.foreign_slots = zeroed_room(_foreign_slots_size)
+        program.name_state(program.foreign_slots, "foreign.slots")
         var call_placeholder = Buffer(0)
         program.data.append(call_placeholder)
         program.call_table = program.data.count() - 1
@@ -533,6 +537,39 @@ func take_the_deferred_slot(lowering: FunctionLowering) {
     machine.stored(label, 0, slot)
 }
 
+# ../../../spite_documentation/failure.md#a-fault-a-foreign-library-catches-itself
+func take_the_foreign_slots(lowering: FunctionLowering) {
+    var slots = lowering.new_register()
+    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(slots, program.foreign_slots)
+    lowering.emit(addressed)
+    take_a_foreign_slot(lowering, slots, 0)
+    take_a_foreign_slot(lowering, slots, 8)
+}
+
+func take_a_foreign_slot(lowering: FunctionLowering, slots: Integer, offset: Integer) {
+    var no_arguments = List<Integer>()
+    var slot = lowering.new_register()
+    var allocated = LowIntermediaryRepresentation.Instructions.ImportCall(slot, "TlsAlloc", no_arguments, "", 0)
+    lowering.emit(allocated)
+    var none_left = lowering.constant(_thread_storage_out_of_indexes)
+    var failed = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(failed, 'equal', slot, none_left, true)
+    lowering.emit(compared)
+    var stopping = lowering.new_block()
+    var taken = lowering.new_block()
+    var tested = LowIntermediaryRepresentation.Instructions.Branch(failed, stopping, taken)
+    lowering.emit(tested)
+    lowering.switch_to(stopping)
+    var label = lowering.text_label(
+        "spite: the program stopped: the system had no thread slot left for the foreign-call site (TlsAlloc failed)\n",
+    )
+    var stopped = LowIntermediaryRepresentation.Instructions.Stop(label, false)
+    lowering.emit(stopped)
+    lowering.switch_to(taken)
+    var stored = LowIntermediaryRepresentation.Instructions.Store(slots, offset, slot, 'bits_64', "", false)
+    lowering.emit(stored)
+}
+
 func lower_the_start() {
     var lowering_state = FunctionLoweringState()
     lowering_state.start_from(layout, program, singleton_slots)
@@ -545,6 +582,7 @@ func lower_the_start() {
     lowering.start("_start")
     if program.reports_faults {
         listen_for_faults(lowering)
+        take_the_foreign_slots(lowering)
     }
     if high.makes_work {
         var beginning = Working(lowering)
@@ -887,12 +925,7 @@ func pass_what_a_foreign_call_raised(
     var tested_heap = LowIntermediaryRepresentation.Instructions.Branch(is_heap, reporting, checking_the_call)
     handling.emit(tested_heap)
     handling.switch_to(checking_the_call)
-    var handling_singletons = Singletons(handling.state)
-    var foreign_label = handling_singletons.record_label_of("_foreign")
-    var foreign = handling.new_register()
-    var addressed_foreign = LowIntermediaryRepresentation.Instructions.DataAddress(foreign, foreign_label)
-    handling.emit(addressed_foreign)
-    var site = loaded_at(handling, foreign, 0)
+    var site = foreign_site_keeping_the_error(handling)
     var zero = handling.constant(0)
     var no_call = handling.new_register()
     var compared_site = LowIntermediaryRepresentation.Instructions.Compare(no_call, 'equal', site, zero, true)
@@ -922,6 +955,21 @@ func pass_what_a_foreign_call_raised(
     handling.emit(compared_end)
     var tested_end = LowIntermediaryRepresentation.Instructions.Branch(inside, reporting, passing)
     handling.emit(tested_end)
+}
+
+# ../../../spite_documentation/failure.md#a-fault-a-foreign-library-catches-itself
+func foreign_site_keeping_the_error(handling: FunctionLowering): Integer {
+    var handling_calls = Calls(handling.state)
+    var no_arguments = List<Integer>()
+    var kept_error = handling.new_register()
+    var kept = LowIntermediaryRepresentation.Instructions.ImportCall(kept_error, "GetLastError", no_arguments, "", 0)
+    handling.emit(kept)
+    var site = handling_calls.foreign_slot_value(0)
+    var restoring = List<Integer>()
+    restoring.append(kept_error)
+    var restored = LowIntermediaryRepresentation.Instructions.ImportCall(-1, "SetLastError", restoring, "", 0)
+    handling.emit(restored)
+    return site
 }
 
 func lower_the_frame_handler() {

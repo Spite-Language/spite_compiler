@@ -515,9 +515,10 @@ of it (`push rbp`, `mov rbp, rsp`; a resumable function pushes `rbp` and lowers 
 `_frame_handler` as its handler, and one entry for each part of a runtime routine (`runtime_routines.spite`,
 `small_blocks.spite`) that lowers the stack, saying by how much (`sub rsp, n` at its start); the parts that do not are
 leaves, and a call that never returns ends with `int3`, so its return address stays inside its routine. The
-lowering writes three handlers (`lowering.spite`): `_fault_handler`, the vectored one, reports at once unless a
-foreign call is running and the fault is outside the program's own code, and then leaves it to the library's own
-handlers; `_frame_handler` reports a watched fault that
+lowering writes three handlers (`lowering.spite`): `_fault_handler`, the vectored one, reports at once unless this
+thread is in a foreign call and the fault is outside the program's own code, and then leaves it to the library's
+own handlers; the current foreign-call site and library are kept in two thread slots (`TlsAlloc` at the start), so
+the decision and the report's `foreign=` are the faulting thread's own; `_frame_handler` reports a watched fault that
 reaches a Spite frame and any unwinding through one; `_unhandled_fault`, the unhandled-exception filter, reports one
 that reaches the bottom of a thread with no Spite frame on the way.
 
