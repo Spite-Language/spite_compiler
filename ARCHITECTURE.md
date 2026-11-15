@@ -26,7 +26,11 @@ Every stage folder has one entry class named for the folder (`proofs/proofs.spit
                                            by abstract_syntax_tree/markup); then
                                            validators/abstract_syntax_tree; once every class is read, fixes/symbols,
                                            then validators/mapping
-    name_resolution                        the model; then validators/name_resolution
+    name_resolution                        the model; then validators/name_resolution, then a reopening that
+                                           changes the type of a standard library attribute or the answer of a
+                                           standard library function (validators/mapping/reopened_type and
+                                           reopened_answer, comparing the resolved types), before the library's
+                                           own code is built on it
     high_intermediary_representation       every reached function built (building only builds)
     proofs                                 the proofs, in their order (below), the rules of
                                            validators/abstract_syntax_tree that need the built program among them
@@ -97,7 +101,9 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    A refusal the builder still makes asks this walk first, for all but `present_values`.
 2. `rules_after_building`: the rules of `validators/abstract_syntax_tree` that need the built program (the call
    inside a call, unused names, and the lone hole, which reads whether each hole the builder built is text), and the
-   reopening that changes an attribute's type (`validators/mapping/reopened_type`, comparing the resolved types).
+   reopening of the program's or a package's class that changes an attribute's type or a function's answer
+   (`validators/mapping/reopened_type` and `reopened_answer`). The symbols stage merges every reopening, so an
+   unused one is checked too.
 3. `switch_cover`: every switch the builder recorded covers its cases, and a `_:` answers for something.
 4. `vector_fit`: every `Vector` the builder recorded making holds a class that fits one.
 5. `compile_time_facts`: the answers to `function_waits`, `function_writes` and their kind, and the refusal of an
