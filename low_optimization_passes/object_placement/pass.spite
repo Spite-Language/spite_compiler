@@ -7,10 +7,8 @@ var next_register = 0
 var field_registers = List<Integer>()
 var register_fields = List<Integer>()
 var original_block_count = 0
-var field_known = List<Boolean>()
-var field_values = List<Long>()
-var placing_known = List<Boolean>()
-var placing_values = List<Long>()
+var entering_fields = List<Dictionary<Integer, Long>>()
+var placing = Dictionary<Integer, Long>()
 var placed = List<SpiteCompiler.Instruction>()
 var placing_block = 0
 var text_flags = List<Integer>()
@@ -106,18 +104,12 @@ func place_the_objects() {
 }
 
 func find_the_known_fields() {
-    field_known.clear()
-    field_values.clear()
-    var total = original_block_count * facts.field_roots.count()
-    var index = 0
-    while index < total {
-        field_known.append(false)
-        field_values.append(0)
-        index = index + 1
-    }
+    entering_fields.clear()
     var visited = List<Boolean>()
-    index = 0
+    var index = 0
     while index < original_block_count {
+        var nothing_known = Dictionary<Integer, Long>()
+        entering_fields.append(nothing_known)
         visited.append(false)
         index = index + 1
     }
@@ -135,15 +127,7 @@ func find_the_known_fields() {
 }
 
 func meet_into(block_index: Integer, visited: List<Boolean>): Boolean {
-    var fields = facts.field_roots.count()
-    var known = List<Boolean>()
-    var values = List<Long>()
-    var index = 0
-    while index < fields {
-        known.append(block_index != 0)
-        values.append(0)
-        index = index + 1
-    }
+    var known = Dictionary<Integer, Long>()
     var seen_any = false
     var predecessors = flow.predecessors_of(block_index)
     if block_index == 0 {
@@ -153,168 +137,143 @@ func meet_into(block_index: Integer, visited: List<Boolean>): Boolean {
     while predecessor_index < predecessors.count() {
         var predecessor = predecessors[predecessor_index]
         if visited[predecessor] == true {
-            var state_known = List<Boolean>()
-            var state_values = List<Long>()
-            leaving_state(predecessor, state_known, state_values)
-            meet_states(known, values, state_known, state_values, seen_any)
+            var leaving = leaving_state(predecessor)
+            if seen_any {
+                known = shared_fields(known, leaving)
+            } else {
+                known = leaving
+            }
             seen_any = true
         }
         predecessor_index = predecessor_index + 1
     }
     fallback seen_any or block_index == 0
-    if not seen_any {
-        index = 0
-        while index < fields {
-            known[index] = false
-            index = index + 1
-        }
-    }
     var changed = visited[block_index] != true
     visited[block_index] = true
-    index = 0
-    while index < fields {
-        var slot = block_index * fields + index
-        var now_known = known[index] == true
-        var now_value = values[index]
-        crash now_value
-        if not now_known {
-            now_value = 0
-        }
-        if field_known[slot] != now_known or field_values[slot] != now_value {
-            changed = true
-        }
-        field_known[slot] = now_known
-        field_values[slot] = now_value
-        index = index + 1
+    var before = entering_fields[block_index]
+    crash before
+    if not same_fields(before, known) {
+        changed = true
     }
+    entering_fields[block_index] = known
     return changed
 }
 
-func meet_states(
-    known: List<Boolean>,
-    values: List<Long>,
-    state_known: List<Boolean>,
-    state_values: List<Long>,
-    seen_any: Boolean,
-) {
+func shared_fields(known: Dictionary<Integer, Long>, incoming: Dictionary<Integer, Long>): Dictionary<Integer, Long> {
+    var shared = Dictionary<Integer, Long>()
+    var fields = known.keys()
     var index = 0
-    while index < known.count() {
-        var incoming = state_known[index] == true
-        var incoming_value = state_values[index]
-        crash incoming_value
-        if not seen_any {
-            known[index] = incoming
-            values[index] = incoming_value
-        } else if not incoming or values[index] != incoming_value {
-            known[index] = false
+    while index < fields.count() {
+        var field = fields[index]
+        var value = known[field]
+        crash value
+        if incoming.contains(field) and incoming[field] == value {
+            shared[field] = value
         }
         index = index + 1
     }
+    return shared
 }
 
-func leaving_state(block_index: Integer, known: List<Boolean>, values: List<Long>) {
-    var fields = facts.field_roots.count()
+func same_fields(before: Dictionary<Integer, Long>, now: Dictionary<Integer, Long>): Boolean {
+    fallback before.count() == now.count()
+    var fields = now.keys()
     var index = 0
-    while index < fields {
-        var slot = block_index * fields + index
-        var entering = field_known[slot] == true
-        var value = field_values[slot]
+    while index < fields.count() {
+        var field = fields[index]
+        var value = now[field]
         crash value
-        known.append(entering)
-        values.append(value)
+        fallback before.contains(field) and before[field] == value
         index = index + 1
     }
+    return true
+}
+
+func leaving_state(block_index: Integer): Dictionary<Integer, Long> {
+    var entering = entering_fields[block_index]
+    crash entering
+    var known = entering.copy()
     var block = function.blocks[block_index]
     crash block
     var instruction_index = 0
     while instruction_index < block.instructions.count() {
         var instruction = block.instructions[instruction_index]
-        follow_the_fields(instruction, known, values)
+        follow_the_fields(instruction, known)
         instruction_index = instruction_index + 1
     }
+    return known
 }
 
-func follow_the_fields(instruction: SpiteCompiler.Instruction, known: List<Boolean>, values: List<Long>) {
+func follow_the_fields(instruction: SpiteCompiler.Instruction, known: Dictionary<Integer, Long>) {
     if instruction.class == LowIntermediaryRepresentation.Instructions.Allocate {
         if facts.mode_of(instruction.target) == 1 {
             var root = facts.root_of(instruction.target)
-            set_every_field(root, known, values)
+            set_every_field(root, known)
         }
         return
     }
     if instruction.class == LowIntermediaryRepresentation.Instructions.Store {
-        follow_a_store(instruction, known, values)
+        follow_a_store(instruction, known)
         return
     }
     if instruction.class == LowIntermediaryRepresentation.Instructions.Retain {
-        move_the_count(instruction.object, known, values, 1)
+        move_the_count(instruction.object, known, 1)
         return
     }
     if instruction.class == LowIntermediaryRepresentation.Instructions.Call {
-        forget_the_released(instruction, known, values)
+        forget_the_released(instruction, known)
     }
 }
 
-func forget_the_released(
-    call: LowIntermediaryRepresentation.Instructions.Call,
-    known: List<Boolean>,
-    values: List<Long>,
-) {
+func forget_the_released(call: LowIntermediaryRepresentation.Instructions.Call, known: Dictionary<Integer, Long>) {
     fallback call.function == "_release"
     var index = 0
     while index < call.arguments.count() {
         var argument = call.arguments[index]
-        move_the_count(argument, known, values, -1)
+        move_the_count(argument, known, -1)
         index = index + 1
     }
 }
 
-func move_the_count(register: Integer, known: List<Boolean>, values: List<Long>, step: Integer) {
+func move_the_count(register: Integer, known: Dictionary<Integer, Long>, step: Integer) {
     fallback facts.mode_of(register) == 1
     var root = facts.root_of(register)
     fallback facts.plain[root] != true
     var field = facts.count_field_of(root)
-    fallback field >= 0
-    fallback known[field] == true
-    var value = values[field]
+    fallback field >= 0 and known.contains(field)
+    var value = known[field]
     crash value
     var moved = value + step
     if moved < 0 {
-        known[field] = false
+        known.remove_at(field)
         return
     }
-    values[field] = moved
+    known[field] = moved
 }
 
-func set_every_field(root: Integer, known: List<Boolean>, values: List<Long>) {
+func set_every_field(root: Integer, known: Dictionary<Integer, Long>) {
     var index = 0
     while index < facts.field_roots.count() {
         var owner = facts.field_roots[index]
         if owner == root {
-            known[index] = true
-            values[index] = 0
+            known[index] = 0
         }
         index = index + 1
     }
 }
 
-func follow_a_store(
-    stored: LowIntermediaryRepresentation.Instructions.Store,
-    known: List<Boolean>,
-    values: List<Long>,
-) {
+func follow_a_store(stored: LowIntermediaryRepresentation.Instructions.Store, known: Dictionary<Integer, Long>) {
     fallback facts.mode_of(stored.address) == 1
     var root = facts.root_of(stored.address)
     var field = facts.field_of(root, stored.offset)
     crash field >= 0
-    if facts.constant_known[stored.source] == true {
-        var value = facts.constant_values[stored.source]
-        crash value
-        known[field] = fits_the_field(value, field)
-        values[field] = value
-        return
+    known.remove_at(field)
+    fallback facts.constant_known[stored.source] == true
+    var value = facts.constant_values[stored.source]
+    crash value
+    if fits_the_field(value, field) {
+        known[field] = value
     }
-    known[field] = false
 }
 
 func fits_the_field(value: Long, field: Integer): Boolean {
@@ -342,19 +301,9 @@ func fits_the_field(value: Long, field: Integer): Boolean {
 func place_in_block(block_index: Integer) {
     var block = function.blocks[block_index]
     crash block
-    placing_known = List<Boolean>()
-    placing_values = List<Long>()
-    var fields = facts.field_roots.count()
-    var index = 0
-    while index < fields {
-        var slot = block_index * fields + index
-        var entering = field_known[slot] == true
-        var value = field_values[slot]
-        crash value
-        placing_known.append(entering)
-        placing_values.append(value)
-        index = index + 1
-    }
+    var entering = entering_fields[block_index]
+    crash entering
+    placing = entering.copy()
     var original = block.instructions
     var last = original.last()
     var falls = true
@@ -364,7 +313,7 @@ func place_in_block(block_index: Integer) {
     placed = List<SpiteCompiler.Instruction>()
     placing_block = block_index
     var split = false
-    index = 0
+    var index = 0
     while index < original.count() {
         var instruction = original[index]
         if place_one(instruction) {
@@ -507,8 +456,7 @@ func place_an_allocation(allocate: LowIntermediaryRepresentation.Instructions.Al
             var register = field_register(allocate.target, index)
             var zero = LowIntermediaryRepresentation.Instructions.Constant(register, 0)
             placed.append(zero)
-            placing_known[index] = true
-            placing_values[index] = 0
+            placing[index] = 0
         }
         index = index + 1
     }
@@ -634,8 +582,8 @@ func place_a_load(loaded: LowIntermediaryRepresentation.Instructions.Load) {
     var root = facts.root_of(loaded.address)
     var field = facts.field_of(root, loaded.offset)
     crash field >= 0
-    if mode == 1 and placing_known[field] == true {
-        var value = placing_values[field]
+    if mode == 1 and placing.contains(field) {
+        var value = placing[field]
         crash value
         var folded = LowIntermediaryRepresentation.Instructions.Constant(loaded.target, value)
         placed.append(folded)
@@ -674,12 +622,12 @@ func place_a_store(stored: LowIntermediaryRepresentation.Instructions.Store) {
     crash field >= 0
     var target = field_register(stored.address, field)
     normalize_into(target, stored.source, field)
-    placing_known[field] = false
-    if facts.constant_known[stored.source] == true {
-        var value = facts.constant_values[stored.source]
-        crash value
-        placing_known[field] = fits_the_field(value, field)
-        placing_values[field] = value
+    placing.remove_at(field)
+    fallback facts.constant_known[stored.source] == true
+    var value = facts.constant_values[stored.source]
+    crash value
+    if fits_the_field(value, field) {
+        placing[field] = value
     }
 }
 
@@ -762,13 +710,13 @@ func place_a_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
     fallback mode == 1 and facts.plain[root] != true
     var field = facts.count_field_of(root)
     var count = shared_register(field)
-    if placing_known[field] == true {
-        var known_count = placing_values[field]
+    if placing.contains(field) {
+        var known_count = placing[field]
         crash known_count
         var raised: Long = known_count + 1
         var counted = LowIntermediaryRepresentation.Instructions.Constant(count, raised)
         placed.append(counted)
-        placing_values[field] = raised
+        placing[field] = raised
         return
     }
     var one = new_register()
@@ -776,7 +724,7 @@ func place_a_retain(retain: LowIntermediaryRepresentation.Instructions.Retain) {
     placed.append(made_one)
     var added = LowIntermediaryRepresentation.Instructions.Arithmetic(count, 'add', count, one, 'bits_64', true, false)
     placed.append(added)
-    placing_known[field] = false
+    placing.remove_at(field)
 }
 
 func place_a_call(call: LowIntermediaryRepresentation.Instructions.Call): Boolean {
@@ -800,8 +748,8 @@ func place_a_call(call: LowIntermediaryRepresentation.Instructions.Call): Boolea
 func count_down(root: Integer): Boolean {
     var field = facts.count_field_of(root)
     var count = shared_register(field)
-    if placing_known[field] == true {
-        var known_count = placing_values[field]
+    if placing.contains(field) {
+        var known_count = placing[field]
         crash known_count
         if known_count >= 1 {
             count_down_known(root, field, count, known_count)
@@ -858,7 +806,7 @@ func count_down(root: Integer): Boolean {
     freeing.instructions.append(onward)
     placed = List<SpiteCompiler.Instruction>()
     placing_block = continuing_index
-    placing_known[field] = false
+    placing.remove_at(field)
     return true
 }
 
@@ -866,7 +814,7 @@ func count_down_known(root: Integer, field: Integer, count: Integer, known_count
     var lowered: Long = known_count - 1
     var counted = LowIntermediaryRepresentation.Instructions.Constant(count, lowered)
     placed.append(counted)
-    placing_values[field] = lowered
+    placing[field] = lowered
     fallback lowered == 0
     var children = facts.free_children[root]
     crash children
