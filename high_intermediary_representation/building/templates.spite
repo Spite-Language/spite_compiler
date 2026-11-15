@@ -24,10 +24,12 @@ func passed_on_template(
     fallback is_bound and function.template_index() < 0
     var symbol_index = passed_symbol_index(function, call)
     fallback symbol_index >= 0
-    var specialised_name = "{function.name}_for_{bound_pattern.function}"
-    var made = context.current_class.function_named(specialised_name)
+    var function_key = function.key()
+    var origin = current.copy_origin()
+    var copy_key = "passed|{function_key}|{symbol_index}|{origin}"
+    var made = context.current_class.function_copied_for(copy_key)
     if not made {
-        made = specialised_for_the_pattern(function, symbol_index, specialised_name)
+        made = specialised_for_the_pattern(function, symbol_index, copy_key, origin)
     }
     crash made
     var passed = List<SpiteCompiler.Expression>()
@@ -76,7 +78,8 @@ func passes_the_symbol(
 func specialised_for_the_pattern(
     function: Model.FunctionModel,
     symbol_index: Integer,
-    specialised_name: String,
+    copy_key: String,
+    origin: String,
 ): Model.FunctionModel {
     var current = context.current_function.binding_or_empty()
     crash current.member_type
@@ -98,6 +101,12 @@ func specialised_for_the_pattern(
         pattern,
         null,
     )
+    bound.copied_from = origin
+    var wanted_name = "{function.name}_for_{current_pattern.function}"
+    if current_pattern.function.is_empty() {
+        wanted_name = "{function.name}_for_{current.member}"
+    }
+    var specialised_name = context.current_class.unused_function_name(wanted_name)
     var made = context.resolver.reading.specialized(
         function.declaration,
         function.owner,
@@ -107,6 +116,7 @@ func specialised_for_the_pattern(
         specialised_name,
         context.current_class,
     )
+    made.copy_key = copy_key
     context.current_class.declared_functions.append(made)
     return made
 }
@@ -189,10 +199,10 @@ func specialised_for_a_constant(
     crash attribute
     var owner = context.program.class_named(function.owner)
     crash owner
-    var specialised_name = specialised_name_for(function, described_model.key, attribute_name)
-    var made = owner.function_named(specialised_name)
+    var copy_key = walked_copy_key(function, described_model.key, "", attribute_name)
+    var made = owner.function_copied_for(copy_key)
     if not made {
-        made = specialised_for_an_attribute(function, owner, place, specialised_name, described_model, attribute)
+        made = specialised_for_an_attribute(function, owner, place, copy_key, described_model, attribute)
     }
     crash made
     var passed = List<SpiteCompiler.Expression>()
@@ -227,9 +237,11 @@ func specialised_for_the_walked(
     var place = walked_place_in(function, written, walked_name)
     fallback place >= 0
     var walked_class = current.walked_class()
-    var specialised_name = specialised_name_for(function, walked_class, walked.member)
-    var made = owner.function_named(specialised_name)
+    var walked_shape = current.walked_shape()
+    var copy_key = walked_copy_key(function, walked_class, walked_shape, walked.member)
+    var made = owner.function_copied_for(copy_key)
     if not made {
+        var specialised_name = specialised_name_for(owner, function, walked_class, walked.member)
         var bound = Model.TemplateBinding(
             place,
             walked.member,
@@ -242,6 +254,7 @@ func specialised_for_the_walked(
             null,
         )
         bound.member_owner = walked_class
+        bound.member_shape = walked_shape
         made = context.resolver.reading.specialized(
             function.declaration,
             function.owner,
@@ -251,6 +264,7 @@ func specialised_for_the_walked(
             specialised_name,
             owner,
         )
+        made.copy_key = copy_key
         owner.declared_functions.append(made)
     }
     crash made
@@ -267,12 +281,24 @@ func specialised_for_the_walked(
 }
 
 # ../../../spite_documentation/metaprogramming.md#templates-and-walks-side-by-side
-func specialised_name_for(function: Model.FunctionModel, class_key: String, member: String): String {
-    if class_key.is_empty() {
-        return "{function.name}_for_{member}"
+func walked_copy_key(function: Model.FunctionModel, class_key: String, shape_key: String, member: String): String {
+    var function_key = function.key()
+    return "walked|{function_key}|{class_key}|{shape_key}|{member}"
+}
+
+# ../../../spite_documentation/metaprogramming.md#templates-and-walks-side-by-side
+func specialised_name_for(
+    owner: Model.ClassModel,
+    function: Model.FunctionModel,
+    class_key: String,
+    member: String,
+): String {
+    var wanted = "{function.name}_for_{member}"
+    if not class_key.is_empty() {
+        var class_name = class_key.replace(".", "_")
+        wanted = "{function.name}_for_{class_name}_{member}"
     }
-    var class_name = class_key.replace(".", "_")
-    return "{function.name}_for_{class_name}_{member}"
+    return owner.unused_function_name(wanted)
 }
 
 func walks_a_declaration(current: Model.FunctionModel): Boolean {
@@ -319,7 +345,7 @@ func specialised_for_an_attribute(
     function: Model.FunctionModel,
     owner: Model.ClassModel,
     place: Integer,
-    specialised_name: String,
+    copy_key: String,
     described_model: Model.ClassModel,
     attribute: Model.AttributeModel,
 ): Model.FunctionModel {
@@ -336,6 +362,7 @@ func specialised_for_an_attribute(
         null,
     )
     bound.member_owner = described_model.key
+    var specialised_name = specialised_name_for(owner, function, described_model.key, attribute.name)
     var made = context.resolver.reading.specialized(
         function.declaration,
         function.owner,
@@ -345,6 +372,7 @@ func specialised_for_an_attribute(
         specialised_name,
         owner,
     )
+    made.copy_key = copy_key
     owner.declared_functions.append(made)
     return made
 }
@@ -462,19 +490,16 @@ func specialized_for(owner: Model.ClassModel, template: Model.FunctionModel, nam
     var written_owner: Model.Type = member_owner
     var owner_type = bound_parameters(template, written_owner)
     var is_rebound = owner_type.name != written_owner.name
-    var known_name = name
-    if is_rebound and owner_type.kind == 'parameters' {
-        known_name = "{name}_in_{bound_pattern.function}"
-    }
-    var known = owner.function_named(known_name)
-    if known and is_rebound {
-        return known
-    }
     if is_rebound and owner_type.kind == 'parameters' {
         var current = context.current_function.binding_or_empty()
         var current_pattern = current.pattern_or_empty()
         var rebound = Model.BoundPattern(current_pattern.pattern, current_pattern.function, "", false)
-        return specialized_over_parameters(owner, template, owner_type, known_name, match, rebound)
+        var rebound_name = "{name}_in_{bound_pattern.function}"
+        return specialized_over_parameters(owner, template, owner_type, rebound_name, match, rebound)
+    }
+    var known = owner.function_named(name)
+    if known and is_rebound {
+        return known
     }
     return specialized_by_kind(owner, template, owner_type, name, match)
 }
@@ -1356,6 +1381,11 @@ func specialized_over_parameters(
     crash written
     var walked = context.resolver.owners.function_of_parameters(owner_type)
     fallback walked
+    var copy_key = parameters_copy_key(template, written, pattern, owner_type)
+    var known = owner.function_copied_for(copy_key)
+    if known {
+        return known
+    }
     var index = 0
     while index < walked.parameters.count() {
         var parameter = walked.parameters[index]
@@ -1372,21 +1402,38 @@ func specialized_over_parameters(
                 pattern,
                 null,
             )
+            var specialised_name = owner.unused_function_name(name)
             var made = context.resolver.reading.specialized(
                 template.declaration,
                 template.owner,
                 bound,
                 null,
                 null,
-                name,
+                specialised_name,
                 owner,
             )
+            made.copy_key = copy_key
             owner.declared_functions.append(made)
             return made
         }
         index = index + 1
     }
     return null
+}
+
+# ../../../spite_documentation/metaprogramming.md#templates-over-arguments
+func parameters_copy_key(
+    template: Model.FunctionModel,
+    written: String,
+    pattern: Model.BoundPattern?,
+    owner_type: Model.Type,
+): String {
+    var template_key = template.key()
+    var bound_pattern = Model.BoundPattern("", "", "", false)
+    if pattern {
+        bound_pattern = pattern
+    }
+    return "parameters|{template_key}|{written}|{bound_pattern.pattern}|{bound_pattern.function}|{owner_type.name}"
 }
 
 func template_match(template: Model.FunctionModel, name: String): String? {
