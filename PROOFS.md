@@ -1026,12 +1026,17 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `fits_vector`), on a class object written in the code, on another such answer (`Monster.namespace.name`) or on a
   local given one and never assigned again, is the attribute's value, with no test of the object's slot and no fill
   (`high_optimization_passes/class_object_reads`).
+- **Keeps the order**: a class object is let go at exit, and a `drop()` that reads one after that halts with D1256's
+  words. So no read in a function a `drop()` can reach (through calls, `type` members of the same name, and, once
+  such a function calls a function value, every function the program takes as a value) is folded: it reads the
+  object as before and halts the same way, and the program's output never changes.
 - **Falls back**: an attribute that is a list or a dictionary, one the fill works out from a late answer
   (`is_stateful` of a program class), a class object read from a list, an attribute or a parameter, and any build
   that keeps everything (`CommandLine.Inspection`) read the object at run time, as before.
 - **Lives in**: the proof `proofs/steady_class_objects`, registered among the high passes right before
   `class_object_reads` (`HighProgram.steady_class_object_values`).
-- **Checked by**: tests/class_object_reads_fold, tests/reflection_names_fold, tests/enum_reflection (output only).
+- **Checked by**: tests/class_object_reads_fold, tests/class_object_read_in_a_drop_at_exit, tests/reflection_names_fold,
+  tests/enum_reflection (output only).
 
 ## Memory
 

@@ -1529,8 +1529,10 @@ assigned again (`high_optimization_passes/class_object_reads`, after `folded_dic
 
 When it does not apply: an attribute that is a list or a dictionary (`attributes`, `functions`, `generics`), one the
 fill works out from a late answer (`is_stateful` of a program class), a class object read from a list, an
-attribute or a parameter, and builds that keep everything (`--development`, `--repl`, `--hot-reload`). What a user
-can observe: nothing but the time; `--high-ir` shows the constants where the calls were (`tests/class_object_reads_fold`).
+attribute or a parameter, a read in a function a `drop()` can reach (which may run at exit after the class object
+is let go, and must halt as it did: `tests/class_object_read_in_a_drop_at_exit`), and builds that keep everything
+(`--development`, `--repl`, `--hot-reload`). What a user can observe: nothing but the time; `--high-ir` shows the
+constants where the calls were (`tests/class_object_reads_fold`).
 
 ## A late answer keeps only its taken branch
 
