@@ -275,6 +275,20 @@ the code itself. A library function, a generic class's function, a constructor, 
 more than eight copies deep are not copied, and a parameter the body assigns or copies into a local with no written
 type keeps its declared type (`TypedCopies.keeps_its_type`), since that local may later hold any value of it.
 
+### Anything is filled per use
+
+`Anything` is a union whose members the compiler fills with the classes that reach it, and each place that writes
+`Anything` (an attribute, a parameter, an answer, a local) is its own: its type is the shape `Anything@<place>`,
+shown as `Anything` (`Types.its_own`, the shape made on first ask by `ProgramModel.anything_keyed`). A value moved
+from one `Anything` into another links them (`Fitting.fitted_into_another_anything`, and a function value's
+parameters and answer through `link_the_anything_parts`), so the classes that reach one reach the other, and
+`follow_the_shape_links` repeats until no link adds a class. Two `Anything`s are the same type everywhere else
+(`Type.is_the_same_as`). So printing a `Spite.Attribute`'s `.value` asks `to_string` of the classes the attributes
+held, not of the owner kept beside it. `value.to_string()` written on an `Anything` links it to the shape
+`Anything|to_string`, which only a class with its own `to_string` fills; a hole `"{value}"` still takes a class's
+`to_debug` where it has no `to_string`. A generic argument (`List<Anything>`) and `Anything` inside a function type
+stay the one shared `Anything`.
+
 ### The low passes, in order
 
 `low_optimization_passes/low_optimization_passes.spite` lists them, with the low proofs before the passes that
