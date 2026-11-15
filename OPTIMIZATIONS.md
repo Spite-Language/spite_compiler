@@ -1254,7 +1254,7 @@ in the object, no default, no write in the constructor and no argument at the ca
 looks at the whole program: an attribute of a reflection class that no built function reads is absent, its writes go,
 and a constructor parameter nothing reads then goes with its arguments, unless an argument could do something (a call).
 What such a field would have held is not worked out either: the builder asks whether its reader is queued
-(`building/features.spite`), and makes the wrappers, stand-ins and facts only then, or a program reading one name would
+(`building/features.spite`), and makes the wrappers and facts only then, or a program reading one name would
 build every function of the class. The default of a field read and replaced by the constructor is left out as any other
 ([below](#defaults-the-constructor-replaces-are-never-made)); `_not_made`, the default of a function field, only names
 itself, so it does not stop that.
