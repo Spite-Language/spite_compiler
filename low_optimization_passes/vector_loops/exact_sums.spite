@@ -89,22 +89,31 @@ func study() {
         }
         index = index + 1
     }
-    var round = 0
     changed = true
-    while changed and round < 100 {
+    while changed {
         changed = false
         index = 0
         while index < program.lowered_functions.count() {
             var function = program.lowered_functions[index]
             current = index
             if alive[index] == true {
-                spread_through(function)
+                spread_until_settled(function)
             }
             index = index + 1
         }
-        round = round + 1
     }
-    is_settled = not changed
+    is_settled = true
+}
+
+func spread_until_settled(function: LowIntermediaryRepresentation.LowFunction) {
+    var changed_before = changed
+    changed = true
+    while changed {
+        changed = false
+        spread_through(function)
+        changed_before = changed_before or changed
+    }
+    changed = changed_before
 }
 
 func make_the_facts(function: LowIntermediaryRepresentation.LowFunction) {
@@ -396,28 +405,8 @@ func constant_value(register: Integer): Long {
 }
 
 func join_into(known: LowOptimizationPasses.VectorLoops.Exact, adding: LowOptimizationPasses.VectorLoops.Exact) {
-    if not (adding.is_empty or not known.is_known) {
-        if not adding.is_known {
-            known.forget()
-            changed = true
-            return
-        }
-        if known.is_empty {
-            known.take(adding)
-            changed = true
-            return
-        }
-        var merged = joined(known, adding)
-        if not merged.same_as(known) {
-            changed = true
-            known.changes = known.changes + 1
-            if known.changes > 20 {
-                known.forget()
-                return
-            }
-            known.take(merged)
-        }
-    }
+    var grown = grown_by(known, adding)
+    settle_into(known, grown)
 }
 
 func join_whole_into(
@@ -425,20 +414,99 @@ func join_whole_into(
     adding: LowOptimizationPasses.VectorLoops.Exact,
     target: Integer,
 ) {
+    var grown = grown_by(known, adding)
     var narrow_flags = narrows[current]
     crash narrow_flags
     var only_narrow = narrow_flags[target] == true
-    var was_known = known.is_known and not known.is_empty
-    var lowest = known.low
-    var highest = known.high
-    join_into(known, adding)
-    var widens = only_narrow and was_known and not known.is_known and adding.is_known and not adding.is_empty
     var smallest: Long = -2147483648
     var largest: Long = _largest_integer
-    if widens and lowest >= smallest and highest <= largest and adding.low >= smallest and adding.high <= largest {
-        known.hold(0, smallest, largest)
-        known.changes = 100
+    var leaves_the_width = grown.is_known and not grown.is_empty and (grown.low < smallest or grown.high > largest)
+    if only_narrow and leaves_the_width {
+        grown = integer_range(true)
     }
+    settle_into(known, grown)
+}
+
+func grown_by(
+    known: LowOptimizationPasses.VectorLoops.Exact,
+    adding: LowOptimizationPasses.VectorLoops.Exact,
+): LowOptimizationPasses.VectorLoops.Exact {
+    if adding.is_empty or not known.is_known {
+        return known
+    }
+    if not adding.is_known {
+        return unknown_fact()
+    }
+    if known.is_empty {
+        var taken = LowOptimizationPasses.VectorLoops.Exact()
+        taken.take(adding)
+        return taken
+    }
+    var grown = joined(known, adding)
+    move_the_ends_to_the_ladder(grown, known)
+    return grown
+}
+
+func settle_into(known: LowOptimizationPasses.VectorLoops.Exact, grown: LowOptimizationPasses.VectorLoops.Exact) {
+    fallback not grown.same_as(known)
+    changed = true
+    if not grown.is_known {
+        known.forget()
+        return
+    }
+    known.take(grown)
+}
+
+func move_the_ends_to_the_ladder(
+    grown: LowOptimizationPasses.VectorLoops.Exact,
+    known: LowOptimizationPasses.VectorLoops.Exact,
+) {
+    fallback grown.is_known
+    var known_low = aligned(known.low, known.exponent, grown.exponent)
+    var known_high = aligned(known.high, known.exponent, grown.exponent)
+    if grown.low < known_low {
+        grown.low = ladder_at_or_below(grown.low)
+    }
+    if grown.high > known_high {
+        grown.high = ladder_at_or_above(grown.high)
+    }
+}
+
+func ladder_at_or_above(value: Long): Long {
+    if value > 0 {
+        return step_past(value)
+    }
+    if value < 0 {
+        var magnitude = 0 - value
+        return 0 - step_within(magnitude)
+    }
+    return 0
+}
+
+func ladder_at_or_below(value: Long): Long {
+    if value < 0 {
+        var magnitude = 0 - value
+        return 0 - step_past(magnitude)
+    }
+    if value > 0 {
+        return step_within(value)
+    }
+    return 0
+}
+
+func step_past(magnitude: Long): Long {
+    var bits = bit_length(magnitude)
+    var step: Long = 1
+    step = step.shifted_left(bits)
+    return step - 1
+}
+
+func step_within(magnitude: Long): Long {
+    var above = magnitude + 1
+    var bits = bit_length(above) - 1
+    var step: Long = 1
+    step = step.shifted_left(bits)
+    return step - 1
 }
 
 func joined(

@@ -4929,6 +4929,14 @@ parameter holds what every call passes it; and a decimal read from a list holds 
 type, anywhere in the program, stored (and zero). A list filled from bytes, or written through anything the proof
 cannot follow, proves nothing, and neither does a decimal a call answers.
 
+The facts are found by rounds over the program, each function spread until its own facts stop changing, until a
+round changes nothing (#425). They end, with no round limit: a fact only grows (from nothing, to a range, to
+unknown), and a range that grows moves each end it widens out to the ladder `0, ±1, ±3, ±7, ..., ±(2^k - 1)`, or
+lowers its exponent. An end moves out at most 61 times between two lowerings (a known range stays below `2^60`
+multiples, so the magnitude of an end stays below `2^60`), the exponent lowers at most 60 times (each lowering at least doubles the largest multiple), and
+there are finitely many registers, parameters and list types. A counter (`index = index + 1`) so reaches the whole
+32-bit range in about 33 changes, and a register only 32-bit arithmetic writes holds that range at most.
+
 **When it does not apply:** a term that may round (a division, a square root, a product too large to be exact, a
 decimal read from a file), a starting total that may be `-0.0`, or a total the proof cannot follow keeps the loop's
 order: the loop still runs in lanes if it has no such total, and runs as written if it has.
