@@ -176,6 +176,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   the loop if the body hands it on), are not writes to anything a proof reads (`Assignments.hand_on`, which marks the write `is_to_a_fresh_object`); a wait writes nothing in a program that makes no `Concurrent` or
   `Parallel`, and anything in one that does; a call through a function value reaches the functions taken as values
   with its signature, and a function that only calls its parameters reaches the functions each caller passes it; a
+  foreign call reaches the functions handed to a `ForeignCallback` (`Assignments.note_a_callback`), which C may call
+  back, and through them what they call and take as values, never every function value; a
   `drop()` that may run is followed too. Inside a loop, a call anywhere in the body undoes a narrowing made before
   the loop for the next pass ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
   "Before the loop" is told by the scope the narrowing lives in (`NarrowedRead.proven_in_frame` against the loop's
@@ -201,7 +203,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   (`high_intermediary_representation/narrowed_read.spite`, `reads.spite`: `note_a_narrowed_read`) with the calls
   built since its check (`statements.spite`: `log_the_calls_of`); what a call may assign is
   `high_intermediary_representation/assignments.spite` read for narrowings (`read_for_narrowings`).
-- **Checked by**: tests/receiver_call_effects, tests/same_name_call_effects,
+- **Checked by**: tests/receiver_call_effects, tests/same_name_call_effects, tests/foreign_callback_keeps_proofs,
   tests/narrowing_kept_across_harmless_call, tests/copy_right_before_a_loop_is_kept;
   conformance/call_in_loop_right_after_the_check_undoes_narrowing,
   conformance/own_call_in_loop_right_after_the_check_undoes_narrowing,
@@ -213,7 +215,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   conformance/crash_and_call_undoes_proof; conformance/call_undoes_proof, conformance/branch_undoes_proof,
   conformance/receiver_call_undoes_proof, conformance/count_undoes_proof, conformance/bound_proofs_undone,
   conformance/structural_index_undone, conformance/call_on_other_undoes_narrowing,
-  conformance/call_in_loop_undoes_narrowing, conformance/shrink_undoes_proof_*, tests/shrink_keeps_the_proofs_it_cannot_reach,
+  conformance/call_in_loop_undoes_narrowing, conformance/shrink_undoes_proof_*, conformance/foreign_callback_shrink_undoes_proof, tests/shrink_keeps_the_proofs_it_cannot_reach,
   conformance/narrowed_past_a_write_to_an_earlier_attribute,
   conformance/narrowed_past_a_write_to_an_object_handed_on, tests/narrowed_past_filling_a_new_object.
 
