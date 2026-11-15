@@ -1988,7 +1988,10 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   which the builder builds from the same declaration. In the copy a class test on a value of one class is decided
   (`Operators.copied_class_test`) and a `switch` on such a parameter builds the case naming its class
   (`Switches.case_of_the_copied_class`); neither is a decided condition to fix, since the copy is walked. Copies whose
-  lowered code is the same are folded by `identical_functions`, which compares that code.
+  lowered code is the same are folded by `identical_functions`, which compares that code. A parameter the body
+  assigns or copies into an untyped local keeps its declared type (`TypedCopies.keeps_its_type`), `==` on a copied
+  parameter compares it as its declared type (`TypedCopies.as_declared`), and the function as written is built
+  first and dropped by `unreached_functions` when no call reaches it.
 - **Missing**: a value whose class is known only while running reaches the function as written.
 - **Falls back**: the copy's mistake with ", in its copy for (Link, Chain) that the call at line 10 in Zoo.Zoo makes".
 - **Lives in**: `high_intermediary_representation/building/typed_copies.spite`, `arguments.spite`, `calls.spite`.
