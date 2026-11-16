@@ -2614,6 +2614,67 @@ climbs), so each step lowers a number that cannot go below the first block's 0. 
 before, which no walk can reach: it takes at most one step per reached block, and the compiler's and the spec
 programs' longest meeting took under 50 (#548).
 
+## Every loop after lowering settles with no round limit
+
+The passes after lowering repeat a step until a round changes nothing, with no round limit (#495, #569): a limit
+that stops early may keep an answer that has not settled. Each loop ends because what it changes only goes one way
+over finitely many things:
+
+- [Maths left on constants](#maths-left-on-constants-after-lowering-is-worked-out-too) (`constant_folding`): an
+  instruction is replaced at most once, by a constant, a copy or a jump, which are never replaced again, and
+  nothing is added, so every round that folds leaves one fewer instruction to fold.
+- [A value nobody reads](#a-value-nobody-reads-is-not-computed) (`dead_code`): every round that changes something
+  removes an instruction, and nothing is added.
+- [Counted pairs](#a-count-taken-and-let-go-with-nothing-between-is-never-taken) (`counted_pairs`): every round
+  removes a retain and its release, and nothing is added. A block found to lead only to a stop stays found, and a
+  round that finds none ends the search.
+- [What a loop does not change](#what-a-loop-does-not-change-is-computed-before-it) (`loop_invariants`): every
+  round moves an instruction out of the loop's blocks, which stay the same while it runs. A singleton's test moved
+  out of a loop lands just before it, inside one loop fewer, so the sum of the tests' loop depths falls each time.
+- The slots of singletons made at start (`made_singletons`): a register or a load is marked at most once and never
+  unmarked.
+- The objects a register may hold, for [exact decimal sums](#a-decimal-sum-is-split-into-lanes-only-where-every-partial-sum-is-exact)
+  (`vector_loops/holders.spite`): a set only gains places, and becomes unknown past 8, over the program's
+  registers, answers and places.
+- The dominators (`dominance.spite`): a block's dominator only moves up the tree towards the first block (each new
+  one is the meeting of the old one with another predecessor's), as in the unrolling's.
+- [A branch its predecessor decides](#a-branch-its-predecessor-decides-goes-straight-to-its-side)
+  (`jump_threading`): where a jump goes next depends only on its own block and the block it goes to, so a jump
+  that came back to a block it went to before would go round forever (a loop of tests that decide each other).
+  A jump goes to each block at most once, and stops where it would come back.
+- [Common subexpressions across blocks](#common-subexpressions-across-blocks): once a block has been followed, what
+  it leaves only loses computations: what a round finds is kept only where the round before found it too, with the
+  same register. A block leaves at most 128. Before (#569), what a block left could also gain a computation in a
+  later round (room freed under the 128, or a computation made again in another register), so some functions went
+  round forever, and 16 rounds then shared nothing across blocks.
+- The registers a caller makes, which [inlining](#a-function-called-in-a-loop-is-inlined-into-it) looks for in a
+  call's arguments: a register is added once and never removed. Before (#569), two passes missed a copy written
+  before the copy it copies.
+
+MEASURED
+
+### Budgets, not round limits
+
+Some walks stop at a size, and past it leave the code as written, so a budget costs speed, never a wrong answer
+(#569):
+
+- `unread_objects`: at most 32 objects are tried in a function (`most_tried`), and following who holds one stops
+  after 20 000 blocks (`_most_walk_steps`), which keeps that object. The walk itself ends without it: what enters a
+  block only gains holders.
+- `inlining`: finding whether a call is in a loop stops after 4 000 blocks (`_most_successor_steps`), and the call
+  is then taken as not in a loop. The walk ends without it: it follows each block's successors once.
+- `vector_loops/decimal_translating.spite`: finding what a decimal holds before a loop stops after 400 blocks
+  (`_most_blocks_walked`), and the total then keeps the loop's order. The walk ends without it too.
+
+BUDGETS_MEASURED
+
+### Passes run a set number of times
+
+Two passes repeat a whole step exactly twice, as a pipeline, not as a search for a fixed point:
+`loop_invariants` moves what each loop does not change twice over all the loops (the second time moves out of an
+outer loop what the first moved out of an inner one), and `live_values` finds the lives and removes unread values
+twice. PIPELINES_MEASURED
+
 ## A read from a known object cannot fault, and goes when nothing reads it
 
 A read of a word the evaluation proves lies inside a live known object is marked as one that cannot fault, and the
@@ -2852,7 +2913,7 @@ is made on every path to a block (found by following the blocks forward, keeping
 made, forgetting loads at every write of memory, and forgetting a computation wherever a register it reads is
 written again), a repeat in that block copies the answer. A computation over a loop's counter (written before the
 loop and on every pass) is shared between two blocks of one pass, since nothing writes the counter between them.
-When the following does not settle in 16 rounds over the blocks, nothing is shared across blocks.
+The following runs until it settles ([every loop after lowering settles](#every-loop-after-lowering-settles-with-no-round-limit)).
 `list.count()` read before a loop and again in the loop's bound test is one load when the loop writes nothing.
 The sharing runs again after [what a loop does not change is computed before
 it](#what-a-loop-does-not-change-is-computed-before-it), so two loads of one singleton's slot moved out of a loop
