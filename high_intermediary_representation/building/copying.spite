@@ -150,6 +150,14 @@ func copy_deeply(copied: SpiteCompiler.Value, attribute: Model.AttributeModel, r
 func deep_copy_call(value: SpiteCompiler.Value): SpiteCompiler.Value {
     var calls = Calls(values.context, values)
     var no_arguments = List<SpiteCompiler.Value>()
+    var held = value.value_type
+    if held.kind == 'object' and held.name != "String" {
+        var owner = context.class_of(held)
+        var shared = shared_table_copy_of(owner)
+        if shared {
+            return calls.method_call(value, shared.name, no_arguments)
+        }
+    }
     return calls.method_call(value, "deep_copy", no_arguments)
 }
 
@@ -164,9 +172,112 @@ func deep_copied(value: SpiteCompiler.Value): SpiteCompiler.Value {
 
 # ../../PROOFS.md#a-deep-copy-copies-a-graph-with-its-shape
 func uses_a_table(model: Model.ClassModel): Boolean {
+    if reaches_itself(model) {
+        return true
+    }
+    return two_ways_can_meet(model)
+}
+
+func reaches_itself(model: Model.ClassModel): Boolean {
     var walking = List<String>()
     var finished = List<String>()
     return walks_into_a_cycle(model, walking, finished)
+}
+
+# ../../PROOFS.md#a-deep-copy-copies-a-graph-with-its-shape
+func two_ways_can_meet(model: Model.ClassModel): Boolean {
+    if holds_items(model) {
+        return true
+    }
+    var reached = List<String>()
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if needs_its_own(attribute.attribute_type) {
+            var reachable = classes_reached_from(attribute.attribute_type)
+            if meets(reachable, reached) {
+                return true
+            }
+            add_the_new(reached, reachable)
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func holds_items(model: Model.ClassModel): Boolean {
+    var bound = model.bound_types.keys()
+    var index = 0
+    while index < bound.count() {
+        var name = bound[index]
+        var bound_type = model.bound_types[name]
+        crash bound_type
+        if needs_its_own(bound_type) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+# ../../PROOFS.md#a-deep-copy-copies-a-graph-with-its-shape
+func classes_reached_from(held: Model.Type): List<String> {
+    var found = List<String>()
+    add_a_held_key(found, held)
+    var reached = List<String>()
+    var index = 0
+    while index < found.count() {
+        var key = found[index]
+        var model = context.program.class_named(key)
+        if model and not model.is_singleton and not reached.contains(key) {
+            reached.append(key)
+            var further = copied_keys_of(model)
+            add_the_new(found, further)
+        }
+        index = index + 1
+    }
+    return reached
+}
+
+func copied_keys_of(model: Model.ClassModel): List<String> {
+    var declared = model.function_named("deep_copy")
+    if not copies_itself(declared) {
+        return held_class_keys(model)
+    }
+    var keys = List<String>()
+    var bound = model.bound_types.keys()
+    var index = 0
+    while index < bound.count() {
+        var name = bound[index]
+        var bound_type = model.bound_types[name]
+        crash bound_type
+        add_a_held_key(keys, bound_type)
+        index = index + 1
+    }
+    return keys
+}
+
+func meets(reachable: List<String>, reached: List<String>): Boolean {
+    var index = 0
+    while index < reachable.count() {
+        var key = reachable[index]
+        if reached.contains(key) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func add_the_new(keys: List<String>, more: List<String>) {
+    var index = 0
+    while index < more.count() {
+        var key = more[index]
+        if not keys.contains(key) {
+            keys.append(key)
+        }
+        index = index + 1
+    }
 }
 
 func walks_into_a_cycle(current: Model.ClassModel, walking: List<String>, finished: List<String>): Boolean {
@@ -278,30 +389,10 @@ func shared_table_copy_of(model: Model.ClassModel): Model.FunctionModel? {
 }
 
 func items_use_a_table(model: Model.ClassModel): Boolean {
-    if uses_a_table(model) {
+    if reaches_itself(model) {
         return true
     }
-    var bound = model.bound_types.keys()
-    var index = 0
-    while index < bound.count() {
-        var name = bound[index]
-        var bound_type = model.bound_types[name]
-        crash bound_type
-        if bound_uses_a_table(bound_type) {
-            return true
-        }
-        index = index + 1
-    }
-    return false
-}
-
-func bound_uses_a_table(bound_type: Model.Type): Boolean {
-    if bound_type.kind == 'union' or bound_type.kind == 'shape' {
-        return true
-    }
-    fallback needs_its_own(bound_type)
-    var held = context.class_of(bound_type)
-    return uses_a_table(held) or items_use_a_table(held)
+    return holds_items(model)
 }
 
 func table_copy_of(model: Model.ClassModel): Model.FunctionModel {
@@ -353,7 +444,6 @@ func copy_through_one_table(model: Model.ClassModel, name: String): Model.Functi
 }
 
 func copy_in_of(model: Model.ClassModel): Model.FunctionModel {
-    var calls = Calls(values.context, values)
     var own_type = model.type_of_an_instance()
     var table_model = copy_table()
     var table_type = table_model.type_of_an_instance()
@@ -384,11 +474,7 @@ func copy_in_of(model: Model.ClassModel): Model.FunctionModel {
     } else if namespace == "Dictionary" {
         copy_a_dictionary_through_the_table(model, own_type, table_type)
     } else if copies_itself(declared) {
-        var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
-        var no_arguments = List<SpiteCompiler.Value>()
-        var own_copy = calls.method_call(own, "deep_copy", no_arguments)
-        var answered_own = HighIntermediaryRepresentation.Statements.Return(own_copy, 0)
-        statements.append(answered_own)
+        copy_itself_once(own_type, table_type)
     } else {
         copy_through_the_table(model, own_type, table_type)
     }
@@ -508,6 +594,22 @@ func copy_a_dictionary_through_the_table(model: Model.ClassModel, own_type: Mode
         statements.append(assigned)
         index = index + 1
     }
+    var answered = HighIntermediaryRepresentation.Statements.Return(copied, 0)
+    statements.append(answered)
+}
+
+# ../../PROOFS.md#a-deep-copy-copies-a-graph-with-its-shape
+func copy_itself_once(own_type: Model.Type, table_type: Model.Type) {
+    var calls = Calls(values.context, values)
+    var table = HighIntermediaryRepresentation.Values.LocalRead(table_type, "table")
+    var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
+    answer_a_copy_already_made(own_type, table)
+    var no_arguments = List<SpiteCompiler.Value>()
+    var own_copy = calls.method_call(own, "deep_copy", no_arguments)
+    var declared = HighIntermediaryRepresentation.Statements.Declare("copied", own_type, own_copy, 0, "")
+    statements.append(declared)
+    var copied = HighIntermediaryRepresentation.Values.LocalRead(own_type, "copied")
+    remember_the_copy(own_type, copied, table)
     var answered = HighIntermediaryRepresentation.Statements.Return(copied, 0)
     statements.append(answered)
 }

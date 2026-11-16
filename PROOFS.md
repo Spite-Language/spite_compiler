@@ -1343,10 +1343,21 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 ### A deep copy copies a graph with its shape
 
-- **Status**: built (D724, D1252, D1397, D1754).
-- **Rule**: a class whose attributes can reach itself, or a class that does, or reach a back reference, is copied
-  through a table made for the call, so a cycle is copied once per object however the program reaches it
-  ([memory.md](../spite_documentation/memory.md)).
+- **Status**: built (D488, D724, D1252, D1397, D1754, D2545).
+- **Rule**: every deep copy makes one new object per original object, so what the original reaches twice (two
+  attributes, a list and an attribute, a union, a cycle, a back reference) is one object in the copy
+  ([memory.md](../spite_documentation/memory.md)). A class is copied through a table made for the call unless the
+  proof below shows that nothing its copy reaches can be reached twice.
+- **Proof that drops the table**: for a class with no `deep_copy()` of its own, worked out per program from its
+  monomorphised classes. It holds when the class cannot reach itself (no cycle, no back reference, no `type`
+  attribute anywhere it reaches), has no bound type that is copied (generic items can repeat), and the classes
+  each of its copied attributes can reach (through object attributes, bound types and union members, a class
+  with its own `deep_copy()`, `List` and `Dictionary` included, through its bound types only) are disjoint from
+  those every other copied attribute can reach. Two ways to one object part at some object: at this class
+  they leave through two attributes whose reachable classes share none, so no object is on both; below it the
+  attribute's own `deep_copy()` keeps the shape, by the same rule. A `List` or `Dictionary` whose items are
+  copied (objects, unions, `type` values) always copies them through one table, since two items can be one
+  object; a copy without a table calls that table copy for such an attribute.
 - **How**: a class reaches another through an object attribute, a bound type, or a union attribute (each member of
   the union); a union attribute inside a table copy is copied through its member's `_deep_copy_in`, dispatched on
   the class it holds, with the same table. A class that reaches a `type` attribute is copied through a table
@@ -1358,11 +1369,19 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   itself one copy however many objects hold it (`tests/deep_copy_list_graph`, `tests/deep_copy_shared_collections`).
   A collection whose items need no table copies them one by one and makes none. The table finds a copy through
   the hashed `Dictionary<Long, Long>` of `Spite.CopyTable`.
-- **Falls back**: a class that reaches a `type` pays for a table even when no filler reaches it back.
-- **Lives in**: embedded, `high_intermediary_representation/building/copying.spite` (`uses_a_table`, `holds_a_type`,
-  `copy_in_call`).
+  Inside a table copy a class with its own `deep_copy()` is copied through it once and remembered, so it too is
+  one object in the copy however often it is reached.
+- **Falls back**: a table, whenever the proof cannot show the ways apart: a class that reaches a `type` (even when
+  no filler reaches it back), two attributes of one class or of classes that reach a common one (even when the
+  program only ever stores fresh objects in them), and any list or dictionary of objects.
+- **Missing**: a proof from the writes (each attribute and each list written only from an object made for it and
+  kept nowhere else) that would drop the table for a tree of such classes and for a list of fresh objects.
+- **Lives in**: embedded, `high_intermediary_representation/building/copying.spite` (`uses_a_table`,
+  `two_ways_can_meet`, `classes_reached_from`, `holds_a_type`, `copy_in_call`, `deep_copy_call`).
 - **Checked by**: tests/deep_copy_graphs, tests/deep_copy_list_graph, tests/deep_copy_shared_collections,
-  tests/deep_copy_union_cycles, tests/deep_copy_type_cycles.
+  tests/deep_copy_union_cycles, tests/deep_copy_type_cycles, tests/deep_copy_shares_a_leaf_through_two_attributes,
+  tests/deep_copy_shares_a_leaf_through_a_list_and_an_attribute, tests/deep_copy_shares_a_leaf_through_a_union,
+  tests/deep_copy_shares_an_object_with_its_own_copy.
 
 ### A singleton made at the start is never tested again
 

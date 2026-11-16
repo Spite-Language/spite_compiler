@@ -274,9 +274,10 @@ crash or holds a `drop()` is not quiet, so it stays and runs in order; a singlet
 The builder writes each class's `copy()` and `deep_copy()` (`high_intermediary_representation/building/copying.spite`)
 when the class declares none: a new object made with no defaults, and every attribute assigned from the original,
 through its own class's `deep_copy()` for an object, a union or a shape, and as it is for a number, a `String` or a
-singleton. Only a class whose attributes can reach the class itself again copies through a table
-(`Spite.CopyTable`), made for that call, which remembers every object copied so a graph is copied with its shape;
-every other class's copy is a plain sequence of copies and stores, with no table, no lookup and nothing remembered.
+singleton. A copy keeps the original's shape (D2545), so a class copies through a table (`Spite.CopyTable`), made
+for that call, which remembers every object copied, unless [the proof](PROOFS.md#a-deep-copy-copies-a-graph-with-its-shape)
+shows nothing its copy reaches can be reached twice; such a class's copy is a plain sequence of copies and stores,
+with no table, no lookup and nothing remembered.
 
 ```spite
 var id = 0
@@ -284,8 +285,9 @@ var customer = Customer("", 0)
 var lines = List<Line>()
 ```
 
-`orders.deep_copy()` on a `List<Order>` copies each order, its customer and its lines through their own functions,
-with no table, since nothing an `Order` holds leads back to an `Order`.
+`order.deep_copy()` copies the customer and the lines through their own functions, with no table at the `Order`,
+since nothing an `Order` holds leads back to it and nothing a `Customer` reaches is a `Line` or a `List<Line>`.
+The lines themselves go through one table, since two of them can be one object.
 
 **When it does not apply:** a class that declares its own `deep_copy()` is copied through it. **What a program can
 observe:** nothing but time and allocations: the copy is what [the rule](https://github.com/Spite-Language/spite_documentation/blob/master/memory.md) says.
