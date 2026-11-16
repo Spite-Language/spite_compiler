@@ -2228,6 +2228,20 @@ it changes only goes one way over finitely many things.
   (`proofs/dominating_tests`): a block's dominator only moves up the tree towards the first block, as in the
   passes after lowering ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#every-loop-after-lowering-settles-with-no-round-limit)).
   Before, past 64 rounds the proof answered nothing.
+- [A signed test](#a-counted-loop-reads-its-items-unchecked) follows a register to the one it copies while both
+  are written once, and walks up from a block to the one way into it; [the range of a register](#the-range-of-a-register)
+  walks up the same way. Each stops at a register or a block it passed (copies in a ring, or blocks with one way in
+  that come round, out of reach from the start), so it passes each once (8 steps before, #581).
+- [Passes that write only what they alone reach](#passes-that-write-only-what-they-alone-reach) studies a function
+  once per round for each context: where `this` and each argument come from, and the function values its parameters
+  hold. Each answer is kept for the round, and a function already being studied in the same context answers
+  shared, so a round ends: a program has finitely many functions, origins and function values. Before (#581) it
+  gave up past 4 000 studies ("it reaches more than 4000 functions") and ran the loop in order.
+- [A write to an object only this function holds](#a-write-to-an-object-only-this-function-holds-must-be-read)
+  looks through up to four calls, which is the rule itself, not a round limit: a fifth call's answer is not
+  judged (tests/memory_replaced_depth_5), so each walk ends after four functions (#581 left it as it is).
+
+PROOFS_MEASURED
 
 Measured (#576) with every loop counted while building the compiler and the 3 027 spec programs: the registers
 never negative of the signed tests need up to 58 rounds (`native_fault_stack`'s constructor, and 56 in
