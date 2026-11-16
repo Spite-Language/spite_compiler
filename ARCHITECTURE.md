@@ -284,9 +284,10 @@ from one `Anything` into another links them (`Fitting.fitted_into_another_anythi
 parameters and answer through `link_the_anything_parts`), so the classes that reach one reach the other, and
 `follow_the_shape_links` repeats until no link adds a class. Two `Anything`s are the same type everywhere else
 (`Type.is_the_same_as`). So printing a `Spite.Attribute`'s `.value` asks `to_string` of the classes the attributes
-held, not of the owner kept beside it. `value.to_string()` written on an `Anything` links it to the shape
-`Anything|to_string`, which only a class with its own `to_string` fills; a hole `"{value}"` still takes a class's
-`to_debug` where it has no `to_string`. A generic argument (`List<Anything>`) and `Anything` inside a function type
+held, not of the owner kept beside it. An `Anything` shape lists only `to_debug`, which every class has:
+`value.to_string()` and a hole `"{value}"` on an `Anything` pass the value into the shape `Anything|to_string`
+(`Fitting.shown_through_their_own`), which only a class with its own `to_string` fills, so nothing stands in for a
+missing one. A generic argument (`List<Anything>`) and `Anything` inside a function type
 stay the one shared `Anything`.
 
 ### The low passes, in order
