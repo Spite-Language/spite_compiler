@@ -288,8 +288,18 @@ parameters and answer through `link_the_anything_parts`), so the classes that re
 held, not of the owner kept beside it. An `Anything` shape lists only `to_debug`, which every class has:
 `value.to_string()` and a hole `"{value}"` on an `Anything` pass the value into the shape `Anything|to_string`
 (`Fitting.shown_through_their_own`), which only a class with its own `to_string` fills, so nothing stands in for a
-missing one. A generic argument (`List<Anything>`) and `Anything` inside a function type
-stay the one shared `Anything`.
+missing one. An `Anything` written as a generic argument (`List<Anything?>`, `Spite.Function<Anything?, String>`)
+is its own too, keyed by where it is written (`GenericArgument.place`, set by the parser), so each such place mints its
+own class (`List_of_Anything@<place>@_maybe`, `Instances.own_anything_key`). Two such classes differing only in their
+places are the same type (`Type.without_places`); a value moved from one into the other joins them
+(`Fitting.fitted_into_another_place`): their `Anything`s are linked both ways, since both now hold the one object, and
+the joined classes (`ProgramModel.join_the_families`) fill every shape any of them fills, so a test of the class
+while running finds the object whichever of them it was made as. One object is then used through the functions of
+several classes, so a class with a place keeps its declared layout (`keeps_its_declared_layout` in `Layout`,
+`AttributeUses` and `UnreadAttributes`, and its named numbers stay): every class of a family lays the object out the
+same way, whatever each one's own uses would drop or move. A place is never shown: the class is shown as written
+(`List<Anything?>`, `Instances.shown_present_argument`), and a stop names its function without the place
+(`FunctionModel.shown_owner`, `Type.without_places`).
 
 ### The low passes, in order
 
