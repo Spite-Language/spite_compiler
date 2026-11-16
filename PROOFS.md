@@ -2058,7 +2058,10 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   function, a shape or a walked member), an attribute default of a class never made, and a
   whole function from which the builder folded a branch away (it records each one, `Context.folded_functions`).
   Standard library code the builder neither built nor folded counts no `x.name`: it never runs, and the library's
-  own attributes are not checked, so its uncalled `other.red` cannot hide a program's unread `red`. A member of a shape a class fills is read. In a folder the
+  own attributes are not checked, so its uncalled `other.red` cannot hide a program's unread `red`. Library code the builder
+  folded counts no `x.name` either: library code names only library classes and reaches a program's class only
+  through a copy made for it, which is built and counted by type. An `x.name` on `.attributes[...]` is a
+  `Spite.Attribute`'s own value and counts for no attribute. A member of a shape a class fills is read. In a folder the
   program loads only singleton bindings are checked, counting reads from inside that folder.
 - **Falls back**: an unread attribute is refused (`the attribute 'label' is never read: remove it`).
 - **Lives in**: `validators/abstract_syntax_tree/unused_names`, and the proof `proofs/every_attribute_is_read`
@@ -2067,7 +2070,7 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Checked by**: conformance/unused_names, written_not_read, unused_attributes, attribute_read_in_another_class,
   loaded_singleton_unread, template_unused_attribute, template_unused_function,
   attribute_hidden_by_an_uncalled_read, attribute_hidden_by_an_uncalled_library_read,
-  attribute_hidden_by_an_uncalled_call;
+  attribute_hidden_by_an_uncalled_call, attribute_hidden_by_a_library_template;
   tests/attribute_read_by_an_uncalled_function.
 
 ### A constructed object must be kept and used
