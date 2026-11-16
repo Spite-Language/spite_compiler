@@ -2205,6 +2205,32 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Checked by**: conformance/walk_with_function, argument_walk_without_function, repeated_branch_call,
   repeated_branch_call_chain, switch_chain, switch_chain_else_if, switch_chain_or, lone_hole and its variants.
 
+## Every loop in a proof settles with no round limit
+
+A proof that repeats a step until a round changes nothing has no round limit (#495, #576): a limit that stops it
+early leaves an answer that has not settled, which the proofs below then threw away. Each loop ends because what
+it changes only goes one way over finitely many things.
+
+- [Passes that write only what they alone reach](#passes-that-write-only-what-they-alone-reach)
+  (`high_optimization_passes/banded_loops/owned/writes.spite`): where a name's value may come from (made here, the
+  item, shared, owned) and what a pass stores in a class only gain kinds, over a function's names and the
+  program's classes. Before, 16 rounds for what is stored and 8 for the names, past which the loop was refused
+  ("did not settle").
+- [A text is written only while nothing else holds it](#a-text-is-written-only-while-nothing-else-holds-it)
+  (`high_optimization_passes/constant_texts/written_texts.spite`): what holds the text at a loop's head is the
+  larger of itself and what the body leaves, so it only rises over three states (held by nothing, held alone,
+  handed on) and settles in three rounds at most, which the old limit of 3 allowed.
+- The registers never negative that [a signed test](#a-counted-loop-reads-its-items-unchecked) proves bounds with
+  (`proofs/bounds_proven_by_signed_tests`), and those [the range of a register](#the-range-of-a-register) floors at
+  0: a register only loses the mark. [The range of a register](#the-range-of-a-register) learns a register's
+  bounds once and never forgets them, so a round that learns nothing ends (8 rounds before).
+- The dominators of [a test a dominating test made](#a-test-a-dominating-test-already-made-is-answered)
+  (`proofs/dominating_tests`): a block's dominator only moves up the tree towards the first block, as in the
+  passes after lowering ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#every-loop-after-lowering-settles-with-no-round-limit)).
+  Before, past 64 rounds the proof answered nothing.
+
+PROOFS_MEASURED
+
 ## Live reload
 
 ### A reload compiles only the changed classes

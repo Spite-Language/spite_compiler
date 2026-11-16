@@ -2650,6 +2650,28 @@ over finitely many things:
 - The registers a caller makes, which [inlining](#a-function-called-in-a-loop-is-inlined-into-it) looks for in a
   call's arguments: a register is added once and never removed. Before (#569), two passes missed a copy written
   before the copy it copies.
+- [A register that only ever holds one constant](#a-register-that-only-ever-holds-one-constant-is-that-constant)
+  (`available_copies`): a register goes from no write seen to one constant to many, never back.
+- [Straight runs of blocks](#straight-runs-of-blocks-are-one-block): every merge leaves a reachable block that had
+  one way in out of reach for good, so a function merges at most as many times as it has blocks.
+- [Copies read through](#a-copy-is-read-through-wherever-it-still-holds): what leaves a block starts as every copy
+  and only loses copies, since what enters a block is what all its predecessors leave in common, and a block
+  passes it on less the copies whose registers it writes, plus the copies it makes. Following a register to the
+  source it copies ends too: the copies that hold at one place never form a ring, since of the copies of a ring
+  the one made last writes the register another copy of the ring reads, which ends that copy. Before (#576), the
+  following stopped after 8 copies.
+- [Jump threading](#a-branch-its-predecessor-decides-goes-straight-to-its-side)'s last step, a jump to a block
+  that only jumps on: it follows such blocks and stops at a block it passed already, where they jump round in a
+  ring (a loop that never ends), so each block is passed at most once. Before (#576), it stopped after 16 and a
+  ring had no guard of its own.
+- [Exact decimal sums](#a-decimal-sum-is-split-into-lanes-only-where-every-partial-sum-is-exact) follow a
+  buffer's register to the register it copies while it is written once, and stop at one they passed (8 steps
+  before, #576). [A sum over a loop](#a-sum-over-a-loop-is-kept-in-lanes) follows its chain of additions, and
+  each link reads the sum further on in the loop's body, so the chain ends at the body's end (8 links before).
+- [Identical functions](#identical-functions-are-folded-into-one): every round that folds marks a function as
+  folded, and a folded function is never unfolded or folded again. A function is folded only into one not folded
+  yet, so following who a function was folded into passes each function at most once (16 rounds and 64 steps
+  before, #576).
 
 Measured (#569) building the compiler and the 3 027 spec programs: the blocks that only lead to a stop need up to
 273 rounds (`OperatorCall.Validator.refuse_an_operator_name`), where 8 stopped them in 708 of the compiler's
@@ -2684,6 +2706,21 @@ Two passes repeat a whole step exactly twice, as a pipeline, not as a search for
 outer loop what the first moved out of an inner one), and `live_values` finds the lives and removes unread values
 twice. A third time would move nothing in the compiler or the spec programs, and would remove more
 values only in two spec programs' constructors (`singleton_guard`, `singleton_lock_calls`).
+
+## Every loop before lowering settles with no round limit
+
+The passes on the high representation repeat a step until a round changes nothing, with no round limit (#495,
+#576), for the same reason as [the passes after lowering](#every-loop-after-lowering-settles-with-no-round-limit):
+what each changes only goes one way over finitely many things.
+
+- [An object handed to the place that keeps it](#an-object-handed-to-the-place-that-keeps-it-is-not-counted)
+  (`ownership/taken_parameters.spite`): a parameter found to be kept is never unfound, and a program has finitely
+  many parameters (32 rounds before).
+- [A class split where a constant attribute decides](#a-class-is-split-where-a-constant-attribute-decides-its-branches)
+  (`split_classes`): a name's value goes from not seen to one value to unknown, never back (32 rounds before,
+  which then split nothing).
+
+HIGH_MEASURED
 
 ## A read from a known object cannot fault, and goes when nothing reads it
 
