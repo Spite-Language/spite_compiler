@@ -2672,6 +2672,28 @@ over finitely many things:
   folded, and a folded function is never unfolded or folded again. A function is folded only into one not folded
   yet, so following who a function was folded into passes each function at most once (16 rounds and 64 steps
   before, #576).
+- [A decimal lives in a decimal register](#a-decimal-lives-in-a-decimal-register): the generator hands a decimal's
+  size on through copies until a round hands on nothing. A register only goes from no size to a size, never back,
+  so a function settles in at most one round more than it has registers. Before (#581) it stopped after 4 rounds,
+  which cost speed, not a wrong answer: a register left with no size lives in a whole-number register, and a copy
+  between the two kinds moves the bits whole (`movd`, `movq`), so the value read is the same.
+- [What a loop does not change](#what-a-loop-does-not-change-is-computed-before-it) follows a register to the one
+  it copies, to find the tests a loop makes on an address and where the address comes from, and stops at a register
+  it passed (copies in a ring, or a copy of a register written more than once, which it does not follow), so it
+  passes each register once (8 copies before, #581).
+- [Exact decimal sums](#a-decimal-sum-is-split-into-lanes-only-where-every-partial-sum-is-exact) find the buffer an
+  address reads and what an address or argument points into by following registers written once through copies
+  and additions, and pass each register once: one met again is either on the way here (a ring) or answered nothing
+  already, since the first answer found is the walk's answer, so it answers nothing again. The owner of a buffer
+  must agree over every write of a register, so it stops only at a register on the way to it (a ring), which owns
+  nothing known, as the old limit did (8 steps before, #581).
+- [An address sum is the addressing mode](#an-address-sum-is-the-addressing-mode): the generator finds the
+  instruction that writes an address, which is written once, by looking back to the start of the block (16
+  instructions before, #581).
+- The weight of a value's use ([values live in registers](#values-live-in-registers)) is 32 to the power of the
+  loops that hold it, at most 4: that is not a walk but the rule of the weight, and the loop ends at the depth.
+
+LOWERED_MEASURED
 
 Measured (#569) building the compiler and the 3 027 spec programs: the blocks that only lead to a stop need up to
 273 rounds (`OperatorCall.Validator.refuse_an_operator_name`), where 8 stopped them in 708 of the compiler's
