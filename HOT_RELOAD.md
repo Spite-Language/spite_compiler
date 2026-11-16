@@ -114,13 +114,16 @@ runs lines until the input ends.
 
 Each line is a reload. The console writes `<program>.reload_session`: a `var\t<name>\t<type>` line for each
 `var` the session keeps, `func\t<count>` and that many lines for each typed function, `load\t<path>` for a file
-being loaded, and `line\t<count>` with the line. The compile reads it and writes `Spite.Session` to
-`.spite/build/spite/session.spite` (`building/reload/session.spite`), digested in the manifest like a program
-file. The session holds one attribute, the entry instance, so its layout never changes: each of the entry's
+being loaded, and `line\t<count>` with the line. The compile reads it and writes `Spite.Session`
+(`building/reload/session.spite`) as two files of one class, both digested in the manifest like program files.
+`.spite/build/spite/session.spite` is the compiler's own code, exempt from the rules like the library: the session
+holds one attribute, the entry instance, so its layout never changes: each of the entry's
 attributes has a `get_`/`set_` pair reading it through `program`, each of its functions a function calling it, so
 a line names them bare; each kept `var` has a `get_`/`set_` pair over a `Dictionary<String, Anything>` the console
-keeps, narrowed back with `held.class == <type>`; the typed functions are copied in; and `run_line(): String?` is
-the line, `var line_value = <line>` and `return "{line_value}"` for an expression, the statements and a `keep` of
+keeps, narrowed back with `held.class == <type>`. `.spite/build/spite/typed_lines.spite` is what the person typed,
+checked as program code by every rule (`Mapping.LibraryFile.is_typed_lines`; it is never rewritten), and an error in
+it names the typed line as its place (`Diagnostics.TypedLines`): the typed functions, and `run_line(): String?`,
+which is the line, `var line_value = <line>` and `return "{line_value}"` for an expression, the statements and a `keep` of
 each `var` declared at its top for anything else. An expression that answers nothing is run as a statement there.
 The compile's answer tells the type of each such `var` (`session var\t<name>\t<type>`, `outputs/session_facts.spite`),
 which the console writes into the next session. A line that does not compile leaves the session file as it was.

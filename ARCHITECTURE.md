@@ -515,7 +515,8 @@ namespace's reflected `classes` leave them out. The reloader
 the compiler writes as text, as a generated class under the program's `.spite/build/spite/` with the library's
 rights, is only what varies: `Spite.ReloadPoint` (the build's values for the reloader,
 `high_intermediary_representation/building/reload/source.spite`) and, in a REPL build, `Spite.Session`
-(`building/reload/session.spite`: the entry's members, the session's `var`s and `func`s and the line typed).
+(`building/reload/session.spite`: the entry's members and the session's `var`s; the typed `func`s and line go to
+`typed_lines.spite` beside it, which is checked as the program's own code).
 
 Beside every executable the compiler writes `<name>.functions`: one line per function of the code, its start and
 end as offsets from the start of the code section and its key (`# spite functions 1`, then `start\tend\tkey` in
