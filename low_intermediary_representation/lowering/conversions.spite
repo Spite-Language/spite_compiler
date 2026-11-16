@@ -27,7 +27,7 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
     }
     var converted = lowering.lower_value(conversion.converted)
     if conversion.kind == 'nullable' {
-        return made_nullable(converted, conversion.value_type)
+        return made_nullable(converted, conversion)
     }
     if conversion.kind == 'into_shape' {
         crash conversion.converted
@@ -47,12 +47,22 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
     if conversion.kind == 'widen' and from_type.is_nullable {
         return converted
     }
+    if conversion.kind == 'narrow_decimal' and conversion.answers_null_when_it_does_not_fit {
+        var float_presence = fits_the_float_range(converted.value, from_type)
+        var single = decimal_converted(converted.value, from_type, conversion.value_type)
+        return Lowered(single.value, float_presence)
+    }
     if conversion.kind == 'narrow_decimal' {
         check_the_float_range(converted.value, from_type)
         return decimal_converted(converted.value, from_type, conversion.value_type)
     }
     if conversion.kind == 'to_decimal' {
         return decimal_converted(converted.value, from_type, conversion.value_type)
+    }
+    if conversion.kind == 'to_whole' and conversion.answers_null_when_it_does_not_fit {
+        var whole_presence = fits_the_decimal_range(converted.value, from_type, conversion.value_type)
+        var whole = decimal_converted(converted.value, from_type, conversion.value_type)
+        return Lowered(whole.value, whole_presence)
     }
     if conversion.kind == 'to_whole' {
         check_the_decimal_range(converted.value, from_type, conversion.value_type)
@@ -81,7 +91,11 @@ func lower_conversion(conversion: HighIntermediaryRepresentation.Values.Conversi
         }
         return carried(converted)
     }
-    if conversion.kind == 'narrow' {
+    if conversion.kind == 'narrow' and conversion.answers_null_when_it_does_not_fit {
+        var presence = fits_the_range(converted.value, from_type, conversion.value_type)
+        return Lowered(converted.value, presence)
+    }
+    if conversion.kind == 'narrow' and not conversion.is_proven_to_fit {
         check_the_range(converted.value, from_type, conversion.value_type)
     }
     if conversion.kind == 'present' {
@@ -1233,11 +1247,106 @@ func article_of(name: String): String {
     return "a"
 }
 
-func made_nullable(converted: Lowered, nullable_type: Model.Type): Lowered {
+func made_nullable(converted: Lowered, conversion: HighIntermediaryRepresentation.Values.Conversion): Lowered {
     var lowering = FunctionLowering(state)
-    if not lowering.is_a_nullable_scalar(nullable_type) {
+    if not lowering.is_a_nullable_scalar(conversion.value_type) {
         return carried(converted)
+    }
+    if answers_its_presence(conversion.converted) {
+        return converted
     }
     var present = lowering.constant(1)
     return Lowered(converted.value, present)
+}
+
+# ../../../spite_documentation/values_and_types.md#a-number-that-may-not-fit-is-narrowed
+func answers_its_presence(inner: SpiteCompiler.Value?): Boolean {
+    if inner.class == HighIntermediaryRepresentation.Values.Conversion {
+        return inner.answers_null_when_it_does_not_fit
+    }
+    return false
+}
+
+func fits_the_range(value: Integer, given: Model.Type, wanted: Model.Type): Integer {
+    var lowering = FunctionLowering(state)
+    var given_scalar = state.scalars.of(given.name)
+    var wanted_scalar = state.scalars.of(wanted.name)
+    crash given_scalar
+    crash wanted_scalar
+    var presence = lowering.constant(1)
+    if state.scalars.is_below(given_scalar.smallest, wanted_scalar.smallest) {
+        var lowest = whole_bound_of(wanted_scalar.smallest)
+        var above_the_low = compared_to(value, 'greater_or_equal', lowest, given_scalar.is_signed)
+        presence = unchecked_bits(presence, 'bits_and', above_the_low, false)
+    }
+    if state.scalars.is_below(wanted_scalar.largest, given_scalar.largest) {
+        var highest = whole_bound_of(wanted_scalar.largest)
+        var below_the_high = compared_to(value, 'less_or_equal', highest, given_scalar.is_signed)
+        presence = unchecked_bits(presence, 'bits_and', below_the_high, false)
+    }
+    return presence
+}
+
+func compared_to(
+    value: Integer,
+    comparison: LowIntermediaryRepresentation.Instructions.Compare.Comparison,
+    limit: Long,
+    compares_signed: Boolean,
+): Integer {
+    var lowering = FunctionLowering(state)
+    var bound = lowering.constant(limit)
+    var holds = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(holds, comparison, value, bound, compares_signed)
+    lowering.emit(compared)
+    return holds
+}
+
+func decimal_compared_to(
+    value: Integer,
+    comparison: LowIntermediaryRepresentation.Instructions.Compare.Comparison,
+    limit_bits: Long,
+): Integer {
+    var lowering = FunctionLowering(state)
+    var bound = lowering.constant(limit_bits)
+    var holds = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Decimal.Compare(holds, comparison, value, bound, true)
+    lowering.emit(compared)
+    return holds
+}
+
+func fits_the_decimal_range(value: Integer, from_type: Model.Type, to_type: Model.Type): Integer {
+    var to_scalar = state.scalars.of(to_type.name)
+    crash to_scalar
+    var wide = value
+    if from_type.name == "Float" {
+        var double_type = Model.Type('scalar', "Double")
+        var widened = decimal_converted(value, from_type, double_type)
+        wide = widened.value
+    }
+    var lowest_bits = decimal_bits_of(to_scalar.smallest)
+    var above = state.scalars.increased(to_scalar.largest)
+    var above_bits = decimal_bits_of(above)
+    var above_the_low = decimal_compared_to(wide, 'greater_or_equal', lowest_bits)
+    var below_the_high = decimal_compared_to(wide, 'less', above_bits)
+    return unchecked_bits(above_the_low, 'bits_and', below_the_high, false)
+}
+
+func fits_the_float_range(value: Integer, from_type: Model.Type): Integer {
+    var lowering = FunctionLowering(state)
+    if from_type.name != "Double" {
+        return lowering.constant(1)
+    }
+    var largest_float: Long = _largest_float_as_double_bits
+    var infinity: Long = _infinity_as_double_bits
+    var negative_largest: Long = largest_float - _largest_long - 1
+    var negative_infinity: Long = infinity - _largest_long - 1
+    var above_the_largest = decimal_compared_to(value, 'greater', largest_float)
+    var below_infinity = decimal_compared_to(value, 'less', infinity)
+    var past_the_top = unchecked_bits(above_the_largest, 'bits_and', below_infinity, false)
+    var below_the_smallest = decimal_compared_to(value, 'less', negative_largest)
+    var above_negative_infinity = decimal_compared_to(value, 'greater', negative_infinity)
+    var past_the_bottom = unchecked_bits(below_the_smallest, 'bits_and', above_negative_infinity, false)
+    var outside = unchecked_bits(past_the_top, 'bits_or', past_the_bottom, false)
+    var one = lowering.constant(1)
+    return unchecked_bits(outside, 'bits_xor', one, false)
 }

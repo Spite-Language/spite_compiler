@@ -119,13 +119,16 @@ clearing a function's facts once it has, so no fact outlives the round that prov
 11. `ranges`: the ranges of numbers that let arithmetic and divisions go unchecked (a speed proof: it records its
    facts on the operations). It first reads which attributes nothing writes (`AttributeUses`) and records those
    whose default is a number (`HighProgram.numbers_nothing_writes`), which it reads as that number.
-12. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
+   It also records each narrowing a program wrote (`HighProgram.narrowing_sites`) and whether its range fits.
+12. `narrowings_fit`: a narrowing into a plain number fits by the ranges, and a decimal that loses its fraction or
+   precision is written on its own line (`validators/high_intermediary_representation/narrowing_fit`).
+13. `setup_lists`: a list its setup fills with objects it makes holds exactly those (a speed proof: it records each
    counted loop over such a list in `HighProgram.setup_list_walks`).
-13. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
+14. `lists_in_the_frame`: a local list of numbers filled at its own level and then only counted and read by
    index holds a known count of items (a speed proof: it records the count on the list's declaration,
    `Declare.frame_items`, which a high pass carries with the statement, and the lowering lays the list out in the
    frame).
-14. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
+15. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
    since the running program's manifest; none answers `unchanged` before anything is lowered.
 
 The sites `recorded_sites` judges hold what the builder resolved where it recorded them (the names in scope with

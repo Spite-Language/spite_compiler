@@ -623,8 +623,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 ### Arithmetic that does not fit halts
 
 - **Status**: partly built.
-- **Rule**: every whole-number `+`, `-`, `*`, unary `-`, the smallest value divided by -1 and a narrowing halts if
-  it does not fit; the step of a counter under its bound carries no check, nor does constant arithmetic; constant
+- **Rule**: every whole-number `+`, `-`, `*`, unary `-` and the smallest value divided by -1 halt if
+  it does not fit (a narrowing is judged while compiling, [below](#a-number-that-may-not-fit-is-narrowed)); the step of a counter under its bound carries no check, nor does constant arithmetic; constant
   arithmetic that does not fit is a compile error
   ([values_and_types.md](../spite_documentation/values_and_types.md#numeric-types-and-the-casting-rule)).
 - **Buys**: no wrapped number is ever read.
@@ -634,9 +634,32 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Falls back**: the check stays, "spite: '...' does not fit in an Integer (...), at ...".
 - **Lives in**: the lowering (`conversions.spite`: `check_the_range`), the generator
   (`emit_a_cold_stop`), and the counter proof in `ranges.spite`.
-- **Checked by**: tests/counter_room, tests/integer_overflow, tests/unsigned_overflow, tests/narrowing_overflow,
+- **Checked by**: tests/counter_room, tests/integer_overflow, tests/unsigned_overflow,
   tests/negate_overflow, tests/smallest_divided, tests/smallest_absolute; conformance/constant_overflow,
   conformance/literal_does_not_fit, conformance/byte_minimum_literal_does_not_fit.
+
+### A number that may not fit is narrowed
+
+- **Status**: built.
+- **Rule**: a number put into a narrower one goes through that class's cast, which answers `null` when the value
+  does not fit (D1895). Into a `T?` it is that `null`; into a plain number it is refused unless the ranges prove it
+  fits, so the failure moves from run time to compile time. A decimal into a whole number, and a `Double` into a
+  `Float`, are written on their own line, a declaration or an assignment, never as an argument, a `return` or an
+  operand (D1896, D1899) ([values_and_types.md](../spite_documentation/values_and_types.md#a-number-that-may-not-fit-is-narrowed)).
+- **Buys**: no narrowing halts at run time; a narrowing the ranges prove has no check at all.
+- **Falls back**: refused, "this value is an Integer, which may not fit in a Tiny: write 'var converted: Tiny? =
+  value' on its own line ...", or "this value is a Float, which loses its fraction in an Integer: write 'var
+  converted: Integer? = value' on the line above, and narrow that".
+- **Lives in**: `proofs/ranges` (`prove_a_conversion`, which records each narrowing as a
+  `HighIntermediaryRepresentation.NarrowingSite` and whether its range fits), `proofs/narrowings_fit`, which hands
+  each to `validators/high_intermediary_representation/narrowing_fit`; the lowering (`conversions.spite`:
+  `fits_the_range`, `fits_the_decimal_range`, `fits_the_float_range`) answers the presence of a `T?`.
+- **Checked by**: tests/narrowing_into_a_nullable, tests/narrowing_overflow, tests/cast_reads_the_range,
+  tests/decimal_narrowing, tests/double_too_large_for_float, tests/signedness_change,
+  tests/infinity_into_an_integer_is_null, tests/not_a_number_into_an_integer_is_null;
+  conformance/narrowing_may_not_fit, conformance/byte_minimum_does_not_fit,
+  conformance/decimal_argument_loses_its_fraction, conformance/decimal_returned_loses_its_fraction,
+  conformance/decimal_declared_may_not_fit.
 
 ### A range proves arithmetic fits
 

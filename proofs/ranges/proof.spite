@@ -8,11 +8,15 @@ var ranges = Dictionary<String, NumberRange>()
 var declared = Dictionary<String, Model.Type>()
 var is_reaching = true
 var are_paths_narrowed = true
+var proving: HighIntermediaryRepresentation.HighFunction? = null
+var proving_line = 0
+var narrowing_sites = List<HighIntermediaryRepresentation.NarrowingSite>()
 var limit: Long = 4611686018427387904
 var _largest_integer: Long = 2147483647
 var _largest_long: Long = 9223372036854775807
 
 func check(high: HighIntermediaryRepresentation.HighProgram) {
+    narrowing_sites = high.narrowing_sites
     var uses = HighIntermediaryRepresentation.AttributeUses()
     uses.read_the_program(high)
     high.numbers_nothing_writes = uses.numbers_nothing_writes()
@@ -20,6 +24,7 @@ func check(high: HighIntermediaryRepresentation.HighProgram) {
     while index < high.built_functions.count() {
         var built = high.built_functions[index]
         if built.is_from_the_source {
+            proving = built
             prove(built.function, built.body, high)
         }
         index = index + 1
@@ -52,6 +57,7 @@ func prove_block(block: HighIntermediaryRepresentation.Statements.Block?) {
 }
 
 func prove_statement(statement: SpiteCompiler.Statement) {
+    proving_line = statement.line
     switch statement {
         HighIntermediaryRepresentation.Statements.Declare: prove_a_declaration(statement)
         HighIntermediaryRepresentation.Statements.Assign.Assign: prove_an_assignment(statement)
@@ -1188,7 +1194,7 @@ func prove_present(value: SpiteCompiler.Value) {
         HighIntermediaryRepresentation.Values.ForeignCall: prove_a_foreign_call(value)
         HighIntermediaryRepresentation.Values.Class.Membership: prove_value(value.tested)
         HighIntermediaryRepresentation.Values.PresenceTest: prove_value(value.tested)
-        HighIntermediaryRepresentation.Values.Conversion: prove_value(value.converted)
+        HighIntermediaryRepresentation.Values.Conversion: prove_a_conversion(value)
         HighIntermediaryRepresentation.Values.Function.Value: prove_value(value.receiver)
         HighIntermediaryRepresentation.Values.Function.ValueCall: prove_a_value_call(value)
         HighIntermediaryRepresentation.Values.NumberRoom: prove_both(value.made, value.number)
@@ -1205,6 +1211,44 @@ func prove_present(value: SpiteCompiler.Value) {
         HighIntermediaryRepresentation.Values.Class.Object: return
         HighIntermediaryRepresentation.Values.Function.Fact: return
     }
+}
+
+# ../../PROOFS.md#a-number-that-may-not-fit-is-narrowed
+func prove_a_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion) {
+    prove_value(conversion.converted)
+    var narrows = conversion.kind == 'narrow' or conversion.kind == 'to_whole' or conversion.kind == 'narrow_decimal'
+    fallback narrows and proving
+    var inner = range_of(conversion.converted)
+    if inner and conversion.kind == 'narrow' {
+        conversion.is_proven_to_fit = fits(inner, conversion.value_type)
+    }
+    if conversion.kind == 'narrow' and not conversion.is_proven_to_fit {
+        conversion.is_proven_to_fit = is_a_constant_that_fits(conversion.converted, conversion.value_type)
+    }
+    var site = HighIntermediaryRepresentation.NarrowingSite(proving, proving_line, conversion)
+    narrowing_sites.append(site)
+}
+
+# ../../PROOFS.md#a-number-that-may-not-fit-is-narrowed
+func is_a_constant_that_fits(value: SpiteCompiler.Value?, wanted: Model.Type): Boolean {
+    var number = constant_of(value)
+    fallback number and value
+    fallback value.value_type.name != "UnsignedLong"
+    return number.number >= type_lowest(wanted) and number.number <= type_highest(wanted)
+}
+
+func constant_of(value: SpiteCompiler.Value?): HighIntermediaryRepresentation.Values.WholeNumber? {
+    if value.class == HighIntermediaryRepresentation.Values.WholeNumber {
+        return value
+    }
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        var key = "{value.attribute.owner}.{value.attribute.name}"
+        var number = numbers_nothing_writes[key]
+        if number.class == HighIntermediaryRepresentation.Values.WholeNumber {
+            return number
+        }
+    }
+    return null
 }
 
 func prove_a_call(call: HighIntermediaryRepresentation.Values.Call) {
@@ -1490,6 +1534,9 @@ func operation_range(operation: HighIntermediaryRepresentation.Values.MachineOpe
     if not answer and left {
         answer = divided_by_anything(operation.operator, left)
     }
+    if not answer and right and operation.operator == 'remainder' {
+        answer = remainder_of_anything(right)
+    }
     if answer {
         var cut = cut_to(answer, operation.value_type)
         if cut {
@@ -1516,6 +1563,17 @@ func divided_by_anything(
         return NumberRange(low, high)
     }
     return null
+}
+
+# ../../PROOFS.md#a-number-that-may-not-fit-is-narrowed
+func remainder_of_anything(right: NumberRange): NumberRange? {
+    var low_size = magnitude(right.lowest)
+    var high_size = magnitude(right.highest)
+    var size = larger(low_size, high_size)
+    fallback size > 0
+    var zero: Long = 0
+    var below = size - 1
+    return NumberRange(zero - below, below)
 }
 
 func combined(
@@ -1656,11 +1714,22 @@ func is_a_count(call: HighIntermediaryRepresentation.Values.Call, owner: Model.C
     return is_listed or shown.starts_with("Vector<") or shown.starts_with("Items<")
 }
 
+# ../../PROOFS.md#a-number-that-may-not-fit-is-narrowed
+func masked_range(call: HighIntermediaryRepresentation.Values.Call): NumberRange? {
+    var mask = argument_range(call, 0)
+    fallback mask
+    fallback mask.lowest >= 0
+    return NumberRange(0, mask.highest)
+}
+
 func number_function_range(call: HighIntermediaryRepresentation.Values.Call): NumberRange? {
     fallback scalars.is_a_scalar(call.function.owner)
+    var name = call.function.name
+    if name == "bits_and" {
+        return masked_range(call)
+    }
     var receiver = range_of(call.receiver)
     fallback receiver
-    var name = call.function.name
     if name == "to_long" or name == "to_integer" {
         return receiver
     }
