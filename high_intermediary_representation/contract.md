@@ -29,6 +29,7 @@ like "is this call ever reached" or "may this value be null" has no answer on th
   same state as a local (`var statements = Statements(state)`). `building/statements.spite` holds blocks and bodies,
   `build`, the variable, evaluation, return, `if` and `fallback`; `building/assignments.spite` the writes;
   `building/loops.spite` the `while`, the renewal of lists and the loop checks; `building/switches.spite` the `switch`;
+  `building/class_test_copies.spite` the `then` of an `if` on an `or` of class tests of one path, built once per class;
   `building/crashes.spite` the `crash` and the site it is recorded under; `building/reports.spite` the programs that
   print a crash's and a fallback's report.
   `building/values.spite` is the entry of the values builder: `Values(context)` keeps `value_of` (the exhaustive `switch`

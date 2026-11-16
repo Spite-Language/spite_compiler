@@ -435,7 +435,8 @@ function that needs another concern makes one over the same state as a local (`v
 variable, the evaluation, the return, the `if` and the `fallback`, the facts an `if` proves and what the builder
 records for the proofs; `assignments` writes a name, an attribute, a bound member, a shape and an index and forgets
 what a write undoes; `loops` builds the `while`, the renewal of a list of lists and the checks a loop asks of a count
-or a bound; `switches` builds the `switch`, checks its cover and its case kinds and reads a case's condition; `crashes`
+or a bound; `switches` builds the `switch`, checks its cover and its case kinds and reads a case's condition; `class_test_copies` builds the `then` of an `if`
+on an `or` of class tests of one path once per class, each copy narrowed to its class; `crashes`
 builds the `crash`, the guard's failure, and the site and identity a crash is recorded under; `reports` writes the
 program that prints a crash's report and the parts of the failed condition it shows. A caller outside names the entry:
 `statements.function_body_of`.
