@@ -75,7 +75,7 @@ The program keeps all of its code, and the answer says why:
   through a layout they do not have), or an enum's values change other than by adding new ones last (a value's
   number included: the answer names both numbers);
 - the shared routines are compiled differently (the program starts using threads, say);
-- changed code calls a system function the program never imported, or reaches state that has no name;
+- changed code reaches state that has no name;
 - the room kept for new code is full or cannot be reserved;
 - a function writes more or fewer object literals of one layout than the running program's.
 
@@ -87,6 +87,17 @@ that function (`Object_<digest>_<n>`). A reload that adds a literal before anoth
 literal's id with the literal that made its objects, instead of handing it to whichever literal now comes first.
 A reload that changes how many literals of one layout a function writes is refused, since it could not say which
 literal the running objects came from.
+
+## System functions a reload adds
+
+Changed code may call a system function the running program never imported (a lock, a thread's wait). The reload
+library gives each such function an eight-byte cell in its data, and its calls go through the cell as the
+executable's own calls go through its import table. After the slot writes the library lists the cells: a count,
+then for each the cell's address and the names of its system library (`kernel32.dll`, or `ucrtbase.dll` for the C
+runtime) and of the function. The swap fills each cell with `LoadLibraryA` and `GetProcAddress` before it writes any
+slot, and refuses the reload, naming both, when the system lacks the function. The manifest then lists the cell as
+that function's `import` (or `library`) line, so a later reload calls through it too. A program that never reloads
+pays nothing: its calls go through its import table as before.
 
 ## Crash reports inside reloaded code
 
