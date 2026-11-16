@@ -913,8 +913,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Buys**: a default left out, an unread attribute's default never made, or an argument dropped never takes away
   a change to an object the program still holds, nor a halt.
 - **Falls back**: not quiet; the default is made, the argument is passed.
-- **Lives in**: `high_intermediary_representation/quiet_values.spite` (embedded), asked by `replaced_defaults`,
-  `lent_attributes` and `unread_fields`.
+- **Lives in**: `high_intermediary_representation/quiet_values.spite` (embedded), asked by `replaced_defaults` and
+  `lent_attributes`; `unread_fields` asks `Conversion.never_halts` (`values/conversion.spite`) of its arguments.
 - **Checked by**: tests/lent_default_keeps_a_call_on_what_it_is_handed, tests/default_kept_chain_calls_what_it_kept,
   tests/default_kept_writes_through_an_argument.
 
