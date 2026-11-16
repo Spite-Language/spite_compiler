@@ -2651,7 +2651,15 @@ over finitely many things:
   call's arguments: a register is added once and never removed. Before (#569), two passes missed a copy written
   before the copy it copies.
 
-MEASURED
+Measured (#569) building the compiler and the 3 027 spec programs: the blocks that only lead to a stop need up to
+273 rounds (`OperatorCall.Validator.refuse_an_operator_name`), where 8 stopped them in 708 of the compiler's
+functions; constant folding needs up to 66 (`native_fault_stack`'s constructor; 8 stopped 7 functions); the made
+registers up to 7 passes, where 2 stopped thousands of calls' checks; jump threading up to 50 rounds
+(`AnsweredFacts.keep_the_taken_branches`) and no jump comes back; common subexpressions up to 52 rounds
+(`ShrunkLists.keys_watching`); counted pairs 22 rounds; dead code 12; the holders 15; the singleton tests 6; the
+singleton slots 3; the dominators and the hoisting never more than 3 and 4. Each limit that stopped a loop early
+stopped it on the safe side (fewer constants folded, fewer pairs or values removed, fewer calls inlined, nothing
+shared), so the programs printed the same before.
 
 ### Budgets, not round limits
 
@@ -2666,14 +2674,16 @@ Some walks stop at a size, and past it leave the code as written, so a budget co
 - `vector_loops/decimal_translating.spite`: finding what a decimal holds before a loop stops after 400 blocks
   (`_most_blocks_walked`), and the total then keeps the loop's order. The walk ends without it too.
 
-BUDGETS_MEASURED
+Measured (#569): 32 objects are reached in 17 of the compiler's functions and 36 of the spec programs'; the
+4 000 blocks only in `text_escapes`' `texts_after_a_hole`; the 20 000 and the 400 blocks never.
 
 ### Passes run a set number of times
 
 Two passes repeat a whole step exactly twice, as a pipeline, not as a search for a fixed point:
 `loop_invariants` moves what each loop does not change twice over all the loops (the second time moves out of an
 outer loop what the first moved out of an inner one), and `live_values` finds the lives and removes unread values
-twice. PIPELINES_MEASURED
+twice. A third time would move nothing in the compiler or the spec programs, and would remove more
+values only in two spec programs' constructors (`singleton_guard`, `singleton_lock_calls`).
 
 ## A read from a known object cannot fault, and goes when nothing reads it
 
