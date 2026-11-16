@@ -497,8 +497,8 @@ the rest skips, and liveness runs after the flow because it walks the blocks in 
 `Concurrent`, `Parallel` and their scheduler are not Spite classes: the lowering writes them as low functions
 (`low_intermediary_representation/lowering/machine_writing.spite` is the kit). `scheduling.spite` writes the
 scheduler (`_scheduler_*`: the frames each thread steps, joins, sleeps, the poll limit and the circle of joins),
-`work_writing.spite` the functions of each handle and the table of calls in a row, and `debug_guard_writing.spite`
-the guard that cuts a `to_debug()` cycle. A handle is a block the compiler lays out (`Spite.Work_of_<T>`: the frame
+`work_writing.spite` the functions of each handle and the table of calls in a row, and `cycle_guard_writing.spite`
+the guards that cut a `to_debug()` cycle and a cycle of generated `equals` calls. A handle is a block the compiler lays out (`Spite.Work_of_<T>`: the frame
 it waits for, its answer and its presence); the resolver makes its class model with no source, and its functions
 have no body (`is_written_by_the_compiler`), so a call to one is an ordinary call. Only `to_debug` of a handle and
 the stand-in for a null in a shape (`Spite.Absent`) are high functions the builder writes. A program that makes no

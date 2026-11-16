@@ -307,13 +307,16 @@ a number, a `Boolean` or an enum, and a `return` answers only one of those, so n
 copy passed on to a call is shared too, since a call that writes nothing keeps nothing. The copied classes (the
 class and everything its attributes, items, keys and values hold) are the program's own or the library's `List`,
 `Dictionary`, `String` and `Buffer`, have no `drop()`, hold nothing through a back reference, never lead back to
-themselves, are not singletons, and nothing in the whole program compares one of them with `==` or `!=` (a test
-against `null` aside) or keys a `Dictionary` with it. The program makes no `Concurrent`, starts no thread and
+themselves, are not singletons, and nothing in the whole program asks which object one of them is (an
+`is_same_instance`, or an `==` that still compares identity, as on a union of classes; a test against `null` aside)
+or keys a `Dictionary` with it. An `==` through the `equals` a class is given asks only the attributes, which a shared
+copy answers like the original, so it does not stop the sharing. The program makes no `Concurrent`, starts no thread and
 hands no callback to C, the function does not wait, and the build is not a `--repl`, `--repl-port`,
 `--development` or `--hot-reload` one.
 
 **When it does not apply:** a copy that is changed, kept or answered, or of a class compared by identity anywhere,
-is made as written; and so is every copy in a block that writes anything at all, even to an object the copy never
+is made as written (one `is_same_instance` on the class anywhere in the program keeps every copy of it, which is why
+the docs ask for it as little as possible); and so is every copy in a block that writes anything at all, even to an object the copy never
 reaches.
 
 **What a program can observe:** fewer allocations under `--debug-memory`, and the time: every value read through

@@ -2,29 +2,65 @@ var no_state = FunctionLoweringState()
 var lowering = FunctionLowering(no_state)
 var machine = MachineWriting(lowering)
 var guard_label = -1
+var key: String
+var addresses: Integer
+var ending: String
+var state_name: String
 
-func DebugGuardWriting(starting_lowering: FunctionLowering) {
+# ../../ARCHITECTURE.md#what-the-compiler-writes-itself
+func CycleGuardWriting(
+    starting_lowering: FunctionLowering,
+    starting_key: String,
+    starting_addresses: Integer,
+    starting_ending: String,
+    starting_state_name: String,
+) {
     lowering = starting_lowering
     machine = MachineWriting(starting_lowering)
+    key = starting_key
+    addresses = starting_addresses
+    ending = starting_ending
+    state_name = starting_state_name
 }
 
 func write_the_guard() {
-    fallback not machine.is_written("Spite.Debugging.enters")
+    fallback not machine.is_written("{key}.enters")
     guard_label = machine.zeroed_label(32)
-    machine.writing.state.program.name_state(guard_label, "debug.guard")
+    machine.writing.state.program.name_state(guard_label, state_name)
     write_enters()
     write_leaves()
     write_end()
 }
 
+func entry_bytes(): Integer {
+    return addresses * 8 + 8
+}
+
+func owner_offset(): Integer {
+    return addresses * 8
+}
+
 func entry_at(entries: Integer, index: Integer): Integer {
-    var sixteen = machine.constant_of(16)
-    var scaled = machine.product_of(index, sixteen)
+    var width = entry_bytes()
+    var bytes = machine.constant_of(width)
+    var scaled = machine.product_of(index, bytes)
     return machine.sum_of(entries, scaled)
 }
 
+func holds_the_addresses(entry: Integer): Integer {
+    var address = machine.loaded(entry, 0)
+    var same = machine.compared('equal', address, 1)
+    if addresses > 1 {
+        var other_address = machine.loaded(entry, 8)
+        var same_other = machine.compared('equal', other_address, 2)
+        same = machine.both(same, same_other)
+    }
+    return same
+}
+
 func write_enters() {
-    machine.begin("Spite.Debugging.enters", 2)
+    var parameters = addresses + 1
+    machine.begin("{key}.enters", parameters)
     var guard = machine.data_at(guard_label)
     var locking = machine.one_listed(guard)
     machine.call_imported("AcquireSRWLockExclusive", locking)
@@ -36,9 +72,9 @@ func write_enters() {
     var in_range = machine.compared('less', index, count)
     var done = machine.loop_while(in_range)
     var entry = entry_at(entries, index)
-    var address = machine.loaded(entry, 0)
-    var owner = machine.loaded(entry, 8)
-    var same_address = machine.compared('equal', address, 1)
+    var owner_at = owner_offset()
+    var owner = machine.loaded(entry, owner_at)
+    var same_address = holds_the_addresses(entry)
     var same_thread = machine.compared('equal', owner, thread)
     var is_inside = machine.both(same_address, same_thread)
     var elsewhere = machine.opened_when(is_inside)
@@ -55,8 +91,9 @@ func write_enters() {
     machine.copied(doubled, capacity)
     machine.step_by(doubled, 8)
     var twice = machine.sum_of(doubled, capacity)
-    var sixteen = machine.constant_of(16)
-    var size = machine.product_of(twice, sixteen)
+    var width = entry_bytes()
+    var bytes = machine.constant_of(width)
+    var size = machine.product_of(twice, bytes)
     var is_new = machine.is_zero(entries)
     var growing = machine.opened_when(is_new)
     var made = machine.writing.new_register()
@@ -75,7 +112,11 @@ func write_enters() {
     var kept_entries = machine.loaded(guard, 8)
     var added = entry_at(kept_entries, count)
     machine.stored(added, 0, 1)
-    machine.stored(added, 8, thread)
+    if addresses > 1 {
+        machine.stored(added, 8, 2)
+    }
+    var thread_at = owner_offset()
+    machine.stored(added, thread_at, thread)
     var more = machine.plus_number(count, 1)
     machine.stored(guard, 16, more)
     machine.call_imported("ReleaseSRWLockExclusive", locking)
@@ -85,7 +126,7 @@ func write_enters() {
 }
 
 func write_leaves() {
-    machine.begin("Spite.Debugging.leaves", 1)
+    machine.begin("{key}.leaves", 1)
     var guard = machine.data_at(guard_label)
     var locking = machine.one_listed(guard)
     machine.call_imported("AcquireSRWLockExclusive", locking)
@@ -98,7 +139,8 @@ func write_leaves() {
     var in_range = machine.compared_to('greater_or_equal', index, 0)
     var done = machine.loop_while(in_range)
     var entry = entry_at(entries, index)
-    var owner = machine.loaded(entry, 8)
+    var owner_at = owner_offset()
+    var owner = machine.loaded(entry, owner_at)
     var is_mine = machine.compared('equal', owner, thread)
     var not_mine = machine.opened_when(is_mine)
     var moving = machine.kept(index)
@@ -106,10 +148,14 @@ func write_leaves() {
     var has_next = machine.compared('less', moving, last)
     var shifted = machine.loop_while(has_next)
     var here = entry_at(entries, moving)
-    var next_address = machine.loaded(here, 16)
-    var next_owner = machine.loaded(here, 24)
-    machine.stored(here, 0, next_address)
-    machine.stored(here, 8, next_owner)
+    var width = entry_bytes()
+    var offset = 0
+    while offset < width {
+        var next_offset = offset + width
+        var next_word = machine.loaded(here, next_offset)
+        machine.stored(here, offset, next_word)
+        offset = offset + 8
+    }
     machine.step_by(moving, 1)
     machine.loop_back(shifting, shifted)
     machine.stored(guard, 16, last)
@@ -124,7 +170,7 @@ func write_leaves() {
 }
 
 func write_end() {
-    machine.begin("_debugging_end", 0)
+    machine.begin(ending, 0)
     var guard = machine.data_at(guard_label)
     var entries = machine.loaded(guard, 8)
     var has_some = machine.compared_to('not_equal', entries, 0)
