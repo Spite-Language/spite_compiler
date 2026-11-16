@@ -2075,7 +2075,10 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   Standard library code the builder neither built nor folded counts no `x.name`: it never runs, and the library's
   own attributes are not checked, so its uncalled `other.red` cannot hide a program's unread `red`. Library code the builder
   folded counts no `x.name` either: library code names only library classes and reaches a program's class only
-  through a copy made for it, which is built and counted by type. An `x.name` on `.attributes[...]` is a
+  through a copy made for it, which is built and counted by type. Such an `x.name` in a generic class of the program
+  counts only for the classes that template reaches (`proofs/every_attribute_is_read/template_reach.spite`): the
+  bound types of its copies, the classes its file names, and, from each of those, the classes its attributes,
+  parameters and answers name. An `x.name` on `.attributes[...]` is a
   `Spite.Attribute`'s own value and counts for no attribute. A member of a shape a class fills is read. In a folder the
   program loads only singleton bindings are checked, counting reads from inside that folder.
 - **Falls back**: an unread attribute is refused (`the attribute 'label' is never read: remove it`).
@@ -2085,8 +2088,9 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Checked by**: conformance/unused_names, written_not_read, unused_attributes, attribute_read_in_another_class,
   loaded_singleton_unread, template_unused_attribute, template_unused_function,
   attribute_hidden_by_an_uncalled_read, attribute_hidden_by_an_uncalled_library_read,
-  attribute_hidden_by_an_uncalled_call, attribute_hidden_by_a_library_template;
-  tests/attribute_read_by_an_uncalled_function.
+  attribute_hidden_by_an_uncalled_call, attribute_hidden_by_a_library_template,
+  attribute_hidden_by_a_program_template; tests/attribute_read_by_an_uncalled_function,
+  attribute_read_by_an_uncalled_template.
 
 ### A constructed object must be kept and used
 
