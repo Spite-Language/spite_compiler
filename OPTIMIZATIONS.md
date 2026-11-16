@@ -2693,7 +2693,12 @@ over finitely many things:
 - The weight of a value's use ([values live in registers](#values-live-in-registers)) is 32 to the power of the
   loops that hold it, at most 4: that is not a walk but the rule of the weight, and the loop ends at the depth.
 
-LOWERED_MEASURED
+Measured (#581) building the compiler and the 3 027 spec programs: the address an instruction reads is written up
+to 78 instructions before it in the compiler (121 functions past 16, `GenericConstraint.Validator.check_a_written_form`)
+and 98 in the spec programs (`LoneHoleUnaffected`), which are now folded. The walks to what an address points into
+pass more than 9 registers in 149 of the compiler's functions and 49 of the spec programs' (a count of registers
+passed, not of how deep the old walk went, so it does not say whether 8 changed an answer). A decimal's size never
+needed more than 4 rounds, and no copy chain of a loop's tests and bases, nor of a buffer, came near 8.
 
 Measured (#569) building the compiler and the 3 027 spec programs: the blocks that only lead to a stop need up to
 273 rounds (`OperatorCall.Validator.refuse_an_operator_name`), where 8 stopped them in 708 of the compiler's

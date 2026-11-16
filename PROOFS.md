@@ -2241,7 +2241,11 @@ it changes only goes one way over finitely many things.
   looks through up to four calls, which is the rule itself, not a round limit: a fifth call's answer is not
   judged (tests/memory_replaced_depth_5), so each walk ends after four functions (#581 left it as it is).
 
-PROOFS_MEASURED
+Measured (#581) the same way: walking up through blocks with one way in, the range of a register goes up to 508
+blocks in the compiler (`Collections.watch_the_shared_lists`; 6 091 functions went past 8) and 596 in the spec
+programs (`Color.named_hex`, 4 948 functions past 8), so 8 dropped facts from tests further up in thousands of
+functions; the signed tests' copies and blocks never went past 8, and the banded loops' proof never studied 500
+functions in one round, far under the old budget of 4 000.
 
 Measured (#576) with every loop counted while building the compiler and the 3 027 spec programs: the registers
 never negative of the signed tests need up to 58 rounds (`native_fault_stack`'s constructor, and 56 in

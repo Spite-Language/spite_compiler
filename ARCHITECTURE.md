@@ -826,7 +826,8 @@ already in, and the class of a local read from another local stops at a name it 
 walk hands its list to stop at a walker they asked already, and a C type renamed by `typedef` in a header stops at a
 name it passed (a header renaming in a ring). Before, they stopped after 8, 8, 4 and 16 steps.
 
-ARCHITECTURE_MEASURED
+Measured (#581) building the compiler and the 3 027 spec programs: none of these walks went as far as its old
+limit.
 
 ## Memory
 
