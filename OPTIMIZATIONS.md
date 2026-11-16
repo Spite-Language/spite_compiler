@@ -1844,6 +1844,14 @@ attribute is read both as signed and unsigned, to one of more than 32 attributes
 function that waits. A whole number attribute narrower than 64 bits read back from a register is cut and extended
 as the read would have done.
 
+What each field holds where a block starts is found by rounds over the blocks until one changes nothing, with no
+round limit (#495, #548). A block is reached first through a reached predecessor (the first block from nothing
+known), and from then on what enters it only loses values: it is what its reached predecessors leave, kept where they
+all agree, and a block leaves less when less enters it (an allocation sets its fields to zero, a store sets or forgets
+one, a retain or a release moves a known count). So a field at a block only goes from unreached, to one known value,
+to unknown, and the rounds end within (fields + 1) x blocks changes. The compiler needs at most 66
+rounds (`Intrinsics.typed_access`), the spec programs at most 70 (`function_value_in_frame`).
+
 What a user can observe: only time and memory. An object in registers or in the frame is never allocated, so
 `--debug-memory` counts fewer allocations and frees; its `drop`-less class has nothing else to run.
 
