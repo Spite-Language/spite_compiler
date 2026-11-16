@@ -897,6 +897,27 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `every_writer_can_be_built`, `writes_its_object`) asks it.
 - **Checked by**: tests/class_walk, tests/run_time_kinds, tests/reflection_objects, tests/stateful_singleton_writes.
 
+### A quiet value changes nothing handed in and never halts
+
+- **Status**: built.
+- **Rule**: `HighIntermediaryRepresentation.QuietValues` answers whether a value can be left out without the program
+  seeing it. A call is quiet only on an object proven new: one made in the value being asked (a making, `this` inside
+  a constructor or the defaults it runs, a parameter handed a new object, a local declared from one); a call on
+  anything handed in (`names.append(name)` on a parameter, a call on an attribute's object) is never quiet, since
+  the caller sees what it changes. For the defaults the constructor replaces, an attribute of the new object counts
+  as new too, since that pass keeps every default that reads one that stays. A conversion is quiet only when it
+  cannot halt (`Conversion.never_halts`): a `proven` conversion of a value that may be missing halts when it is, a
+  `present` read of an attribute halts when its back reference is gone, and a narrowing halts outside its range;
+  `unread_fields` asks the same of the arguments it drops
+  ([optimizations.md](../spite_documentation/optimizations.md#an-attribute-that-only-holds-an-item-of-its-holders-list-is-not-counted)).
+- **Buys**: a default left out, an unread attribute's default never made, or an argument dropped never takes away
+  a change to an object the program still holds, nor a halt.
+- **Falls back**: not quiet; the default is made, the argument is passed.
+- **Lives in**: `high_intermediary_representation/quiet_values.spite` (embedded), asked by `replaced_defaults`,
+  `lent_attributes` and `unread_fields`.
+- **Checked by**: tests/lent_default_keeps_a_call_on_what_it_is_handed, tests/default_kept_chain_calls_what_it_kept,
+  tests/default_kept_writes_through_an_argument.
+
 ### The one class a `type` admits
 
 - **Status**: built (wider than the old rule).

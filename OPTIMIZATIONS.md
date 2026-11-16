@@ -5027,7 +5027,9 @@ of a function that always writes it, as `take` does, counts as a write), worked 
 fixed point. A function that may run first (the entry function, a constructor, the defaults, a function taken as
 a value or reached through a shape) counts as having no write before it. The default `Page(0)` must be quiet (see
 [defaults the constructor replaces are never made](#defaults-the-constructor-replaces-are-never-made)), so that not
-making it cannot be seen.
+making it cannot be seen. Here nothing it reads is new: a default `Page(flag)` whose constructor calls `given.raise()`
+on the flag it is handed is made, since a call is quiet only on an object the making itself made
+([PROOFS.md](PROOFS.md#a-quiet-value-changes-nothing-handed-in-and-never-halts)).
 
 **When it applies:** to a non-nullable object attribute of a singleton of the program (not generic, not the entry
 class) whose class frees quietly (no `drop()` in it or in what it holds), when every write of it outside its

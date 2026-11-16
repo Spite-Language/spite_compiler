@@ -7,6 +7,8 @@ var refused = Dictionary<String, Boolean>()
 var first_uses = List<HighIntermediaryRepresentation.Values.MakeObject>()
 var for_dropped_defaults = false
 var functions_not_quiet = List<String>()
+var fresh_names = List<String>()
+var this_is_fresh = false
 
 func QuietValues(high: HighProgram) {
     model = high.model
@@ -95,6 +97,34 @@ func is_a_quiet_conversion(
     return is_quiet(conversion.converted, bound)
 }
 
+# ../PROOFS.md#a-quiet-value-changes-nothing-handed-in-and-never-halts
+func is_fresh(value: SpiteCompiler.Value?): Boolean {
+    fallback value
+    if value.class == HighIntermediaryRepresentation.Values.ThisRead {
+        return this_is_fresh
+    }
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return fresh_names.contains(value.name)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.MakeObject {
+        return true
+    }
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        return for_dropped_defaults and is_fresh(value.object)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        return is_a_fresh_conversion(value)
+    }
+    return false
+}
+
+func is_a_fresh_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
+    var kind = conversion.kind
+    var same_object = kind == 'present' or kind == 'nullable' or kind == 'into_union' or kind == 'widen'
+    fallback same_object or kind == 'proven'
+    return is_fresh(conversion.converted)
+}
+
 func is_a_quiet_making(
     made: HighIntermediaryRepresentation.Values.MakeObject,
     bound: Dictionary<String, Long>,
@@ -128,6 +158,7 @@ func defaults_of_a_making(made: HighIntermediaryRepresentation.Values.MakeObject
 
 func is_a_quiet_call(call: HighIntermediaryRepresentation.Values.Call, bound: Dictionary<String, Long>): Boolean {
     fallback is_quiet(call.receiver, bound) and are_quiet(call.arguments, bound)
+    fallback is_fresh(call.receiver)
     if for_dropped_defaults and is_an_append_to_a_list(call) {
         return true
     }
@@ -149,6 +180,7 @@ func is_a_quiet_function(key: String, arguments: List<SpiteCompiler.Value>, oute
     var function = bodies[key]
     fallback function and not visiting.contains(key) and not functions_not_quiet.contains(key)
     var bound = Dictionary<String, Long>()
+    var fresh_here = List<String>()
     var question = key
     var index = 0
     while index < function.function.parameters.count() and index < arguments.count() {
@@ -158,6 +190,10 @@ func is_a_quiet_function(key: String, arguments: List<SpiteCompiler.Value>, oute
         if known {
             bound[parameter.name] = known
             question = "{question} {parameter.name}={known}"
+        }
+        if is_fresh(argument) {
+            fresh_here.append(parameter.name)
+            question = "{question} {parameter.name}=fresh"
         }
         index = index + 1
     }
@@ -170,7 +206,13 @@ func is_a_quiet_function(key: String, arguments: List<SpiteCompiler.Value>, oute
     var outer_uses = first_uses
     first_uses = List<HighIntermediaryRepresentation.Values.MakeObject>()
     visiting.append(key)
+    var outer_fresh = fresh_names
+    var outer_this_is_fresh = this_is_fresh
+    fresh_names = fresh_here
+    this_is_fresh = true
     var quiet = is_a_quiet_block(function.body, bound)
+    fresh_names = outer_fresh
+    this_is_fresh = outer_this_is_fresh
     var last = visiting.count() - 1
     visiting.remove_at(last)
     var own_uses = first_uses
@@ -216,7 +258,10 @@ func first_uses_of_a_write(
 ): List<HighIntermediaryRepresentation.Values.MakeObject>? {
     first_uses = List<HighIntermediaryRepresentation.Values.MakeObject>()
     var bound = Dictionary<String, Long>()
-    if is_a_quiet_write(written, bound) {
+    this_is_fresh = true
+    var quiet = is_a_quiet_write(written, bound)
+    this_is_fresh = false
+    if quiet {
         return first_uses
     }
     return null
@@ -250,7 +295,7 @@ func is_a_quiet_block(
 
 func is_a_quiet_statement(statement: SpiteCompiler.Statement, bound: Dictionary<String, Long>): Boolean {
     switch statement {
-        HighIntermediaryRepresentation.Statements.Declare: return is_quiet(statement.value, bound)
+        HighIntermediaryRepresentation.Statements.Declare: return is_a_quiet_declaration(statement, bound)
         HighIntermediaryRepresentation.Statements.Assign.Attribute: return is_a_quiet_write(statement, bound)
         HighIntermediaryRepresentation.Statements.Evaluate: return is_a_quiet_evaluation(statement, bound)
         HighIntermediaryRepresentation.Statements.If: return is_a_quiet_if(statement, bound)
@@ -263,6 +308,17 @@ func is_a_quiet_statement(statement: SpiteCompiler.Statement, bound: Dictionary<
     }
 }
 
+func is_a_quiet_declaration(
+    declared: HighIntermediaryRepresentation.Statements.Declare,
+    bound: Dictionary<String, Long>,
+): Boolean {
+    fallback is_quiet(declared.value, bound)
+    if is_fresh(declared.value) {
+        fresh_names.append(declared.name)
+    }
+    return true
+}
+
 func is_a_quiet_write(
     written: HighIntermediaryRepresentation.Statements.Assign.Attribute,
     bound: Dictionary<String, Long>,
@@ -270,7 +326,7 @@ func is_a_quiet_write(
     if for_dropped_defaults {
         return is_a_quiet_write_of_a_new_object(written, bound)
     }
-    fallback written.object.class == HighIntermediaryRepresentation.Values.ThisRead
+    fallback written.object.class == HighIntermediaryRepresentation.Values.ThisRead and this_is_fresh
     return is_quiet(written.value, bound)
 }
 
@@ -278,7 +334,7 @@ func is_a_quiet_write_of_a_new_object(
     written: HighIntermediaryRepresentation.Statements.Assign.Attribute,
     bound: Dictionary<String, Long>,
 ): Boolean {
-    fallback is_quiet(written.object, bound)
+    fallback is_quiet(written.object, bound) and is_fresh(written.object)
     var on_this = written.object.class == HighIntermediaryRepresentation.Values.ThisRead
     if on_this and notes_a_singleton_made(written.value) {
         return true
