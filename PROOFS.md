@@ -1970,7 +1970,7 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: a write to a local only this function holds, never read after it, is refused
   ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)). The local holds a constructor's result,
-  a copy, or the answer of a function (its own class's, `this`'s or another object's, up to four calls deep) whose
+  a copy, or the answer of a function (its own class's, `this`'s or another object's, through any number of calls) whose
   every `return` is such a result or a local made so that it only reads or writes through; the last whole
   assignment before the write (`made = Tally()`) says what it holds. A write inside a branch of an `if` or a
   `switch` to a local an outer block made is judged the same way, when nothing after it in any block around it
@@ -1983,7 +1983,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   and `validators/high_intermediary_representation/lost_write`, handed whether anything lets the object go.
 - **Checked by**: conformance/lost_writes, conformance/lost_write_in_a_branch, conformance/lost_write_in_a_loop,
   conformance/lost_item_in_a_loop, conformance/lost_write_answered_elsewhere, conformance/lost_write_after_a_new_object,
-  conformance/lost_write_made_by_a_function; tests/lost_writes_read_later keeps writes that are read.
+  conformance/lost_write_made_by_a_function, conformance/memory_replaced_depth_5 (an item answered through five calls);
+  tests/lost_writes_read_later keeps writes that are read.
 
 ### A name read from a list, assigned and never read, is an error
 
@@ -2238,8 +2239,10 @@ it changes only goes one way over finitely many things.
   shared, so a round ends: a program has finitely many functions, origins and function values. Before (#581) it
   gave up past 4 000 studies ("it reaches more than 4000 functions") and ran the loop in order.
 - [A write to an object only this function holds](#a-write-to-an-object-only-this-function-holds-must-be-read)
-  looks through up to four calls, which is the rule itself, not a round limit: a fifth call's answer is not
-  judged (tests/memory_replaced_depth_5), so each walk ends after four functions (#581 left it as it is).
+  follows the item a function answers through the attribute it calls on, and stops at a function it asked already;
+  whether every return of a function makes a new object asks the functions it returns from, and one asked again on
+  the way answers no, so each walk passes a function once on its way. Before (#581), it stopped after four calls,
+  so a fifth call's lost write was not refused (now conformance/memory_replaced_depth_5).
 
 Measured (#581) the same way: walking up through blocks with one way in, the range of a register goes up to 508
 blocks in the compiler (`Collections.watch_the_shared_lists`; 6 091 functions went past 8) and 596 in the spec
