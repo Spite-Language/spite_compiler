@@ -46,7 +46,11 @@ like "is this call ever reached" or "may this value be null" has no answer on th
 - `building/folded/constants.spite` and `building/folded/known_copies.spite`: what a question on a class or namespace known while
   compiling answers, and the copy of a function that knows it.
 - `building/writers.spite`: the writer each attribute listed at run time carries, which `Spite.Attribute.set_value` calls
-  to write the owner's field, cast as an assignment casts; its body is filled once a program calls `set_value`.
+  to write the owner's field, cast as an assignment casts; its body is filled once a program calls `set_value`, with
+  a cast for each class that reaches `set_value`'s parameter. Each write (`building/value_write_site.spite`) is judged
+  once building ends: every class that reaches it must be taken by an attribute it can write (those listed at run
+  time, or the one its `.attributes["name"]` names), or the write is refused. A writer stops the program only where a
+  reaching class misfits it (another attribute takes it) or the program has a prompt or hot reload.
 - `building/typed_copies.spite`: the copy of a function whose parameter is a union or a `type` (or a generic holding
   one) for the types a call hands it (`Model.TypedCopy` on the copy), which the builder builds like any function, so
   each copy is checked as written for its types ([ARCHITECTURE.md](../ARCHITECTURE.md#a-call-copies-a-function-taking-a-union-or-a-type)).
