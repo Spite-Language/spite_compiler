@@ -817,6 +817,17 @@ a proof that only makes code cheaper records its facts for the passes after it, 
 high representation as a `Proof`, or on the low representation as a `LowProof` run among the low passes. `PROOFS.md` lists every proof, the
 pass that makes it, and the ones still made inside a step or a pass, with why.
 
+## A walk stops where it passed before
+
+A walk that follows names, functions or registers keeps what it passed and stops where it would pass one again,
+never after a set number of steps (#581): a set limit drops answers silently. So it ends, since a program holds
+finitely many of each. In name resolution, a template's parameter handed on through helpers stops at a helper it is
+already in, and the class of a local read from another local stops at a name it read; building, the walkers a known
+walk hands its list to stop at a walker they asked already, and a C type renamed by `typedef` in a header stops at a
+name it passed (a header renaming in a ring). Before, they stopped after 8, 8, 4 and 16 steps.
+
+ARCHITECTURE_MEASURED
+
 ## Memory
 
 - An object lives on the heap and is freed by reference counting (D658); where the proof `objects_in_the_frame`
