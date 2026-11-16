@@ -19,6 +19,7 @@ var _continue_searching = 0
 var _frame_continues_the_search = 1
 var _unwinding_flags = 6
 var _foreign_slots_size = 16
+var _check_point_room = 64
 var _thread_storage_out_of_indexes: Long = 4294967295
 
 func Lowering(starting_high: HighIntermediaryRepresentation.HighProgram) {
@@ -56,7 +57,8 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
     program.counts_alone_outside_the_work = high.counts_alone_outside_the_work
     note_the_deferred()
     crash high.context
-    program.hot_reload = high.context.build_flags["hot_reload"] == "true"
+    var inspection = CommandLine.Inspection()
+    program.hot_reload = inspection.swaps(high.context.build_flags)
     if layout.program.class_named("Spite.Fault") {
         program.reports_faults = true
         var placeholder = Buffer(0)
@@ -85,34 +87,12 @@ func lowered(): LowIntermediaryRepresentation.LoweredProgram {
         program.live_bytes_label = zeroed_count()
         program.name_state(program.live_bytes_label, "memory.live_bytes")
     }
-    if high.prompt {
-        program.prompt_intrinsics = high.prompt_intrinsics
-    }
-    var checks_points = false
-    if high.prompt_check_point {
-        checks_points = true
-    }
     if high.reload_check_point {
-        checks_points = true
-    }
-    if checks_points {
         program.prompt_flag_label = zeroed_count()
         program.name_state(program.prompt_flag_label, "prompt.flag")
-        var room = 24
-        if high.reload_check_point {
-            room = 64
-        }
-        if high.prompt_listen {
-            room = 64
-        }
-        if high.prompt_listen or high.reload_check_point {
-            program.prompt_sleeps = true
-        }
-        program.prompt_objects_label = zeroed_room(room)
+        program.prompt_sleeps = true
+        program.prompt_objects_label = zeroed_room(_check_point_room)
         program.name_state(program.prompt_objects_label, "prompt.objects")
-    }
-    if high.prompt_check_point {
-        program.prompt_check_point = high.prompt_check_point.key()
     }
     if high.reload_check_point {
         program.reload_check_point = high.reload_check_point.key()
@@ -608,9 +588,6 @@ func lower_the_start() {
     if high.prompt {
         prompt_object = lowering_values.make_object(high.prompt.owner)
     }
-    if high.prompt_listen {
-        listen_remotely(lowering, prompt_object, object, high.prompt_listen)
-    }
     var reloader = -1
     if high.reload_start {
         reloader = start_the_reloader(lowering, object, high.reload_start)
@@ -625,9 +602,6 @@ func lower_the_start() {
     }
     if high.prompt and high.prompt_runs_the_console {
         call_the_prompt(lowering, prompt_object, object, high.prompt)
-    }
-    if high.prompt_serve {
-        call_the_prompt(lowering, prompt_object, object, high.prompt_serve)
     }
     if high.makes_work {
         var ending = Working(lowering)
@@ -1130,35 +1104,6 @@ func destroy_the_singletons(lowering: FunctionLowering) {
     lowering.switch_to(done)
 }
 
-# ../../../spite_documentation/repl.md#remote---repl-port
-func listen_remotely(
-    lowering: FunctionLowering,
-    prompt_object: Integer,
-    entry_object: Integer,
-    listen: Model.FunctionModel,
-) {
-    var objects = lowering.new_register()
-    var addressed = LowIntermediaryRepresentation.Instructions.DataAddress(objects, program.prompt_objects_label)
-    lowering.emit(addressed)
-    var kept_prompt = LowIntermediaryRepresentation.Instructions.Store(objects, 0, prompt_object, 'bits_64', "", false)
-    lowering.emit(kept_prompt)
-    var kept_entry = LowIntermediaryRepresentation.Instructions.Store(objects, 8, entry_object, 'bits_64', "", false)
-    lowering.emit(kept_entry)
-    var arguments = List<Integer>()
-    arguments.append(prompt_object)
-    var waits = PromptWaits(lowering)
-    waits.start(lowering)
-    var listen_key = listen.key()
-    var listened = LowIntermediaryRepresentation.Instructions.Call(-1, listen_key, arguments, -1, false)
-    lowering.emit(listened)
-    fallback high.reload_start
-    write_the_alarm()
-    var no_block = lowering.constant(0)
-    var thread = lowering.new_register()
-    var started = LowIntermediaryRepresentation.Instructions.StartThread(thread, "_prompt_alarm", no_block)
-    lowering.emit(started)
-}
-
 # ../../../spite_documentation/repl.md#how-it-works
 func start_the_reloader(lowering: FunctionLowering, entry_object: Integer, starting: Model.FunctionModel): Integer {
     var lowering_values = Values(lowering.state)
@@ -1174,17 +1119,18 @@ func start_the_reloader(lowering: FunctionLowering, entry_object: Integer, start
     waits.keep_the_main_thread(lowering, objects)
     var arguments = List<Integer>()
     arguments.append(reloader)
+    if not starting.parameters.is_empty() {
+        arguments.append(entry_object)
+    }
     var starting_key = starting.key()
     var started_watching = LowIntermediaryRepresentation.Instructions.Call(-1, starting_key, arguments, -1, false)
     lowering.emit(started_watching)
-    if not high.prompt_listen {
-        waits.start_the_sleep(lowering)
-        write_the_alarm()
-        var no_block = lowering.constant(0)
-        var thread = lowering.new_register()
-        var started = LowIntermediaryRepresentation.Instructions.StartThread(thread, "_prompt_alarm", no_block)
-        lowering.emit(started)
-    }
+    waits.start_the_sleep(lowering)
+    write_the_alarm()
+    var no_block = lowering.constant(0)
+    var thread = lowering.new_register()
+    var started = LowIntermediaryRepresentation.Instructions.StartThread(thread, "_prompt_alarm", no_block)
+    lowering.emit(started)
     return reloader
 }
 
@@ -1225,7 +1171,9 @@ func call_the_prompt(
     var lowering_counting = Counting(lowering.state)
     var arguments = List<Integer>()
     arguments.append(prompt_object)
-    arguments.append(entry_object)
+    if not prompt.parameters.is_empty() {
+        arguments.append(entry_object)
+    }
     var prompt_key = prompt.key()
     var called = LowIntermediaryRepresentation.Instructions.Call(-1, prompt_key, arguments, -1, false)
     lowering.emit(called)

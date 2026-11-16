@@ -5,7 +5,7 @@ The settings a run is given.
 `command_line.spite` is the entry: `CommandLine`'s `run()` reads `Settings()`, names the program's folder and entry
 (`program_folder`, `program_name`), and removes the last build unless the run is a reload or a `--check`. `connect.spite`
 answers `--connect`, handing the port to `validators/command_line/connect_port` and what the socket answered to
-`validators/command_line/connection`, `inspection.spite` says whether a run is interactive, `settings_file.spite` reads the `.env` file and
+`validators/command_line/connection`, `inspection.spite` says whether a run is interactive and whether it carries the swap machinery or a REPL session, `settings_file.spite` reads the `.env` file and
 `reload_host_reader.spite` reads a running program's manifest. `library_folder.spite` finds the standard library
 (`--standard-library-path`, else the volume of the library the compiler preloads when it is built) and what it
 holds, which `validators/command_line/standard_library` judges before `Mapping.StandardLibrary` keeps it.

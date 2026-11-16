@@ -28,9 +28,8 @@ Target: a changed function reloads in well under 0.1 s of swapping, after the co
    `windows/spite/hot_reload.spite` for the room, the compiler's run and the swap), which the start of the program
    starts through `Spite.ReloadPoint`. That class is the one part the compiler writes for the build
    (`.spite/build/spite/reload_point.spite`), since it is what varies: the program's folder, the compiler's path, the
-   build's flags and the folders to watch, as plain values handed to `start`. The prompt's reload commands (`reload`,
-   `eval`, `run`, the breakpoints) are still text the compiler adds to the class (`symbols/machinery_text.spite`) until
-   #296 removes them. A suite test builds the library's class without the flag
+   build's flags and the folders to watch, as plain values handed to `start`, and in a REPL build the session and
+   the console ([Lines typed at the REPL](#lines-typed-at-the-repl)). A suite test builds the library's class without the flag
    (`tests/hot_reload_library_is_built_without_the_flag`). It watches the program's folders with
    `FileSystemWatcher`, and a check point asks it whether a saved file waits, waiting for a file still being
    written to settle (`settled_changes`). A check point is one load of a flag a helper thread raises every 25 ms; it
@@ -104,22 +103,35 @@ address in no record and past the executable's code names no place instead of th
 the place names them), since `<program>.functions` knows only the executable's code, and `at=` gives
 `reload+0x<offset>` from the start of that record's code.
 
-## Code typed at the prompt, and breakpoints
+## Lines typed at the REPL
 
-Both are reloads whose answer the program keeps to itself. `eval` and `run` write `<program>.reload_prompt` (the
-word, then the code); the compile writes `Spite.PromptCode`, one function `answer(program: <Entry>): String` whose
-body is the typed code, to `.spite/build/spite/prompt_code.spite`, digested in the manifest like a program file. A
-build writes it with `return ""`, so the REPL calls the same function before and after, through its slot. A
-breakpoint writes `<program>.reload_breaks`; the compile has the parser write a call of
-`Spite.Breakpoint().pause_at(site)` before the statement starting on each line, after the file's rules are checked, so only the
-functions of the files holding one change. `Spite.Breakpoint` is machinery the symbols stage writes, holding the
-REPL's stop as a function value. Before that call the builder writes, from the scope it holds there, one line of
-text for `self` and for every local in scope, each its name, its type and its value as the REPL prints a nested
-value, into a list the call hands to the stop (`locals` answers them). The program removes both files when it starts.
+A `--repl` build carries the parts above without the watcher (`--repl --hot-reload` adds it): `Spite.ReloadPoint`
+then also holds the session `Spite.Session` and the console `Spite.ReadEvaluatePrintLoop`
+(`spite_standard_library/common/spite/read_evaluate_print_loop.spite`, and `windows/spite/` for reading the input
+without waiting). The start of the program hands the entry instance to the session and starts the console, every
+check point asks the console whether a whole line waits, and once the constructor returns the console reads and
+runs lines until the input ends.
+
+Each line is a reload. The console writes `<program>.reload_session`: a `var\t<name>\t<type>` line for each
+`var` the session keeps, `func\t<count>` and that many lines for each typed function, `load\t<path>` for a file
+being loaded, and `line\t<count>` with the line. The compile reads it and writes `Spite.Session` to
+`.spite/build/spite/session.spite` (`building/reload/session.spite`), digested in the manifest like a program
+file. The session holds one attribute, the entry instance, so its layout never changes: each of the entry's
+attributes has a `get_`/`set_` pair reading it through `program`, each of its functions a function calling it, so
+a line names them bare; each kept `var` has a `get_`/`set_` pair over a `Dictionary<String, Anything>` the console
+keeps, narrowed back with `held.class == <type>`; the typed functions are copied in; and `run_line(): String?` is
+the line, `var line_value = <line>` and `return "{line_value}"` for an expression, the statements and a `keep` of
+each `var` declared at its top for anything else. An expression that answers nothing is run as a statement there.
+The compile's answer tells the type of each such `var` (`session var\t<name>\t<type>`, `outputs/session_facts.spite`),
+which the console writes into the next session. A line that does not compile leaves the session file as it was.
+
+Without the watcher a line is compiled against the files as the program loaded them: a program file whose digest
+differs from the manifest's, and that the line does not `load`, refuses the line, naming the file.
 
 ## Not built yet
 
 What the issues list: moving live objects to a new layout, compiling only the changed classes instead of the whole
 program (the proof finds them, the compile does not skip the rest yet), the compile on a helper thread, a reload
-held while a `Concurrent` waits inside a function it swaps, reflection that follows a reload, and a path at
-the prompt that starts at a breakpoint's local.
+held while a `Concurrent` waits inside a function it swaps, reflection that follows a reload, a REPL `var` of a
+`union`, a `type` or a function, `load` of a file outside the program's folders, and the scratchpad REPL of a
+folder with no program.

@@ -5263,9 +5263,8 @@ func ForeignNames() {
 
 Everything that exists to look inside a running program is compiled only into the build that asks for it:
 
-- `--repl` and `--repl-port`: the classes of the prompt (`Spite.Prompt`, `Spite.PromptPath`, and the socket's
-  `listen`, `serve` and `check_point` for `--repl-port`) are written by the compiler for that build only, with the
-  allocation counts the prompt reads.
+- `--repl` and `--repl-port`: everything `--hot-reload` carries but the watcher, the console
+  `Spite.ReadEvaluatePrintLoop` and the session `Spite.Session`, with the allocation counts a line may read.
 - `--hot-reload` (or `hot_reload = true` in `build.spite`): `Spite.HotReload` and `Spite.ReloadPoint`, a slot per
   function that its first instruction jumps through, functions aligned to 32 bytes, the manifest's names of the data,
   and the check point at the end of each loop's pass.

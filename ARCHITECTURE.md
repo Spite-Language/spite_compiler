@@ -323,7 +323,7 @@ folders and flags that exist. The size of every file is held by `validators/abst
 | fix rule | `fixes/<layer>/<rule>/fix.spite` (class `Fix`), and `every_fix.spite` in the layer; `fixes/fixes.spite` writes |
 | printer | `printers/<printer>/printer.spite` (class `Printer`) |
 | emitter | `generators/<target>/instructions/<instruction>.spite` per instruction kind |
-| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; a hub holding the exhaustive `switch`, and a `<hub>_state.spite` where the concerns share one state object: `lowering/function_lowering.spite` (`FunctionLoweringState`), `building/statements.spite` (`StatementsState`), `building/reflection.spite` (`ReflectionState`), `building/prompt/source.spite` (`SourceState`, and `*_text.spite` for the texts it writes); `building/values.spite` has no state file, since its concerns take the `Values`. `low_optimization_passes/vector_loops` (`VectorLoopState`) is a pass split the same way |
+| builder (`high_intermediary_representation/building`, `low_intermediary_representation/lowering`) | flat folders of one file per concern; a hub holding the exhaustive `switch`, and a `<hub>_state.spite` where the concerns share one state object: `lowering/function_lowering.spite` (`FunctionLoweringState`), `building/statements.spite` (`StatementsState`), `building/reflection.spite` (`ReflectionState`); `building/values.spite` has no state file, since its concerns take the `Values`. `low_optimization_passes/vector_loops` (`VectorLoopState`) is a pass split the same way |
 | helper | next to what uses it: beside the one pass or proof that reads it; in the stage folder when several passes read it (`high_optimization_passes/references.spite`, `low_optimization_passes/machine.spite`); on the representation when proofs share it (`high_intermediary_representation/writes.spite`); in the tree's folder when rules and fixes share it (`abstract_syntax_tree/unused_names`). A pass may run another pass's `Pass` (`known_headers`, `partial_evaluation`), which is no helper (D1925) |
 | other | `diagnostics`, `model`, `folder_layout`, `generators/<target>`, what the stages share: no stage of their own, so no layout beyond the emitter's |
 
@@ -508,15 +508,14 @@ handle writes none of it, and a program that never starts calls in a row has no 
 
 The rest is Spite code. What does not vary with the program is library code: the fault and crash reports
 `Spite.Fault`, the program's settings check `Spite.Settings`, the fallback ring `Spite.Asserts` and the deep copy
-table `Spite.CopyTable` (`spite_standard_library/common/spite/`), read like any library class the first time a program needs one, so a program that never needs one reads none of it. These four, with the
-prompt's two, are `Symbols.MachineryNames`: a program that names one, reopens one from a `spite/` folder of
+table `Spite.CopyTable` (`spite_standard_library/common/spite/`), read like any library class the first time a program needs one, so a program that never needs one reads none of it. These four are `Symbols.MachineryNames`: a program that names one, reopens one from a `spite/` folder of
 its own, or names any `Spite.Internal` name is refused, a crash inside one names no values, and the `Spite`
 namespace's reflected `classes` leave them out. The reloader
-`Spite.HotReload` is library code too (HOT_RELOAD.md). What the compiler writes as text, as a generated class under
-the program's `.spite/build/spite/` with the library's rights, is what varies, or what the prompt's command language
-removes with #296: `Spite.ReloadPoint` (the build's values for the reloader), the reload commands and
-`Spite.Breakpoint` (`symbols/machinery_text.spite`), and, only in a `--repl` build, `Spite.Prompt`,
-`Spite.PromptPath` (`high_intermediary_representation/building/prompt/*_text.spite`) and `ReadEvaluatePrintLoop`.
+`Spite.HotReload` and the REPL's console `Spite.ReadEvaluatePrintLoop` are library code too (HOT_RELOAD.md). What
+the compiler writes as text, as a generated class under the program's `.spite/build/spite/` with the library's
+rights, is only what varies: `Spite.ReloadPoint` (the build's values for the reloader,
+`high_intermediary_representation/building/reload/source.spite`) and, in a REPL build, `Spite.Session`
+(`building/reload/session.spite`: the entry's members, the session's `var`s and `func`s and the line typed).
 
 Beside every executable the compiler writes `<name>.functions`: one line per function of the code, its start and
 end as offsets from the start of the code section and its key (`# spite functions 1`, then `start\tend\tkey` in
@@ -659,7 +658,7 @@ are `validators/mapping/` `misnamed_path`, `library_load` (handed a `Mapping.Lib
 whether another library holds it, which `read_one_load` finds with the load's own IO), `unneeded_load` and
 `repeated_declaration`. A proof or step asks the rule, calls the fix when the answer is fixable, and
 tells the answer otherwise. A fix never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`, `cut_later`, `renamed_with_the_last_fix`), which makes it right before writing. A rename changes only the name a declaration or an identifier holds, so nothing proven about a value's slot is assigned again. A library file, a pinned
-package's file, a generated class, a generic class, a walk and a file holding breakpoints are never fixed: their
+package's file, a generated class, a generic class and a walk are never fixed: their
 mistakes stay errors.
 
 One owner writes, `fixes/fixes.spite` (`Fixes.Fixes`, a singleton): no step, validator or proof writes a file or
