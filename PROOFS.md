@@ -1047,6 +1047,20 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: tests/class_object_reads_fold, tests/class_object_read_in_a_drop_at_exit, tests/reflection_names_fold,
   tests/enum_reflection (output only).
 
+### A reflection field's write that goes keeps what its value does
+
+- **Status**: built.
+- **Rule**: a write to a field of a reflection class that no built function reads goes with the field, and its object
+  and its value are each kept as an evaluation unless they are quiet: a literal, a local, `this`, a read of something
+  quiet, a conversion of something quiet, or a making with no arguments whose defaults and
+  constructor `HighIntermediaryRepresentation.QuietValues` proves quiet. A call is never quiet here, since it may
+  change the object it is called on ([reflection.md](../spite_documentation/reflection.md#what-the-compiler-leaves-out)).
+- **Buys**: the field's slot and its write go without changing what the program prints or changes; the evaluation
+  lets go of what it answered, so nothing made leaks.
+- **Falls back**: keeps the evaluation, never drops one that could do something.
+- **Lives in**: `high_optimization_passes/unread_fields` (embedded).
+- **Checked by**: tests/unread_reflection_field_keeps_its_effects.
+
 ## Memory
 
 ### A buffer freed in its block lives in the frame
