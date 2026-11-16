@@ -53,6 +53,10 @@ Target: a changed function reloads in well under 0.1 s of swapping, after the co
    first time, so every reference reaches it with 32 bits), copies the code in, flushes the instruction cache,
    writes each changed function's slot, and makes the new manifest the running one. A library is never unloaded: a
    call already running finishes on the old code, and values the old code made stay valid.
+6. **The ends.** A reload never swaps `_start`, so in such a build `_start` calls `_ends`, an ordinary function
+   with a slot that ends every piece the program holds at exit (the `to_debug` guard's table, the singletons, the
+   callback table). A reload that brings a piece in changes `_ends` and swaps it, so the piece is ended too
+   (`tests/hot_reload_frees_a_piece_it_brings_in`). Other builds end the pieces in `_start` itself.
 
 ## The manifest
 
