@@ -269,6 +269,40 @@ letting go of the object skips.
 **What a program can observe:** fewer allocations and time. A default that prints, writes through what it reads, can
 crash or holds a `drop()` is not quiet, so it stays and runs in order; a singleton it uses first is still used there.
 
+## A default replaced right after its making is never made
+
+```spite
+func built(): Panel {
+    var panel = Panel()
+    panel.title = "outer"
+    var note = Note()
+    note.content = "first"
+    panel.children = [note]
+    return panel
+}
+```
+
+`Panel` declares `var children = List<Anything>()`, and `built` replaces it before anything reads it, so the panel is
+made with a copy of its defaults that leaves `children` out: the default list is never made. A tag
+(`<Panel><Note/></Panel>`) is written this way, so every tag with children made a list and dropped it at once:
+`tests/jsx_nested_tags_set_children` went from 1337 allocations to 833.
+
+**When it applies:** to a local declared with a making (`var panel = Panel()`), for each attribute assigned on it
+(`panel.children = ...`) in the statements right after, in the same block, before any statement that reads the
+local. A statement in between may declare, assign and call anything that does not name the local: until the local
+is read, nothing else holds the object, so nothing else can read its attributes. Its constructor, if it has one,
+must not read the attribute or name `this` other than to assign or read an attribute. The default left out follows
+the [rules of a default the constructor replaces](#defaults-the-constructor-replaces-are-never-made): it is quiet,
+no default that stays reads it, and a singleton it uses first is still used there.
+
+**When it does not apply:** an `if`, a loop, a `return` or a `crash` before the assignment, a statement that reads
+the local (passing it, calling it, reading any attribute of it) or assigns it, an assignment whose value reads the
+local, a singleton, a class whose layout others rely on (`Buffer`, `String`, `ForeignCallback`, `Spite.*`), and a
+making that leaves out nothing more than its constructor already does.
+
+**What a program can observe:** fewer allocations. Each such making runs its own trimmed copy of the defaults,
+shared by every making that leaves out the same attributes.
+
 ## A deep copy is written per class, with a table only where a graph needs one
 
 The builder writes each class's `copy()` and `deep_copy()` (`high_intermediary_representation/building/copying.spite`)

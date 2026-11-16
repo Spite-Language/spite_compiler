@@ -1144,6 +1144,21 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   47/48 byte edges), tests/short_text_boundaries (a stored, answered, foreign and handed-out text, output only),
   tests/short_text.
 
+### A default replaced before any read is not made
+
+- **Status**: built.
+- **Rule**: an attribute of a local just made, assigned in the straight statements after the making before any
+  statement reads the local, and not read by its constructor, is never read with its default: until the local is
+  read nothing else holds the object. A quiet default no staying default reads is left out of the making
+  ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-default-replaced-right-after-its-making-is-never-made)).
+- **Buys**: the default's allocation, count and free.
+- **Falls back**: the making runs every default; a branch, a loop, a `return` or a read of the local before the
+  assignment keeps it.
+- **Lives in**: embedded in the pass `high_optimization_passes/replaced_defaults` (`writes_after_making.spite`
+  finds the writes, the pass trims the defaults), read by the lowering through `MakeObject.trimmed_defaults_key`.
+- **Checked by**: tests/default_replaced_after_making (counts with `--debug-memory`),
+  tests/jsx_nested_tags_set_children (counts with `--debug-memory`).
+
 ### A text is written only while nothing else holds it
 
 - **Status**: built, embedded in the pass `high_optimization_passes/constant_texts` (D2120).

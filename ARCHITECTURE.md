@@ -200,7 +200,8 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    (`HighProgram.lone_atomic_attributes`), which another class reads with no lock.
 11. `replaced_defaults`: the defaults a constructor replaces and those only left-out defaults read, trimmed for that
    constructor, and the slots it hands a fresh object (`HighProgram.trimmed_defaults`, `trimmed_keys`,
-   `fresh_by_constructor`).
+   `fresh_by_constructor`); also those a function assigns on a local right after making it, before reading it,
+   trimmed for that making (`MakeObject.trimmed_defaults_key`).
 12. `taken_parameters`: the parameters a function keeps, which its callers hand over without counting
    (`HighProgram.taken_parameters`).
 13. `embedded_attributes`: an object only its holder holds lives inside it (into `HighProgram.layout`).
