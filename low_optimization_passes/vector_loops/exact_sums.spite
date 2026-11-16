@@ -1263,8 +1263,10 @@ func definition_at(function: LowIntermediaryRepresentation.LowFunction, encoded:
 
 func kill_through(function: LowIntermediaryRepresentation.LowFunction, instruction: SpiteCompiler.Instruction) {
     if instruction.class == LowIntermediaryRepresentation.Instructions.CopyBytes {
-        var destination = provenance(function, instruction.destination, 0)
-        var source = provenance(function, instruction.source, 0)
+        var destination_passed = List<Integer>()
+        var destination = provenance(function, instruction.destination, destination_passed)
+        var source_passed = List<Integer>()
+        var source = provenance(function, instruction.source, source_passed)
         if destination != source {
             kill_for(function, destination)
         }
@@ -1272,7 +1274,8 @@ func kill_through(function: LowIntermediaryRepresentation.LowFunction, instructi
     }
     if instruction.class == LowIntermediaryRepresentation.Instructions.Store {
         if instruction.region.is_empty() {
-            var address = provenance(function, instruction.address, 0)
+            var address_passed = List<Integer>()
+            var address = provenance(function, instruction.address, address_passed)
             kill_for(function, address)
         }
         return
@@ -1282,8 +1285,9 @@ func kill_through(function: LowIntermediaryRepresentation.LowFunction, instructi
         while index < instruction.arguments.count() {
             var argument = instruction.arguments[index]
             crash argument
-            var passed = provenance(function, argument, 0)
-            kill_for(function, passed)
+            var argument_passed = List<Integer>()
+            var held = provenance(function, argument, argument_passed)
+            kill_for(function, held)
             index = index + 1
         }
     }
@@ -1380,8 +1384,9 @@ func kill_in_the_calls(
                 }
                 var argument = instruction.arguments[parameter]
                 crash argument
-                var passed = buffer_owner(calling, argument, 0)
-                kill_for(calling, passed)
+                var no_buffers = List<Integer>()
+                var owner = buffer_owner(calling, argument, no_buffers)
+                kill_for(calling, owner)
             }
             place = place + 1
         }
@@ -1389,10 +1394,12 @@ func kill_in_the_calls(
     }
 }
 
-func provenance(function: LowIntermediaryRepresentation.LowFunction, register: Integer, depth: Integer): String {
-    if depth > 8 or register < 0 or register >= definition_lists.count() {
+# ../../OPTIMIZATIONS.md#every-loop-after-lowering-settles-with-no-round-limit
+func provenance(function: LowIntermediaryRepresentation.LowFunction, register: Integer, passed: List<Integer>): String {
+    if passed.contains(register) or register < 0 or register >= definition_lists.count() {
         return "unknown"
     }
+    passed.append(register)
     var places = definition_lists[register]
     if places.count() != 1 {
         return "unknown"
@@ -1402,9 +1409,9 @@ func provenance(function: LowIntermediaryRepresentation.LowFunction, register: I
     var instruction = definition_at(function, encoded)
     switch instruction {
         LowIntermediaryRepresentation.Instructions.Load: return provenance_of_a_load(function, instruction)
-        LowIntermediaryRepresentation.Instructions.Arithmetic: return provenance_of_a_sum(function, instruction, depth)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return provenance_of_a_sum(function, instruction, passed)
         LowIntermediaryRepresentation.Instructions.Check: return "unknown"
-        LowIntermediaryRepresentation.Instructions.Copy: return provenance(function, instruction.source, depth + 1)
+        LowIntermediaryRepresentation.Instructions.Copy: return provenance(function, instruction.source, passed)
         LowIntermediaryRepresentation.Instructions.Constant: return "unknown"
         LowIntermediaryRepresentation.Instructions.Compare: return "unknown"
         LowIntermediaryRepresentation.Instructions.Decimal.Compare: return "unknown"
@@ -1443,16 +1450,16 @@ func provenance(function: LowIntermediaryRepresentation.LowFunction, register: I
 func provenance_of_a_sum(
     function: LowIntermediaryRepresentation.LowFunction,
     arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
-    depth: Integer,
+    passed: List<Integer>,
 ): String {
     if arithmetic.operator != 'add' and arithmetic.operator != 'subtract' {
         return "unknown"
     }
-    var left = provenance(function, arithmetic.left, depth + 1)
+    var left = provenance(function, arithmetic.left, passed)
     if left != "unknown" or arithmetic.operator != 'add' {
         return left
     }
-    return provenance(function, arithmetic.right, depth + 1)
+    return provenance(function, arithmetic.right, passed)
 }
 
 func provenance_of_a_load(
@@ -1462,13 +1469,21 @@ func provenance_of_a_load(
     if loaded.region != "Buffer.$storage" {
         return "unknown"
     }
-    return buffer_owner(function, loaded.address, 0)
+    var no_buffers = List<Integer>()
+    return buffer_owner(function, loaded.address, no_buffers)
 }
 
-func buffer_owner(function: LowIntermediaryRepresentation.LowFunction, buffer: Integer, depth: Integer): String {
-    if depth > 8 or buffer < 0 or buffer >= definition_lists.count() {
+# ../../OPTIMIZATIONS.md#every-loop-after-lowering-settles-with-no-round-limit
+func buffer_owner(
+    function: LowIntermediaryRepresentation.LowFunction,
+    buffer: Integer,
+    on_the_way: List<Integer>,
+): String {
+    if on_the_way.contains(buffer) or buffer < 0 or buffer >= definition_lists.count() {
         return "unknown buffer"
     }
+    var walked = on_the_way.copy()
+    walked.append(buffer)
     var places = definition_lists[buffer]
     if places.is_empty() and buffer < function.parameter_count {
         return "parameter:{buffer}"
@@ -1482,7 +1497,7 @@ func buffer_owner(function: LowIntermediaryRepresentation.LowFunction, buffer: I
         var encoded = places[index]
         crash encoded
         var instruction = definition_at(function, encoded)
-        var found = buffer_owner_of(function, instruction, buffer, depth)
+        var found = buffer_owner_of(function, instruction, buffer, walked)
         if index > 0 and found != agreed {
             return "unknown buffer"
         }
@@ -1496,13 +1511,13 @@ func buffer_owner_of(
     function: LowIntermediaryRepresentation.LowFunction,
     instruction: SpiteCompiler.Instruction,
     buffer: Integer,
-    depth: Integer,
+    walked: List<Integer>,
 ): String {
     switch instruction {
         LowIntermediaryRepresentation.Instructions.Load: return owner_of_a_loaded_buffer(instruction)
-        LowIntermediaryRepresentation.Instructions.Copy: return buffer_owner(function, instruction.source, depth + 1)
+        LowIntermediaryRepresentation.Instructions.Copy: return buffer_owner(function, instruction.source, walked)
         LowIntermediaryRepresentation.Instructions.Allocate: return "fresh:{buffer}"
-        LowIntermediaryRepresentation.Instructions.Arithmetic: return owner_of_a_placed_buffer(function, instruction, buffer, depth)
+        LowIntermediaryRepresentation.Instructions.Arithmetic: return owner_of_a_placed_buffer(function, instruction, buffer, walked)
         LowIntermediaryRepresentation.Instructions.Check: return "unknown buffer"
         LowIntermediaryRepresentation.Instructions.Constant: return "unknown buffer"
         LowIntermediaryRepresentation.Instructions.Compare: return "unknown buffer"
@@ -1542,12 +1557,12 @@ func owner_of_a_placed_buffer(
     function: LowIntermediaryRepresentation.LowFunction,
     arithmetic: LowIntermediaryRepresentation.Instructions.Arithmetic,
     buffer: Integer,
-    depth: Integer,
+    walked: List<Integer>,
 ): String {
     if arithmetic.operator != 'add' {
         return "unknown buffer"
     }
-    var placed = buffer_owner(function, arithmetic.left, depth + 1)
+    var placed = buffer_owner(function, arithmetic.left, walked)
     if placed.starts_with("fresh:") {
         return "fresh:{buffer}"
     }
