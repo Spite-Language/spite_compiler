@@ -49,7 +49,9 @@ like "is this call ever reached" or "may this value be null" has no answer on th
   to write the owner's field, cast as an assignment casts; its body is filled once a program calls `set_value`, with
   a cast for each class that reaches `set_value`'s parameter. Each write (`building/value_write_site.spite`) is judged
   once building ends: every class that reaches it must be taken by an attribute it can write (those listed at run
-  time, or the one its `.attributes["name"]` names), or the write is refused. A writer stops the program only where a
+  time, or the ones its `.attributes["name"]` names, followed through locals by `KnownCalls.attributes_named_by`),
+  or the write is refused. While the shape links are followed, the classes reaching each write join the `Anything`
+  place of every attribute it can write (`fill_the_written_places`). A writer stops the program only where a
   reaching class misfits it (another attribute takes it) or the program has a prompt or hot reload.
 - `building/typed_copies.spite`: the copy of a function whose parameter is a union or a `type` (or a generic holding
   one) for the types a call hands it (`Model.TypedCopy` on the copy), which the builder builds like any function, so
