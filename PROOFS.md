@@ -1999,7 +1999,8 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   not-null ([values_and_types.md](../spite_documentation/values_and_types.md#inline-types-and-duck-typing)).
 - **How**: a class passed as a `type` must have each attribute with the type's type, and each function with as many
   parameters, the same parameter types and the same answer (D1136), the type's own name meaning the type, any
-  class that fits it, never only the class being checked (spite_compiler#545). A member whose type is a union is filled by the same union or by one of its classes; one whose type is a
+  class that fits it, never only the class being checked (spite_compiler#545); while a class is judged against a
+  `type`, the class counts as fitting it inside the members, so a missing member is what the refusal names. A member whose type is a union is filled by the same union or by one of its classes; one whose type is a
   `type` by the same `type`, or by a class or a union whose classes each have the `type`'s members; one whose type
   is a function value by a function value with the same parameter types and answer (D1255).
 - **How, for a `$T`**: the class a `$T` is given is compared with its constraint the same way, each member's types
