@@ -2229,7 +2229,11 @@ it changes only goes one way over finitely many things.
   passes after lowering ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#every-loop-after-lowering-settles-with-no-round-limit)).
   Before, past 64 rounds the proof answered nothing.
 
-PROOFS_MEASURED
+Measured (#576) with every loop counted while building the compiler and the 3 027 spec programs: the registers
+never negative of the signed tests need up to 58 rounds (`native_fault_stack`'s constructor, and 56 in
+`ForeignSiteIsTheFaultingThreads`), where 32 dropped every mark and the proof answered nothing in those
+functions; the ranges settle in at most 5 rounds, the dominators and the banded loops' proof in at most 4, and the
+texts in at most 3, so the other limits never stopped a loop.
 
 ## Live reload
 

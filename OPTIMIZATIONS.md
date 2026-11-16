@@ -2683,6 +2683,17 @@ singleton slots 3; the dominators and the hoisting never more than 3 and 4. Each
 stopped it on the safe side (fewer constants folded, fewer pairs or values removed, fewer calls inlined, nothing
 shared), so the programs printed the same before.
 
+Measured (#576) the same way, for the loops above it added: a run of blocks that only jump on is up to 5 771
+blocks long in the compiler (`OperatorCall.Validator.refuse_an_operator_name` and other long chains of tests) and
+8 816 in `many_crash_arms_in_a_row_still_build`, where 16 stopped jumps part of the way in 1 775 of the compiler's
+functions (they then went through the rest of the run); no ring of such blocks was met, and that program
+builds in the same time. A block merges up to 39 blocks after it in the compiler and 305 in the spec programs,
+where 64 stopped three (`ForeignSiteIsTheFaultingThreads`, `Color.named_hex`,
+`CallsInARowThatStayInOrder.recursive_pair`). The copies that hold settle in up to 74 rounds (96 in the spec
+programs), far under the old 1 000; following a copy takes at most 7 steps, the steady constants 4 rounds, the
+identical functions 4 rounds and 4 steps, a buffer's copies 2 steps and a sum's chain under 8 links, so those
+limits never stopped anything.
+
 ### Budgets, not round limits
 
 Some walks stop at a size, and past it leave the code as written, so a budget costs speed, never a wrong answer
@@ -2720,7 +2731,8 @@ what each changes only goes one way over finitely many things.
   (`split_classes`): a name's value goes from not seen to one value to unknown, never back (32 rounds before,
   which then split nothing).
 
-HIGH_MEASURED
+Measured (#576) building the compiler and the 3 027 spec programs: the kept parameters settle in at most 5
+rounds and the split classes in 6, so the limits of 32 never stopped them.
 
 ## A read from a known object cannot fault, and goes when nothing reads it
 
