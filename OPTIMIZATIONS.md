@@ -2578,6 +2578,42 @@ list or an attribute is not followed. The proof is [PROOFS.md](PROOFS.md#a-split
 
 What a user can observe: the time, and the copies, named `<function>$split<n>`, in the executable's function map.
 
+## What the evaluation while compiling stops at
+
+The evaluation while compiling (`low_optimization_passes/compile_time_evaluation`) has budgets, not round limits: past
+each one it leaves that code as it was written, so a budget costs speed or size, never a wrong answer, and no answer
+it keeps is one it stopped before it settled (#548).
+
+- A function of more than 20 000 instructions, or whose registers times blocks pass 600 000, is not evaluated
+  (`fits`).
+- Following a function's paths stops after 20 000 steps of work plus 40 per instruction, and then nothing it found
+  is used: the function stays as written.
+- A loop is followed pass by pass for at most 16 passes to count them, and its copies hold at most 1 024
+  instructions; a longer loop is not unrolled. At most 8 loops are unrolled in a function. Each is kept only once
+  the function is evaluated again and the loop is unreached, so stopping after the eighth leaves a function whose
+  evaluation is complete, with its other loops as written.
+- A call run while compiling stops after 100 000 steps, 300 000 in one function's evaluation and 20 000 000 in the
+  program, or past 4 194 304 words of memory (`Machine`); a call that does not finish is not answered and stays a
+  call.
+- At most 64 copies for known arguments and 64 split copies are made in a program, each of a function of at most
+  4 000 instructions; a call past them calls the function as written. The copies for known arguments are also what
+  ends a chain of copies: a copy evaluated knowing its arguments can find a call to copy again (a recursion that
+  counts down), and nothing else bounds that chain.
+
+Measured (#548): building the compiler, the copies for known arguments stop at 64 of 2 529 candidate calls, 17
+functions unroll 8 loops, 383 loops pass 16 passes, and 936 functions are too large to evaluate; no function's work
+and no call's steps run out. Over the spec programs no program reaches 64 copies or 64 split copies (at most 27 and
+2), 60 functions unroll 8 loops, calls run out of steps 41 times and
+find their function's steps spent 6 004 times; no function's work runs out.
+
+The loops in it settle with no limit. The impure functions are found by rounds that only mark functions, so they end
+within one round per function. The dominators the unrolling finds are settled by rounds (#495), and two walks up
+them, `meeting` and `dominates`, end because every reached block's dominator is numbered before it in the
+depth-first order (the block's parent there is a predecessor handled earlier in the same round, and a meeting only
+climbs), so each step lowers a number that cannot go below the first block's 0. They stopped at 100 000 steps
+before, which no walk can reach: it takes at most one step per reached block, and the compiler's and the spec
+programs' longest meeting took under 50 (#548).
+
 ## A read from a known object cannot fault, and goes when nothing reads it
 
 A read of a word the evaluation proves lies inside a live known object is marked as one that cannot fault, and the

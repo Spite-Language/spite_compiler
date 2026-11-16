@@ -790,7 +790,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   constructor, costs nothing in the copy, which is what a `Boolean` codegen value bought.
 - **Missing**: an object read back from a list, an attribute or a function value is not known, so its calls keep
   the test; the attribute keeps its slot.
-- **Falls back**: the run-time test, the same answer.
+- **Falls back**: the run-time test, the same answer, and so does a call past the evaluation's size budgets (64
+  split copies in a program, a callee of at most 4 000 instructions), which are budgets, not round limits
+  ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#what-the-evaluation-while-compiling-stops-at)).
 - **Lives in**: the high pass `high_optimization_passes/split_classes` (which values reach which calls) and
   `low_optimization_passes/compile_time_evaluation/partial_evaluation.spite` (`trusts_the_split`, the copies),
   embedded in an optimisation, since the facts are only worth proving for the copies it makes.
