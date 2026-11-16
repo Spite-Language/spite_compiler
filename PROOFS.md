@@ -1054,7 +1054,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   and its value are each kept as an evaluation unless they are quiet: a literal, a local, `this`, a read of something
   quiet, a conversion of something quiet, or a making with no arguments whose defaults and
   constructor `HighIntermediaryRepresentation.QuietValues` proves quiet. A call is never quiet here, since it may
-  change the object it is called on ([reflection.md](../spite_documentation/reflection.md#what-the-compiler-leaves-out)).
+  change the object it is called on, nor a making with arguments, since its constructor may change what it is handed ([reflection.md](../spite_documentation/reflection.md#what-the-compiler-leaves-out)).
 - **Buys**: the field's slot and its write go without changing what the program prints or changes; the evaluation
   lets go of what it answered, so nothing made leaks.
 - **Falls back**: keeps the evaluation, never drops one that could do something.

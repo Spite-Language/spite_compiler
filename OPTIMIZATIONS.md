@@ -1261,7 +1261,8 @@ and a constructor parameter nothing reads then goes with its arguments, unless a
 A write that goes leaves an evaluation of its object and of its value wherever one could do something, so a call or a
 making whose defaults or constructor do something still runs, and the evaluation lets go of what it answered; only
 literals, locals, reads and quiet makings go with the write. A making with no arguments is
-quiet when `HighIntermediaryRepresentation.QuietValues` proves it, the same question an argument is asked.
+quiet when `HighIntermediaryRepresentation.QuietValues` proves it, the same question an argument is asked; one with
+arguments is kept, since its constructor may change what it is handed.
 What such a field would have held is not worked out either: the builder asks whether its reader is queued
 (`building/features.spite`), and makes the wrappers and facts only then, or a program reading one name would
 build every function of the class. The default of a field read and replaced by the constructor is left out as any other
