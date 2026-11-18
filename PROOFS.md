@@ -651,7 +651,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   the high pass `answered_facts` and left out with its cold path
   ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-check-of-a-narrowing-the-ranges-prove-is-not-made), #596).
 - **Falls back**: refused, "this value is an Integer, which may not fit in a Tiny: write 'var converted: Tiny? =
-  value' on its own line ...", or "this value is a Float, which loses its fraction in an Integer: write 'var
+  value' on its own line ..., or bound the value first with a condition ('if value >= smallest and value <= largest
+  { }')", the condition naming only the side the value can pass (`value <= largest` for an `UnsignedInteger` into an
+  `Integer`, `value >= smallest` for an `Integer` into an `UnsignedInteger`, both for a decimal, which
+  [a range bounds](#a-range-proves-a-decimal-fits) only from a comparison that holds), or "this value is a Float, which loses its fraction in an Integer: write 'var
   converted: Integer? = value' on the line above, and narrow that".
 - **Lives in**: `proofs/ranges` (`prove_a_conversion`, which records each narrowing as a
   `HighIntermediaryRepresentation.NarrowingSite` and whether its range fits), `proofs/narrowings_fit`, which hands
@@ -677,7 +680,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   ([values_and_types.md](../spite_documentation/proofs.md#a-range-proves-arithmetic-fits)). A range is kept only
   within 2^62 either way, so the proof's own arithmetic on bounds never overflows; an 8-byte local a condition bounds
   on one side only keeps that side apart (`name|floor`, `name|ceiling`), read only by the next condition on it, which
-  makes a range once both sides are within the limit (#594). Past an `if` with no `else` whose block reaches its end,
+  makes a range once both sides are within the limit (#594). A local declared `T?` gets the range its present value
+  has: a condition read through its narrowing (`fallback held and held <= top`, `if not held or held > top { return 0 }`,
+  or a comparison after `crash held`) bounds it, and a read narrowed later keeps that bound until it is assigned (#622).
+  Past an `if` with no `else` whose block reaches its end,
   each local holds the join of what the block left and what the entry narrowed by the opposite of the condition
   leaves; a range joined with a kept side keeps the wider side. An assignment reads the value's range before it forgets
   the name, so `remainder = 0 - remainder` keeps a range.
@@ -698,13 +704,47 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   can; the rule stands so that a builder sharing one later cannot fold it wrongly.
 - **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room, tests/down_counter_ranges,
   tests/leaving_or_proves_ranges, tests/named_bounds_prove_ranges, tests/long_comparisons_bound,
-  tests/clamping_if_keeps_its_bound, tests/shifted_right_bounds_a_narrowing; conformance/signed_shift_may_not_fit.
+  tests/clamping_if_keeps_its_bound, tests/shifted_right_bounds_a_narrowing, tests/nullable_read_keeps_its_bound;
+  conformance/signed_shift_may_not_fit.
+
+### A range proves a decimal fits
+
+- **Status**: built (#614).
+- **Rule**: a `Float` or `Double` local gets a range only from a comparison that holds as written: a side of an `if`
+  or `while` condition, a side of an `and` that holds, a `fallback` or `crash` condition (which holds past it), and
+  the `else` of a negated test (`if not (scaled > top) { } else { }`). The range bounds the value's floor: from
+  `scaled <= bound` the floor is at most the bound's floor, from `scaled >= bound` at least it, `<` and `>` count as
+  `<=` and `>=`, and `==` both. A bound is a written decimal (a negative one too, which the builder writes as
+  `-0.0 - 1000.0`), a named decimal nothing writes, another decimal local with a range, or a whole number with a range within 2^53 (exact in a `Double`); a range is kept within 2^62 either
+  way like a whole number's, one side at a time until both are known (`name|floor`, `name|ceiling`). A decimal into a whole
+  number is proven when that floor range fits the whole type, since the cast fits exactly when the value is at
+  least the type's smallest and below its largest plus one; a `Double` into a `Float` when the local has any range,
+  since every value within 2^62 fits a `Float`. Rounding is not the proof's: the cast still drops the fraction toward
+  zero and is still written on its own line (D2563).
+- **Why NaN and the infinities cannot slip through**: every comparison with NaN is false, and `!=` is true. So a
+  comparison that holds proves the value is not NaN, and a bound on both sides proves it finite. A comparison that
+  does not hold proves nothing: past `if scaled > top or scaled < bottom { return 0 }` NaN reaches the next line, so
+  the turned-around sides a whole number would get (`scaled <= top`, `scaled >= bottom`) are never recorded for a
+  decimal, nor anything from `!=`. An infinity fails `<=` against a finite bound on its side, so a range from both
+  sides holds only finite values; one side alone keeps no range.
+- **Buys**: `if scaled <= top and scaled >= bottom { var whole: Integer = scaled }` is accepted with no run-time
+  test, and into a `T?` the narrowing is present with no test, as a proven whole-number narrowing is.
+- **Falls back**: refused as an unproven narrowing ("... or bound the value first with a condition ('if value >=
+  smallest and value <= largest { }')"); arithmetic on decimals keeps no range, so `var half = scaled / 2.0` has
+  none.
+- **Lives in**: `proofs/ranges` (`narrow_a_decimal`, `decimal_range_of`, `decimal_constant_of`,
+  `is_a_decimal_that_fits`); named decimals come from `high_intermediary_representation/attribute_uses.spite`
+  (`is_a_written_decimal`); the lowering (`conversions.spite`) leaves out the
+  test of a proven `to_whole` or `narrow_decimal`.
+- **Checked by**: tests/bounded_decimal_narrowing; conformance/decimal_leaving_if_proves_nothing,
+  conformance/decimal_declared_may_not_fit.
 
 ### An attribute nothing writes is read as its default
 
 - **Status**: built (#395).
-- **Rule**: an attribute no built function writes outside its default, whose default is one whole-number literal,
-  holds that number wherever it is read, so the proof `ranges` reads it as that number's range: after
+- **Rule**: an attribute no built function writes outside its default, whose default is one number literal,
+  holds that number wherever it is read, so the proof `ranges` reads it as that number's range (a decimal's as the
+  bound of [a decimal range](#a-range-proves-a-decimal-fits)): after
   `var _hundred = 100`, `floor.minimum(_hundred)` runs to at most 100, and `fallback amount < _thousand` bounds
   `amount` as `amount < 1000` does ([values_and_types.md](../spite_documentation/values_and_types.md#named-numbers)).
   What writes an attribute is what [untouched attributes](OPTIMIZATIONS.md#untouched-attributes-have-no-slot)

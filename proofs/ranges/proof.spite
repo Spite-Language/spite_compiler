@@ -14,6 +14,7 @@ var narrowing_sites = List<HighIntermediaryRepresentation.NarrowingSite>()
 var limit: Long = 4611686018427387904
 var _largest_integer: Long = 2147483647
 var _largest_long: Long = 9223372036854775807
+var _largest_exact_decimal: Long = 9007199254740992
 
 func check(high: HighIntermediaryRepresentation.HighProgram) {
     narrowing_sites = high.narrowing_sites
@@ -45,7 +46,7 @@ func prove(
     var index = 0
     while index < function.parameters.count() {
         var parameter = function.parameters[index]
-        declared[parameter.name] = parameter.parameter_type
+        declared[parameter.name] = parameter.parameter_type.present()
         index = index + 1
     }
     prove_block(body)
@@ -188,7 +189,7 @@ func either_calls_something(left: SpiteCompiler.Value?, right: SpiteCompiler.Val
 
 func prove_a_declaration(declaration: HighIntermediaryRepresentation.Statements.Declare) {
     prove_value(declaration.value)
-    declared[declaration.name] = declaration.declared_type
+    declared[declaration.name] = declaration.declared_type.present()
     set_the_range(declaration.name, declaration.value)
 }
 
@@ -986,8 +987,8 @@ func narrow_an_operation(condition: HighIntermediaryRepresentation.Values.Machin
         comparison = turned_around(comparison)
     }
     var mirrored = mirrored_comparison(comparison)
-    narrow_one_side(comparison, condition.left, condition.right)
-    narrow_one_side(mirrored, condition.right, condition.left)
+    narrow_one_side(comparison, condition.left, condition.right, holds)
+    narrow_one_side(mirrored, condition.right, condition.left, holds)
 }
 
 func narrow_both_sides(
@@ -1049,10 +1050,16 @@ func narrow_one_side(
     comparison: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
     subject: SpiteCompiler.Value?,
     other: SpiteCompiler.Value?,
+    holds: Boolean,
 ) {
     var path = attribute_path_of(subject)
     if path != "" {
         narrow_a_path(comparison, path, other)
+        return
+    }
+    var decimal_name = decimal_name_of(subject)
+    if decimal_name != "" {
+        narrow_a_decimal(comparison, decimal_name, other, holds)
         return
     }
     var name = local_name_of(subject)
@@ -1130,6 +1137,164 @@ func keep_one_side(name: String, narrowed: NumberRange) {
     }
 }
 
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func narrow_a_decimal(
+    comparison: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+    name: String,
+    other: SpiteCompiler.Value?,
+    holds: Boolean,
+) {
+    fallback holds
+    var bound = decimal_range_of(other)
+    fallback bound
+    var zero_point: Long = 0
+    var low: Long = zero_point - limit
+    var high: Long = limit
+    var floor = ranges["{name}|floor"]
+    if floor {
+        low = floor.lowest
+    }
+    var ceiling = ranges["{name}|ceiling"]
+    if ceiling {
+        high = ceiling.highest
+    }
+    var current = ranges[name]
+    if current {
+        low = current.lowest
+        high = current.highest
+    }
+    switch comparison {
+        'less': high = smaller(high, bound.highest)
+        'less_or_equal': high = smaller(high, bound.highest)
+        'greater': low = larger(low, bound.lowest)
+        'greater_or_equal': low = larger(low, bound.lowest)
+        'equal': low = larger(low, bound.lowest)
+        'add': return
+        'subtract': return
+        'multiply': return
+        'divide': return
+        'remainder': return
+        'not_equal': return
+        'and': return
+        'or': return
+    }
+    if comparison == 'equal' {
+        high = smaller(high, bound.highest)
+    }
+    fallback low <= high
+    var narrowed = NumberRange(low, high)
+    if not is_within_the_limit(narrowed) {
+        keep_one_side(name, narrowed)
+        return
+    }
+    ranges[name] = narrowed
+    ranges.remove_at("{name}|floor")
+    ranges.remove_at("{name}|ceiling")
+}
+
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func decimal_name_of(value: SpiteCompiler.Value?): String {
+    fallback value and is_decimal(value.value_type)
+    if value.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return value.name
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        return decimal_name_through(value)
+    }
+    return ""
+}
+
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func decimal_name_through(conversion: HighIntermediaryRepresentation.Values.Conversion): String {
+    fallback conversion.kind == 'present' or conversion.kind == 'widen'
+    fallback conversion.converted
+    var inner_type = conversion.converted.value_type.present()
+    fallback is_decimal(inner_type)
+    if conversion.converted.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return conversion.converted.name
+    }
+    return ""
+}
+
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func decimal_range_of(value: SpiteCompiler.Value?): NumberRange? {
+    fallback value
+    var name = decimal_name_of(value)
+    if name != "" {
+        return ranges[name]
+    }
+    var constant = decimal_constant_of(value)
+    if constant {
+        return floor_range(constant)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.Conversion {
+        return whole_as_a_decimal_range(value)
+    }
+    return null
+}
+
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func decimal_constant_of(value: SpiteCompiler.Value?): Double? {
+    fallback value
+    if value.class == HighIntermediaryRepresentation.Values.DecimalNumber {
+        return written_decimal(value)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        var key = "{value.attribute.owner}.{value.attribute.name}"
+        var number = numbers_nothing_writes[key]
+        return decimal_constant_of(number)
+    }
+    if value.class == HighIntermediaryRepresentation.Values.MachineOperation {
+        return negated_decimal(value)
+    }
+    return null
+}
+
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func negated_decimal(operation: HighIntermediaryRepresentation.Values.MachineOperation): Double? {
+    fallback operation.operator == 'subtract' and is_decimal(operation.value_type)
+    var zero = decimal_constant_of(operation.left)
+    fallback zero and zero == 0.0
+    var negated = decimal_constant_of(operation.right)
+    fallback negated
+    return 0.0 - negated
+}
+
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func written_decimal(number: HighIntermediaryRepresentation.Values.DecimalNumber): Double? {
+    if number.value_type.name == "Float" {
+        var single: Float? = number.written
+        fallback single
+        return single
+    }
+    return number.written
+}
+
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func whole_as_a_decimal_range(conversion: HighIntermediaryRepresentation.Values.Conversion): NumberRange? {
+    fallback conversion.kind == 'to_decimal'
+    var whole = range_of(conversion.converted)
+    fallback whole
+    var exact: Long = _largest_exact_decimal
+    var zero_point: Long = 0
+    var negative_exact: Long = zero_point - exact
+    fallback whole.lowest >= negative_exact and whole.highest <= exact
+    return whole
+}
+
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func floor_range(number: Double): NumberRange? {
+    var truncated: Long? = number
+    fallback truncated
+    var found = NumberRange(truncated, truncated)
+    fallback is_within_the_limit(found)
+    var back: Double = truncated
+    if number < back {
+        found = NumberRange(truncated - 1, truncated - 1)
+    }
+    return found
+}
+
 # ../../PROOFS.md#a-proven-divisor-is-not-checked
 func narrow_a_path(
     comparison: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
@@ -1155,7 +1320,7 @@ func local_name_of(value: SpiteCompiler.Value?): String {
     fallback value
     switch value {
         HighIntermediaryRepresentation.Values.LocalRead: return whole_local_name(value)
-        HighIntermediaryRepresentation.Values.Conversion: return widened_name_of(value)
+        HighIntermediaryRepresentation.Values.Conversion: return converted_name_of(value)
         HighIntermediaryRepresentation.Values.WholeNumber: return ""
         HighIntermediaryRepresentation.Values.DecimalNumber: return ""
         HighIntermediaryRepresentation.Values.TextConstant: return ""
@@ -1186,9 +1351,20 @@ func whole_local_name(read: HighIntermediaryRepresentation.Values.LocalRead): St
     return read.name
 }
 
-func widened_name_of(conversion: HighIntermediaryRepresentation.Values.Conversion): String {
-    fallback conversion.kind == 'widen'
-    return local_name_of(conversion.converted)
+# ../../PROOFS.md#a-range-proves-arithmetic-fits
+func converted_name_of(conversion: HighIntermediaryRepresentation.Values.Conversion): String {
+    if conversion.kind == 'widen' {
+        return local_name_of(conversion.converted)
+    }
+    fallback conversion.kind == 'present' and is_whole(conversion.value_type)
+    return present_name_of(conversion)
+}
+
+# ../../PROOFS.md#a-range-proves-arithmetic-fits
+func present_name_of(conversion: HighIntermediaryRepresentation.Values.Conversion): String {
+    var read = conversion.converted
+    fallback read.class == HighIntermediaryRepresentation.Values.LocalRead
+    return read.name
 }
 
 func shifted_name_of(value: SpiteCompiler.Value?): String {
@@ -1283,8 +1459,21 @@ func prove_a_conversion(conversion: HighIntermediaryRepresentation.Values.Conver
     if conversion.kind == 'narrow' and not conversion.is_proven_to_fit {
         conversion.is_proven_to_fit = is_a_constant_that_fits(conversion.converted, conversion.value_type)
     }
+    if conversion.kind != 'narrow' {
+        conversion.is_proven_to_fit = is_a_decimal_that_fits(conversion)
+    }
     var site = HighIntermediaryRepresentation.NarrowingSite(proving, proving_line, conversion)
     narrowing_sites.append(site)
+}
+
+# ../../PROOFS.md#a-range-proves-a-decimal-fits
+func is_a_decimal_that_fits(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
+    var floors = decimal_range_of(conversion.converted)
+    fallback floors
+    if conversion.kind == 'narrow_decimal' {
+        return true
+    }
+    return fits(floors, conversion.value_type)
 }
 
 # ../../PROOFS.md#a-number-that-may-not-fit-is-narrowed
@@ -1566,6 +1755,9 @@ func local_range(read: HighIntermediaryRepresentation.Values.LocalRead): NumberR
 
 func converted_range(conversion: HighIntermediaryRepresentation.Values.Conversion): NumberRange? {
     fallback is_whole(conversion.value_type)
+    if conversion.kind == 'present' {
+        return present_range(conversion)
+    }
     var is_kept = conversion.kind == 'widen' or conversion.kind == 'narrow'
     if not is_kept {
         return type_range(conversion.value_type)
@@ -1577,6 +1769,16 @@ func converted_range(conversion: HighIntermediaryRepresentation.Values.Conversio
     var cut = cut_to(inner, conversion.value_type)
     if cut {
         return cut
+    }
+    return type_range(conversion.value_type)
+}
+
+# ../../PROOFS.md#a-range-proves-arithmetic-fits
+func present_range(conversion: HighIntermediaryRepresentation.Values.Conversion): NumberRange? {
+    var name = present_name_of(conversion)
+    var known = ranges[name]
+    if name != "" and known {
+        return known
     }
     return type_range(conversion.value_type)
 }
@@ -1915,6 +2117,13 @@ func is_whole(of_type: Model.Type): Boolean {
     var scalar = scalars.of(of_type.name)
     fallback scalar
     return not scalar.is_decimal
+}
+
+func is_decimal(of_type: Model.Type): Boolean {
+    fallback of_type.kind == 'scalar' and not of_type.is_nullable
+    var scalar = scalars.of(of_type.name)
+    fallback scalar
+    return scalar.is_decimal
 }
 
 func is_bounded(of_type: Model.Type): Boolean {
