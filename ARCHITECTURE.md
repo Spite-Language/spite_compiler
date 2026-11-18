@@ -559,7 +559,10 @@ of it (`push rbp`, `mov rbp, rsp`; a resumable function pushes `rbp` and lowers 
 `_frame_handler` as its handler, and one entry for each part of a runtime routine (`runtime_routines.spite`,
 `small_blocks.spite`) that lowers the stack, saying by how much (`sub rsp, n` at its start); the parts that do not are
 leaves, and a call that never returns ends with `int3`, so its return address stays inside its routine; so does a function
-whose last instruction is a call (`encoder.keep_a_last_call_inside`), which never returns. The
+whose last instruction is a call (`encoder.keep_a_last_call_inside`), which never returns. A free function whose last
+step frees another object leaves its frame (`mov rsp, rbp`, `pop rbp`) and jumps to that free, an epilogue the unwinder
+reads like one ending in `ret`
+([Freeing a chain takes no stack per link](OPTIMIZATIONS.md#freeing-a-chain-takes-no-stack-per-link)). The
 lowering writes three handlers (`lowering.spite`): `_fault_handler`, the vectored one, reports at once unless this
 thread is in a foreign call and the fault is outside the program's own code, and then leaves it to the library's
 own handlers; the current foreign-call site and library are kept in two thread slots (`TlsAlloc` at the start), so
