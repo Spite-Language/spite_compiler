@@ -442,9 +442,20 @@ names the one above it.
 The resolver (`name_resolution/resolver.spite`) only holds the state and the concerns and starts the resolution.
 `ResolutionState` holds the fields; `same_members` finds a union or type already written under another name,
 `instances` (the `monomorphiser`) is the worklist of classes to fill and the generic instances minted for it, `types`
-resolves a written type, `owners` works out the owner and class of the names of a template, and `reading` reads a class
-file's declarations into the model. A class waiting in the worklist is filled by a `Reading` that `instances` makes when
-it drains the list, since `types` asks for a drain and `reading` asks `types` for a type.
+resolves a written type, `owners` works out the owner and class of the names of a template, `reading` reads a class
+file's declarations into the model, and `declared_names` reads the enums, unions and types a class declares. A class
+waiting in the worklist is filled by a `Reading` that `instances` makes when it drains the list, since `types` asks for
+a drain and `reading` asks `types` for a type.
+
+### A class is filled once, in its turn
+
+Name resolution never nests one class's filling inside another's, so its stack does not grow with the program (#609).
+A class's enums, unions and types are read when it joins the program (`Instances.join`), before any class is filled:
+`Owner.Kind` needs only those names, so a type naming one never waits for its owner. Then one loop drains the worklist
+in the order classes joined, each class filled once. A drain asked for while that loop runs (a type resolved inside a
+fill, a class read late) returns at once and leaves what it added to the loop. The one type that reads another class's
+functions, `$value_type.argument_class("name", 0)`, is written in a template, and the class bound to `$value_type` joined
+before the instance that binds it, so it has had its turn.
 
 The reflection builder (`high_intermediary_representation/building/reflection.spite`) is split the same way, over
 `ReflectionState`: `described_names` (names and paths), `features` (which reflection functions the program asks for),

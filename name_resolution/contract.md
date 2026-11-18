@@ -111,7 +111,10 @@ member is answered when the class is compiled.
 - `instances.spite`: the worklist of classes to fill and the generic instances minted for it: the name of an instance
   (`List_of_Integer`), the ones the compiler makes without a file (`Spite.Work`, a list, a dictionary of text) and the
   instance a constructor's arguments decide. It drains the worklist with a `Reading` made for the drain, so that
-  `types` can ask for one.
+  `types` can ask for one; one loop drains it, each class in its turn (`ARCHITECTURE.md`, a class is filled once, in
+  its turn).
+- `declared_names.spite`: the enums, unions and types a class declares, read when the class joins the program, and
+  the names of a template whose unions are checked.
 - `types.spite`: a type as written to a type of the model: a path, a type parameter, a dependent member, a declared
   enum, union or type, and the arguments of a generic; and the rules about a class named wrongly, which it hands to the
   validators.
