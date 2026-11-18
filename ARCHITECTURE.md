@@ -287,7 +287,11 @@ type keeps its declared type (`TypedCopies.keeps_its_type`), since that local ma
 shown as `Anything` (`Types.its_own`, the shape made on first ask by `ProgramModel.anything_keyed`). A value moved
 from one `Anything` into another links them (`Fitting.fitted_into_another_anything`, and a function value's
 parameters and answer through `link_the_anything_parts`), so the classes that reach one reach the other, and
-`follow_the_shape_links` repeats until no link adds a class. Two `Anything`s are the same type everywhere else
+`follow_the_shape_links` repeats until no link adds a class. A place whose values are tested at run time before they
+enter it (a `call()` parameter typed `Anything` or a `type`, read from `call.arguments`) is linked the same way but
+takes only the classes that fit it (`Fitting.fill_with_the_fitting`), so a class that never reaches the call is never
+asked to fit, and the test (`test_the_fillers`) matches every filler, numbers and enums too. A hole on a `T?` of a
+`type` asking `to_string` goes through `Anything|to_string` like a hole on an `Anything?`, so null shows `null`. Two `Anything`s are the same type everywhere else
 (`Type.is_the_same_as`). So printing a `Spite.Attribute`'s `.value` asks `to_string` of the classes the attributes
 held, not of the owner kept beside it. An `Anything` shape lists only `to_debug`, which every class has:
 `value.to_string()` and a hole `"{value}"` on an `Anything` pass the value into the shape `Anything|to_string`
