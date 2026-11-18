@@ -733,7 +733,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   width's range, since it halts otherwise. A register written from itself (a loop's counter, a running total)
   gets none. At the start of a block, a register written once (or a parameter never written) is bounded too by
   every test on the one way into it: the branches of the blocks before it, as long as each has one predecessor
-  (eight at most), each test of the register against another register's bounds (signed: `<`, `<=`, `>`, `>=`,
+  (stopping at a block it passed, [below](#every-loop-in-a-proof-settles-with-no-round-limit)), each test of the
+  register against another register's bounds (signed: `<`, `<=`, `>`, `>=`,
   `==`; unsigned `<` and `<=` against a count never negative, from 0), and through a test of such an answer
   against zero (`crash` and `fallback` write that). A write of the register inside those blocks drops what the test
   proved. A write's bounds are worked out with what holds in the block it is in, so a number tested to be between
@@ -1364,11 +1365,18 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   receiver is not followed (D2525). A function's own stores
   include those of the program functions it calls, followed to a fixed point: one round over the program, then
   rounds over only the callers of a function whose summary grew, until none grows, so a link made any number of
-  calls down counts (D1663, spite_compiler#26, #495). A partial reading is never used: a link found only in a later
+  calls down counts (D1663, D1818, spite_compiler#26, #495). A partial reading is never used: a link found only in a later
   round can decide that an attribute pointing both ways keeps its counts. An object a function makes is named by that function and its place
   in it (`#Team:sign:1`), the same on every reading, so a summary read again is equal and the rounds end; a summary
-  keeps each store once, and only stores whose keys reach at most four parts deep (`this.a.b.c`), so it cannot grow
-  without end. A call whose summary names an object the reading function itself makes (through recursion) adds
+  keeps each store once, and only stores whose keys reach at most four parts deep (`this.a.b.c`), a size budget
+  ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#budgets-not-round-limits)): a recursive call over a chain
+  (`walk(node.next)`) places the function's own stores one attribute deeper each round, so without it a summary
+  grows without end. A store past it is left out, which can only hide a link: an attribute it hides a link for keeps
+  its counts, and so does one that may point back to its holder (`partner: Person?`, or `beta: Beta?` beside
+  `alpha: Alpha?`) whose name, or whose owning attribute's name, a left-out store wrote, since the link the other
+  way that keeps both counted may be the one left out (#602; before, such an attribute was picked as the back
+  reference and its object freed while still held, `tests/back_reference_other_way_past_the_key_budget`).
+  A call whose summary names an object the reading function itself makes (through recursion) adds
   nothing of that object, since it is another call's object under the same name. A link found in one
   function decides the attribute for the whole program. Every class an object back attribute holds gets a back word
   (the count of back references that keep its memory); the classes a union or `type` back attribute may hold put it
@@ -1393,6 +1401,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `high_intermediary_representation/layout.spite` (`place_the_shared_back_words`).
 - **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls,
   tests/back_reference_two_levels, tests/a_back_reference_found_many_calls_down (73 calls down),
+  tests/back_reference_other_way_past_the_key_budget,
   tests/back_reference_named_by_two_classes, tests/back_reference_union_items, tests/back_reference_type_items,
   tests/back_reference_union_attribute, tests/back_reference_type_attribute,
   tests/back_reference_made_side_by_side, tests/back_reference_made_side_by_side_leaving.
