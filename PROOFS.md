@@ -1312,7 +1312,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 ### A back reference is picked from how the program links its objects
 
-- **Status**: partly built (D759, D1396, D2525, D2526).
+- **Status**: partly built (D759, D1396, D2525, D2526, D2580).
 - **Rule**: an attribute `a: T?` of a class `C` holds no count when one function both sets `c.a = t` and stores `c`
   into `t`'s attribute `f`, which holds a `C` ([memory.md](../spite_documentation/memory.md)); never from the class
   graph alone, since taking an owning reference for a back one would free an object the program still holds. A
@@ -1320,6 +1320,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   which `C` declares (D2525). An attribute `a: U?` holding a union, or `a: S?` holding a `type`, holds no count when
   every class it may hold links back that way: each class member of the union, or each class of the program that
   declares every member of the `type`; one that does not, or a member that is not a class, keeps it counted (D2526).
+  Two objects one function makes side by side and links to each other directly (`question.answer = answer` beside
+  `answer.question = question`) both die with that function when neither leaves it, so the attribute of the one made
+  later is the back reference: when every function that links the two attributes this way makes the same one later
+  and keeps both objects in, and no function stores into that attribute any other way (D2580).
 - **How**: each function of the program is read for the stores it makes: `x.a = y`, `x.f.append(y)` (and
   `insert`, `prepend`, `add`, `set_at`), `x.f[k] = y`, and a constructor that keeps its argument in an attribute. A
   call of a program function adds that function's own stores, with `this` and its parameters replaced by the call's
@@ -1339,22 +1343,29 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   function decides the attribute for the whole program. Every class an object back attribute holds gets a back word
   (the count of back references that keep its memory); the classes a union or `type` back attribute may hold put it
   at one offset, the first slot free in all of them, so the store, the read's freed check and the release use one
-  slot whichever class the value holds, with no check of its class at run time (D2526).
+  slot whichever class the value holds, with no check of its class at run time (D2526). A pair made side by side
+  stays in its function (`model/made_pair_walk.spite`) when the stores read for it (its own and its callees') put
+  neither object anywhere but in the other's link, and each mention of either is a name a `var` gives one of them, a
+  receiver of an attribute read, a link store, a narrowing alone, or the receiver of a call of one of the two
+  classes' functions whose answer is discarded or holds no object; the functions called that way, and the classes'
+  constructors, are read the same way with `this` and the two link attributes as the pair. Anything else (an
+  argument, a return, a list, an assignment of the local, a function value) lets the pair leave.
 - **Missing**: a call of a function two classes name on a receiver whose class is not known (a local that is not
-  made there), a store through keys more than four parts deep, two objects linked directly (not through a
-  collection) where no function made one without the other (both made side by side, as `tests/memory_leak_summary`),
-  one attribute pointing both ways (`partner`), a union or `type` back attribute one of whose classes does not link
+  made there), a store through keys more than four parts deep, two objects made side by side and linked directly
+  where one of them leaves the function (`return answer`), one attribute pointing both ways (`partner`, as
+  `tests/memory_leak_summary`), a union or `type` back attribute one of whose classes does not link
   back, and a back attribute that cannot be null: each keeps its counts and leaks, which `--debug-memory` names at
   exit. Nothing in the first three proves which side outlives the other; a class that does not link back could be
   freed while the program still means to hold it; and one that cannot be null has no `null` to answer once its
   object is freed (spite_compiler#26).
 - **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
-- **Lives in**: `model/back_references.spite`, asked by `ProgramModel.holds_no_count`; the shared back word in
+- **Lives in**: `model/back_references.spite` and `model/made_pair_walk.spite`, asked by `ProgramModel.holds_no_count`; the shared back word in
   `high_intermediary_representation/layout.spite` (`place_the_shared_back_words`).
 - **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls,
   tests/back_reference_two_levels, tests/a_back_reference_found_many_calls_down (73 calls down),
   tests/back_reference_named_by_two_classes, tests/back_reference_union_items, tests/back_reference_type_items,
-  tests/back_reference_union_attribute, tests/back_reference_type_attribute.
+  tests/back_reference_union_attribute, tests/back_reference_type_attribute,
+  tests/back_reference_made_side_by_side, tests/back_reference_made_side_by_side_leaving.
 
 ### A ForeignCallback kept by the object it calls holds that object back
 
