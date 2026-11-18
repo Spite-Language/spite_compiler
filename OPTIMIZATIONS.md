@@ -1571,9 +1571,13 @@ another such read answers (`Monster.namespace.name`, the namespace's name), and 
 assigned again (`high_optimization_passes/class_object_reads`, after `folded_dictionaries` and before
 `unread_fields`).
 
+A class object held by an attribute that only its class's defaults give one
+([PROOFS.md](PROOFS.md#an-attribute-only-its-defaults-give-a-class-object-holds-it)), read on a local or `this`, is
+known too: with `var held: Spite.Class = Monster` in `Keeper`, `keeper.held.name` is `"Monster"`.
+
 When it does not apply: an attribute that is a list or a dictionary (`attributes`, `functions`, `generics`), one the
 fill works out from a late answer (`is_stateful` of a program class), a class object read from a list, an
-attribute or a parameter, a class object a `drop()` can reach (which may run at exit after the object is let go,
+attribute something else writes or a parameter of a function that is not a copy for one class, a class object a `drop()` can reach (which may run at exit after the object is let go,
 and must halt as it did, so the object is made where it was: `tests/class_object_read_in_a_drop_at_exit`), and builds that keep everything
 (`--development`, `--repl`, `--hot-reload`). What a user can observe: nothing but the time; `--high-ir` shows the
 constants where the calls were (`tests/class_object_reads_fold`).

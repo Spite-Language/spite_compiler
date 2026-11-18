@@ -1088,12 +1088,30 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   object, is never folded anywhere, so each is made when it was and halts the same way; a `drop()` that reaches
   a `.class` of a value folds nothing. The program's output never changes.
 - **Falls back**: an attribute that is a list or a dictionary, one the fill works out from a late answer
-  (`is_stateful` of a program class), a class object read from a list, an attribute or a parameter, and any build
+  (`is_stateful` of a program class), a class object read from a list, an attribute that is not
+  [only given by its defaults](#an-attribute-only-its-defaults-give-a-class-object-holds-it) or a parameter of a
+  function that is not a copy for one class, and any build
   that keeps everything (`CommandLine.Inspection`) read the object at run time, as before.
 - **Lives in**: the proof `proofs/steady_class_objects`, registered among the high passes right before
   `class_object_reads` (`HighProgram.steady_class_object_values`).
 - **Checked by**: tests/class_object_reads_fold, tests/class_object_read_in_a_drop_at_exit, tests/reflection_names_fold,
   tests/enum_reflection (output only).
+
+### An attribute only its defaults give a class object holds it
+
+- **Status**: built (spite_compiler#54).
+- **Rule**: an attribute whose every write in the built program is in a defaults function of its class, at the top of
+  its body, writing one class object named in the code (the same in each defaults function the class has), holds that
+  object whenever an object of the class is read, as long as nothing before the write in the defaults can reach the
+  object being made: for a class with many objects, no value before it reads `this`; for a singleton or the entry,
+  which another function can reach while it is made, no value before it reads `this` or calls anything. It falls when
+  a `type` member shares the attribute's name, or when an object of the class is made without its defaults.
+- **Buys**: a read of what a class object holds through such an attribute, on a local or `this`, is the constant
+  `class_object_reads` gives that class object (`keeper.held.name` is `"Monster"`).
+- **Falls back**: any other write (a constructor, a reflection writer, a write in a branch), and a read through a
+  call, read the attribute at run time.
+- **Lives in**: `high_optimization_passes/class_object_reads/steady_attributes.spite`.
+- **Checked by**: tests/class_object_read_through_an_attribute.
 
 ### A class object is filled only where it is read
 

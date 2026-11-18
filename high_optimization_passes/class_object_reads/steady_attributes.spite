@@ -1,0 +1,181 @@
+# ../../PROOFS.md#an-attribute-only-its-defaults-give-a-class-object-holds-it
+
+var no_program = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(no_program)
+var objects = Dictionary<String, HighIntermediaryRepresentation.Values.Class.Object>()
+var default_writes = Dictionary<String, Integer>()
+var defaults_counts = Dictionary<String, Integer>()
+var spoiled = Dictionary<String, Boolean>()
+var shape_members = Dictionary<String, Boolean>()
+var skipping_owners = Dictionary<String, Boolean>()
+var walked: Model.FunctionModel? = null
+var reaches_the_object = false
+var calls_out = false
+
+func note_the_program(high_program: HighIntermediaryRepresentation.HighProgram) {
+    high = high_program
+    objects = Dictionary<String, HighIntermediaryRepresentation.Values.Class.Object>()
+    default_writes = Dictionary<String, Integer>()
+    defaults_counts = Dictionary<String, Integer>()
+    spoiled = Dictionary<String, Boolean>()
+    shape_members = Dictionary<String, Boolean>()
+    skipping_owners = Dictionary<String, Boolean>()
+    var shapes = high.model.shapes.values()
+    shapes.each(note_a_shape)
+    high.built_functions.each(note_a_function)
+}
+
+func note_a_shape(shape: Model.ShapeModel) {
+    shape.members.each(note_a_shape_member)
+}
+
+func note_a_shape_member(member: Model.FunctionModel) {
+    shape_members[member.name] = true
+}
+
+# ../../PROOFS.md#an-attribute-only-its-defaults-give-a-class-object-holds-it
+func object_read_by(
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+): HighIntermediaryRepresentation.Values.Class.Object? {
+    fallback read.object
+    var is_quiet = read.object.class == HighIntermediaryRepresentation.Values.LocalRead or read.object.class == HighIntermediaryRepresentation.Values.ThisRead
+    fallback is_quiet
+    var attribute = read.attribute
+    var key = "{attribute.owner}.{attribute.name}"
+    fallback not spoiled.contains(key) and not shape_members.contains(attribute.name)
+    fallback not skipping_owners.contains(attribute.owner)
+    var written = default_writes[key]
+    fallback written and written == defaults_counts[attribute.owner]
+    return objects[key]
+}
+
+func note_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    walked = function.function
+    var owner = function.function.owner
+    if is_a_defaults_function(function.function) {
+        var counted = defaults_counts[owner]
+        if counted {
+            defaults_counts[owner] = counted + 1
+        } else {
+            defaults_counts[owner] = 1
+        }
+    }
+    var is_escaped = false
+    var index = 0
+    while index < function.body.statements.count() {
+        var statement = function.body.statements[index]
+        var is_a_default = is_a_default_write(statement)
+        if is_a_default and statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+            note_a_default(statement, is_escaped)
+        } else {
+            spoil_the_writes(statement)
+        }
+        if may_reach_the_object(statement, is_a_default) {
+            is_escaped = true
+        }
+        index = index + 1
+    }
+}
+
+func is_a_defaults_function(function: Model.FunctionModel): Boolean {
+    return function.name == "_attribute_defaults" or function.name.ends_with("$defaults")
+}
+
+func is_a_default_write(statement: SpiteCompiler.Statement): Boolean {
+    crash walked
+    fallback is_a_defaults_function(walked)
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute
+    fallback statement.attribute.owner == walked.owner
+    return statement.object and statement.object.class == HighIntermediaryRepresentation.Values.ThisRead
+}
+
+# ../../PROOFS.md#an-attribute-only-its-defaults-give-a-class-object-holds-it
+func note_a_default(written: HighIntermediaryRepresentation.Statements.Assign.Attribute, is_escaped: Boolean) {
+    var key = "{written.attribute.owner}.{written.attribute.name}"
+    var object = written_object_of(written.value)
+    if is_escaped or not object {
+        spoiled[key] = true
+        return
+    }
+    var noted = objects[key]
+    if noted {
+        var is_the_same = noted.reflection_kind == object.reflection_kind and noted.described == object.described
+        if not is_the_same {
+            spoiled[key] = true
+        }
+    } else {
+        objects[key] = object
+    }
+    var count = default_writes[key]
+    if count {
+        default_writes[key] = count + 1
+    } else {
+        default_writes[key] = 1
+    }
+}
+
+func written_object_of(value: SpiteCompiler.Value?): HighIntermediaryRepresentation.Values.Class.Object? {
+    fallback value
+    if value.class == HighIntermediaryRepresentation.Values.Class.Object {
+        return value
+    }
+    fallback value.class == HighIntermediaryRepresentation.Values.Conversion
+    fallback value.kind == 'present' or value.kind == 'nullable'
+    return written_object_of(value.converted)
+}
+
+# ../../PROOFS.md#an-attribute-only-its-defaults-give-a-class-object-holds-it
+func may_reach_the_object(statement: SpiteCompiler.Statement, is_a_default: Boolean): Boolean {
+    crash walked
+    reaches_the_object = false
+    calls_out = false
+    var rewriting = HighOptimizationPasses.Rewriting(this)
+    if is_a_default and statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        statement.value = rewriting.rewritten_or_none(statement.value)
+    } else {
+        rewriting.rewrite_statement(statement)
+    }
+    var is_one_object = walked.owner == high.model.entry
+    var model = high.model.class_named(walked.owner)
+    if model and model.is_singleton {
+        is_one_object = true
+    }
+    if is_one_object {
+        return reaches_the_object or calls_out
+    }
+    return reaches_the_object
+}
+
+func spoil_the_writes(statement: SpiteCompiler.Statement) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+        spoiled["{statement.attribute.owner}.{statement.attribute.name}"] = true
+    } else if statement.class == HighIntermediaryRepresentation.Statements.If {
+        spoil_a_block(statement.then_branch)
+        spoil_a_block(statement.else_branch)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.While {
+        spoil_a_block(statement.body)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        spoil_a_block(statement)
+    }
+}
+
+func spoil_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(spoil_the_writes)
+}
+
+func rewritten(value: SpiteCompiler.Value): SpiteCompiler.Value {
+    if value.class == HighIntermediaryRepresentation.Values.ThisRead {
+        reaches_the_object = true
+    } else if value.class == HighIntermediaryRepresentation.Values.MakeObject {
+        calls_out = true
+        if value.skips_the_defaults {
+            skipping_owners[value.value_type.name] = true
+        }
+    } else if value.class == HighIntermediaryRepresentation.Values.Call or value.class == HighIntermediaryRepresentation.Values.ShapeCall {
+        calls_out = true
+    } else if value.class == HighIntermediaryRepresentation.Values.Function.ValueCall or value.class == HighIntermediaryRepresentation.Values.ForeignCall {
+        calls_out = true
+    }
+    return value
+}
