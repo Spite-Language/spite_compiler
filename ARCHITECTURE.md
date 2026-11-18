@@ -167,7 +167,8 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
    of them, on a known class object, into that constant, leaving out a local holding a class object nothing reads
    any more ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-read-of-what-a-class-object-holds-is-its-answer)).
    Right before the next, `unread_fields`: a field of a reflection class nothing reads has no slot, no write and no
-   constructor argument.
+   constructor argument. Then `unread_fills` hands each fill whose class object no function and no reached fill
+   reads any more to the next ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-class-object-nothing-reads-is-never-filled)).
 5. `unreached_functions`: a function only the calls those passes replaced reached is dropped.
    Right after it, `constant_texts` proves that the program writes a text only while one local holds it; where it
    does, it marks each literal nothing writes into to live in the executable's data (`TextConstant.lives_in_data`)

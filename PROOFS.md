@@ -1095,6 +1095,18 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: tests/class_object_reads_fold, tests/class_object_read_in_a_drop_at_exit, tests/reflection_names_fold,
   tests/enum_reflection (output only).
 
+### A class object is filled only where it is read
+
+- **Status**: built (spite_compiler#54).
+- **Rule**: a fill runs only from a read of its class object's slot, and the only values that read one are a class
+  object written in a function and a `.class` of a value, which reads the object of each class it may answer. A fill
+  that no function but the fills reaches through those, transitively through the fills that are reached, never runs.
+- **Buys**: such a fill is not compiled, nor what only it called (`high_optimization_passes/unread_fills`).
+- **Falls back**: a fill reached from a function that is dropped later stays; builds that keep everything
+  (`CommandLine.Inspection`) keep every fill.
+- **Lives in**: `high_optimization_passes/unread_fills`.
+- **Checked by**: tests/unread_fills_are_left_out, tests/class_object_reads_fold, tests/enum_reflection.
+
 ### A reflection field's write that goes keeps what its value does
 
 - **Status**: built.

@@ -1578,6 +1578,34 @@ and must halt as it did, so the object is made where it was: `tests/class_object
 (`--development`, `--repl`, `--hot-reload`). What a user can observe: nothing but the time; `--high-ir` shows the
 constants where the calls were (`tests/class_object_reads_fold`).
 
+## A class object nothing reads is never filled
+
+A fill is compiled for every class object the code named while it was built, and each fill names the class objects
+it hands on (a class's namespace, the classes of its attributes and generics, an enum's owner). Once the reads above
+are constants, and the reflection fields nothing reads have gone with their writes, many of those objects are read
+by nothing: the pass `high_optimization_passes/unread_fills` (after `unread_fields`, right before
+`unreached_functions`) walks every function
+that is not a fill for the class objects it reads (a class object written in it, and each class a `.class` may
+answer), then the fills of those, and hands each fill nothing reached to `unreached_functions`, which drops it with
+what only it called ([PROOFS.md](PROOFS.md#a-class-object-is-filled-only-where-it-is-read)).
+
+```spite
+enum Part {
+    'wing'
+}
+
+var console = Console()
+
+func Parts() {
+    console.print(Part.owner)
+}
+```
+
+`Parts`'s class object is read, so its fill stays; the fill no longer hands on its attributes' classes once nothing
+reads `attributes`, so `Console`'s fill, and the fills only that one reached, are not compiled. Builds that keep
+everything (`--development`, `--repl`, `--hot-reload`) keep every fill. What a user can observe: a smaller
+executable (`tests/unread_fills_are_left_out`).
+
 ## A late answer keeps only its taken branch
 
 `function_waits` and `function_writes_parameter` are answered only once every function is built (D673), so both
