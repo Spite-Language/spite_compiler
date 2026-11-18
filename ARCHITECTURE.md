@@ -309,6 +309,13 @@ same way, whatever each one's own uses would drop or move. A place is never show
 (`List<Anything?>`, `Instances.shown_present_argument`), and a stop names its function without the place
 (`FunctionModel.shown_owner`, `Type.without_places`).
 
+`==` on a value typed by a `type`, a union or `Anything` passes both sides into the compiler's own shape
+`held_equals|<type>` (`Equality.held_equal`), whose one member `equals` every class that reaches the value fills with
+its own `equals`, written or given (`Equality.need_the_held_equals`, through the same links as any shape). The lowering
+dispatches on the left side's class and answers `false` when the right side's class differs
+(`Conversions.compare_a_held_class`); a number, an enum or a name is unboxed first, an enum and a singleton compare as
+they are.
+
 ### The low passes, in order
 
 `low_optimization_passes/low_optimization_passes.spite` lists them, with the low proofs before the passes that
