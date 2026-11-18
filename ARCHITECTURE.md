@@ -480,14 +480,26 @@ The statements builder (`high_intermediary_representation/building/statements.sp
 each other both ways, since an `if` builds a block and a block builds a loop, so none holds another as an attribute: a
 function that needs another concern makes one over the same state as a local (`var statements = Statements(state)`).
 `statements` holds the block and body orchestration, the exhaustive `switch` over the written statements (`build`), the
-variable, the evaluation, the return, the `if` and the `fallback`, the facts an `if` proves and what the builder
-records for the proofs; `assignments` writes a name, an attribute, a bound member, a shape and an index and forgets
+variable, the evaluation, the return, an `if` up to its else branch and the `fallback`, the facts an `if` proves and what the builder
+records for the proofs; `ifs` builds the chain of an `if`'s `else if`s, its else branch and the `if` whose condition
+is decided; `assignments` writes a name, an attribute, a bound member, a shape and an index and forgets
 what a write undoes; `loops` builds the `while`, the renewal of a list of lists and the checks a loop asks of a count
 or a bound; `switches` builds the `switch`, checks its cover and its case kinds and reads a case's condition; `class_test_copies` builds the `then` of an `if`
 on an `or` of class tests of one path once per class, each copy narrowed to its class; `crashes`
 builds the `crash`, the guard's failure, and the site and identity a crash is recorded under; `reports` writes the
 program that prints a crash's report and the parts of the failed condition it shows. A caller outside names the entry:
 `statements.function_body_of`.
+
+### An else-if chain is built in a loop
+
+An `else if` is an else branch holding one `if`, so built by nested calls each link would deepen the stack by
+`build`, `build_if`, `other_branch_of`, `block_of` and `build_all` (#612). `ifs.build_if` builds the chain in a loop
+instead: `statements.built_up_to_its_else_if` builds an `if` up to its else branch and, when that branch is an
+`else if`, does what those calls do before they build the inner `if` (enters the other branch, opens the block and
+its statements, notes the statement), keeps what they would hold as an `ElseIfLink` and answers the inner `if`.
+Once an `if` with no `else if` is built whole, the links are closed from the last, doing what the calls do after,
+so every state change happens in the order of the nested calls. Each turn takes the next `if` written in the chain,
+so the loop ends with the chain and needs no cap.
 
 The values builder (`high_intermediary_representation/building/values.spite`) builds the value of every expression.
 Its concerns take the `Context` and the `Values` and do not hold their parent, as `declared_walks.spite` does, so

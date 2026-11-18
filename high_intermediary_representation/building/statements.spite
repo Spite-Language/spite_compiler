@@ -6,17 +6,26 @@ func Statements(starting_state: StatementsState) {
 
 func block_of(written: AbstractSyntaxTree.Shapes.Statements.Block?): HighIntermediaryRepresentation.Statements.Block {
     crash written
-    var outer = state.built
+    var opened = open_a_block(written.line)
+    build_all(written.statements)
+    return closed_block(opened)
+}
+
+func open_a_block(line: Integer): OpenedBlock {
+    var opened = OpenedBlock(state.built, line)
     state.built = List<SpiteCompiler.Statement>()
     state.context.scope.hold_the_narrowings()
     state.context.scope.enter()
-    var log_start = state.context.logged_calls.count()
-    build_all(written.statements)
+    opened.log_start = state.context.logged_calls.count()
+    return opened
+}
+
+func closed_block(opened: OpenedBlock): HighIntermediaryRepresentation.Statements.Block {
     state.context.scope.leave()
-    var made = HighIntermediaryRepresentation.Statements.Block(written.line)
+    var made = HighIntermediaryRepresentation.Statements.Block(opened.line)
     made.statements = state.built
-    state.built = outer
-    finish_a_stretch(log_start, made)
+    state.built = opened.outer
+    finish_a_stretch(opened.log_start, made)
     return made
 }
 
@@ -43,20 +52,8 @@ func function_body_of(
 }
 
 func build_all(written: List<SpiteCompiler.WrittenStatement>) {
-    state.rest_is_folded_away = false
-    var outer_statements = state.context.block_statements
-    var outer_index = state.context.block_index
-    var pushed = not state.at_function_root
-    state.at_function_root = false
-    if pushed {
-        var enclosing = EnclosingBlock(outer_statements, outer_index)
-        state.enclosing_blocks.append(enclosing)
-    }
-    state.context.block_statements = written
-    note_a_block("enter", written)
-    var library = Mapping.LibraryFile()
-    var path = state.context.path()
-    var is_the_program = not library.holds(path)
+    var opened = open_the_statements(written)
+    var is_the_program = is_the_programs_code()
     var index = 0
     while index < written.count() and not state.rest_is_folded_away {
         var statement = written[index]
@@ -68,12 +65,38 @@ func build_all(written: List<SpiteCompiler.WrittenStatement>) {
         state.context.block_statements = written
         index = index + 1
     }
-    note_a_block("leave", written)
+    close_the_statements(opened)
+}
+
+func open_the_statements(written: List<SpiteCompiler.WrittenStatement>): OpenedStatements {
+    state.rest_is_folded_away = false
+    var outer_statements = state.context.block_statements
+    var outer_index = state.context.block_index
+    var pushed = not state.at_function_root
+    var opened = OpenedStatements(written, outer_statements, outer_index, pushed)
+    state.at_function_root = false
     if pushed {
+        var enclosing = EnclosingBlock(outer_statements, outer_index)
+        state.enclosing_blocks.append(enclosing)
+    }
+    state.context.block_statements = written
+    note_a_block("enter", written)
+    return opened
+}
+
+func is_the_programs_code(): Boolean {
+    var library = Mapping.LibraryFile()
+    var path = state.context.path()
+    return not library.holds(path)
+}
+
+func close_the_statements(opened: OpenedStatements) {
+    note_a_block("leave", opened.written)
+    if opened.pushed {
         crash state.enclosing_blocks.remove_last()
     }
-    state.context.block_statements = outer_statements
-    state.context.block_index = outer_index
+    state.context.block_statements = opened.outer_statements
+    state.context.block_index = opened.outer_index
     state.rest_is_folded_away = false
 }
 
@@ -295,18 +318,18 @@ func add_pending(statement: SpiteCompiler.Statement) {
 }
 
 func build(statement: SpiteCompiler.WrittenStatement) {
-    state.context.rechecked_path = ""
+    start_a_statement(statement)
     var assignments = Assignments(state)
     var loops = Loops(state)
     var switches = Switches(state)
     var crashes = Crashes(state)
-    state.context.line = statement.line
+    var ifs = Ifs(state)
     switch statement {
         AbstractSyntaxTree.Shapes.Statements.VariableStatement: build_variable(statement)
         AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: assignments.build_assignment(statement)
         AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: build_evaluation(statement)
         AbstractSyntaxTree.Shapes.Statements.ReturnStatement: build_return(statement)
-        AbstractSyntaxTree.Shapes.Statements.IfStatement: build_if(statement)
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: ifs.build_if(statement)
         AbstractSyntaxTree.Shapes.Statements.WhileStatement: loops.build_while(statement)
         AbstractSyntaxTree.Shapes.Statements.SwitchStatement: switches.build_switch(statement)
         AbstractSyntaxTree.Shapes.Statements.FallbackStatement: build_fallback(statement)
@@ -314,6 +337,11 @@ func build(statement: SpiteCompiler.WrittenStatement) {
         AbstractSyntaxTree.Shapes.Statements.Block: build_inner_block(statement)
         AbstractSyntaxTree.Shapes.Statements.LoadStatement: return
     }
+}
+
+func start_a_statement(statement: SpiteCompiler.WrittenStatement) {
+    state.context.rechecked_path = ""
+    state.context.line = statement.line
 }
 
 func build_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
@@ -1191,8 +1219,13 @@ func build_return(statement: AbstractSyntaxTree.Shapes.Statements.ReturnStatemen
     add(made)
 }
 
-func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+# ../../ARCHITECTURE.md#an-else-if-chain-is-built-in-a-loop
+func built_up_to_its_else_if(
+    statement: AbstractSyntaxTree.Shapes.Statements.IfStatement,
+    links: List<ElseIfLink>,
+): AbstractSyntaxTree.Shapes.Statements.IfStatement? {
     var operators = Operators(state.values.context, state.values)
+    var ifs = Ifs(state)
     var written = statement.condition
     crash statement.condition
     var printer = Printers.Spite.ExpressionPrinter(statement.condition)
@@ -1208,8 +1241,8 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
     note_a_decided_condition(condition, "if", written, build_reads_before)
     flush_the_pending()
     if condition.class == HighIntermediaryRepresentation.Values.WholeNumber {
-        build_a_decided_if(statement, condition.number != 0)
-        return
+        ifs.build_a_decided_if(statement, condition.number != 0)
+        return null
     }
     var condition_start = state.context.logged_calls.count()
     log_a_value(condition, statement.line)
@@ -1226,9 +1259,16 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
     var then_start = state.context.logged_calls.count()
     var copies = ClassTestCopies(state)
     var then_branch = copies.then_branch_of(statement, paths, types, check)
+    var inner = ifs.else_if_of(statement)
+    if inner {
+        var link = ifs.opened_else_if(statement, condition, written_condition, then_branch, then_start)
+        links.append(link)
+        start_a_statement(inner)
+        return inner
+    }
     var else_branch: HighIntermediaryRepresentation.Statements.Block? = null
     if statement.else_branch {
-        else_branch = other_branch_of(statement.else_branch, then_start, then_branch)
+        else_branch = ifs.other_branch_of(statement.else_branch, then_start, then_branch)
     }
     var made = HighIntermediaryRepresentation.Statements.If(
         condition,
@@ -1252,22 +1292,7 @@ func build_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
         var windows = Windows(state.context, state.values)
         windows.note_a_leaving_guard(statement.condition)
     }
-}
-
-# ../../PROOFS.md#assigning-undoes-a-proof
-func other_branch_of(
-    written: AbstractSyntaxTree.Shapes.Statements.Block?,
-    then_start: Integer,
-    then_branch: HighIntermediaryRepresentation.Statements.Block,
-): HighIntermediaryRepresentation.Statements.Block {
-    state.context.scope.start_the_other_branch()
-    state.context.enter_the_other_branch(then_start)
-    var made = block_of(written)
-    state.context.leave_the_other_branch()
-    var then_leaves = state.endings.always_leaves(then_branch)
-    var else_leaves = state.endings.always_leaves(made)
-    state.context.scope.join_the_branches(then_leaves, else_leaves)
-    return made
+    return null
 }
 
 # ../../PROOFS.md#a-value-proven-present-is-a-t
@@ -1529,20 +1554,6 @@ func read_a_negated_count(
     crash binary.right
     var negated = AbstractSyntaxTree.Shapes.Expressions.BinaryExpression(counted, opposite, binary.right)
     read_a_count_fact(negated, counted)
-}
-
-func build_a_decided_if(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement, holds: Boolean) {
-    state.context.note_a_folded_branch()
-    if holds {
-        var taken = block_of(statement.then_branch)
-        add(taken)
-        state.rest_is_folded_away = state.endings.always_leaves(taken)
-        return
-    }
-    fallback statement.else_branch
-    var other = block_of(statement.else_branch)
-    add(other)
-    state.rest_is_folded_away = state.endings.always_leaves(other)
 }
 
 func build_inner_block(statement: AbstractSyntaxTree.Shapes.Statements.Block) {
