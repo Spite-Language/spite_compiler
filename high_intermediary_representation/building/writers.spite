@@ -84,6 +84,9 @@ func fill_the_bodies() {
         state.context.written_value_classes = reaching.count()
         state.context.attribute_writers_filled = 0
     }
+    var owner = state.context.current_class
+    var outer = state.context.current_function
+    var at = state.context.line
     while state.context.attribute_writers_filled < state.context.attribute_writers.count() {
         var index = state.context.attribute_writers_filled
         var function = state.context.attribute_writers[index]
@@ -95,9 +98,15 @@ func fill_the_bodies() {
         var parameter = function.function.parameters[0]
         crash parameter
         crash function.function.answer
+        state.context.current_class = model
+        state.context.current_function = function.function
+        state.context.line = 0
         function.body = writing_body(model, attribute, parameter.parameter_type, function.function.answer)
         state.context.attribute_writers_filled = index + 1
     }
+    state.context.current_class = owner
+    state.context.current_function = outer
+    state.context.line = at
 }
 
 func writing_body(
@@ -126,7 +135,7 @@ func writing_body(
         write_a_fit(body, model, attribute, given_type)
         write_the_casts(body, model, attribute, given_type, answer_type)
     }
-    if not may_reach_unwritten(written) {
+    if not may_reach_unwritten(written, given_type) {
         var nothing_left = HighIntermediaryRepresentation.Values.NullConstant(answer_type)
         var all_written = HighIntermediaryRepresentation.Statements.Return(nothing_left, 0)
         body.statements.append(all_written)
@@ -173,9 +182,11 @@ func write_a_null(
     var absent = HighIntermediaryRepresentation.Values.Negation(present)
     var writing_null = HighIntermediaryRepresentation.Statements.Block(0)
     var written = attribute.attribute_type
-    if written.is_nullable {
-        var nothing = HighIntermediaryRepresentation.Values.NullConstant(written)
-        assign(writing_null, model, attribute, nothing)
+    var maybe = written.nullable()
+    var nothing = HighIntermediaryRepresentation.Values.NullConstant(maybe)
+    var cast = assigned_cast(writing_null, nothing, written)
+    if cast {
+        assign(writing_null, model, attribute, cast)
         var no_answer = HighIntermediaryRepresentation.Values.NullConstant(answer_type)
         var answered = HighIntermediaryRepresentation.Statements.Return(no_answer, 0)
         writing_null.statements.append(answered)
@@ -312,12 +323,8 @@ func write_a_cast(
     }
     var again = held(given_type)
     var unboxed = HighIntermediaryRepresentation.Values.Conversion(source, conversion, again, "")
-    var written = attribute.attribute_type
-    var wanted = written.present()
-    var cast = wrappers.fitted_into(casting, fitting, unboxed, wanted)
-    if written.is_nullable {
-        cast = HighIntermediaryRepresentation.Values.Conversion(written, 'nullable', cast, "")
-    }
+    var cast = assigned_cast(casting, unboxed, attribute.attribute_type)
+    fallback cast
     assign(casting, model, attribute, cast)
     var own_type = model.type_of_an_instance()
     var own = HighIntermediaryRepresentation.Values.ThisRead(own_type)
@@ -327,6 +334,52 @@ func write_a_cast(
     casting.statements.append(answered)
     var branch = HighIntermediaryRepresentation.Statements.If(is_it, casting, null, 0, "")
     running.statements.append(branch)
+}
+
+# ../../../spite_documentation/reflection.md#known-only-at-run-time
+func assigned_cast(
+    running: HighIntermediaryRepresentation.Statements.Block,
+    value: SpiteCompiler.Value,
+    written: Model.Type,
+): SpiteCompiler.Value? {
+    var fitting = Fitting(state.values.context, state.values)
+    fitting.is_on_its_own_line = true
+    var presence_count = state.context.presence_sites.count()
+    var recorded_count = state.context.recorded_sites.count()
+    var cast = wrappers.fitted_into(running, fitting, value, written)
+    var asks_a_proof = state.context.presence_sites.count() > presence_count
+    state.context.presence_sites.truncate(presence_count)
+    state.context.recorded_sites.truncate(recorded_count)
+    fallback not asks_a_proof
+    var narrowing = narrowing_answer(cast)
+    fallback not narrowing.is_a_mistake()
+    return cast
+}
+
+# ../../../spite_documentation/values_and_types.md#a-number-that-may-not-fit-is-narrowed
+func narrowing_answer(cast: SpiteCompiler.Value): Validators.Answer {
+    var answer = Validators.Answer()
+    var body = HighIntermediaryRepresentation.Statements.Block(0)
+    var judged = HighIntermediaryRepresentation.HighFunction(state.context.current_function, body)
+    add_the_narrowings(answer, judged, cast)
+    return answer
+}
+
+func add_the_narrowings(
+    answer: Validators.Answer,
+    judged: HighIntermediaryRepresentation.HighFunction,
+    value: SpiteCompiler.Value?,
+) {
+    fallback value
+    fallback value.class == HighIntermediaryRepresentation.Values.Conversion
+    var kind = value.kind
+    if kind == 'narrow' or kind == 'to_whole' or kind == 'narrow_decimal' {
+        var rule = Validators.HighIntermediaryRepresentation.NarrowingFit.Validator()
+        var site = HighIntermediaryRepresentation.NarrowingSite(judged, state.context.line, value)
+        var narrowed = rule.check(state.context, site)
+        answer.take(narrowed)
+    }
+    add_the_narrowings(answer, judged, value.converted)
 }
 
 # ../../../spite_documentation/reflection.md#known-only-at-run-time
@@ -340,7 +393,7 @@ func is_written_from_the_prompt(): Boolean {
 }
 
 # ../../../spite_documentation/reflection.md#known-only-at-run-time
-func may_reach_unwritten(written: Model.Type): Boolean {
+func may_reach_unwritten(written: Model.Type, given_type: Model.Type): Boolean {
     if is_written_from_the_prompt() {
         return true
     }
@@ -348,7 +401,8 @@ func may_reach_unwritten(written: Model.Type): Boolean {
     var index = 0
     while index < reaching.count() {
         var reached = reaching[index]
-        if not takes(written, reached) {
+        var again = held(given_type)
+        if not takes(written, reached, again) {
             return true
         }
         index = index + 1
@@ -434,9 +488,34 @@ func add_a_class(reached: Model.Type, reaching: List<Model.Type>) {
 }
 
 # ../../../spite_documentation/reflection.md#known-only-at-run-time
-func takes(written: Model.Type, reached: Model.Type): Boolean {
+func meets(written: Model.Type, reached: Model.Type): Boolean {
     var wanted = written.present()
     return fits_as_it_is(wanted, reached) or casts(wanted, reached)
+}
+
+# ../../../spite_documentation/reflection.md#known-only-at-run-time
+func takes(written: Model.Type, reached: Model.Type, holder: SpiteCompiler.Value): Boolean {
+    var wanted = written.present()
+    if fits_as_it_is(wanted, reached) {
+        return true
+    }
+    fallback casts(wanted, reached)
+    var unused = HighIntermediaryRepresentation.Statements.Block(0)
+    var stand_in = held_as(holder, reached, reached)
+    var cast = assigned_cast(unused, stand_in, written)
+    if cast {
+        return true
+    }
+    return false
+}
+
+# ../../../spite_documentation/reflection.md#known-only-at-run-time
+func held_as(holder: SpiteCompiler.Value, held_type: Model.Type, reached: Model.Type): SpiteCompiler.Value {
+    var kind: HighIntermediaryRepresentation.Values.Conversion.Kind = 'present'
+    if reached.kind == 'scalar' or reached.kind == 'enumeration' {
+        kind = 'unbox'
+    }
+    return HighIntermediaryRepresentation.Values.Conversion(held_type, kind, holder, "")
 }
 
 # ../../../spite_documentation/reflection.md#known-only-at-run-time
@@ -621,6 +700,11 @@ func judge_a_written_value(site: ValueWriteSite) {
         add_the_classes_of(site.given.value_type, reaching)
     }
     var targets = targets_of(site, reaching)
+    if targets.count() == 1 {
+        var only = targets[0]
+        judge_as_the_assignment(site, only, reaching)
+        return
+    }
     var null_answer = rule.check_a_null(state.context, site.given, targets)
     state.context.tell(null_answer)
     var index = 0
@@ -633,13 +717,55 @@ func judge_a_written_value(site: ValueWriteSite) {
 }
 
 # ../../../spite_documentation/reflection.md#known-only-at-run-time
+func judge_as_the_assignment(site: ValueWriteSite, target: WriteTarget, reaching: List<Model.Type>) {
+    var rule = Validators.HighIntermediaryRepresentation.ValueWrittenAtRunTime.Validator()
+    var targets = List<WriteTarget>()
+    targets.append(target)
+    var written = target.held
+    if site.gives_null() {
+        var into_a_plain_type = Validators.HighIntermediaryRepresentation.NullIntoAPlainType.Validator()
+        var null_answer = into_a_plain_type.check(state.context, written)
+        state.context.tell(null_answer)
+    }
+    var index = 0
+    while index < reaching.count() {
+        var reached = reaching[index]
+        if meets(written, reached) {
+            judge_a_reaching_class(site, written, reached)
+        } else {
+            var answer = rule.check(state.context, reached, targets)
+            state.context.tell(answer)
+        }
+        index = index + 1
+    }
+}
+
+# ../../../spite_documentation/reflection.md#known-only-at-run-time
+func judge_a_reaching_class(site: ValueWriteSite, written: Model.Type, reached: Model.Type) {
+    var wanted = written.present()
+    fallback wanted.kind != 'function'
+    var held_type = reached
+    if site.given.value_type.is_nullable {
+        held_type = reached.nullable()
+    }
+    fallback held_type.is_nullable or not fits_as_it_is(wanted, reached)
+    var fitting = Fitting(state.values.context, state.values)
+    fitting.is_on_its_own_line = true
+    var unused = HighIntermediaryRepresentation.Statements.Block(0)
+    var held_value = held_as(site.given, held_type, reached)
+    var cast = wrappers.fitted_into(unused, fitting, held_value, written)
+    var narrowing = narrowing_answer(cast)
+    state.context.tell(narrowing)
+}
+
+# ../../../spite_documentation/reflection.md#known-only-at-run-time
 func targets_of(site: ValueWriteSite, reaching: List<Model.Type>): List<WriteTarget> {
     var targets = List<WriteTarget>()
     var index = 0
     while index < state.context.written_attributes.count() {
         var attribute = state.context.written_attributes[index]
         if site.may_write(attribute) {
-            var target = target_of(attribute, reaching)
+            var target = target_of(attribute, reaching, site.given)
             targets.append(target)
         }
         index = index + 1
@@ -647,7 +773,7 @@ func targets_of(site: ValueWriteSite, reaching: List<Model.Type>): List<WriteTar
     return targets
 }
 
-func target_of(attribute: Model.AttributeModel, reaching: List<Model.Type>): WriteTarget {
+func target_of(attribute: Model.AttributeModel, reaching: List<Model.Type>, holder: SpiteCompiler.Value): WriteTarget {
     var owner_shown = attribute.owner
     var owner = state.context.program.class_named(attribute.owner)
     if owner {
@@ -658,7 +784,7 @@ func target_of(attribute: Model.AttributeModel, reaching: List<Model.Type>): Wri
     var index = 0
     while index < reaching.count() {
         var reached = reaching[index]
-        if takes(written, reached) {
+        if takes(written, reached, holder) {
             target.takes.append(reached)
         }
         index = index + 1
