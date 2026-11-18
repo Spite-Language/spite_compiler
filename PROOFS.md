@@ -192,7 +192,6 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   A local that may hold a list held elsewhere (a parameter, a local given anything but a list made there or answered new by the library (a `copy()`, a `split`, not an item), and a made list once it is stored, passed or given to another local: `HandedLists`, `Context.shared_lists`) is watched by every read of a list of its type, judged against every such local of the whole function, and a local list nothing else can hold is watched only through its own name, so `var alias = items`, `alias.clear()` and `given.clear()` on a parameter that is the attribute are refused before `items[0]`. A call or a write that may assign the attribute holding the list, or an attribute on the way to it, counts as a shrink (`shelf.renew()` assigning `items`; `Writes.renews_a_list`). A count kept in a `var` proves from the line it was counted (`Context.counted_starts`, `Statements.stamp_the_kept_counts`), so a shrink between the count and the read, or anywhere in a loop around the read, is refused.
   A call counts from where it runs in its statement: every call, a getter's included, is logged as it is built (`Context.log_a_call_as_it_is_built`, from `Values.value_of`), so `cleared(alias) + rack.item.number`, a comparison, a text hole, a list item, an index after the list, or an argument of a call on an earlier call's answer is refused like a read on the next line, while a read before the call in the same statement keeps its proof. A getter on a later side of a condition counts like a call (`WrittenGetters`).
   A call or a write in a `then` does not reach a read in its `else` (`NarrowedRead.is_on_another_branch`), unless the read was proven before a loop around both.
-- **Missing**: a call inside a condition is ordered after the block it guards.
 - **Falls back**: refused, "'keeper.target' was proven before line 12, where 'forget(...)' may assign 'target'
   again, so this read would use what the call left there, unproven: prove 'keeper.target' again after that line"
   (a list: "'items[0]' was proven before line 9, where 'trim(...)' may shrink what it reads, so this read may fall outside it: prove 'items[0]' again after that line");
@@ -788,7 +787,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Buys**: generic code compiles only the branch its class takes.
 - **Missing**: `function_waits` and `function_writes_parameter` are answered after every function is built, so both
   branches are built and checked (D673), and the high pass `answered_facts` then keeps only the taken one; a codegen number compared with a literal folds only when one side is a
-  call; a function taking a `type` has no copy per class. `x and $flag` and `x or $flag` fold whatever `x` is (in
+  call. `x and $flag` and `x or $flag` fold whatever `x` is (in
   plain code a condition that folds is refused, D1746): one
   that only reads names, attributes and tests is left out (D1143), and one that calls something is run on its own,
   once, before the statement, and its answer dropped (D1513).
@@ -1047,23 +1046,6 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: `builder.spite` (`build`), `building/context.spite` (`need`).
 - **Checked by**: tests/folded_helpers, tests/folded_crash_uncalled, tests/unreached_function_reads, tests/hello.
 
-### A reload compiles only the changed classes
-
-- **Status**: missing (no reload: the compiler refuses `--hot-reload`, so no build can swap stale code in).
-- **Rule**: a `--hot-reload` build records every fact one class took from another; a reload replays them, compiles
-  the changed classes, and falls back to a whole compile, saying why, when a fact differs
-  ([repl.md](../spite_documentation/repl.md)).
-- **Lives in**: none (`HOT_RELOAD.md` is the design).
-- **Checked by**: none.
-
-### A reload reaches every object whose attributes it changes
-
-- **Status**: missing (no reload: the compiler refuses `--hot-reload`, so no object can be left on an old layout).
-- **Rule**: every live object of a program class is reachable by the reload, which moves it to the new layout, and
-  a function that cannot be re-pointed refuses the reload by name ([repl.md](../spite_documentation/repl.md)).
-- **Lives in**: none.
-- **Checked by**: none.
-
 ### What a class object holds is known while compiling
 
 - **Status**: built (spite_compiler#54), for the attributes a class object's fill gives a constant.
@@ -1108,15 +1090,6 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: tests/unread_reflection_field_keeps_its_effects.
 
 ## Memory
-
-### A buffer freed in its block lives in the frame
-
-- **Status**: missing (the library has no `Memory.Heap`).
-- **Rule**: a buffer allocated and freed in one block, used only through address primitives in between, lives in
-  the frame ([memory.md](../spite_documentation/memory.md)).
-- **Falls back**: a `Buffer` is a heap object.
-- **Lives in**: none.
-- **Checked by**: none.
 
 ### Objects that never leave their function live in the frame
 

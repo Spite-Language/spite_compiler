@@ -1037,7 +1037,7 @@ write is held once.
 
 A program whose loops run in bands has other threads only while a band runs, and the code around the bands runs
 alone: the bands are started and joined inside one function, and once the join answers, every count a band took
-or let go is settled. A count in a function no band, no `Parallel` and no overlapped call can reach is therefore
+or let go is settled. A count in a function no band and no overlapped call can reach is therefore
 plain arithmetic, whatever its class, even a class the bands count too, a union, a shape or a function value's
 captured object.
 
@@ -2777,7 +2777,8 @@ Two passes repeat a whole step exactly twice, as a pipeline, not as a search for
 `loop_invariants` moves what each loop does not change twice over all the loops (the second time moves out of an
 outer loop what the first moved out of an inner one), and `live_values` finds the lives and removes unread values
 twice. A third time would move nothing in the compiler or the spec programs, and would remove more
-values only in two spec programs' constructors (`singleton_guard`, `singleton_lock_calls`).
+values only in two spec programs' constructors (`singleton_guard`, `singleton_lock_calls`). Running both until a round
+changes nothing is decided, not built yet (#583).
 
 ## Every loop before lowering settles with no round limit
 

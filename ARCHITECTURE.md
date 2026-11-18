@@ -586,10 +586,10 @@ it from a fresh clone:
 
 Day to day nobody runs the chain: in this folder, `.spite/spite.exe --build
 --executable-path=.spite/spite_next.exe` builds the next compiler from the current source, and the
-next one is kept when it rebuilds itself to the same bytes. A change the current compiler cannot build (a rule
-it would apply to its own source, or a library it would not recognise) is built through a compiler that accepts
-both forms, and that change publishes a new seed: its fixed point as a new `seed-<date>` release, named in
-`SEED_TAG` in the same commit.
+next one is kept when it rebuilds itself to the same bytes. The latest compiler builds the next one: a fresh clone
+building from an old seed is not a goal, so no push adds a stepping stone to `STONES` and nothing proves the chain
+(D1887). A change the current compiler cannot build is built through a compiler that accepts both forms. No agent
+publishes a seed or any other release; only Mortaro does (D1761).
 
 ## A failure stops its own check
 
