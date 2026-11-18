@@ -1,3 +1,4 @@
+var _items_are_last = -2
 var no_program = Model.ProgramModel()
 var high = HighIntermediaryRepresentation.HighProgram(no_program)
 var layout = HighIntermediaryRepresentation.Layout(no_program)
@@ -6,6 +7,8 @@ var no_state = FunctionLoweringState()
 var lowering = FunctionLowering(no_state)
 var built = List<String>()
 var destroyed = List<String>()
+var last_link = -1
+var last_link_type = Model.Type('object', "")
 var singleton_slots: Dictionary<String, Integer>
 
 func Freeing(
@@ -252,6 +255,7 @@ func lower_a_destroy(slot_key: String) {
     free_the_parts(model, object)
     var freed = LowIntermediaryRepresentation.Instructions.Free(object)
     lowering.emit(freed)
+    release_the_last_link()
     var nothing = LowIntermediaryRepresentation.Instructions.Return(-1, -1, false)
     lowering.emit(nothing)
     program.lowered_functions.append(lowering.state.function)
@@ -389,6 +393,7 @@ func lower_a_free(key: String) {
         return
     }
     lowering.start("_free_{key}")
+    last_link = -1
     var object = lowering.new_register()
     lowering.state.function.parameter_count = 1
     var model = high.model.class_named(key)
@@ -437,6 +442,7 @@ func lower_a_free(key: String) {
         var freed = LowIntermediaryRepresentation.Instructions.Free(object)
         lowering.emit(freed)
     }
+    release_the_last_link()
     var nothing = LowIntermediaryRepresentation.Instructions.Return(-1, -1, false)
     lowering.emit(nothing)
     program.lowered_functions.append(lowering.state.function)
@@ -653,6 +659,7 @@ func text_attribute_offset(name: String): Integer {
     return layout.offset_of(attribute)
 }
 
+# ../../OPTIMIZATIONS.md#freeing-a-chain-takes-no-stack-per-link
 func free_the_parts(model: Model.ClassModel, object: Integer) {
     var dropping = model.function_named("drop")
     if dropping {
@@ -663,20 +670,82 @@ func free_the_parts(model: Model.ClassModel, object: Integer) {
         var freed = LowIntermediaryRepresentation.Instructions.Store(object, 8, zero, 'bits_64', "", false)
         lowering.emit(freed)
     }
+    var last = last_link_of(model)
     var element = model.bound_types["$element_type"]
-    var reads_items = model.function_named("_read_value")
-    if element and reads_items {
-        release_the_items(model, element, object)
+    if element and releases_its_items(model) {
+        release_the_items(model, element, object, last == _items_are_last)
     }
     var index = 0
     while index < model.declared_attributes.count() {
         var attribute = model.declared_attributes[index]
-        release_an_attribute(attribute, object)
+        if index == last {
+            hold_the_last_link(attribute, object)
+        } else {
+            release_an_attribute(attribute, object)
+        }
         index = index + 1
     }
     if model.key == "Buffer" {
         free_the_storage(object)
     }
+}
+
+# ../../OPTIMIZATIONS.md#freeing-a-chain-takes-no-stack-per-link
+func last_link_of(model: Model.ClassModel): Integer {
+    var index = model.declared_attributes.count() - 1
+    while index >= 0 {
+        var attribute = model.declared_attributes[index]
+        crash attribute
+        if releases_an_attribute(attribute) and not is_never_seen_freed(attribute.attribute_type) {
+            return index
+        }
+        index = index - 1
+    }
+    var element = model.bound_types["$element_type"]
+    if element and releases_its_items(model) and not is_never_seen_freed(element) {
+        return _items_are_last
+    }
+    return -1
+}
+
+func is_never_seen_freed(of_type: Model.Type): Boolean {
+    fallback of_type.kind == 'object' and not of_type.is_a_walked_name
+    fallback of_type.name == "String" or of_type.name == "Buffer"
+    var model = high.model.class_named(of_type.name)
+    fallback model
+    var dropping = model.function_named("drop")
+    return not dropping and not layout.is_back_held(of_type.name)
+}
+
+func releases_an_attribute(attribute: Model.AttributeModel): Boolean {
+    fallback lowering.is_a_pointer(attribute.attribute_type) and not layout.is_embedded(attribute)
+    fallback not layout.is_lent(attribute) and not layout.is_back(attribute)
+    return layout.has_a_slot(attribute)
+}
+
+func releases_its_items(model: Model.ClassModel): Boolean {
+    var element = model.bound_types["$element_type"]
+    var reads_items = model.function_named("_read_value")
+    fallback element and reads_items
+    fallback lowering.is_a_pointer(element)
+    fallback layout.inline_stride_of(model.key) == 0
+    var buffer_attribute = model.attribute_named("_buffer")
+    var length_attribute = model.attribute_named("_length")
+    return buffer_attribute and length_attribute
+}
+
+func hold_the_last_link(attribute: Model.AttributeModel, object: Integer) {
+    var offset = layout.offset_of(attribute)
+    last_link = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(last_link, object, offset, 'bits_64', true, "", false)
+    lowering.emit(loaded)
+    last_link_type = attribute.attribute_type
+}
+
+func release_the_last_link() {
+    fallback last_link >= 0
+    release_known(last_link, last_link_type)
+    last_link = -1
 }
 
 func call_the_drop(dropping: Model.FunctionModel, object: Integer) {
@@ -800,13 +869,11 @@ func let_go_back(object: Integer, slot: Integer) {
     lowering.emit(called)
 }
 
-func release_the_items(model: Model.ClassModel, element: Model.Type, object: Integer) {
-    fallback lowering.is_a_pointer(element)
-    fallback layout.inline_stride_of(model.key) == 0
+func release_the_items(model: Model.ClassModel, element: Model.Type, object: Integer, keeps_the_last: Boolean) {
     var buffer_attribute = model.attribute_named("_buffer")
     var length_attribute = model.attribute_named("_length")
-    fallback buffer_attribute
-    fallback length_attribute
+    crash buffer_attribute
+    crash length_attribute
     var buffer_offset = layout.offset_of(buffer_attribute)
     var length_offset = layout.offset_of(length_attribute)
     var buffer = lowering.new_register()
@@ -832,6 +899,21 @@ func release_the_items(model: Model.ClassModel, element: Model.Type, object: Int
         false,
     )
     lowering.emit(loaded_length)
+    var released_count = length
+    if keeps_the_last {
+        var one = lowering.constant(1)
+        released_count = lowering.new_register()
+        var all_but_one = LowIntermediaryRepresentation.Instructions.Arithmetic(
+            released_count,
+            'subtract',
+            length,
+            one,
+            'bits_64',
+            true,
+            false,
+        )
+        lowering.emit(all_but_one)
+    }
     var position = lowering.constant(0)
     var header = lowering.new_block()
     var body = lowering.new_block()
@@ -839,11 +921,32 @@ func release_the_items(model: Model.ClassModel, element: Model.Type, object: Int
     lowering.jump_to(header)
     lowering.switch_to(header)
     var more = lowering.new_register()
-    var compared = LowIntermediaryRepresentation.Instructions.Compare(more, 'less', position, length, true)
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(more, 'less', position, released_count, true)
     lowering.emit(compared)
     var test = LowIntermediaryRepresentation.Instructions.Branch(more, body, after)
     lowering.emit(test)
     lowering.switch_to(body)
+    var item = load_an_item(storage, position)
+    release_known(item, element)
+    var step = lowering.constant(1)
+    var advanced = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        position,
+        'add',
+        position,
+        step,
+        'bits_64',
+        true,
+        false,
+    )
+    lowering.emit(advanced)
+    lowering.jump_to(header)
+    lowering.switch_to(after)
+    if keeps_the_last {
+        hold_the_last_item(storage, position, length, element)
+    }
+}
+
+func load_an_item(storage: Integer, position: Integer): Integer {
     var eight = lowering.constant(8)
     var scaled = lowering.new_register()
     var multiplied = LowIntermediaryRepresentation.Instructions.Arithmetic(
@@ -860,19 +963,24 @@ func release_the_items(model: Model.ClassModel, element: Model.Type, object: Int
     var item = lowering.new_register()
     var loaded_item = LowIntermediaryRepresentation.Instructions.Load(item, address, 0, 'bits_64', true, "", false)
     lowering.emit(loaded_item)
-    release_known(item, element)
-    var one = lowering.constant(1)
-    var advanced = LowIntermediaryRepresentation.Instructions.Arithmetic(
-        position,
-        'add',
-        position,
-        one,
-        'bits_64',
-        true,
-        false,
-    )
-    lowering.emit(advanced)
-    lowering.jump_to(header)
+    return item
+}
+
+func hold_the_last_item(storage: Integer, position: Integer, length: Integer, element: Model.Type) {
+    last_link = lowering.constant(0)
+    last_link_type = element
+    var any = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(any, 'less', position, length, true)
+    lowering.emit(compared)
+    var holding = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(any, holding, after)
+    lowering.emit(test)
+    lowering.switch_to(holding)
+    var item = load_an_item(storage, position)
+    var copied = LowIntermediaryRepresentation.Instructions.Copy(last_link, item)
+    lowering.emit(copied)
+    lowering.jump_to(after)
     lowering.switch_to(after)
 }
 

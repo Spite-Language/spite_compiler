@@ -937,6 +937,42 @@ written last, after every other pass (`low_optimization_passes/released_in_place
 
 What a user can observe: the time, and a larger executable where releases are many.
 
+## Freeing a chain takes no stack per link
+
+The free function the compiler writes for a class runs the object's `drop()`, lets go of what the object holds and
+gives its memory back. One release goes last, after the memory is given back: the last owned attribute, or for a
+list its last item. A text or a buffer runs no `drop()` and no back reference reads one, so one declared after the
+last link is let go before it. When that last release brings the count to zero, the free function's last step is
+the call that frees the next object, and the generator writes that call as a jump, its own frame already gone
+(`generators/windows_x64/instructions/call.spite`). Freeing a chain of a million links, a list whose last item holds
+the next list, or a union value that wraps the next one takes the stack of one free, where it took one frame per link
+and overflowed the stack.
+
+**When it applies:** to the free functions only (`_release`, `_free_by_class` and each `_free_` function), when the
+call frees the last link and nothing but the return follows it. Every other call keeps its frame, so a crash report
+names its callers as before.
+
+**When it does not apply:** a link that is not the last owned one, such as the first of two children, is freed by a
+call, one frame per level, as before. A tree as deep as its first child still takes stack per level.
+
+**What a program can observe:** nothing but the stack it needs. Every `drop()` runs in the same order as before (the
+object's own first, then what it holds in order, each with everything it alone holds), and every object that has a
+`drop()` or can be read through a back reference is let go in the same order. What moves is never seen: a text or a
+buffer let go before the last link, and the memory of the object given back before it, when its count is already zero
+and a back reference to it reads `null`.
+
+```spite
+var next: Link? = null
+var label: String
+
+func Link(given: String) {
+    label = given
+}
+```
+
+A chain of `Link`s, each holding the one made before it, frees link by link in a loop: `next` is the last link, and
+`label`, a text, is let go before it.
+
 ## Counts are atomic only in a program with threads
 
 Taking and letting go of a count is a plain addition and subtraction on the object's count, unless the program can
