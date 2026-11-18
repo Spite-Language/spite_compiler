@@ -1169,6 +1169,37 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: `high_optimization_passes/unread_fills`.
 - **Checked by**: tests/unread_fills_are_left_out, tests/class_object_reads_fold, tests/enum_reflection.
 
+### A fill makes nothing but its objects
+
+- **Status**: built (spite_compiler#620).
+- **Rule**: a fill is written by the compiler's reflection writer, and its statements are a making of a reflection
+  object, a list, a dictionary, a `File` or a `Directory` kept in a local, an `append` or `set_at` into such a local,
+  and the constructor of its own class object. Making those and filling them does nothing but allocate and read the
+  class objects named in them. So a local of a fill that nothing reads but its own `append`s and `set_at`s (the
+  collection of a reflection field that `unread_fields` took out of the constructor) can go with them, and with it
+  every class object only it named.
+- **Buys**: the fill does not make the parts nothing reads, and the fills only they reached are not compiled
+  (`high_optimization_passes/unread_fills/unread_parts.spite`, before the reached fills are found).
+- **Falls back**: a local read anywhere else, inside an `if` included, stays with everything that fills it.
+- **Lives in**: `high_optimization_passes/unread_fills/unread_parts.spite`.
+- **Checked by**: tests/unread_fills_are_left_out, tests/static_class_objects.
+
+### A class object is static data where no drop() at exit can see it
+
+- **Status**: built (spite_compiler#620).
+- **Rule**: a fill only makes objects and stores them into its own class object; it reads what no other fill writes,
+  and no fill reads what another class object holds. So the fills can run in any order, once each, before the entry
+  runs and before any other thread starts, with every class object at an address fixed in the executable, and each
+  read of a class object is that address. The one thing the order changes is the order things are let go at exit, which
+  only a `drop()` run at exit can see: a class object such a `drop()` can reach (`objects_seen_at_exit`, which counts a
+  fill that names one as reaching it too) keeps its fill on first read, and when a `drop()` asks the class of a value,
+  every class object does.
+- **Buys**: no test, claim or wait at a read, no fill nesting inside another, and no allocation of the object itself
+  (`high_optimization_passes/static_class_objects`, `low_intermediary_representation/lowering/static_class_objects.spite`).
+- **Falls back**: builds that keep everything (`CommandLine.Inspection`) fill on first read.
+- **Lives in**: `high_optimization_passes/static_class_objects`.
+- **Checked by**: tests/static_class_objects, tests/class_object_read_in_a_drop_at_exit, tests/threaded_class_objects.
+
 ### A reflection field's write that goes keeps what its value does
 
 - **Status**: built.

@@ -1718,6 +1718,43 @@ reads `attributes`, so `Console`'s fill, and the fills only that one reached, ar
 everything (`--development`, `--repl`, `--hot-reload`) keep every fill. What a user can observe: a smaller
 executable (`tests/unread_fills_are_left_out`).
 
+## A class object is static data
+
+Each class object the program keeps is an object in the executable's data, at an address fixed when the executable
+is written: its class number and a count that never reaches zero. A read of it is that address, with no test that it
+is filled, no claim of it by a thread and no wait for another one. The fills run once each, one after the other,
+before the entry runs; a fill that names another class object stores its address and fills nothing itself, so no
+fill runs inside another and the start-up keeps no list of fills still to run
+([PROOFS.md](PROOFS.md#a-class-object-is-static-data-where-no-drop-at-exit-can-see-it)). A fill no longer makes the
+collections of the reflection fields nothing reads, nor the class objects only those named
+([PROOFS.md](PROOFS.md#a-fill-makes-nothing-but-its-objects)).
+
+```spite
+enum Part {
+    'wing'
+}
+
+var console = Console()
+
+func Parts() {
+    console.print(Part.owner, Part.name)
+}
+```
+
+`Part`'s `Spite.Enum` and `Parts`'s `Spite.Class` are two objects of the data. The enum's fill makes its values and
+stores the address of `Parts`'s object as its owner; `Parts`'s fill no longer makes the dictionary of its attributes
+that nothing reads.
+
+**When it does not apply:** a class object a `drop()` run at exit can reach (it is filled on its first read and let
+go at exit in the order it was made, as before: `tests/class_object_read_in_a_drop_at_exit`), every class object of a
+program with a `drop()` that asks the class of a value, and builds that keep everything (`--development`, `--repl`,
+`--hot-reload`).
+
+**What a program can observe:** one allocation fewer under `--debug-memory` for each class object, and the
+collections a fill makes are made at start-up, so a class object the program reads only on a path that does not run
+counts its collections too. Nothing else: the fills do nothing a program sees, and what they made is let go at exit
+as before (`tests/static_class_objects`).
+
 ## A late answer keeps only its taken branch
 
 `function_waits` and `function_writes_parameter` are answered only once every function is built (D673), so both
