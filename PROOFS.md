@@ -645,7 +645,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   fits, so the failure moves from run time to compile time. A decimal into a whole number, and a `Double` into a
   `Float`, are written on their own line, a declaration or an assignment, never as an argument, a `return` or an
   operand (D1896, D1899) ([values_and_types.md](../spite_documentation/values_and_types.md#a-number-that-may-not-fit-is-narrowed)).
-- **Buys**: no narrowing halts at run time; a narrowing the ranges prove has no check at all.
+- **Buys**: no narrowing halts at run time; a narrowing the ranges prove has no check at all, into a `T?` too, where
+  it is present with no test, and a `crash`, `fallback` or `if` on a local only such narrowings assign is answered by
+  the high pass `answered_facts` and left out with its cold path
+  ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-check-of-a-narrowing-the-ranges-prove-is-not-made), #596).
 - **Falls back**: refused, "this value is an Integer, which may not fit in a Tiny: write 'var converted: Tiny? =
   value' on its own line ...", or "this value is a Float, which loses its fraction in an Integer: write 'var
   converted: Integer? = value' on the line above, and narrow that".
@@ -653,7 +656,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `HighIntermediaryRepresentation.NarrowingSite` and whether its range fits), `proofs/narrowings_fit`, which hands
   each to `validators/high_intermediary_representation/narrowing_fit`; the lowering (`conversions.spite`:
   `fits_the_range`, `fits_the_decimal_range`, `fits_the_float_range`) answers the presence of a `T?`.
-- **Checked by**: tests/narrowing_into_a_nullable, tests/narrowing_overflow, tests/cast_reads_the_range,
+- **Checked by**: tests/narrowing_into_a_nullable, tests/fitted_narrowing_check_is_not_made, tests/narrowing_overflow, tests/cast_reads_the_range,
   tests/decimal_narrowing, tests/double_too_large_for_float, tests/signedness_change,
   tests/infinity_into_an_integer_is_null, tests/not_a_number_into_an_integer_is_null;
   conformance/narrowing_may_not_fit, conformance/byte_minimum_does_not_fit,
@@ -665,7 +668,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: partly built (D768).
 - **Rule**: every whole-number local and parameter has a range from literals, assignments and the conditions in
   force (every side of an `and` that holds, every side of an `or` that does not, as after `if amount > 100 or
-  amount < 0 { return 1 }`); `count()`, `length()`, `%`, `minimum`, `maximum` and `clamp` bound their answers; loops widen counters and
+  amount < 0 { return 1 }`); `count()`, `length()`, `%`, `minimum`, `maximum` and `clamp` bound their answers, and `shifted_right` (or
+  `_shifted_right`, whose count must be below the width) by a count with a range bounds a receiver that is never negative
+  by its range, and any unsigned receiver by the bits it keeps (from 0 to 2^(width - count) - 1, so
+  `hashed._shifted_right(32)` of an `UnsignedLong` fits an `UnsignedInteger`, #594); loops widen counters and
   count passes; a total holds at most `passes` terms
   ([values_and_types.md](../spite_documentation/proofs.md#a-range-proves-arithmetic-fits)). A range is kept only
   within 2^62 either way, so the proof's own arithmetic on bounds never overflows; an 8-byte local a condition bounds
@@ -691,7 +697,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   can; the rule stands so that a builder sharing one later cannot fold it wrongly.
 - **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room, tests/down_counter_ranges,
   tests/leaving_or_proves_ranges, tests/named_bounds_prove_ranges, tests/long_comparisons_bound,
-  tests/clamping_if_keeps_its_bound.
+  tests/clamping_if_keeps_its_bound, tests/shifted_right_bounds_a_narrowing; conformance/signed_shift_may_not_fit.
 
 ### An attribute nothing writes is read as its default
 

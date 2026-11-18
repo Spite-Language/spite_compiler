@@ -1597,6 +1597,24 @@ keeps only `started_at_once()` when `blend` never waits, and `started_slowly` is
 applies: every `if` on a late answer, in every build. What a user can observe: the executable's size; the branch not
 taken must still compile (`tests/late_answer_branch_dropped`).
 
+## A check of a narrowing the ranges prove is not made
+
+A number narrowed into a `T?` is `null` when it does not fit, so the library writes `crash`, `fallback` or `if` on
+the local it lands in. Where the proof `ranges` shows that the value always fits, the narrowing answers its number
+with no test, and a check of a local every `var` and assignment of which in its function is such a narrowing (not a
+parameter) is a late answer: the high pass `high_optimization_passes/answered_facts` keeps only the branch it takes
+(`fitted_narrowings.spite` finds the locals), so the check, its report and its cold path are not in the executable:
+
+```spite
+var masked = value.bits_and(15)
+var maybe: Tiny? = masked
+crash maybe
+```
+
+is the narrowing alone. It is proven on every compilation, per function and per copy of a generic class, and never
+read from the source. When it applies: every build that lowers. What a user can observe: the executable's size; the
+output is unchanged (`tests/fitted_narrowing_check_is_not_made`).
+
 ## A crash's report is a cold call
 
 The code that reports a failed `crash` (every value it shows, the `spite: the program stopped` line and the
