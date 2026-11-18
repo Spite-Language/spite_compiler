@@ -212,6 +212,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   conformance/condition_call_after_the_while_fact, conformance/condition_call_before_a_later_side,
   conformance/condition_call_before_a_later_while_side, conformance/condition_call_in_a_leaving_or,
   conformance/condition_call_before_the_right_of_an_or, conformance/condition_call_in_a_plain_value,
+  conformance/condition_call_in_a_while_inside_the_fact, conformance/condition_call_before_its_else,
   conformance/fallback_call_undoes_proof, conformance/crash_call_undoes_proof, conformance/fallback_and_call_undoes_proof,
   conformance/crash_and_call_undoes_proof; conformance/call_undoes_proof, conformance/branch_undoes_proof,
   conformance/receiver_call_undoes_proof, conformance/count_undoes_proof, conformance/bound_proofs_undone,
