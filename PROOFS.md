@@ -750,9 +750,11 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 ### A wider operand is written first
 
 - **Status**: built.
-- **Rule**: in arithmetic, comparisons and bitwise functions, a right side with more bits (or a decimal beside a
-  whole number) is refused, naming the turned-around form, unless it is a literal within the left type
-  ([values_and_types.md](../spite_documentation/values_and_types.md#numeric-types-and-the-casting-rule)).
+- **Rule**: in arithmetic and bitwise functions, a right side with more bits (or a decimal beside a whole number)
+  is refused, naming the turned-around form, unless it is a literal within the left type
+  ([values_and_types.md](../spite_documentation/values_and_types.md#numeric-types-and-the-casting-rule)). A
+  comparison widens its narrower side instead (`ComparedTypes`,
+  [values_and_types.md](../spite_documentation/values_and_types.md#a-comparison-is-done-in-the-wider-type)).
 - **Buys**: nothing is cut to fit.
 - **Falls back**: refused, "'...' is added in Integer, since arithmetic takes the left side's type, and the right
   side is a Long, which would be cut to fit: write the Long first ...". A literal out of the left type's range gets
@@ -760,10 +762,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Lives in**: `validators/high_intermediary_representation/cut_operand`, handed the fitted right side by
   `operators.spite` (`binary_value`, `judge_a_cut`); `calls.spite` hands the built call to
   `validators/high_intermediary_representation/wider_bitwise_operand`.
-- **Checked by**: conformance/wider_right_operand, conformance/wider_comparison, conformance/wider_bitwise_operand,
+- **Checked by**: conformance/wider_right_operand, conformance/wider_bitwise_operand,
   conformance/library_wider_bitwise_operand,
   conformance/wider_decimal_right, conformance/wider_multiplication_order, conformance/wider_subtraction;
-  tests/signedness_not_wider.
+  tests/signedness_not_wider, tests/comparison_in_the_wider_type.
 
 ### Maths on constants is worked out while compiling
 
