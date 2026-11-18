@@ -952,8 +952,9 @@ and overflowed the stack.
 call frees the last link and nothing but the return follows it. Every other call keeps its frame, so a crash report
 names its callers as before.
 
-**When it does not apply:** a link that is not the last owned one, such as the first of two children, is freed by a
-call, one frame per level, as before. A tree as deep as its first child still takes stack per level.
+**When it does not apply:** a link that is not the last owned one, such as the first of two children, can hold a
+structure as deep as the one being freed; such a class is freed onto a pending list instead
+([Freeing a deep structure takes no stack per level](#freeing-a-deep-structure-takes-no-stack-per-level)).
 
 **What a program can observe:** nothing but the stack it needs. Every `drop()` runs in the same order as before (the
 object's own first, then what it holds in order, each with everything it alone holds), and every object that has a
@@ -972,6 +973,76 @@ func Link(given: String) {
 
 A chain of `Link`s, each holding the one made before it, frees link by link in a loop: `next` is the last link, and
 `label`, a text, is let go before it.
+
+## A link whose freeing is never seen goes last
+
+Freeing an object is seen only through a `drop()` it runs and a back reference that reads `null` once its object is
+gone. A class is seen freed when it declares `drop()`, is held back by a back reference, is a singleton, a
+`FunctionValue` or a `Work`, or holds a link (an owned attribute, or a list's items) that may hold a class seen freed or
+one the compiler cannot name; every other class, with all it may hold, is never seen freed, and letting go of it
+earlier or later than its declared place cannot change a program's output
+(`low_intermediary_representation/lowering/deep_links.spite`). The compiler finds the seen classes by walking back from
+the ones seen on their own along the classes that hold them.
+
+So the link a free function lets go of last ([Freeing a chain takes no stack per link](#freeing-a-chain-takes-no-stack-per-link))
+is picked by its depth, not by its declared place: the last seen link when it can lead back to the class being freed,
+else the last never-seen link that can, else the last link as before. Links that are seen keep their order. A link
+leads back when one of the classes it may hold reaches the freed class again through links (both are in one component
+of the graph of which class holds which, found once per program).
+
+**When it applies:** to every class freed by its parts, when a never-seen link that leads back is declared before a
+link that does not.
+
+**What a program can observe:** nothing but the stack it needs.
+
+```spite
+var next: Step? = null
+var note = Note()
+```
+
+`Note` declares no `drop()` and holds only texts, so a chain of `Step`s lets go of `note` first and of `next` last, by a
+jump: it frees in the stack of one free, where `note`, declared last, would have made `next` a link that is not the last
+one.
+
+## Freeing a deep structure takes no stack per level
+
+A class is freed onto a pending list when a link that is not its last one can hold a structure as deep as the one being
+freed: the link is not the last one picked
+([A link whose freeing is never seen goes last](#a-link-whose-freeing-is-never-seen-goes-last)), or it is a list's
+items, and a class it may hold is in the freed class's component of the graph of which class holds which. Such a class
+gets two functions (`low_intermediary_representation/lowering/freeing.spite`):
+
+- `_free_onto_{key}(object, pending)` runs the object's `drop()`, puts its links on the pending list in reverse (the
+  attributes from the last declared, then the items from the last), lets go of a text, a buffer or a back reference at
+  once, gives the object's memory back and answers the list;
+- `_free_{key}(object)`, which every caller keeps calling, runs `_free_onto_{key}` with no list and then
+  `_free_the_pending`.
+
+`_free_the_pending` takes the link on top until none is left: `_free_a_pending` counts it down, and at zero
+`_free_onto_by_class` frees it by its class, onto the same list when its class is freed that way and by its
+`_free_{key}` otherwise (`pending_frees.spite`). The list is one block (how many links wait, how many fit, the links),
+made at the first link that is not `null` and doubled when full; it is given back when it is empty. It comes from the
+process heap directly (`HeapAlloc`, `HeapReAlloc`, `HeapFree`), outside the program's own blocks, so it is no object
+of the program and `--debug-memory` never counts it.
+
+The first link of an object is on top, so it is counted down, and what it alone holds is freed, before the object's
+second link: every count goes down, and every `drop()` runs, in the order a call per link gives. A `drop()` that lets
+go of an object starts a list of its own, so what it frees is freed before it returns, as before.
+
+**When it applies:** to classes freed by their parts in a component with such a link. A left spine of a million
+branches, a tree whose first child holds the next level, and a list whose items hold lists all free in the stack of one
+free, and nothing limits the depth but memory.
+
+**When it does not apply:** a `FunctionValue`, a `Work` and a box are freed as before: a structure deep through what a
+function value holds still takes a frame per level. The pending list costs a heap block per freed structure that has a
+link, and a call per link.
+
+**What a program can observe:** nothing but the stack it needs: the same `drop()`s in the same order, and the same
+`--debug-memory` counts.
+
+The next mode is the class's own: a never-seen class whose every link leads back could be freed by turning the tree
+into a spine as it goes (no list at all), and a class holding a `List` of its own kind could keep its children in the
+list block itself; neither is written yet.
 
 ## Counts are atomic only in a program with threads
 

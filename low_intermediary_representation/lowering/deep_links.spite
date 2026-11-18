@@ -1,0 +1,423 @@
+# ../../OPTIMIZATIONS.md#freeing-a-deep-structure-takes-no-stack-per-level
+
+var _items_are_last = -2
+var _anything = "*"
+var no_program = Model.ProgramModel()
+var high = HighIntermediaryRepresentation.HighProgram(no_program)
+var layout = HighIntermediaryRepresentation.Layout(no_program)
+var no_state = FunctionLoweringState()
+var lowering = FunctionLowering(no_state)
+var keys = List<String>()
+var holds = Dictionary<String, List<String>>()
+var held_by = Dictionary<String, List<String>>()
+var components = Dictionary<String, Integer>()
+var seen = Dictionary<String, Boolean>()
+var deep_components = Dictionary<Integer, Boolean>()
+
+func DeepLinks(
+    starting_high: HighIntermediaryRepresentation.HighProgram,
+    starting_layout: HighIntermediaryRepresentation.Layout,
+    starting_lowering: FunctionLowering,
+) {
+    high = starting_high
+    layout = starting_layout
+    lowering = starting_lowering
+}
+
+func study(class_keys: List<String>) {
+    keys = class_keys
+    keys.each(note_what_it_holds)
+    holds[_anything] = keys
+    note_who_holds(_anything)
+    keys.each(note_who_holds)
+    find_the_components()
+    find_what_is_seen()
+    keys.each(note_a_deep_component)
+}
+
+func is_deep(key: String): Boolean {
+    fallback frees_by_its_parts(key) and components.contains(key)
+    var component = components[key]
+    crash component
+    return deep_components[component] == true
+}
+
+func any_deep(): Boolean {
+    return keys.any(is_deep)
+}
+
+func frees_by_its_parts(key: String): Boolean {
+    var model = high.model.class_named(key)
+    fallback model and not lowering.state.scalars.of(key)
+    fallback not key.starts_with("Spite.Work_of_") and not key.starts_with("Spite.FunctionValue")
+    return key != "String" and key != "Buffer" and key != "Spite.SymbolBox"
+}
+
+func releases_an_attribute(attribute: Model.AttributeModel): Boolean {
+    fallback lowering.is_a_pointer(attribute.attribute_type) and not layout.is_embedded(attribute)
+    fallback not layout.is_lent(attribute) and not layout.is_back(attribute)
+    return layout.has_a_slot(attribute)
+}
+
+func releases_its_items(model: Model.ClassModel): Boolean {
+    var element = model.bound_types["$element_type"]
+    var reads_items = model.function_named("_read_value")
+    fallback element and reads_items
+    fallback lowering.is_a_pointer(element)
+    fallback layout.inline_stride_of(model.key) == 0
+    var buffer_attribute = model.attribute_named("_buffer")
+    var length_attribute = model.attribute_named("_length")
+    return buffer_attribute and length_attribute
+}
+
+func is_never_seen_freed(of_type: Model.Type): Boolean {
+    fallback of_type.kind == 'object' and not of_type.is_a_walked_name
+    fallback of_type.name == "String" or of_type.name == "Buffer"
+    var model = high.model.class_named(of_type.name)
+    fallback model
+    var dropping = model.function_named("drop")
+    return not dropping and not layout.is_back_held(of_type.name)
+}
+
+# ../../OPTIMIZATIONS.md#a-link-whose-freeing-is-never-seen-goes-last
+func last_link_of(model: Model.ClassModel): Integer {
+    var last_seen = last_seen_link_of(model)
+    if last_seen != -1 and leads_back(model, last_seen) {
+        return last_seen
+    }
+    var unseen = last_unseen_link_leading_back(model)
+    if unseen != -1 {
+        return unseen
+    }
+    return last_releasing_link_of(model)
+}
+
+func last_seen_link_of(model: Model.ClassModel): Integer {
+    var index = model.declared_attributes.count() - 1
+    while index >= 0 {
+        var attribute = model.declared_attributes[index]
+        crash attribute
+        if is_a_link(attribute) and is_seen_freed(attribute.attribute_type) {
+            return index
+        }
+        index = index - 1
+    }
+    var element = model.bound_types["$element_type"]
+    if element and releases_its_items(model) and is_seen_freed(element) {
+        return _items_are_last
+    }
+    return -1
+}
+
+func last_unseen_link_leading_back(model: Model.ClassModel): Integer {
+    var index = model.declared_attributes.count() - 1
+    while index >= 0 {
+        var attribute = model.declared_attributes[index]
+        crash attribute
+        var unseen = is_a_link(attribute) and not is_seen_freed(attribute.attribute_type)
+        if unseen and leads_back(model, index) {
+            return index
+        }
+        index = index - 1
+    }
+    var element = model.bound_types["$element_type"]
+    if element and releases_its_items(model) and not is_seen_freed(element) and leads_back(model, _items_are_last) {
+        return _items_are_last
+    }
+    return -1
+}
+
+func last_releasing_link_of(model: Model.ClassModel): Integer {
+    var index = model.declared_attributes.count() - 1
+    while index >= 0 {
+        var attribute = model.declared_attributes[index]
+        crash attribute
+        if is_a_link(attribute) {
+            return index
+        }
+        index = index - 1
+    }
+    var element = model.bound_types["$element_type"]
+    if element and releases_its_items(model) and not is_never_seen_freed(element) {
+        return _items_are_last
+    }
+    return -1
+}
+
+func is_a_link(attribute: Model.AttributeModel): Boolean {
+    return releases_an_attribute(attribute) and not is_never_seen_freed(attribute.attribute_type)
+}
+
+func is_seen_freed(of_type: Model.Type): Boolean {
+    var reached = classes_of(of_type)
+    var index = 0
+    while index < reached.count() {
+        var key = reached[index]
+        if seen[key] == true {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func leads_back(model: Model.ClassModel, link: Integer): Boolean {
+    fallback components.contains(model.key)
+    var link_type = type_of_a_link(model, link)
+    var own = components[model.key]
+    crash own
+    return reaches_its_component(link_type, own)
+}
+
+func type_of_a_link(model: Model.ClassModel, link: Integer): Model.Type {
+    if link == _items_are_last {
+        var element = model.bound_types["$element_type"]
+        crash element
+        return element
+    }
+    var attribute = model.declared_attributes[link]
+    crash attribute
+    return attribute.attribute_type
+}
+
+func note_what_it_holds(key: String) {
+    var reached = List<String>()
+    holds[key] = reached
+    fallback frees_by_its_parts(key)
+    var model = high.model.class_named(key)
+    crash model
+    var element = model.bound_types["$element_type"]
+    if element and releases_its_items(model) {
+        add_the_classes_of(element, reached)
+    }
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if releases_an_attribute(attribute) {
+            add_the_classes_of(attribute.attribute_type, reached)
+        }
+        index = index + 1
+    }
+}
+
+func note_who_holds(key: String) {
+    var reached = holds[key]
+    crash reached
+    var index = 0
+    while index < reached.count() {
+        var target = reached[index]
+        if not held_by.contains(target) {
+            var none_yet = List<String>()
+            held_by[target] = none_yet
+        }
+        var holders = held_by[target]
+        crash holders
+        holders.append(key)
+        index = index + 1
+    }
+}
+
+func classes_of(of_type: Model.Type): List<String> {
+    var reached = List<String>()
+    add_the_classes_of(of_type, reached)
+    return reached
+}
+
+func add_the_classes_of(of_type: Model.Type, reached: List<String>) {
+    fallback of_type.kind != 'scalar' and of_type.kind != 'enumeration' and of_type.kind != 'nothing'
+    fallback of_type.kind != 'union' or not add_the_members(of_type, reached)
+    var named = of_type.kind == 'object' and not of_type.is_a_walked_name
+    if named and layout.class_ids.contains(of_type.name) {
+        add_once(of_type.name, reached)
+        return
+    }
+    add_once(_anything, reached)
+}
+
+func add_the_members(of_type: Model.Type, reached: List<String>): Boolean {
+    var parts = of_type.name.split(".")
+    var last = parts.count() - 1
+    var simple = parts[last]
+    crash simple
+    parts.remove_at(last)
+    var owner_key = parts.join(".")
+    var owner = high.model.class_named(owner_key)
+    fallback owner
+    var declared_union = owner.union_named(simple)
+    fallback declared_union
+    var index = 0
+    while index < declared_union.members.count() {
+        var member = declared_union.members[index]
+        add_the_classes_of(member, reached)
+        index = index + 1
+    }
+    return true
+}
+
+func add_once(key: String, reached: List<String>) {
+    if not reached.contains(key) {
+        reached.append(key)
+    }
+}
+
+func find_the_components() {
+    var visited = Dictionary<String, Boolean>()
+    var finished = List<String>()
+    finish_from(_anything, visited, finished)
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        finish_from(key, visited, finished)
+        index = index + 1
+    }
+    var component = 0
+    index = finished.count() - 1
+    while index >= 0 {
+        var key = finished[index]
+        crash key
+        if not components.contains(key) {
+            gather_the_component(key, component)
+            component = component + 1
+        }
+        index = index - 1
+    }
+}
+
+func finish_from(start: String, visited: Dictionary<String, Boolean>, finished: List<String>) {
+    fallback visited[start] != true
+    visited[start] = true
+    var path = List<String>()
+    var next_links = List<Integer>()
+    path.append(start)
+    next_links.append(0)
+    while not path.is_empty() {
+        var last = path.count() - 1
+        var key = path[last]
+        var position = next_links[last]
+        crash key
+        crash position
+        var reached = holds[key]
+        crash reached
+        if position < reached.count() {
+            next_links[last] = position + 1
+            var target = reached[position]
+            if visited[target] != true {
+                visited[target] = true
+                path.append(target)
+                next_links.append(0)
+            }
+        } else {
+            finished.append(key)
+            path.remove_at(last)
+            next_links.remove_at(last)
+        }
+    }
+}
+
+func gather_the_component(start: String, component: Integer) {
+    components[start] = component
+    var waiting = List<String>()
+    waiting.append(start)
+    while not waiting.is_empty() {
+        var key = waiting.remove_last()
+        crash key
+        var holders = held_by[key]
+        if holders {
+            var index = 0
+            while index < holders.count() {
+                var holder = holders[index]
+                if not components.contains(holder) {
+                    components[holder] = component
+                    waiting.append(holder)
+                }
+                index = index + 1
+            }
+        }
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-link-whose-freeing-is-never-seen-goes-last
+func find_what_is_seen() {
+    var waiting = List<String>()
+    seen[_anything] = true
+    waiting.append(_anything)
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        if is_seen_alone(key) {
+            seen[key] = true
+            waiting.append(key)
+        }
+        index = index + 1
+    }
+    while not waiting.is_empty() {
+        var key = waiting.remove_last()
+        crash key
+        var holders = held_by[key]
+        if holders {
+            var holder_index = 0
+            while holder_index < holders.count() {
+                var holder = holders[holder_index]
+                if seen[holder] != true {
+                    seen[holder] = true
+                    waiting.append(holder)
+                }
+                holder_index = holder_index + 1
+            }
+        }
+    }
+}
+
+func is_seen_alone(key: String): Boolean {
+    if key.starts_with("Spite.Work_of_") or key.starts_with("Spite.FunctionValue") {
+        return true
+    }
+    if layout.is_back_held(key) {
+        return true
+    }
+    var model = high.model.class_named(key)
+    fallback model
+    if model.is_singleton {
+        return true
+    }
+    var dropping = model.function_named("drop")
+    if dropping {
+        return true
+    }
+    return false
+}
+
+func note_a_deep_component(key: String) {
+    fallback frees_by_its_parts(key)
+    var model = high.model.class_named(key)
+    crash model
+    var own = components[key]
+    crash own
+    var last = last_link_of(model)
+    var element = model.bound_types["$element_type"]
+    if element and releases_its_items(model) and reaches_its_component(element, own) {
+        deep_components[own] = true
+    }
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var ahead = index != last and releases_an_attribute(attribute)
+        if ahead and reaches_its_component(attribute.attribute_type, own) {
+            deep_components[own] = true
+        }
+        index = index + 1
+    }
+}
+
+func reaches_its_component(of_type: Model.Type, own: Integer): Boolean {
+    var reached = classes_of(of_type)
+    var index = 0
+    while index < reached.count() {
+        var key = reached[index]
+        if components.contains(key) and components[key] == own {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
