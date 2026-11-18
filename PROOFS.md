@@ -667,9 +667,18 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   force (every side of an `and` that holds, every side of an `or` that does not, as after `if amount > 100 or
   amount < 0 { return 1 }`); `count()`, `length()`, `%`, `minimum`, `maximum` and `clamp` bound their answers; loops widen counters and
   count passes; a total holds at most `passes` terms
-  ([values_and_types.md](../spite_documentation/proofs.md#a-range-proves-arithmetic-fits)).
+  ([values_and_types.md](../spite_documentation/proofs.md#a-range-proves-arithmetic-fits)). A range is kept only
+  within 2^62 either way, so the proof's own arithmetic on bounds never overflows; an 8-byte local a condition bounds
+  on one side only keeps that side apart (`name|floor`, `name|ceiling`), read only by the next condition on it, which
+  makes a range once both sides are within the limit (#594). Past an `if` with no `else` whose block reaches its end,
+  each local holds the join of what the block left and what the entry narrowed by the opposite of the condition
+  leaves; a range joined with a kept side keeps the wider side. An assignment reads the value's range before it forgets
+  the name, so `remainder = 0 - remainder` keeps a range.
+- **Why it settles**: the proof is one walk over the function in order; an `if` joins its two ends once, a `while`
+  proves its body once from ranges the counter argument gives (no iteration), and a kept side is read only by a
+  condition, so nothing is revisited.
 - **Buys**: an operation the ranges prove carries no overflow check.
-- **Missing**: loop locals other than counters; types wider than 4 bytes only where a value gives a range.
+- **Missing**: loop locals other than counters; an 8-byte counter has a ceiling only from its own loop's bound.
   `absolute` bounds its answer by its receiver's range, and a counter only stepped down by constants under `>` or
   `>=` keeps a floor and counts its passes like one stepped up (D1515).
 - **Falls back**: the check stays and is listed by `--optimization-report`.
@@ -681,7 +690,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   No builder shares an operation today (#314 removed the last), so no program reaches a second visit and no test
   can; the rule stands so that a builder sharing one later cannot fold it wrongly.
 - **Checked by**: tests/proven_ranges, tests/optimization_report, tests/counter_room, tests/down_counter_ranges,
-  tests/leaving_or_proves_ranges, tests/named_bounds_prove_ranges.
+  tests/leaving_or_proves_ranges, tests/named_bounds_prove_ranges, tests/long_comparisons_bound,
+  tests/clamping_if_keeps_its_bound.
 
 ### An attribute nothing writes is read as its default
 
