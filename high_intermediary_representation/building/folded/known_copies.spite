@@ -7,7 +7,6 @@ var context = Context(no_program, no_resolver)
 var values = Values(context)
 var constants = Constants(context, values)
 var described_names = DescribedNames()
-var _deepest_copy = 8
 var _read_names = [
     "count"
     "is_empty"
@@ -36,7 +35,7 @@ func takes_a_known_item(walker: Model.FunctionModel, listed: Model.KnownValue): 
     if first.kind == 'class' {
         return true
     }
-    return stays_as_it_was(walker.declaration, parameter.name, first, 0)
+    return stays_as_it_was(walker.declaration, parameter.name, first)
 }
 
 func walk_copy(walker: Model.FunctionModel, item: Model.KnownValue): Model.FunctionModel {
@@ -45,8 +44,7 @@ func walk_copy(walker: Model.FunctionModel, item: Model.KnownValue): Model.Funct
     var knowns = Dictionary<String, Model.KnownValue>()
     knowns[parameter.name] = item
     var no_parameters = List<Model.ParameterModel>()
-    var current_copy = context.current_function.walk_copy_or_empty()
-    return copy_knowing(walker, context.current_class, knowns, no_parameters, current_copy.known_depth + 1)
+    return copy_knowing(walker, context.current_class, knowns, no_parameters)
 }
 
 func called_with_knowns(
@@ -70,9 +68,8 @@ func called_on_with_knowns(
 ): SpiteCompiler.Value? {
     var calls = Calls(values.context, values)
     var caller = context.current_function
-    var caller_copy = caller.walk_copy_or_empty()
     var is_in_a_copy = caller.is_a_walk_copy()
-    fallback caller_copy.known_depth < _deepest_copy and not written.is_empty()
+    fallback not written.is_empty()
     fallback takes_knowns(called) and called.parameters.count() == written.count()
     fallback is_in_a_copy or takes_a_described_place(called)
     var library = Mapping.LibraryFile()
@@ -101,14 +98,13 @@ func called_on_with_knowns(
     }
     var known_names = knowns.keys()
     fallback not known_names.is_empty()
-    var depth = caller_copy.known_depth + 1
     var made: Model.FunctionModel? = null
     if known_names.count() == 1 and class_place >= 0 {
-        made = class_copy(called, holder, class_place, knowns, depth)
+        made = class_copy(called, holder, class_place, knowns)
     }
     if not made {
         fallback knowns_stay(called, knowns)
-        made = copy_knowing(called, holder, knowns, kept_parameters, depth)
+        made = copy_knowing(called, holder, knowns, kept_parameters)
     }
     crash made
     return calls.called(made, receiver, kept_arguments)
@@ -123,7 +119,7 @@ func knowns_stay(called: Model.FunctionModel, knowns: Dictionary<String, Model.K
         var name = names[index]
         var known = knowns[name]
         crash known
-        fallback stays_as_it_was(called.declaration, name, known, 0)
+        fallback stays_as_it_was(called.declaration, name, known)
         index = index + 1
     }
     return true
@@ -150,7 +146,6 @@ func class_copy(
     holder: Model.ClassModel,
     place: Integer,
     knowns: Dictionary<String, Model.KnownValue>,
-    depth: Integer,
 ): Model.FunctionModel? {
     var names = knowns.keys()
     var name = names[0]
@@ -170,7 +165,7 @@ func class_copy(
     var member_type = Model.Type('object', model.key)
     var simple = described_names.simple_name_of(model.shown)
     var bound = Model.TemplateBinding(place, simple, member_type, false, 0, "", "", null, null)
-    var binding_copy = Model.WalkCopy(null, "", true, null, depth)
+    var binding_copy = Model.WalkCopy(null, "", true, null)
     var copied = context.resolver.reading.specialized(
         function.declaration,
         function.owner,
@@ -211,7 +206,7 @@ func known_for(
     if known.kind == 'class' {
         return known
     }
-    fallback stays_as_it_was(called.declaration, parameter.name, known, 0)
+    fallback stays_as_it_was(called.declaration, parameter.name, known)
     return known
 }
 
@@ -255,7 +250,6 @@ func copy_knowing(
     holder: Model.ClassModel,
     knowns: Dictionary<String, Model.KnownValue>,
     kept_parameters: List<Model.ParameterModel>,
-    depth: Integer,
 ): Model.FunctionModel {
     var key = identity_of(function, knowns)
     var known = context.known_copies[key]
@@ -264,7 +258,7 @@ func copy_knowing(
     }
     var count = context.known_copies.keys().count()
     var name = "{function.name}_known_{count}"
-    var knowing = Model.WalkCopy(null, "", false, knowns, depth)
+    var knowing = Model.WalkCopy(null, "", false, knowns)
     var made = Model.FunctionModel(
         name,
         function.owner,
@@ -307,7 +301,17 @@ func stays_as_it_was(
     declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
     name: String,
     known: Model.KnownValue,
-    depth: Integer,
+): Boolean {
+    var passed = List<String>()
+    return stays_past(declaration, name, known, passed)
+}
+
+# ../../../ARCHITECTURE.md#a-walk-stops-where-it-passed-before
+func stays_past(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    known: Model.KnownValue,
+    passed: List<String>,
 ): Boolean {
     if not known.has_no_value_to_hold() {
         return true
@@ -325,7 +329,7 @@ func stays_as_it_was(
         }
         if expression.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
             fallback not calls_the_name(expression, name)
-            reads = reads + reads_in_a_call(expression, name, known, depth)
+            reads = reads + reads_in_a_call(expression, name, known, passed)
         }
         index = index + 1
     }
@@ -344,14 +348,14 @@ func reads_in_a_call(
     call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
     name: String,
     known: Model.KnownValue,
-    depth: Integer,
+    passed: List<String>,
 ): Integer {
     var callee = call.callee
     if callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
         return read_as_a_receiver(call, callee, name, known)
     }
     if callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
-        return read_as_an_argument(call, callee.name, name, known, depth)
+        return read_as_an_argument(call, callee.name, name, known, passed)
     }
     return 0
 }
@@ -389,12 +393,13 @@ func read_as_an_argument(
     called_name: String,
     name: String,
     known: Model.KnownValue,
-    depth: Integer,
+    passed: List<String>,
 ): Integer {
     fallback not known.lists_functions()
     var called = context.current_class.function_named(called_name)
-    fallback called and depth < _deepest_copy and called.parameters.count() == call.arguments.count()
+    fallback called and called.parameters.count() == call.arguments.count()
     fallback called.declaration
+    var called_key = called.key()
     var reads = 0
     var index = 0
     while index < call.arguments.count() {
@@ -405,10 +410,25 @@ func read_as_an_argument(
         if written.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
             names_it = written.name == name
         }
-        if names_it and stays_as_it_was(called.declaration, parameter.name, known, depth + 1) {
+        var place = "{called_key}.{parameter.name}"
+        if names_it and not passed.contains(place) and stays_in(called.declaration, parameter.name, known, passed, place) {
             reads = reads + 1
         }
         index = index + 1
     }
     return reads
+}
+
+# ../../../ARCHITECTURE.md#a-walk-stops-where-it-passed-before
+func stays_in(
+    declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration,
+    name: String,
+    known: Model.KnownValue,
+    passed: List<String>,
+    place: String,
+): Boolean {
+    passed.append(place)
+    var stays = stays_past(declaration, name, known, passed)
+    crash passed.remove_last()
+    return stays
 }
