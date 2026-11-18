@@ -433,6 +433,16 @@ forgotten (Mortaro, D2075); a construction names a flag it sets with a local. It
 `known_parameter_functions` are filled by the constructions that have them, and `placed_at_line`, `inferred_owner` and
 `narrowed_names` by a later step.
 
+## Mentioned classes are read from a stack
+
+`SymbolTable.read_class` reads a class and then each class its tokens name. A class naming another, which names
+another, would nest one call per class (#611), so a reading waits instead: `read_one_class` parses a file and adds
+a `MentionReading` (its tokens, the next token, the files the current mention found) to `readings`, and
+`read_class` takes steps on the reading on top until the readings it added are done. A step reads the next file
+a mention found, merges those files once all are read, moves to the next token, or removes a finished reading, so
+classes are read and merged in the order nested calls took. Every step moves an index forward or empties the found
+files, and a reading is added only for a file not yet read, so the steps end without a cap.
+
 ## The resolver and the reflection builder
 
 A class too large for one file keeps its fields in one state object, and each concern is a class beside it that takes

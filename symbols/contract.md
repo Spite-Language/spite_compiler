@@ -3,6 +3,7 @@
 The classes of the program, read a class at a time as names ask for them.
 
 - `symbols.spite`: the entry, `Symbols(map, folder, flags)`; its `run` answers a `symbol_table.spite`.
+- `mention_reading.spite`: a class read whose mentions still wait to be read (`../ARCHITECTURE.md#mentioned-classes-are-read-from-a-stack`).
 - `build_condition.spite`: which build conditions hold.
 - `library_names.spite` and `machinery_names.spite`: the library functions and classes the compiler knows by name.
 - `preloads.spite`, `preloaded_volume.spite` and `volume_table.spite`: the volumes the program's `preload` lines make, and their files as the sorted table the lowering lays out.
