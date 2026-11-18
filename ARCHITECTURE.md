@@ -642,7 +642,7 @@ A refusal stops the check it happened in, and the compile goes on to the other c
 
 The first run drives the rounds, so at most two compilers are in memory: each later round writes what it found to
 `.spite/failed_checks.txt` (`Diagnostics.Ledger`) and answers `goes_on_answer`, and the last one tells everything.
-A round costs one compile up to the next failure, the same as fixing that error and compiling again. Rounds stop at
+A round costs one compile up to the next failure, the same as fixing that error and compiling again. A function's check is where it is written (its file and line, `FunctionModel.written_place`), so a failure skips every copy of it in later rounds (each class filling a generic one, each template or walk copy): those copies would fail on the same line, and a round each told nothing new while the check waited on them (#591). Rounds stop at
 25 errors in the program or after `most_rounds`; the list then ends `and possibly more in the program`. A fix
 written in a round restarts the compile from nothing, since the lines it found may have moved.
 
