@@ -754,8 +754,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: in arithmetic and bitwise functions, a right side with more bits (or a decimal beside a whole number)
   is refused, naming the turned-around form, unless it is a literal within the left type
   ([values_and_types.md](../spite_documentation/values_and_types.md#numeric-types-and-the-casting-rule)). A
-  comparison widens its narrower side instead (`ComparedTypes`,
-  [values_and_types.md](../spite_documentation/values_and_types.md#a-comparison-is-done-in-the-wider-type)).
+  comparison is a call on its left side instead: its right side is fitted like an argument and refused with the
+  assignment's words, or the sides are swapped with a `fixed:` line when the swapped form fits
+  (`validators/high_intermediary_representation/swapped_comparison`,
+  [functions_and_operators.md](../spite_documentation/functions_and_operators.md#a-comparison-is-a-call-on-its-left-side)).
 - **Buys**: nothing is cut to fit.
 - **Falls back**: refused, "'...' is added in Integer, since arithmetic takes the left side's type, and the right
   side is a Long, which would be cut to fit: write the Long first ...". A literal out of the left type's range gets
@@ -766,7 +768,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: conformance/wider_right_operand, conformance/wider_bitwise_operand,
   conformance/library_wider_bitwise_operand,
   conformance/wider_decimal_right, conformance/wider_multiplication_order, conformance/wider_subtraction;
-  tests/signedness_not_wider, tests/comparison_in_the_wider_type.
+  tests/signedness_not_wider, tests/comparison_is_a_call_on_its_left_side, conformance/comparison_swapped_to_fit,
+  conformance/comparison_that_cannot_swap, conformance/comparison_of_unsigned_long.
 
 ### Maths on constants is worked out while compiling
 
