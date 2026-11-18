@@ -925,7 +925,10 @@ answer walk followed one template, never a second.
   - every block releases its locals when it ends or returns; a local declared from an attribute or a list slot
     that nothing after it in its block can write holds it uncounted;
   - `_release` frees an object whose count reaches zero through its class's `_free_<class>`: `drop()` first, then
-    a list's items, the attributes that hold objects, and a buffer's bytes.
+    a list's items, the attributes that hold objects, and a buffer's bytes. A class whose links can hold a structure
+    as deep as itself (`lowering/deep_links.spite`) is freed onto a pending list, its `_free_<class>` calling
+    `_free_onto_<class>` and `_free_the_pending` (`lowering/pending_frees.spite`)
+    ([Freeing a deep structure takes no stack per level](OPTIMIZATIONS.md#freeing-a-deep-structure-takes-no-stack-per-level)).
 - A `Buffer`'s room is sized by the compiler (D659): a buffer proven never to grow keeps its bytes inside the
   value that holds it, exactly `size` of them; every other buffer keeps a heap block that grows.
 - A class whose only memory is a room of at most 8 bytes, and nothing else, is a number: its value travels in a
