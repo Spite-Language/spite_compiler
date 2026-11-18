@@ -1023,7 +1023,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Status**: built, for what `building/folded/constants.spite` answers.
 - **Rule**: a class or namespace named in the code, `$T`, `class`, the parameter of a walk over classes or namespaces,
   and a `var` or a parameter given one of these and never assigned again are constants, and so are their `name`,
-  `name_with_namespaces`, `classes`, `namespaces` and `functions`, `Spite.Namespace.instances` and `Spite.Class.instances` (the
+  `name_with_namespaces`, `classes`, `namespaces`, `functions` and a class's `attributes` (when its fill lists them: not for `String`, a scalar, a list or a dictionary), `Spite.Namespace.instances` and `Spite.Class.instances` (the
   program's namespaces and classes, which no code can add to or take from while it runs), a list literal that only names classes or only names namespaces; `count()`, `is_empty()`, `map_names()`,
   `contains`, `count_name_starts_with` and `count_name_ends_with` of a constant list; `first()`, `last()`, `[n]` written as a
   whole number and `["Name"]` of a constant list of classes or namespaces, which are the item (`first()`, `last()` and a name
@@ -1047,7 +1047,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Falls back**: what does not fold (an attribute's list, a call on another object handed no class or namespace, a filter over a constant list, a text with holes, an index that is not written as a number or a name, or names no item) is run time, so
   a `crash` under it is not decided.
 - **Lives in**: `building/folded/constants.spite`, `building/folded/known_copies.spite`, asked first by `Values.value_of`.
-- **Checked by**: tests/reflection_names_fold, tests/reflection_list_first_folds, tests/reflection_list_last_folds,
+- **Checked by**: tests/reflection_names_fold, tests/attribute_list_folds, tests/reflection_list_first_folds, tests/reflection_list_last_folds,
   tests/reflection_list_index_folds, tests/reflection_list_name_folds, tests/namespace_walk_decided, tests/known_list_walk, tests/class_name_is_short; conformance/reflection_name_crash, conformance/known_list_walk_crash, conformance/walk_name_crash,
   tests/registry_finds_components, tests/namespace_argument_folds,
   conformance/reflection_count_crash, conformance/reflection_names_contains_crash, conformance/namespace_walk_crash,
