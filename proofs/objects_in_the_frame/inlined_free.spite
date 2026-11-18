@@ -11,13 +11,18 @@ var released = List<Boolean>()
 var freed_directly = List<Boolean>()
 var counted_down = List<Boolean>()
 var frees = 0
+var pending = -1
 
 func InlinedFree(starting_function: LowIntermediaryRepresentation.LowFunction) {
     function = starting_function
 }
 
 func read(): Boolean {
-    fallback function.parameter_count == 1 and not function.is_resumable
+    if function.parameter_count == 2 and function.key.starts_with("_free_onto_") {
+        pending = 1
+    }
+    fallback function.parameter_count == 1 or pending >= 0
+    fallback not function.is_resumable
     var register_total = operands.most_register_of(function)
     var index = 0
     while index < register_total {
@@ -41,6 +46,9 @@ func read(): Boolean {
         fallback children[register] < 0 or released[register] == true
         fallback freed_directly[register] != true or counted_down[register] == true
         register = register + 1
+    }
+    if pending >= 0 {
+        offsets.reverse()
     }
     return true
 }
@@ -185,8 +193,8 @@ func is_part_of_a_release(instruction: SpiteCompiler.Instruction): Boolean {
         LowIntermediaryRepresentation.Instructions.AtomicAdd: return is_a_count_subtraction(instruction)
         LowIntermediaryRepresentation.Instructions.Call: return is_a_child_release(instruction)
         LowIntermediaryRepresentation.Instructions.Free: return is_the_free(instruction)
-        LowIntermediaryRepresentation.Instructions.Return: return instruction.source < 0 and instruction.presence < 0
-        LowIntermediaryRepresentation.Instructions.Copy: return false
+        LowIntermediaryRepresentation.Instructions.Return: return answers_what_it_should(instruction)
+        LowIntermediaryRepresentation.Instructions.Copy: return pending >= 0 and instruction.target == pending
         LowIntermediaryRepresentation.Instructions.Decimal.Conversion: return false
         LowIntermediaryRepresentation.Instructions.CallAt: return false
         LowIntermediaryRepresentation.Instructions.ForeignAddress: return false
@@ -231,7 +239,25 @@ func is_a_count_subtraction(adding: LowIntermediaryRepresentation.Instructions.A
     return true
 }
 
+# ../../OPTIMIZATIONS.md#freeing-a-deep-structure-takes-no-stack-per-level
+func answers_what_it_should(answered: LowIntermediaryRepresentation.Instructions.Return): Boolean {
+    fallback answered.presence < 0
+    return answered.source == pending
+}
+
+func is_a_pending_link(call: LowIntermediaryRepresentation.Instructions.Call): Boolean {
+    fallback pending >= 0 and call.function == "_free_later" and call.arguments.count() == 2
+    var list = call.arguments[0]
+    var argument = call.arguments[1]
+    fallback list == pending and is_a_child(argument)
+    released[argument] = true
+    return true
+}
+
 func is_a_child_release(call: LowIntermediaryRepresentation.Instructions.Call): Boolean {
+    if is_a_pending_link(call) {
+        return true
+    }
     fallback call.target < 0 and call.presence < 0 and call.arguments.count() == 1
     var argument = call.arguments[0]
     fallback is_a_child(argument)
