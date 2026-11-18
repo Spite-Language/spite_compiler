@@ -2569,7 +2569,8 @@ function that calls it is given its own copy of that function, evaluated knowing
 function is called directly, and the copy is inlined into like any function, so the function given to `each`,
 `count` or any walk runs inside the walk with no call through a pointer. The copy is kept only when knowing the
 argument let the evaluation make a call direct, decide a test or read a known value; at most 64 copies are made
-in a program, each of a function of at most 4 000 instructions.
+in a program, each of a function of at most 4 000 instructions, and a chain of copies ends where it would copy a
+function it already copied on its way (#601).
 
 ```spite
 func turn_all(points: List<Point>) {
@@ -2648,15 +2649,20 @@ it keeps is one it stopped before it settled (#548).
   program, or past 4 194 304 words of memory (`Machine`); a call that does not finish is not answered and stays a
   call.
 - At most 64 copies for known arguments and 64 split copies are made in a program, each of a function of at most
-  4 000 instructions; a call past them calls the function as written. The copies for known arguments are also what
-  ends a chain of copies: a copy evaluated knowing its arguments can find a call to copy again (a recursion that
-  counts down), and nothing else bounds that chain.
+  4 000 instructions; a call past them calls the function as written. They are size budgets: a chain of copies (a
+  copy evaluated knowing its arguments that finds a call to copy again, as a recursion does) ends where it would
+  copy a function it already copied on its way (`chain_of`), since a program has finitely many functions (#601).
+  Before, only the 64 ended it.
 
 Measured (#548): building the compiler, the copies for known arguments stop at 64 of 2 529 candidate calls, 17
 functions unroll 8 loops, 383 loops pass 16 passes, and 936 functions are too large to evaluate; no function's work
 and no call's steps run out. Over the spec programs no program reaches 64 copies or 64 split copies (at most 27 and
 2), 60 functions unroll 8 loops, calls run out of steps 41 times and
 find their function's steps spent 6 004 times; no function's work runs out.
+
+Measured (#601): building the compiler, the 64 copies stop with 2 478 candidate calls left, and every copy is the
+first of its chain; over the 3 143 spec programs 172 copies are made, in chains of at most 2, none of which reaches a
+function already on it, so the chain rule changed no program.
 
 The loops in it settle with no limit. The impure functions are found by rounds that only mark functions, so they end
 within one round per function. The dominators the unrolling finds are settled by rounds (#495), and two walks up
@@ -2785,6 +2791,14 @@ Some walks stop at a size, and past it leave the code as written, so a budget co
   is then taken as not in a loop. The walk ends without it: it follows each block's successors once.
 - `vector_loops/decimal_translating.spite`: finding what a decimal holds before a loop stops after 400 blocks
   (`_most_blocks_walked`), and the total then keeps the loop's order. The walk ends without it too.
+
+- `LoweredProgram.most_in_flight_per_site`: a call a frame starts as a state machine of its own
+  ([a wait in a frame does not hold the frame](../spite_documentation/concurrency.md#a-wait-in-a-frame-does-not-hold-the-frame))
+  keeps at most 8 unfinished per call site, in a table laid out while compiling (9 entries a site); one more waits
+  where it is written for the oldest of its site, as the call as written waits for itself, so no call is dropped
+  and no memory grows while the program runs (#601). It is not a round limit: nothing settles there.
+- `compile_time_evaluation`: the 64 copies for known arguments (`most_clones`) and 64 split copies (`most_splits`),
+  [above](#what-the-evaluation-while-compiling-stops-at).
 
 Measured (#569): 32 objects are reached in 17 of the compiler's functions and 36 of the spec programs'; the
 4 000 blocks only in `text_escapes`' `texts_after_a_hole`; the 20 000 and the 400 blocks never.

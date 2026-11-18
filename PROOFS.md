@@ -1034,7 +1034,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   so inside it the class is a type, makes its objects and narrows `value.class == part`; over namespaces it knows the
   namespace (`known_arguments`). A call of a function, of this class or of another object, handed a class or a namespace
   constant is a copy for that value (a class alone binds it the same way, `_over_<Class>`), and inside any walk copy so is
-  a call handed any constant, at most eight copies deep (`_deepest_copy`), past which it stays a run-time call. A
+  a call handed any constant, however deep (#601: a copy is made once per function and constant, and constants are
+  only read from the program, so there are finitely many). A
   function that takes a namespace or a class is never built on its own as an uncalled function (`is_a_walked_member`).
 - **A list stays known only while nothing can write to it**: a local or parameter holding a known list is known only when each
   mention in the function is a read (`stays_as_it_was`) or an argument of a function that only reads it. Anything else is

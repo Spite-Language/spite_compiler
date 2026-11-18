@@ -276,8 +276,9 @@ first copy, so it is built and checked as written first and a mistake both make 
 listed in `HighProgram.replaced_functions` (`Context.copied_originals`), so `unreached_functions` drops it when no
 call reaches it. Crash texts and sites name the function as written (`FunctionModel.written_name`).
 Copies whose lowered code is the same are folded by `low_optimization_passes/identical_functions`, which compares
-the code itself. A library function, a generic class's function, a constructor, a variadic parameter and a copy
-more than eight copies deep are not copied, and a parameter the body assigns or copies into a local with no written
+the code itself. A library function, a generic class's function, a constructor and a variadic parameter are not
+copied, nor is a function already copied on the way to this copy for types of a smaller size (a type counts one, plus
+the size of each type it is bound to), so a recursion that wraps its argument calls it as written (#601), and a parameter the body assigns or copies into a local with no written
 type keeps its declared type (`TypedCopies.keeps_its_type`), since that local may later hold any value of it.
 
 ### Anything is filled per use
@@ -850,10 +851,25 @@ never after a set number of steps (#581): a set limit drops answers silently. So
 finitely many of each. In name resolution, a template's parameter handed on through helpers stops at a helper it is
 already in, and the class of a local read from another local stops at a name it read; building, the walkers a known
 walk hands its list to stop at a walker they asked already, and a C type renamed by `typedef` in a header stops at a
-name it passed (a header renaming in a ring). Before, they stopped after 8, 8, 4 and 16 steps.
+name it passed (a header renaming in a ring). Before, they stopped after 8, 8, 4 and 16 steps. The copies the
+builder makes stop the same way (#601): whether a known list stays as it was follows the helpers it is handed to and
+stops at a helper's parameter it is already in, which answers that the list may change; whether a walk drops its
+answer stops at a template it is already in; a copy for a constant argument is made once per function and constant
+at any depth, and ends because a constant is only read from the program (a name, a number, a list of its classes or
+declarations, their counts and lengths, the pieces of a known text), never built from another, so there are
+finitely many; a per-type copy calls a function already on its way as written when its types grew since (above).
+They stopped after 8 copies or 8 calls before.
 
 Measured (#581) building the compiler and the 3 027 spec programs: none of these walks went as far as its old
 limit.
+
+Measured (#601) building the compiler and the 3 143 spec programs: copies for a constant go 2 calls deep in the
+compiler and 10 in the spec programs, past 8 only in `walk_helper_chain_nine_deep`, whose false `crash` in the ninth
+helper is now decided and refused (it ran until then); per-type copies go 6 deep in the compiler and 2 in the spec
+programs, and met a function already on their way once in the compiler (`Operators.operator_call`, with types of the
+same size, so copied as before) and only in `typed_copies_end_at_a_recursion` in the spec programs; a known list was
+handed to a helper 1 998 times in the compiler and 22 in the spec programs, never on to a second helper; the dropped
+answer walk followed one template, never a second.
 
 ## Memory
 
