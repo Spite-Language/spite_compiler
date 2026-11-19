@@ -1013,8 +1013,9 @@ items, and a class it may hold is in the freed class's component of the graph of
 gets two functions (`low_intermediary_representation/lowering/freeing.spite`):
 
 - `_free_onto_{key}(object, pending)` runs the object's `drop()`, puts its links on the pending list in reverse (the
-  attributes from the last declared, then the items from the last), lets go of a text, a buffer or a back reference at
-  once, gives the object's memory back and answers the list;
+  attributes from the last declared, then the items from the last), then lets go of a text, a buffer or a back
+  reference at once (after the items, which a list keeps in its buffer, are read), gives the object's memory back and
+  answers the list;
 - `_free_{key}(object)`, which every caller keeps calling, runs `_free_onto_{key}` with no list and then
   `_free_the_pending`.
 
