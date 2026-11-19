@@ -114,7 +114,7 @@ func folded_item_named(
 func known_reflection_list(written: SpiteCompiler.Expression?): Model.KnownValue? {
     var listed = known_of(written)
     fallback listed and listed.kind == 'list' and listed.is_reflected
-    fallback listed.text == "Spite.Class" or listed.text == "Spite.Namespace"
+    fallback listed.text == "Spite.Class"
     return listed
 }
 
@@ -128,7 +128,6 @@ func folded_answer(expression: SpiteCompiler.Expression): SpiteCompiler.Value? {
         'truth': return truth_value(known)
         'list': return null
         'class': return null
-        'namespace': return null
         'function': return null
         'attribute': return null
     }
@@ -152,7 +151,6 @@ func value_of_any(known: Model.KnownValue): SpiteCompiler.Value? {
         'truth': return truth_value(known)
         'list': return list_value(known)
         'class': return reflection.class_objects.class_object(known.text)
-        'namespace': return reflection.class_objects.namespace_object(known.text)
         'function': return null
         'attribute': return null
     }
@@ -207,9 +205,6 @@ func known_list_literal(literal: AbstractSyntaxTree.Shapes.Expressions.ListLiter
     var first = known_described(literal.entries[0])
     fallback first and first.has_no_value_to_hold()
     var listed = reflected('list', "Spite.Class")
-    if first.kind == 'namespace' {
-        listed = reflected('list', "Spite.Namespace")
-    }
     var index = 0
     while index < literal.entries.count() {
         var entry = literal.entries[index]
@@ -262,11 +257,6 @@ func known_object_named_by(expression: SpiteCompiler.Expression): Model.KnownVal
     fallback arguments.is_empty()
     var path = values.class_path_of(expression)
     if not path.is_empty() {
-        var written = path.join(".")
-        var folder = context.resolver.state.symbols.namespace_folder(written)
-        if folder {
-            return reflected('namespace', folder.namespace)
-        }
         var declared = context.resolver.types.declared_type_in(path, context.current_class)
         fallback not declared or declared.kind != 'enumeration'
     }
@@ -338,14 +328,11 @@ func known_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression
     if walked_name {
         return walked_name
     }
-    var is_asked = name == "name" or name == "name_with_namespaces" or name == "classes"
+    var is_asked = name == "name" or name == "name_with_outer_classes" or name == "nested_classes"
     var lists_members = name == "functions" or name == "attributes"
-    fallback is_asked or name == "namespaces" or lists_members
+    fallback is_asked or name == "outer_class" or lists_members
     var described = known_described(member.target)
     fallback described
-    if described.kind == 'namespace' {
-        return member_of_a_namespace(described.text, name)
-    }
     fallback described.kind == 'class'
     return member_of_a_class(described.text, name)
 }
@@ -379,22 +366,15 @@ func known_described(target: SpiteCompiler.Expression?): Model.KnownValue? {
 func known_instances(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): Model.KnownValue? {
     var path = values.class_path_of(member.target)
     var written = path.join(".")
-    fallback written == "Spite.Namespace" or written == "Spite.Class"
+    fallback written == "Spite.Class"
     fallback values.type_arguments_of(member.target).is_empty()
     var reflection = Reflection(context, values)
-    var item_kind: Model.KnownValue.Kind = 'namespace'
-    var names = List<String>()
-    if written == "Spite.Class" {
-        item_kind = 'class'
-        names = reflection.making.classes_of_the_program()
-    } else {
-        names = reflection.class_objects.namespaces_of_the_program()
-    }
+    var names = reflection.making.classes_of_the_program()
     var listed = reflected('list', written)
     var index = 0
     while index < names.count() {
         var name = names[index]
-        var item = reflected(item_kind, name)
+        var item = reflected('class', name)
         listed.items.append(item)
         index = index + 1
     }
@@ -402,32 +382,15 @@ func known_instances(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpress
 }
 
 # ../../../../spite_documentation/reflection.md#the-spite-classes
-func member_of_a_namespace(described: String, name: String): Model.KnownValue? {
-    if name == "name" {
-        var last = described_names.last_name_of(described)
-        return reflected('text', last)
-    }
-    if name == "name_with_namespaces" {
-        return reflected('text', described)
-    }
-    var folder = context.resolver.state.symbols.namespace_folder(described)
-    fallback folder
-    if name == "classes" {
-        return classes_of_a_folder(folder)
-    }
-    if name == "namespaces" {
-        return namespaces_of_a_folder(folder)
-    }
-    return null
-}
-
-func classes_of_a_folder(folder: Mapping.MappedFolder): Model.KnownValue {
+func nested_classes_of(described: String): Model.KnownValue {
     var listed = reflected('list', "Spite.Class")
+    var nested = context.resolver.state.symbols.map.nested_classes_of(described)
+    var machinery = Symbols.MachineryNames()
     var index = 0
-    while index < folder.files.count() {
-        var file = folder.files[index]
+    while index < nested.count() {
+        var file = nested[index]
         var model = context.resolver.monomorphiser.class_model_named(file.namespace)
-        if model {
+        if model and not machinery.names.contains(file.namespace) {
             var item = reflected('class', model.key)
             listed.items.append(item)
         }
@@ -436,23 +399,17 @@ func classes_of_a_folder(folder: Mapping.MappedFolder): Model.KnownValue {
     return listed
 }
 
-func namespaces_of_a_folder(folder: Mapping.MappedFolder): Model.KnownValue {
-    var listed = reflected('list', "Spite.Namespace")
-    var index = 0
-    while index < folder.folders.count() {
-        var inner = folder.folders[index]
-        var item = reflected('namespace', inner.namespace)
-        listed.items.append(item)
-        index = index + 1
-    }
-    return listed
-}
-
 func member_of_a_class(described: String, name: String): Model.KnownValue? {
     var model = context.program.class_named(described)
     fallback model
-    if name == "name_with_namespaces" {
+    if name == "name_with_outer_classes" {
         return reflected('text', model.shown)
+    }
+    if name == "nested_classes" {
+        return nested_classes_of(model.key)
+    }
+    if name == "outer_class" {
+        return outer_class_of(model.key)
     }
     if name == "name" {
         var simple = described_names.simple_name_of(model.shown)
@@ -465,6 +422,14 @@ func member_of_a_class(described: String, name: String): Model.KnownValue? {
     var listed = reflected('list', "Spite.FunctionDeclaration")
     add_the_functions_of(model, listed)
     return listed
+}
+
+func outer_class_of(described: String): Model.KnownValue? {
+    var outer = described_names.namespace_of(described)
+    fallback not outer.is_empty()
+    var model = context.resolver.monomorphiser.class_model_named(outer)
+    fallback model
+    return reflected('class', model.key)
 }
 
 # ../../../PROOFS.md#a-walk-over-known-classes-is-decided-while-compiling
@@ -602,9 +567,6 @@ func name_of_an_item(item: Model.KnownValue): String {
         var model = context.program.class_named(item.text)
         crash model
         return described_names.simple_name_of(model.shown)
-    }
-    if item.kind == 'namespace' {
-        return described_names.last_name_of(item.text)
     }
     return item.text
 }
@@ -802,10 +764,8 @@ func type_of_a_known(known: Model.KnownValue): Model.Type {
     if known.kind == 'list' {
         return list_type_of(known)
     }
-    if known.kind == 'class' {
-        return Model.Type('object', "Spite.Class")
-    }
-    return Model.Type('object', "Spite.Namespace")
+    crash known.kind == 'class'
+    return Model.Type('object', "Spite.Class")
 }
 
 # ../../../../spite_documentation/metaprogramming.md#walking-a-programs-structure
@@ -831,12 +791,12 @@ func walked_by(
     var parameter = walker.parameters[0]
     var taken = parameter.parameter_type
     fallback taken.kind == 'object' and not taken.is_nullable
-    fallback taken.name == "Spite.Class" or taken.name == "Spite.Namespace"
+    fallback taken.name == "Spite.Class"
     var listed = known_of(callee.target)
     fallback listed and listed.kind == 'list' and listed.text == taken.name
     var copies = KnownCopies(context, values, this)
     fallback copies.takes_a_known_item(walker, listed)
-    if taken.name == "Spite.Class" and every_item_has_a_class(listed) {
+    if every_item_has_a_class(listed) {
         return walked_classes(walker, listed)
     }
     var index = 0

@@ -14,7 +14,7 @@ A representation is data only: no function on it writes text or decides an error
 
 ## The order
 
-Every stage folder has one entry class named for the folder (`proofs/proofs.spite` is `Proofs.Proofs`), whose
+Every stage folder is a class, and its own file named for the folder (`proofs/proofs.spite`, the class `Proofs`) is its entry, whose
 `run` does the stage. `spite_compiler.spite` only makes each stage and calls its `run`, in this order:
 
     command_line                           the settings, the program they name, the last build removed
@@ -340,7 +340,7 @@ and the last shaping of blocks, live values and copy coalescing.
 ## The folders
 
 One layout for each kind of folder, so opening one says where its entry is. `folder_layout/` walks the compiler's own
-namespaces with `crash`es decided while compiling, so a stage without its entry, a pass or proof folder without its
+folder classes with `crash`es decided while compiling, so a stage without its entry, a pass or proof folder without its
 class, a low pass without the entry named for its folder (D1923), a rule folder without `Validator` or holding anything
 else, a fix layer without `EveryFix` or a printer without `Printer` refuses the build, under `--check` too (D1885,
 `spite_spec`'s `compiler_folder_layout_broken`). A `Validator` holds a `check*`, the entry that is handed content and
@@ -350,7 +350,7 @@ folders and flags that exist. The size of every file is held by `validators/abst
 
 | Folder kind | What it holds today |
 |---|---|
-| stage (`name_resolution/`, `outputs/`, ...) | `<stage>.spite` (the entry class `Stage.Stage`) and `contract.md` |
+| stage (`name_resolution/`, `outputs/`, ...) | `<stage>.spite` (the folder's own file, the class `Stage`) and `contract.md` |
 | high pass | `high_optimization_passes/<pass>/pass.spite` (class `Pass`) and its helpers |
 | low pass | `low_optimization_passes/<pass>/<pass>.spite` (the entry the stage registers, named for the folder) and `pass.spite` (class `Pass`, the per-function work), with its helpers; some folders hold several entries (D1923) |
 | proof | `proofs/<proof>/proof.spite` (class `Proof`) and its helpers |
@@ -477,7 +477,7 @@ before the instance that binds it, so it has had its turn.
 
 The reflection builder (`high_intermediary_representation/building/reflection.spite`) is split the same way, over
 `ReflectionState`: `described_names` (names and paths), `features` (which reflection functions the program asks for),
-`writing` (constants, locals and calls a fill writes), `class_objects` (the objects of classes, namespaces, enums,
+`writing` (constants, locals and calls a fill writes), `class_objects` (the objects of classes, enums,
 unions and types), `declarations` (the objects describing one declaration), `wrappers` (the wrappers of a described
 function), `member_lists` (a class's attribute and function lists), `fills` (the fill of each reflection object) and
 `making` (the constructor of every reflected class). A caller names the concern: `reflection.class_objects.class_object`,
@@ -637,7 +637,7 @@ The rest is Spite code. What does not vary with the program is library code: the
 `Spite.Fault`, the program's settings check `Spite.Settings`, the fallback ring `Spite.Asserts` and the deep copy
 table `Spite.CopyTable` (`spite_standard_library/common/spite/`), read like any library class the first time a program needs one, so a program that never needs one reads none of it. These four are `Symbols.MachineryNames`: a program that names one, reopens one from a `spite/` folder of
 its own, or names any `Spite.Internal` name is refused, a crash inside one names no values, and the `Spite`
-namespace's reflected `classes` leave them out. The reloader
+class's reflected `nested_classes` leave them out. The reloader
 `Spite.HotReload` and the REPL's console `Spite.ReadEvaluatePrintLoop` are library code too (HOT_RELOAD.md). What
 the compiler writes as text, as a generated class under the program's `.spite/build/spite/` with the library's
 rights, is only what varies: `Spite.ReloadPoint` (the build's values for the reloader,
@@ -771,8 +771,8 @@ validator only ever sees what stays an error:
 | Layer | Entry, called from | Rules |
 |---|---|---|
 | tokens | `fixes/tokens/every_fix.spite`'s `fixed`, per file between the lexer and the parser (`AbstractSyntaxTree.run`) | `misspelt_keyword` |
-| syntax tree | `fixes/abstract_syntax_tree/every_fix.spite`'s `fixed`, per file as it is read (`SymbolTable.read_class`) | `misplaced_comment`, `declaration_order` (the printer prints declarations in the enforced order), `type_member_form`, `after_return`, `local_names`, `null_class_test` (`value.class == Null` in a condition becomes `not value`), `default_guard`, `own_storage` (a bare attribute name inside its own setter or getter becomes `attributes["x"].value`, rebuilt as new nodes so no proof about a written node is undone); before them, right after the first parse, `own_namespace` (`Sidebar.Picker` inside `sidebar/` becomes `Picker`, in code and in tags): it takes the symbol table to look the mapped classes up, cuts the namespace out of the text where the tokens spell it, and reads the file again |
-| symbols | `fixes/symbols/every_fix.spite`'s `fixed`, once, when every class is read (`Symbols.run`), and it writes and restarts right there; `entry_class_member` runs through `fixed_with_the_packages` once the loaded packages are read too, since it asks their entry classes | `misnamed_path` (a file or folder of the program the mapping noted as having one right spelling is renamed, with the last segment of every `load` naming it, unless a `load` it cannot rewrite reaches it; what stays is refused by `validators/mapping/misnamed_path`), `library_load` (a `load` of the standard library in use goes: every program has it), `entry_class_member` (`Game.Job` written outside the namespace `Game` for an enum of its entry class `Game.Game` becomes `Game.Game.Job`; what a rewrite cannot reach is refused by `validators/name_resolution/class_member`), `unneeded_load`, `repeated_declaration` (a `union` or `type` two classes of a root declare with one name and content moves to the entry class of the lowest namespace holding every copy) |
+| syntax tree | `fixes/abstract_syntax_tree/every_fix.spite`'s `fixed`, per file as it is read (`SymbolTable.read_class`) | `misplaced_comment`, `declaration_order` (the printer prints declarations in the enforced order), `type_member_form`, `after_return`, `local_names`, `null_class_test` (`value.class == Null` in a condition becomes `not value`), `default_guard`, `own_storage` (a bare attribute name inside its own setter or getter becomes `attributes["x"].value`, rebuilt as new nodes so no proof about a written node is undone); before them, right after the first parse, `doubled_path` (`Framework.Framework.Component` becomes `Framework.Component`, a folder being its own class) and then `own_namespace` (`Sidebar.Picker` inside `sidebar/` becomes `Picker`, in code and in tags): each takes the symbol table to look the mapped classes up and answers the text with the path cut where the tokens spell it, and `SymbolTable.read_class` reads the file again |
+| symbols | `fixes/symbols/every_fix.spite`'s `fixed`, once, when every class is read (`Symbols.run`), and it writes and restarts right there | `misnamed_path` (a file or folder of the program the mapping noted as having one right spelling is renamed, with the last segment of every `load` naming it, unless a `load` it cannot rewrite reaches it; what stays is refused by `validators/mapping/misnamed_path`), `library_load` (a `load` of the standard library in use goes: every program has it), `unneeded_load`, `repeated_declaration` (a `union` or `type` two classes of a root declare with one name and content moves to the class of the lowest folder holding every copy, where every class inside names it plainly) |
 | after building | `fixes/after_building/every_fix.spite`: `fixed_a_check` from the proof `proven_checks` before each refusal, `fixed_a_terminal_if` from `guard_asserts`, `fixed_a_walk` before the rules after building, `fixed_an_attribute` from `every_attribute_is_read`, `fixed_a_comparison` from `Operators.binary_value` while building, `fixed_a_negated_order` from `Crashes.judge_a_negated_order` while building a `fallback`, `fixed_a_type_test` and `fixed_the_type_tests_of` from `Statements` before a statement is built | `proven_check` (a `crash` or `fallback` line that proves nothing), `decided_condition` (an `if`, a `while` or a `fallback` decided while compiling), `known_if` (an `if` on what is already narrowed, proven or a decided class test), `terminal_if`, `copy_to_narrow`, `unread_plain_local`, `unread_attribute`, `swapped_comparison` (`count < total` with a wider `total` becomes `total > count`: the tree's sides swap in place, since the build already read them), `negated_order` (`fallback not (count < 0 or count > limit)` becomes `fallback count >= 0 and count <= limit` when every order it turns compares whole numbers: the syntax-tree `default_guard` cannot see types and keeps the `not`, and building notes each order's types in `Context.orders`), `type_test` (`value.class == AnyCustom` against a `type` or a union, in an `if`, `while`, `fallback`, `return` or local's value, through `and`, `or` and `not`, becomes `value.class.satisfies_type(AnyCustom)`, and `!=` its `not`: the call replaces the binary in its parent before the statement is built) |
 
 A fix rule changes the tree it is given (a statement replaced in or removed from the block that holds it, a

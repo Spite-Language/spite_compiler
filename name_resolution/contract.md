@@ -46,15 +46,13 @@ and `List_of_Integer` in the instance `List_of_Integer`.
 - The count of types in `<>` against a class's `generic` lines: `validators/name_resolution/generic_arguments`.
 - A type parameter with no `generic` line: `validators/name_resolution/codegen_line`.
 - A member of a type that is not there: `validators/name_resolution/type_member`.
-- A class's `enum`, `union` or `type` named plainly outside the class, or through a namespace instead of its
-  class: `validators/name_resolution/class_member`. A namespace holds classes and namespaces only, so a plain
-  name looks in the class's own declarations and then for a class, never in another class's declarations. From
-  outside a namespace, `Game.Job` reaches the entry class `Game.Game` through the namespace even when a loaded
-  root makes `Game` answer that class, so it is refused there too (and `fixes/symbols/entry_class_member` rewrites
-  it to `Game.Game.Job` first wherever the file may be rewritten). Any class may name a union or a `type` through
-  its class (D2320); a plain name of an entry class's union or type below that entry class is refused with the
-  path to write (`Symbols.SymbolTable.is_the_entry_class_over`).
-- A union member that is a `type` or another union, at the member's line: `validators/name_resolution/union_member`.
+- A class's `enum`, `union` or `type` named plainly outside the class and the classes inside it, or through an
+  outer class that does not declare it: `validators/name_resolution/class_member`. A plain name looks in the
+  class's own declarations, then in those of each class around it (`Types.declared_in_an_outer_class`, a nested
+  class of that name at a level winning), then in the root class `Spite`'s, and then for a class; it never looks
+  in a sibling's declarations. Any class may name a union or a `type` through its class (D2320), and `Game.Job` for
+  an enum of `game/game.spite` is the class `Game`'s own.
+- A union member that is a `type`, or another union, at the member's line: `validators/name_resolution/union_member`.
   Every error on a union member names the member's line, and the unions of a generic class are read once from its
   template after the classes are filled, so a union is checked even in a template nothing mints.
 - A type that names nothing, `Symbol`, a removed form or a value known only at run time:
@@ -70,10 +68,10 @@ A class name that reaches no file is collected and not reported yet (an issue la
 
 ## The two kinds of dependent type
 
-A type written with two segments is a qualified class name when the first segment names a class or a
-namespace, and a dependent type when it does not:
+A type written with two segments is a qualified class name when the first segment names a class, and a
+dependent type when it does not:
 
-- `Spite.Access` is the class `Access` in the namespace `Spite`.
+- `Spite.Access` is the class `Access` nested in the class `Spite`.
 - `member.class` is the class of the value named `member`, which is a parameter of the enclosing
   function.
 - `$value_type.element_type` is the element type of the type bound to `$value_type`.

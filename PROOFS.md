@@ -1090,30 +1090,29 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 ### A walk over known classes is decided while compiling
 
 - **Status**: built, for what `building/folded/constants.spite` answers.
-- **Rule**: a class or namespace named in the code, `$T`, `class`, the parameter of a walk over classes or namespaces,
+- **Rule**: a class named in the code (a folder's class included), `$T`, `class`, the parameter of a walk over classes,
   and a `var` or a parameter given one of these and never assigned again are constants, and so are their `name`,
-  `name_with_namespaces`, `classes`, `namespaces`, `functions` and a class's `attributes` (when its fill lists them: not for `String`, a scalar, a list or a dictionary), `Spite.Namespace.instances` and `Spite.Class.instances` (the
-  program's namespaces and classes, which no code can add to or take from while it runs), a list literal that only names classes or only names namespaces; `count()`, `is_empty()`, `map_names()`,
+  `name_with_outer_classes`, `outer_class` (when there is one), `nested_classes`, `functions` and a class's `attributes` (when its fill lists them: not for `String`, a scalar, a list or a dictionary), `Spite.Class.instances` (the
+  program's classes, which no code can add to or take from while it runs), a list literal that only names classes; `count()`, `is_empty()`, `map_names()`,
   `contains`, `count_name_starts_with` and `count_name_ends_with` of a constant list; `first()`, `last()`, `[n]` written as a
-  whole number and `["Name"]` of a constant list of classes or namespaces, which are the item (`first()`, `last()` and a name
+  whole number and `["Name"]` of a constant list of classes, which are the item (`first()`, `last()` and a name
   a constant `T?` holding it, proven present, so a `crash` on a local holding one is removed as proven, as after
   `Phase.values.find_by_name('update')`), or run time when there is none; `starts_with`, `ends_with`,
   `contains`, `split` and `length()` of a constant text; and `==`, `!=`, the orders, `and`, `or` and `not` over them.
-  Each answers what the object made at run time would answer, from the same names (`DescribedNames`, `namespaces_of_the_program`).
-- **Walks**: `each` over a constant list of classes or namespaces with a walker of the class is one call per item, of a copy
-  of the walker that knows it: over classes the copy binds the class as `Theme.classes.each(...)` does (`walked_class_keys`),
-  so inside it the class is a type, makes its objects and narrows `value.class == part`; over namespaces it knows the
-  namespace (`known_arguments`). A call of a function, of this class or of another object, handed a class or a namespace
+  Each answers what the object made at run time would answer, from the same names (`DescribedNames`, `FolderMap.nested_classes_of`).
+- **Walks**: `each` over a constant list of classes with a walker of the class is one call per item, of a copy
+  of the walker that knows it: the copy binds the class as `Theme.nested_classes.each(...)` does (`walked_class_keys`),
+  so inside it the class is a type, makes its objects and narrows `value.class == part`. A call of a function, of this class or of another object, handed a class
   constant is a copy for that value (a class alone binds it the same way, `_over_<Class>`), and inside any walk copy so is
   a call handed any constant, however deep (#601: a copy is made once per function and constant, and constants are
   only read from the program, so there are finitely many). A
-  function that takes a namespace or a class is never built on its own as an uncalled function (`is_a_walked_member`).
+  function that takes a class is never built on its own as an uncalled function (`is_a_walked_member`).
 - **A list stays known only while nothing can write to it**: a local or parameter holding a known list is known only when each
   mention in the function is a read (`stays_as_it_was`) or an argument of a function that only reads it. Anything else is
   built as it was written, at run time, undecided.
 - **Buys**: a walk whose every check folds costs nothing at run time: no reflection object is made for it, and a `crash` that
-  holds is not written. A walk over `Spite.Namespace.instances` that checks the program's layout refuses the build, as the compiler's own `folder_layout` does (`tests/compiler_folder_layout_broken`).
-- **Falls back**: what does not fold (an attribute's list, a call on another object handed no class or namespace, a filter over a constant list, a text with holes, an index that is not written as a number or a name, or names no item) is run time, so
+  holds is not written. A walk over `Spite.Class.instances` that checks the program's layout refuses the build, as the compiler's own `folder_layout` does (`tests/compiler_folder_layout_broken`).
+- **Falls back**: what does not fold (an attribute's list, a call on another object handed no class, a filter over a constant list, a text with holes, an index that is not written as a number or a name, or names no item) is run time, so
   a `crash` under it is not decided.
 - **Lives in**: `building/folded/constants.spite`, `building/folded/known_copies.spite`, asked first by `Values.value_of`.
 - **Checked by**: tests/reflection_names_fold, tests/attribute_list_folds, tests/reflection_list_first_folds, tests/reflection_list_last_folds,
@@ -1138,7 +1137,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 ### What a class object holds is known while compiling
 
 - **Status**: built (spite_compiler#54), for the attributes a class object's fill gives a constant.
-- **Rule**: a class object (`Spite.Class`, `Spite.Namespace`, `Spite.Enum`, `Spite.Union`, `Spite.Type`) is made
+- **Rule**: a class object (`Spite.Class`, `Spite.Enum`, `Spite.Union`, `Spite.Type`) is made
   once, by the fill the compiler writes for it, which runs the reflection class's defaults and then its constructor
   on the new object. An attribute of the reflection class that its constructor writes once, at the top of its body,
   from a parameter it never assigns, and that no other function of the program writes (its defaults aside, which run
@@ -1147,7 +1146,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   known while compiling. The facts are proven from the built program at each compile, never taken from the library
   ([reflection.md](../spite_documentation/reflection.md#the-spite-classes)).
 - **Buys**: a call of a function that only answers such an attribute (`get_name`, `get_is_singleton`, `to_string`,
-  `fits_vector`), on a class object written in the code, on another such answer (`Monster.namespace.name`) or on a
+  `fits_vector`), on a class object written in the code, on another such answer (`Monster.outer_class.name`) or on a
   local given one and never assigned again, is the attribute's value, with no test of the object's slot and no fill
   (`high_optimization_passes/class_object_reads`).
 - **Keeps the order**: a class object is let go at exit, and a `drop()` that reads one after that halts with D1256's

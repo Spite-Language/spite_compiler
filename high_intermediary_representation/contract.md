@@ -44,7 +44,7 @@ like "is this call ever reached" or "may this value be null" has no answer on th
   and their spreading; `building/calls.spite` calls, constructions, member calls, presets and function values;
   `building/templates.spite` specialising, pattern matching and the template match; `building/naming.spite` plurals and
   inflection; `building/questions.spite` value calls, reflection questions, waits and writes questions and folded counts.
-- `building/folded/constants.spite` and `building/folded/known_copies.spite`: what a question on a class or namespace known while
+- `building/folded/constants.spite` and `building/folded/known_copies.spite`: what a question on a class known while
   compiling answers, and the copy of a function that knows it.
 - `building/writers.spite`: the writer a `Spite.Attribute<Value>` carries when `Value` is the attribute's own type, a
   function of the owner's class that writes the field; `Spite.Attribute.set_value` calls it. A write through a union or

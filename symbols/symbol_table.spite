@@ -84,7 +84,7 @@ func read_one_class(class_file: Mapping.ClassFile) {
     var reading_check = gathering.reading_check_of(class_file.path)
     fallback not gathering.has_failed(reading_check)
     var text = text_of_the_class(class_file.path)
-    var is_generated = generated_texts.contains(class_file.path)
+    var is_generated = generated_texts.contains(class_file.path) or class_file.is_implicit
     var parsing = AbstractSyntaxTree.AbstractSyntaxTree(class_file.path, class_file.namespace, text)
     parsing.keeps_the_comments = may_rewrite(class_file.path, is_generated)
     if may_rewrite(class_file.path, is_generated) {
@@ -95,9 +95,21 @@ func read_one_class(class_file: Mapping.ClassFile) {
     }
     var tree = parsing.run()
     if may_rewrite(class_file.path, is_generated) {
+        var doubled = Fixes.AbstractSyntaxTree.DoubledPath.Fix(this, tree, class_file.simple_name)
+        var undoubled = doubled.shortened(parsing.tokens, text)
+        if not doubled.found_problems.is_empty() {
+            parsing = parsing.again(undoubled)
+            tree = parsing.run()
+            doubled.found_problems.each(parsing.token_fixes.append)
+        }
         var own_namespace = Fixes.AbstractSyntaxTree.OwnNamespace.Fix(this, tree, class_file.simple_name)
-        parsing = own_namespace.read_again(parsing, text)
-        tree = own_namespace.tree
+        var plain = own_namespace.shortened(parsing.tokens, undoubled)
+        if not own_namespace.found_problems.is_empty() {
+            parsing = parsing.again(plain)
+            tree = parsing.run()
+            doubled.found_problems.each(parsing.token_fixes.append)
+            own_namespace.found_problems.each(parsing.token_fixes.append)
+        }
     }
     var tokens = parsing.tokens
     var fixed = fixed_text(class_file, text, tree, is_generated, parsing.token_fixes)
@@ -183,6 +195,7 @@ func text_of_the_class(path: String): String {
     if typed {
         return typed
     }
+    fallback not map.is_implicit(path)
     var file_path: Path? = path
     crash file_path
     var file = File(file_path)
@@ -245,34 +258,6 @@ func check_after_building(text_holes: List<String>, other_holes: List<String>) {
         rules.check_after_building(checked, class_name)
         index = index + 1
     }
-}
-
-# ../../spite_documentation/classes_and_files.md#a-union-or-type-two-classes-declare
-func is_the_entry_class_over(
-    owner_namespace: String,
-    owner_path: String,
-    from_namespace: String,
-    from_path: String,
-): Boolean {
-    var folder_namespace = enclosing(owner_namespace)
-    if folder_namespace.is_empty() {
-        return is_the_entry_class_of_the_root(owner_namespace, owner_path, from_path)
-    }
-    var owner_segments = owner_namespace.split(".")
-    var folder_segments = folder_namespace.split(".")
-    var owner_last = owner_segments.last()
-    var folder_last = folder_segments.last()
-    crash owner_last and folder_last
-    fallback owner_last == folder_last
-    return from_namespace.starts_with("{folder_namespace}.")
-}
-
-func is_the_entry_class_of_the_root(owner_namespace: String, owner_path: String, from_path: String): Boolean {
-    var root = map.root_holding(owner_path)
-    var from_root = map.root_holding(from_path)
-    fallback root and from_root
-    fallback root.namespace == owner_namespace and root.path == from_root.path
-    return folder_of(owner_path) == root.path.replace("\\", "/")
 }
 
 func is_library_path(path: String): Boolean {
@@ -1352,6 +1337,34 @@ func written_name_at(tokens: List<AbstractSyntaxTree.Tokens.Token>, start: Integ
         }
     }
     return written
+}
+
+# ../../spite_documentation/classes_and_files.md#a-folder-is-a-class
+func is_a_folder_class(key: String): Boolean {
+    var folder = map.folders_by_namespace[key]
+    fallback folder
+    return not folder.key_prefix.is_empty() and not map.is_a_root(folder.path)
+}
+
+# ../../spite_documentation/classes_and_files.md#a-folder-is-a-class
+func entry_class_reached(written: String, from_namespace: String): Mapping.ClassFile? {
+    var searched = from_namespace
+    var keep_going = true
+    while keep_going {
+        var candidate = names.joined(searched, written)
+        var found = map.classes_by_namespace[candidate]
+        if found and is_a_folder_class(candidate) {
+            return found.last()
+        }
+        keep_going = not searched.is_empty()
+        searched = enclosing(searched)
+    }
+    return null
+}
+
+# ../../spite_documentation/classes_and_files.md#a-folder-is-a-class
+func outer_class_of(key: String): String {
+    return enclosing(key)
 }
 
 func namespace_folder(written: String): Mapping.MappedFolder? {

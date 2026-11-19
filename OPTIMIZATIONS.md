@@ -1641,13 +1641,13 @@ before these passes run, and a value must be in the frame when the function resu
 
 ## A walk over known classes makes no reflection object
 
-`Monster.name`, `Part.classes.count()`, `Part.classes.map_names().contains("Alpha")` and a walk over
-`Spite.Namespace.instances` or `Spite.Class.instances` are answered while the function is built (`building/folded/constants.spite`,
-[PROOFS.md](PROOFS.md#a-walk-over-known-classes-is-decided-while-compiling)), so no `Spite.Class` or `Spite.Namespace` is made for
-them and no table is filled; `Part.classes.first()`, `.last()`, `[0]` and `["Alpha"]` make only the item's object, never the list. A `crash` that holds there writes nothing, a `fallback` a walk copy folds false records no trace, and the local holding a
+`Monster.name`, `Part.nested_classes.count()`, `Part.nested_classes.map_names().contains("Alpha")` and a walk over
+`Spite.Class.instances` are answered while the function is built (`building/folded/constants.spite`,
+[PROOFS.md](PROOFS.md#a-walk-over-known-classes-is-decided-while-compiling)), so no `Spite.Class` is made for
+them and no table is filled; `Part.nested_classes.first()`, `.last()`, `[0]` and `["Alpha"]` make only the item's object, never the list. A `crash` that holds there writes nothing, a `fallback` a walk copy folds false records no trace, and the local holding a
 known list is not declared. A walk over every class of the program, `Spite.Class.instances.each(bind)`, is one call per
 class of a copy of `bind` that binds it, so a `has_function("render")` test folds in each copy and a class it does not
-take leaves an empty copy; a namespace or class handed to a function (`window.register_namespace(Theme)`) makes that
+take leaves an empty copy; a class handed to a function (`window.register_classes(Theme)`) makes that
 function's copy for it, so the walk inside folds the same way. The list of every class and the table behind it are not
 made unless something else reads them. What such a walk leaves is a call of a copy per item that does next to nothing; not every copy is inlined away yet (spite_compiler#299's check leaves about 1600 of them).
 
@@ -1659,7 +1659,7 @@ and never an `Integer` that does not fit.
 
 A class object is made at run time by the fill the compiler writes for it, the first time something reads it: each
 read tests the object's slot and runs the fill when it is empty. What the fill gives most attributes is written in
-it as a constant (the class's name, whether it is a singleton, an enum, a list or optional, its namespace), and
+it as a constant (the class's name, whether it is a singleton, an enum, a list or optional, its outer class), and
 [nothing changes it afterwards](PROOFS.md#what-a-class-object-holds-is-known-while-compiling), so the compiler reads
 it there instead: a call of a function that only answers such an attribute, on a class object it knows, is that
 constant.
@@ -1669,13 +1669,13 @@ func describe(monster: Monster) {
     var alone = Monster.is_singleton
     var described: Spite.Class = Monster
     var its = monster.class
-    console.print(alone, described.name, described.is_enum, its.name_with_namespaces)
+    console.print(alone, described.name, described.is_enum, its.name_with_outer_classes)
 }
 ```
 
 `describe` reads no class object: `false`, `"Monster"`, `false` and `"Monster"` are its constants, and once nothing
 else reads it, `Monster`'s class object is never filled. A known class object is one written in the code, one
-another such read answers (`Monster.namespace.name`, the namespace's name), and a local given one and never
+another such read answers (`Monster.outer_class.name`, the outer class's name), and a local given one and never
 assigned again (`high_optimization_passes/class_object_reads`, after `folded_dictionaries` and before
 `unread_fields`).
 
@@ -1693,7 +1693,7 @@ constants where the calls were (`tests/class_object_reads_fold`).
 ## A class object nothing reads is never filled
 
 A fill is compiled for every class object the code named while it was built, and each fill names the class objects
-it hands on (a class's namespace, the classes of its attributes and generics, an enum's owner). Once the reads above
+it hands on (a class's outer and nested classes, the classes of its attributes and generics, an enum's owner). Once the reads above
 are constants, and the reflection fields nothing reads have gone with their writes, many of those objects are read
 by nothing: the pass `high_optimization_passes/unread_fills` (after `unread_fields`, right before
 `unreached_functions`) walks every function
@@ -2503,8 +2503,8 @@ A retain or a release of a register known to hold nothing (the 0 an attribute of
 ## Walks over classes, values and members are unrolled while compiling
 
 A walk whose list is known while compiling is no loop in the program: the compiler writes one call per element.
-`Namespace.classes.each(walker)`, with `walker` taking a `Spite.Class`, makes one copy of `walker` for each class
-of the namespace's folder, in which the parameter is that class (`Runner<system>()`, `system.has_function(...)`,
+`Folder.nested_classes.each(walker)`, with `walker` taking a `Spite.Class`, makes one copy of `walker` for each class
+nested in the folder's class, in which the parameter is that class (`Runner<system>()`, `system.has_function(...)`,
 `system.name` are all constants); `Enum.values.each(walker)` calls `walker` once per value, with the value as a
 constant; and a template's plural (`fill_attributes(row)`, `run_phases_each()`) is one call of the template's copy
 for each member it ranges over. `$type.values`, where the generic is bound to an enum, is a constant list of its
@@ -2513,7 +2513,7 @@ kept, and a walker nobody walks is not compiled.
 
 ```spite
 func Schedule() {
-    System.classes.each(add_system)
+    System.nested_classes.each(add_system)
 }
 
 func add_system(system: Spite.Class) {
@@ -2522,9 +2522,9 @@ func add_system(system: Spite.Class) {
 }
 ```
 
-It applies when the namespace or the enum is named directly (or `$type` bound to an enum) and the walker is a
+It applies when the folder's class or the enum is named directly (or `$type` bound to an enum) and the walker is a
 function of the same class taking one parameter. A list of classes or values reached at run time
-(`thing.class.namespace.classes`) is walked as an ordinary list of reflection objects. What a user can observe:
+(`thing.class.outer_class.nested_classes`) is walked as an ordinary list of reflection objects. What a user can observe:
 the order of the calls is the order of the folder's files and of the enum's values, the same as the walk at run
 time would take.
 
