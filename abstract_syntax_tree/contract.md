@@ -17,5 +17,6 @@ The step from a file's text to its tree, once per class file.
 - `default_guard`, `names`, `unused_names`, `switch_chain`: what a rule of `validators/abstract_syntax_tree` and its fix, or that rule alone, read in a tree; a rule's folder holds only the rule.
 
 The tree holds what was written and where; it decides no error (the rules of `validators/abstract_syntax_tree` do,
-`spelling` and `syntax` from the tokens and the kept pieces as soon as a file is lexed and parsed) and writes no text
+`spelling` and `syntax` from the tokens and the kept pieces as soon as a file is lexed and parsed, and
+`file_content_budget` from the tree right after, so a file over it is walked no further) and writes no text
 (`printers/spite` does).

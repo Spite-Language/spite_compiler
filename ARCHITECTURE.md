@@ -843,7 +843,8 @@ step or proof tells through `Context.tell(answer)`, which asks the entry.
   written for it (a printer, a validator handed a Boolean that does IO and rewrites, a caller handing words, a
   fixer that decides, a rule that stops in place), to show each is refused.
 - A file over its file content budget ([the rule](https://github.com/Spite-Language/spite_documentation/blob/master/style.md#the-file-content-budget))
-  is told with the file's other refusals, by `validators/abstract_syntax_tree/file_content_budget`. No list or flag excuses a file.
+  is told alone, by `validators/abstract_syntax_tree/file_content_budget` as soon as the file is parsed: the file is
+  then read no further, so no fix or walk meets a tree of any length (D2594). No list or flag excuses a file.
 - A file's rules read one `AbstractSyntaxTree.Walk.Walk`: every block, statement and expression of the file with
   its line and function, made once. A message quotes code through `printers/spite`.
 - A rule that needs the whole program runs once the program is complete; a rule about one class runs per class,
