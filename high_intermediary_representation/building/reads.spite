@@ -94,6 +94,15 @@ func name_value(identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpr
         if attribute.declaration and is_a_library_number(attribute) {
             return values.value_of(attribute.declaration.value, attribute.attribute_type)
         }
+        var names = Model.AccessorNames()
+        var own_getter_name = names.getter_of(identifier.name)
+        var own_getter = context.current_class.function_named(own_getter_name)
+        if own_getter {
+            var accessors = Accessors()
+            if not accessors.reads_its_storage(context, own_getter, attribute, true) {
+                return getter_read(own_getter, own, "this.{identifier.name}")
+            }
+        }
         var read = HighIntermediaryRepresentation.Values.AttributeRead(own, attribute)
         return narrowed(read, "this.{identifier.name}")
     }
@@ -134,7 +143,9 @@ func name_value(identifier: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpr
         crash bound
         return reflection.class_objects.class_object(bound.name)
     }
-    var getter = context.current_class.function_named("get_{identifier.name}")
+    var getter_names = Model.AccessorNames()
+    var getter_name = getter_names.getter_of(identifier.name)
+    var getter = context.current_class.function_named(getter_name)
     if getter and getter.parameters.is_empty() and getter.answer {
         return own_getter_read(getter)
     }
@@ -168,6 +179,19 @@ func own_getter_read(getter: Model.FunctionModel): SpiteCompiler.Value {
     var no_written = List<SpiteCompiler.Expression>()
     var own = literals.this_value()
     return calls.called(getter, own, no_written)
+}
+
+# ../../PROOFS.md#a-getter-narrows-while-it-only-reads
+func getter_read(getter: Model.FunctionModel, target: SpiteCompiler.Value, path: String): SpiteCompiler.Value {
+    var calls = Calls(context, values)
+    var no_arguments = List<SpiteCompiler.Expression>()
+    var read = calls.called(getter, target, no_arguments)
+    var narrowed_type = context.scope.narrowed_type_of(path)
+    if narrowed_type {
+        note_a_getter_read(read, path, narrowed_type)
+        return values.proven_read(read, narrowed_type, path)
+    }
+    return read
 }
 
 func walked_name_value(walking: Model.FunctionModel): SpiteCompiler.Value {
@@ -586,7 +610,9 @@ func member_value(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression
     var owner = values.present_class_of(target)
     values.judge_a_private_name(owner, member.name)
     var attribute = owner.attribute_named(member.name)
-    var getter = owner.function_named("get_{member.name}")
+    var names = Model.AccessorNames()
+    var getter_name = names.getter_of(member.name)
+    var getter = owner.function_named(getter_name)
     var spelled_preset = member.name.pascal_case()
     var preset = owner.preset_named(spelled_preset)
     var constant_on_value = Validators.HighIntermediaryRepresentation.ConstantOnValue.Validator()
@@ -594,20 +620,17 @@ func member_value(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression
     context.tell(constant_on_value_answer)
     var is_outside = owner.key != context.current_class.key
     if not getter and is_outside {
-        getter = templates.member_template_of(owner, "get_{member.name}")
+        getter = templates.member_template_of(owner, getter_name)
     }
     var reads_through_a_getter = is_outside or not attribute
+    if not reads_through_a_getter and getter and attribute {
+        var accessors = Accessors()
+        reads_through_a_getter = not accessors.reads_its_storage(context, getter, attribute, false)
+    }
     if reads_through_a_getter and getter {
-        var no_arguments = List<SpiteCompiler.Expression>()
-        var read = calls.called(getter, target, no_arguments)
         var getter_printer = Printers.Spite.ExpressionPrinter(member)
         var getter_path = getter_printer.text()
-        var narrowed_type = context.scope.narrowed_type_of(getter_path)
-        if narrowed_type {
-            note_a_getter_read(read, getter_path, narrowed_type)
-            return values.proven_read(read, narrowed_type, getter_path)
-        }
-        return read
+        return getter_read(getter, target, getter_path)
     }
     var lists_its_attributes = not attribute and member.name == "attributes"
     var is_stored_inline = target.value_type.kind == 'scalar' or target.value_type.name == "String"
