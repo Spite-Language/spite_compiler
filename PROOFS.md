@@ -1659,7 +1659,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   is made a `Spite.FunctionValueHoldingItsOwnerBack` (`builder.spite`, `hold_the_owner_back`), whose address is the
   entry `<function>$held` (`low_intermediary_representation/lowering/held_owner_entries.spite`): it reads the owner
   with `_back_counted`, stops the program naming the function if the owner was freed, calls the function and lets the
-  owner go. `copying.spite` (`bind_to_the_copy`) makes the copy's value from the copy.
+  owner go. `copying.spite` (`bind_to_the_copy`) makes the copy's value from the copy. Such an attribute holds only its
+  default or `null`, so the class's given `equals` (`building/equality.spite`, `held_back_equal`) compares it by
+  presence: both values are the same function on the two objects being compared, which are equal while they compare.
 - **Buys**: the cycle the default makes frees, with no `drop()` skipped.
 - **Costs**: a back slot in the owner, and a count up and down around each call through the value.
 - **Missing**: a function value of the class stored in its own attribute by a function (not the default), one read
