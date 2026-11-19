@@ -1474,12 +1474,14 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   argument, a return, a list, an assignment of the local, a function value) lets the pair leave.
 - **Missing**: a call of a function two classes name on a receiver whose class is not known (a local that is not
   made there), a link only a recursive call places one attribute deeper makes (`walk(node.next)`), two objects made side by side and linked directly
-  where one of them leaves the function (`return answer`), one attribute pointing both ways (`partner`, as
-  `tests/memory_leak_summary`), a union or `type` back attribute one of whose classes does not link
+  where one of them leaves the function (`return answer`), one attribute pointing both ways that
+  [the pair below](#a-pair-linked-through-one-attribute-is-cleared-when-it-goes) does not cover (`first.join(second)`,
+  as `tests/memory_leak_summary`), a union or `type` back attribute one of whose classes does not link
   back, and a back attribute that cannot be null: each keeps its counts and leaks, which `--debug-memory` names at
   exit. Nothing in the first three proves which side outlives the other; a class that does not link back could be
   freed while the program still means to hold it; and one that cannot be null has no `null` to answer once its
-  object is freed (spite_compiler#26).
+  object is freed, so it waits on a proof that no item of the owner's list outlives the owner (D2598,
+  spite_compiler#26).
 - **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
 - **Lives in**: `model/back_references.spite` and `model/made_pair_walk.spite`, asked by `ProgramModel.holds_no_count`; the shared back word in
   `high_intermediary_representation/layout.spite` (`place_the_shared_back_words`).
@@ -1520,6 +1522,59 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `freeing.spite` (`let_the_owner_go_back`), `callbacks.spite` (`call_through_held_back`).
 - **Checked by**: tests/foreign_callback_kept_by_its_owner_is_freed,
   tests/foreign_callback_kept_elsewhere_keeps_its_owner.
+
+### A pair linked through one attribute is cleared when it goes
+
+- **Status**: built (#26, Mortaro 2026-11-18, D2595).
+- **Rule**: two objects one function makes side by side and links both ways through one attribute (`first.partner =
+  second` beside `second.partner = first`) have no owner side, so no back reference can be picked. When neither leaves
+  the function, the compiler clears the slot that closed the cycle (`second.partner`, the store written later) right
+  before the locals holding the pair go, so the pair is freed then; that object's `drop()` sees the attribute as
+  `null` ([memory.md](../spite_documentation/memory.md#two-objects-linked-both-ways-through-one-attribute)).
+- **How**: `model/back_references.spite` (`note_the_closing_slots`) reads the stores of each function for two that
+  close each other through the same attribute, both on objects the function makes itself. The pair counts when each
+  object has one name, both names are declared once and in the same block (`model/declaration_blocks.spite`), and the
+  pair stays in its function as `model/made_pair_walk.spite` reads it (the same walk D2580 uses). The function's key
+  and the closing object's name are recorded; lowering (`low_intermediary_representation/lowering/statements.spite`,
+  `note_a_closing_slot`, `clear_the_closing_slot`) stores `null` into that attribute wherever the local is let go: at
+  its block's end and at every return that leaves the block.
+- **Buys**: the pair is freed with no `drop()` skipped and nothing written by the program.
+- **Costs**: one store and one release where the local goes, written while compiling; nothing else at run time.
+- **Missing**: a pair linked through calls of another function, made in different blocks, held under two names, or
+  one of whose objects leaves the function keeps its counts and leaks, which `--debug-memory` names at exit.
+- **Lives in**: `model/back_references.spite`, `model/declaration_blocks.spite`, `model/made_pair_walk.spite`,
+  `low_intermediary_representation/lowering/statements.spite` and `counting.spite` (`release_held`).
+- **Checked by**: tests/partner_pair_cleared_when_it_goes.
+
+### A function value bound to its own owner holds it back
+
+- **Status**: built (#26, Mortaro 2026-11-18, D2596, D2597 to confirm).
+- **Rule**: an attribute whose default names one of its own class's functions (`var act: Spite.Function<Nothing> =
+  rest`) holds a function value bound to the object itself. When that value can only be called (`act()`,
+  `holder.act()`, `act.call_function()`), narrowed (`fallback`, `crash`, `if`, `while` on it alone) or cleared
+  (`act = null`) anywhere in the program, it holds its owner without a count, like a ForeignCallback kept by its owner,
+  so the object is freed when its last other holder goes, its `drop()` runs, and the function value is released with
+  its attributes ([functions_and_operators.md](../spite_documentation/functions_and_operators.md#functions-are-values)).
+  A call through the value holds the owner for the call: the value's entry counts the owner up, calls, and counts it
+  down, so the owner outlives a call that lets go of its last other holder. `copy()` and `deep_copy()` of the owner bind
+  the copy's value to the copy, never to the original.
+- **How**: `model/own_function_values.spite` reads every class's attributes for such a default (the class not a
+  singleton, not generic) and every mention of the attribute's name in the program (any class, so a name another
+  class also uses counts too); a mention that is not a call, a narrowing or a `null` store, or any listing of
+  `.attributes` not indexed by a declaration, keeps the count. The owner gets a back slot (`layout.spite`); the default
+  is made a `Spite.FunctionValueHoldingItsOwnerBack` (`builder.spite`, `hold_the_owner_back`), whose address is the
+  entry `<function>$held` (`low_intermediary_representation/lowering/held_owner_entries.spite`): it reads the owner
+  with `_back_counted`, stops the program naming the function if the owner was freed, calls the function and lets the
+  owner go. `copying.spite` (`bind_to_the_copy`) makes the copy's value from the copy.
+- **Buys**: the cycle the default makes frees, with no `drop()` skipped.
+- **Costs**: a back slot in the owner, and a count up and down around each call through the value.
+- **Missing**: a function value of the class stored in its own attribute by a function (not the default), one read
+  for anything but a call, and one whose function waits (a resumable function) keep their counts and leak, which
+  `--debug-memory` names at exit.
+- **Lives in**: `model/own_function_values.spite`, `high_intermediary_representation/builder.spite`,
+  `building/copying.spite`, `low_intermediary_representation/lowering/held_owner_entries.spite` and `calls.spite`
+  (`lower_function_value`).
+- **Checked by**: tests/fn_own_function_attribute_cycle, tests/own_function_default_holds_its_owner_back.
 
 ### A copy never shares or remakes a C registration
 
