@@ -2976,25 +2976,11 @@ Some walks stop at a size, and past it leave the code as written, so a budget co
   and no memory grows while the program runs (#601). It is not a round limit: nothing settles there.
 - `compile_time_evaluation`: the 64 copies for known arguments (`most_clones`) and 64 split copies (`most_splits`),
   [above](#what-the-evaluation-while-compiling-stops-at).
-- `model/back_references.spite`: a function's summary of the stores it makes keeps only keys at most four parts deep
-  (`deepest_key`, `this.a.b.c`), [PROOFS.md](PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects).
-  A recursive call over a chain (`walk(node.next)`) places the function's own stores one attribute deeper each
-  round, so the summaries would grow without end; keys that never repeat an attribute name are finite, but in the
-  compiler they reach 9 parts and millions of stores, and building it took three times as long (#602). A store left
-  out only hides a link, so the attribute keeps its counts (a leak `--debug-memory` names), and an attribute that may
-  point back to its holder keeps its counts whenever a store left out wrote its name or its owning attribute's,
-  since the link the other way may be the one left out.
 
 Measured (#569): 32 objects are reached in 17 of the compiler's functions and 36 of the spec programs'; the
 4 000 blocks only in `text_escapes`' `texts_after_a_hole`; the 20 000 and the 400 blocks never.
 
-Measured (#602) building the compiler and the 3 145 spec programs: the back-reference summaries settle in 26
-rounds over the compiler (74 in `a_back_reference_found_many_calls_down`, 4 to 6 elsewhere); the four-part budget
-leaves out 874 916 stores in the compiler, writing 98 attribute names, and none in the spec programs but
-`back_reference_other_way_past_the_key_budget`, the only program where it decided an attribute. With keys that never
-repeat an attribute name instead, the compiler's summaries held keys up to 9 parts deep, its build took 3 749 s
-instead of 1 103 s, and 2 239 stores the budget keeps (`@0.receiver.receiver.name`) were left out. A quiet
-singleton's check goes 1 singleton deep in the compiler and 4 in the spec programs (3 before the new
+Measured (#602) building the compiler and the 3 145 spec programs: a quiet singleton's check goes 1 singleton deep in the compiler and 4 in the spec programs (3 before the new
 `quiet_singleton_chain_five_deep`), so the old 4 never stopped it.
 
 ### Passes run a set number of times
@@ -3024,8 +3010,21 @@ what each changes only goes one way over finitely many things.
   and stops at one already on its way, which answers not quiet (a ring, which the compiler refuses before anyway:
   singletons initialise each other in a circle). A program has finitely many singletons, so the walk ends (4 deep
   before, #602).
+- [A back reference](PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects)
+  (`model/back_references.spite`): a function's summary of the stores it makes, followed through calls, only grows,
+  and a call inside a cycle of calls never makes a key longer (a store it would place deeper, `walk(node.next)`, is
+  left out), so each summary is drawn from finitely many stores and the rounds end, with no limit on a key's parts
+  (four before, #602, #618).
 Measured (#576) building the compiler and the 3 027 spec programs: the kept parameters settle in at most 5
 rounds and the split classes in 6, so the limits of 32 never stopped them.
+
+Measured (#618) building the compiler: the back-reference summaries settle in 27 rounds (26 under the four-part
+budget) and hold 350 748 stores with keys up to 11 parts; 4 776 stores a recursive call would place deeper are left
+out, writing 73 attribute names (874 916 stores and 98 names past the budget before). The compiler's decisions stay
+the same (it builds itself to the same bytes as the installed compiler builds it) and its build takes as long as
+before (938 s and 842 s against the installed compiler's 1 045 s and 846 s, alternating, with two other suites
+running). `a_back_reference_found_many_calls_down` settles in 74 rounds and leaves nothing out;
+`back_reference_recursive_call_deeper` leaves out the 2 stores its recursive call would place deeper.
 
 ## A read from a known object cannot fault, and goes when nothing reads it
 

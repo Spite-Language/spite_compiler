@@ -17,9 +17,9 @@ var named_counts = Dictionary<String, Integer>()
 var is_summarizing = false
 var expands_while_summarizing = false
 var appending = ["append", "insert", "prepend", "add", "set_at"]
-var deepest_key = 4
-var names_past_the_budget = List<String>()
+var names_left_out = List<String>()
 var callers = Dictionary<String, List<String>>()
+var cycles: CallCycles? = null
 var changed_names = List<String>()
 var summarized_functions = Dictionary<String, FunctionModel>()
 var summarizing_name = ""
@@ -55,6 +55,7 @@ func learn(program: ProgramModel) {
     is_summarizing = true
     program.order.each(summarize_the_class)
     expands_while_summarizing = true
+    cycles = CallCycles(callers)
     var waiting = summarized_functions.keys()
     while not waiting.is_empty() {
         changed_names = List<String>()
@@ -151,9 +152,8 @@ func summarize_a_function(function: FunctionModel) {
         var store = stores[store_index]
         var holder = summarized_key(store.holder, names)
         var value = summarized_key(store.value, names)
-        if holder and value and is_kept_in_a_summary(summary, holder, store.attribute, value) {
-            var kept = BackReferenceStore(holder, store.attribute, value)
-            summary.append(kept)
+        if holder and value {
+            keep_in_a_summary(summary, store, holder, value)
         }
         store_index = store_index + 1
     }
@@ -234,19 +234,22 @@ func note_the_class_of_a_parameter(parameter: ParameterModel) {
 }
 
 # ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
+func keep_in_a_summary(summary: List<BackReferenceStore>, store: BackReferenceStore, holder: String, value: String) {
+    if store.is_left_out {
+        add_once(names_left_out, store.attribute)
+        return
+    }
+    fallback is_kept_in_a_summary(summary, holder, store.attribute, value)
+    var kept = BackReferenceStore(holder, store.attribute, value)
+    summary.append(kept)
+}
+
 func is_kept_in_a_summary(
     summary: List<BackReferenceStore>,
     holder: String,
     attribute: String,
     value: String,
 ): Boolean {
-    var holder_parts = holder.split(".")
-    var value_parts = value.split(".")
-    var is_within = holder_parts.count() <= deepest_key and value_parts.count() <= deepest_key
-    if not is_within and not names_past_the_budget.contains(attribute) {
-        names_past_the_budget.append(attribute)
-    }
-    fallback is_within
     var index = 0
     while index < summary.count() {
         var known = summary[index]
@@ -308,10 +311,30 @@ func expand_a_call(name: String, receiver_key: String, arguments: List<SpiteComp
         var value = placed_key(store.value, receiver_key, argument_keys)
         var is_another_reading = is_made_by_this_reading(store.holder) or is_made_by_this_reading(store.value)
         if holder and value and not is_another_reading {
-            add_a_followed_store(holder, store.attribute, value)
+            follow_a_store(store, holder, value, summary_key)
         }
         store_index = store_index + 1
     }
+}
+
+# ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
+func follow_a_store(store: BackReferenceStore, holder: String, value: String, summary_key: String) {
+    fallback not holder.is_empty() and not store.attribute.is_empty() and not value.is_empty()
+    var followed = BackReferenceStore(holder, store.attribute, value)
+    followed.is_followed = true
+    followed.is_left_out = deepens_around_a_cycle(store, holder, value, summary_key)
+    stores.append(followed)
+}
+
+func deepens_around_a_cycle(store: BackReferenceStore, holder: String, value: String, summary_key: String): Boolean {
+    fallback is_summarizing and cycles
+    fallback cycles.are_in_one_cycle(summarizing_name, summary_key)
+    return parts_of(holder) > parts_of(store.holder) or parts_of(value) > parts_of(store.value)
+}
+
+func parts_of(key: String): Integer {
+    var parts = key.split(".")
+    return parts.count()
 }
 
 # ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
@@ -557,13 +580,6 @@ func store_into(collection: SpiteCompiler.Expression, key: String) {
 func add_a_store(holder: String, attribute: String, value: String) {
     fallback not holder.is_empty() and not attribute.is_empty() and not value.is_empty()
     var store = BackReferenceStore(holder, attribute, value)
-    stores.append(store)
-}
-
-func add_a_followed_store(holder: String, attribute: String, value: String) {
-    fallback not holder.is_empty() and not attribute.is_empty() and not value.is_empty()
-    var store = BackReferenceStore(holder, attribute, value)
-    store.is_followed = true
     stores.append(store)
 }
 
@@ -823,7 +839,7 @@ func is_owned_across(
     if not may_point_back {
         return true
     }
-    fallback not names_past_the_budget.contains(owning.name) and not names_past_the_budget.contains(attribute.name)
+    fallback not names_left_out.contains(owning.name) and not names_left_out.contains(attribute.name)
     var other_way = "{owning.name}|{attribute.name}"
     if linked_by_the_made.contains(link) or linked_by_the_made.contains(other_way) {
         return linked_by_the_made.contains(link) and not linked_by_the_made.contains(other_way)
