@@ -2143,7 +2143,7 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: while a `copy()` or `deep_copy()` kept in a `var` lives, nothing writes anything (no attribute, no list,
   no buffer's bytes, in its statements or in what they call), nothing of it outlives its block, and nothing in the
-  program asks a copied class which object it is (`is_same_instance` or another comparison of addresses; the
+  program asks a copied class which object it is (`===`, `!==` or another comparison of addresses; the
   `equals` a class is given compares attributes and is not read for this); the copied classes have no `drop()`, no back reference and no
   cycle ([memory.md](https://github.com/Spite-Language/spite_documentation/blob/master/memory.md)).
 - **Buys**: the copy is the original, counted once more: no object is made and none let go
