@@ -51,7 +51,7 @@ and `List_of_Integer` in the instance `List_of_Integer`.
   class's own declarations, then in those of each class around it (`Types.declared_in_an_outer_class`, a nested
   class of that name at a level winning), then in the root class `Spite`'s, and then for a class; it never looks
   in a sibling's declarations. Any class may name a union or a `type` through its class (D2320), and `Game.Job` for
-  an enum of `game/game.spite` is the class `Game`'s own.
+  an enum of a folder's own file is that class's own.
 - A union member that is a `type`, or another union, at the member's line: `validators/name_resolution/union_member`.
   Every error on a union member names the member's line, and the unions of a generic class are read once from its
   template after the classes are filled, so a union is checked even in a template nothing mints.
