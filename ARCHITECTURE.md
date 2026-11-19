@@ -534,12 +534,16 @@ operand and what it does for the link, from the lowest link up, in the order the
 (`Operators.chained_binary_value`) does so while each link is an ordinary arithmetic operation that reads its left
 side first (no `and` or `or`, no decimal constant, no test of a class or a maybe), the lowering
 (`Values.lower_operation`) while each link is an unfolded operation other than `and` and `or`, and the syntax-tree walk,
-the formatter (`ExpressionPrinter.binary_text`), the rewriting of the passes, the ranges proof and most value walkers
-of the passes and proofs (`<walker>_in_a_chain`) for every operation. A check that only reads the tree
-(`Operators.is_a_decimal_constant`) walks its left side in a loop as well. Some walkers that answer a value for an
-operation from its two sides still call themselves on the left (the folded crashes, the quiet work and the literal
-conversions proofs, the high representation printer and the embedded attributes pass), so a
-sum still costs them a frame per term.
+the formatter (`ExpressionPrinter.binary_text`), the rewriting of the passes, the ranges proof, the value walkers of
+the passes, proofs and printers (`<walker>_in_a_chain`) and the syntax-tree checks of the builder, the validators and
+the model (`InnerCalls.either_side_holds_a_call`, `ConstructorPaths.mentions_in_a_binary`) for every operation. A check
+that only reads the tree (`Operators.is_a_decimal_constant`) walks its left side in a loop as well. A walker that answers a value for an
+operation from its two sides starts from the answer of the leftmost operand and folds each link's right side into it
+from the lowest link up (`operated` of the literal conversions, the printer's `operation_text`); one that stops early
+stops the fold where the nested calls would have stopped (`is_a_quiet_operation`); what a walker did for a link
+before going down (a step counted, a type counted, a compared side noted) it does for each link on the way down. So
+no walker costs a frame per term of a sum. Walkers that follow only `and` and `or` (the narrowing of conditions, the
+default guard's flip, the build conditions) still call themselves on the left.
 
 The values builder (`high_intermediary_representation/building/values.spite`) builds the value of every expression.
 Its concerns take the `Context` and the `Values` and do not hold their parent, as `declared_walks.spite` does, so
