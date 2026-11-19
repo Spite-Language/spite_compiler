@@ -785,7 +785,7 @@ meant, the name without its underscore, the statement at a site, the writes to r
 `copy_to_narrow`), `guard_assert` (`terminal_if`), `default_order`, `read_attribute` (`unread_attribute`) and the syntax
 tree's `unused_names` (`unread_plain_local`); what they share about a site (its tree, whether its line was fixed, whether
 replacing an `if` moves a name onto another) is `HighIntermediaryRepresentation.Building.FixableSite`. The symbols rules
-are `validators/mapping/` `misnamed_path`, `library_load` (handed a `Mapping.LibraryLoad`, the load's folder and
+are `validators/mapping/` `misnamed_path`, `library_load` (handed a `Mapping.LoadedLibrary`, the load's folder and
 whether another library holds it, which `read_one_load` finds with the load's own IO), `unneeded_load` and
 `repeated_declaration`. A proof or step asks the rule, calls the fix when the answer is fixable, and
 tells the answer otherwise. A fix never writes. A rule called while the proofs still read the blocks hands its change to the owner instead (`replaced_later`, `cut_later`, `renamed_with_the_last_fix`), which makes it right before writing. A rename changes only the name a declaration or an identifier holds, so nothing proven about a value's slot is assigned again. A library file, a pinned

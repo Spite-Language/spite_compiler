@@ -6,7 +6,7 @@ The program's folders: which class file each name reaches.
 - `mapped_folder.spite`, `class_file.spite` and `library_file.spite`: a folder, a class file and a library file of the map.
 - `standard_library.spite`: the singleton holding the library's folder and system, chosen once by `command_line`;
   it says whether a path is the library's and shows a library file by its place in the library (D2242).
-  `library_load.spite` is what `validators/mapping/library_load` is handed about a `load`.
+  `loaded_library.spite` is what `validators/mapping/library_load` is handed about a `load`.
 - `shown_paths.spite`: the singleton every root of the map is added to; it names a file in a crash site by its root's
   folder and its place inside it (a library file as `standard_library.spite` shows it), never where the build ran.
 - `packages.spite` and `pinned_copy.spite`: the package a path belongs to and the copy of a git-pinned one.
