@@ -15,6 +15,7 @@ var limit: Long = 4611686018427387904
 var _largest_integer: Long = 2147483647
 var _largest_long: Long = 9223372036854775807
 var _largest_exact_decimal: Long = 9007199254740992
+var assigned_names = AssignedNames()
 
 func check(high: HighIntermediaryRepresentation.HighProgram) {
     narrowing_sites = high.narrowing_sites
@@ -166,7 +167,7 @@ func calls_something(value: SpiteCompiler.Value?): Boolean {
         HighIntermediaryRepresentation.Values.Negation: return calls_something(value.negated)
         HighIntermediaryRepresentation.Values.Conversion: return calls_something(value.converted)
         HighIntermediaryRepresentation.Values.PresenceTest: return calls_something(value.tested)
-        HighIntermediaryRepresentation.Values.MachineOperation: return either_calls_something(value.left, value.right)
+        HighIntermediaryRepresentation.Values.MachineOperation: return calls_something_in_a_chain(value)
         HighIntermediaryRepresentation.Values.Call: return true
         HighIntermediaryRepresentation.Values.MakeObject: return true
         HighIntermediaryRepresentation.Values.ForeignCall: return true
@@ -183,8 +184,37 @@ func calls_something(value: SpiteCompiler.Value?): Boolean {
     }
 }
 
-func either_calls_something(left: SpiteCompiler.Value?, right: SpiteCompiler.Value?): Boolean {
-    return calls_something(left) or calls_something(right)
+# ../../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
+func calls_something_in_a_chain(operation: HighIntermediaryRepresentation.Values.MachineOperation): Boolean {
+    var links = [operation]
+    var lowest = operation
+    var next = calls_something_left_link_of(lowest)
+    while next {
+        links.append(next)
+        lowest = next
+        next = calls_something_left_link_of(lowest)
+    }
+    if calls_something(lowest.left) {
+        return true
+    }
+    var index = links.count() - 1
+    while index >= 0 {
+        var link = links[index]
+        crash link
+        if calls_something(link.right) {
+            return true
+        }
+        index = index - 1
+    }
+    return false
+}
+
+func calls_something_left_link_of(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+): HighIntermediaryRepresentation.Values.MachineOperation? {
+    var left = operation.left
+    fallback left.class == HighIntermediaryRepresentation.Values.MachineOperation
+    return left
 }
 
 func prove_a_declaration(declaration: HighIntermediaryRepresentation.Statements.Declare) {
@@ -223,26 +253,55 @@ func set_the_range(name: String, value: SpiteCompiler.Value?) {
     ranges[name] = cut
 }
 
+# ../../ARCHITECTURE.md#an-else-if-chain-is-walked-in-a-loop
 func prove_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
-    prove_value(branch.condition)
-    var entry = ranges.copy()
-    var entry_reaching = is_reaching
-    narrow(branch.condition, true)
-    prove_block(branch.then_branch)
-    var then_ranges = ranges
-    var then_reaching = is_reaching
-    ranges = entry.copy()
-    is_reaching = entry_reaching
-    if branch.else_branch {
-        prove_block(branch.else_branch)
-    } else {
-        narrow(branch.condition, false)
+    var then_ranges = List<Dictionary<String, NumberRange>>()
+    var then_reaching = List<Boolean>()
+    var link: HighIntermediaryRepresentation.Statements.If? = branch
+    while link {
+        var current = link
+        link = null
+        prove_value(current.condition)
+        var entry = ranges.copy()
+        var entry_reaching = is_reaching
+        narrow(current.condition, true)
+        prove_block(current.then_branch)
+        then_ranges.append(ranges)
+        then_reaching.append(is_reaching)
+        ranges = entry.copy()
+        is_reaching = entry_reaching
+        link = proved_up_to_the_next_link(current)
     }
-    var else_reaching = is_reaching
+    var index = then_ranges.count() - 1
+    while index >= 0 {
+        var reached = then_reaching[index] == true
+        join_a_branch(then_ranges[index], reached)
+        index = index - 1
+    }
+}
+
+func proved_up_to_the_next_link(
+    branch: HighIntermediaryRepresentation.Statements.If,
+): HighIntermediaryRepresentation.Statements.If? {
+    if not branch.else_branch {
+        narrow(branch.condition, false)
+        return null
+    }
+    var next = branch.else_if()
+    if next {
+        proving_line = next.line
+        return next
+    }
+    prove_block(branch.else_branch)
+    return null
+}
+
+func join_a_branch(then_ranges: Dictionary<String, NumberRange>?, then_reaching: Boolean) {
+    crash then_ranges
     fallback then_reaching
-    if not else_reaching {
+    if not is_reaching {
         ranges = then_ranges
-        is_reaching = then_reaching
+        is_reaching = true
         return
     }
     ranges = joined(then_ranges, ranges)
@@ -303,7 +362,7 @@ func join_one_side(
 
 func prove_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
     var assigned = List<String>()
-    assigned_in_block(loop.body, assigned)
+    assigned_names.assigned_in_block(loop.body, assigned)
     var passes = passes_of(loop, assigned)
     var entries = ranges.copy()
     var widened = Dictionary<String, NumberRange>()
@@ -382,7 +441,7 @@ func passes_counted_down(
     name: String,
     entry: NumberRange,
 ): NumberRange? {
-    var written = assignments_of(loop.body, name)
+    var written = assigned_names.assignments_of(loop.body, name)
     fallback written == 1
     var step = top_level_down_step(loop.body, name)
     fallback step > 0
@@ -427,7 +486,7 @@ func down_step_of_the_assignment(
 
 func single_step_of(body: HighIntermediaryRepresentation.Statements.Block, name: String): Long {
     var step: Long = -1
-    var written = assignments_of(body, name)
+    var written = assigned_names.assignments_of(body, name)
     if written == 1 {
         step = top_level_step(body, name)
     }
@@ -457,55 +516,6 @@ func step_of_the_assignment(
         found = step_of(assignment.value, name)
     }
     return found
-}
-
-func assignments_of(block: HighIntermediaryRepresentation.Statements.Block, name: String): Integer {
-    var count = 0
-    var index = 0
-    while index < block.statements.count() {
-        var statement = block.statements[index]
-        var inside = assignments_in(statement, name)
-        count = count + inside
-        index = index + 1
-    }
-    return count
-}
-
-func assignments_in(statement: SpiteCompiler.Statement, name: String): Integer {
-    switch statement {
-        HighIntermediaryRepresentation.Statements.Declare: return named_once(statement.name, name)
-        HighIntermediaryRepresentation.Statements.Assign.Assign: return named_once(statement.name, name)
-        HighIntermediaryRepresentation.Statements.If: return assignments_in_branches(statement, name)
-        HighIntermediaryRepresentation.Statements.While: return assignments_of(statement.body, name)
-        HighIntermediaryRepresentation.Statements.Block: return assignments_of(statement, name)
-        HighIntermediaryRepresentation.Statements.Assign.Attribute: return 0
-        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: return 0
-        HighIntermediaryRepresentation.Statements.Evaluate: return 0
-        HighIntermediaryRepresentation.Statements.Return: return 0
-        HighIntermediaryRepresentation.Statements.Stop: return 0
-    }
-}
-
-func named_once(written: String, name: String): Integer {
-    var count = 0
-    if written == name {
-        count = 1
-    }
-    return count
-}
-
-func assignments_in_branches(branch: HighIntermediaryRepresentation.Statements.If, name: String): Integer {
-    var then_count = assignments_in_a_branch(branch.then_branch, name)
-    var else_count = assignments_in_a_branch(branch.else_branch, name)
-    return then_count + else_count
-}
-
-func assignments_in_a_branch(block: HighIntermediaryRepresentation.Statements.Block?, name: String): Integer {
-    var count = 0
-    if block {
-        count = assignments_of(block, name)
-    }
-    return count
 }
 
 func widen_the_totals(
@@ -556,7 +566,7 @@ func total_range(
     fallback is_whole(named_type)
     var entry = entries[name]
     fallback entry
-    var written = assignments_of(loop.body, name)
+    var written = assigned_names.assignments_of(loop.body, name)
     fallback written == 1
     var operation = top_level_total(loop.body, name)
     fallback operation
@@ -643,42 +653,6 @@ func term_of(operation: HighIntermediaryRepresentation.Values.MachineOperation, 
 func is_a_term(value: SpiteCompiler.Value?, name: String): Boolean {
     var read_name = local_name_of(value)
     return read_name != name
-}
-
-func assigned_in_block(block: HighIntermediaryRepresentation.Statements.Block?, assigned: List<String>) {
-    fallback block
-    var index = 0
-    while index < block.statements.count() {
-        var statement = block.statements[index]
-        assigned_in(statement, assigned)
-        index = index + 1
-    }
-}
-
-func assigned_in(statement: SpiteCompiler.Statement, assigned: List<String>) {
-    switch statement {
-        HighIntermediaryRepresentation.Statements.Declare: add_once(assigned, statement.name)
-        HighIntermediaryRepresentation.Statements.Assign.Assign: add_once(assigned, statement.name)
-        HighIntermediaryRepresentation.Statements.If: assigned_in_branches(statement, assigned)
-        HighIntermediaryRepresentation.Statements.While: assigned_in_block(statement.body, assigned)
-        HighIntermediaryRepresentation.Statements.Block: assigned_in_block(statement, assigned)
-        HighIntermediaryRepresentation.Statements.Assign.Attribute: return
-        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: return
-        HighIntermediaryRepresentation.Statements.Evaluate: return
-        HighIntermediaryRepresentation.Statements.Return: return
-        HighIntermediaryRepresentation.Statements.Stop: return
-    }
-}
-
-func assigned_in_branches(branch: HighIntermediaryRepresentation.Statements.If, assigned: List<String>) {
-    assigned_in_block(branch.then_branch, assigned)
-    assigned_in_block(branch.else_branch, assigned)
-}
-
-func add_once(names: List<String>, name: String) {
-    if not names.contains(name) {
-        names.append(name)
-    }
 }
 
 func counter_range(loop: HighIntermediaryRepresentation.Statements.While, name: String): NumberRange? {
@@ -797,9 +771,17 @@ func steps_in(statement: SpiteCompiler.Statement, steps: CounterSteps, nested: B
     }
 }
 
+# ../../ARCHITECTURE.md#an-else-if-chain-is-walked-in-a-loop
 func steps_in_branches(branch: HighIntermediaryRepresentation.Statements.If, steps: CounterSteps, nested: Boolean) {
-    steps_in_block(branch.then_branch, steps, nested)
-    steps_in_block(branch.else_branch, steps, nested)
+    var link: HighIntermediaryRepresentation.Statements.If? = branch
+    while link {
+        var current = link
+        steps_in_block(current.then_branch, steps, nested)
+        link = current.else_if()
+        if not link {
+            steps_in_block(current.else_branch, steps, nested)
+        }
+    }
 }
 
 func steps_in_a_declaration(declaration: HighIntermediaryRepresentation.Statements.Declare, steps: CounterSteps) {
@@ -926,7 +908,7 @@ func loop_bound_of_an_operation(
 
 func bound_range_of(bound: SpiteCompiler.Value?, loop: HighIntermediaryRepresentation.Statements.While): NumberRange? {
     var assigned = List<String>()
-    assigned_in_block(loop.body, assigned)
+    assigned_names.assigned_in_block(loop.body, assigned)
     var saved = ranges.copy()
     var index = 0
     while index < assigned.count() {
@@ -1528,13 +1510,40 @@ func prove_a_construction(made: HighIntermediaryRepresentation.Values.MakeObject
 }
 
 # ../../PROOFS.md#a-range-proves-arithmetic-fits
+# ../../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
 func prove_an_operation(operation: HighIntermediaryRepresentation.Values.MachineOperation) {
     if operation.is_visited_by_ranges {
         prove_a_visit_again(operation)
         return
     }
     operation.is_visited_by_ranges = true
-    prove_a_visit(operation)
+    var links = [operation]
+    var lowest = operation
+    var next = unvisited_left_link_of(lowest)
+    while next {
+        next.is_visited_by_ranges = true
+        links.append(next)
+        lowest = next
+        next = unvisited_left_link_of(lowest)
+    }
+    prove_value(lowest.left)
+    var index = links.count() - 1
+    while index >= 0 {
+        var link = links[index]
+        crash link
+        prove_value(link.right)
+        prove_after_both(link)
+        index = index - 1
+    }
+}
+
+func unvisited_left_link_of(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+): HighIntermediaryRepresentation.Values.MachineOperation? {
+    var left = operation.left
+    fallback left.class == HighIntermediaryRepresentation.Values.MachineOperation
+    fallback not left.is_visited_by_ranges
+    return left
 }
 
 # ../../PROOFS.md#a-range-proves-arithmetic-fits
@@ -1571,6 +1580,10 @@ func keep_what_both_visits_prove(
 
 func prove_a_visit(operation: HighIntermediaryRepresentation.Values.MachineOperation) {
     prove_both(operation.left, operation.right)
+    prove_after_both(operation)
+}
+
+func prove_after_both(operation: HighIntermediaryRepresentation.Values.MachineOperation) {
     if operation.operator == 'divide' or operation.operator == 'remainder' {
         prove_the_divisor(operation)
         return
@@ -1783,10 +1796,42 @@ func present_range(conversion: HighIntermediaryRepresentation.Values.Conversion)
     return type_range(conversion.value_type)
 }
 
+# ../../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
 func operation_range(operation: HighIntermediaryRepresentation.Values.MachineOperation): NumberRange? {
+    var links = [operation]
+    var lowest = operation
+    var next = ranged_left_link_of(lowest)
+    while next {
+        links.append(next)
+        lowest = next
+        next = ranged_left_link_of(lowest)
+    }
+    var ranged = range_of(lowest.left)
+    var index = links.count() - 1
+    while index >= 0 {
+        var link = links[index]
+        crash link
+        var right = range_of(link.right)
+        ranged = range_from_both(link, ranged, right)
+        index = index - 1
+    }
+    return ranged
+}
+
+func ranged_left_link_of(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+): HighIntermediaryRepresentation.Values.MachineOperation? {
+    var left = operation.left
+    fallback left.class == HighIntermediaryRepresentation.Values.MachineOperation
+    return left
+}
+
+func range_from_both(
+    operation: HighIntermediaryRepresentation.Values.MachineOperation,
+    left: NumberRange?,
+    right: NumberRange?,
+): NumberRange? {
     fallback is_whole(operation.value_type)
-    var left = range_of(operation.left)
-    var right = range_of(operation.right)
     var answer: NumberRange? = null
     if left and right {
         answer = combined(operation.operator, left, right)

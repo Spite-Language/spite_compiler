@@ -505,6 +505,39 @@ Once an `if` with no `else if` is built whole, the links are closed from the las
 so every state change happens in the order of the nested calls. Each turn takes the next `if` written in the chain,
 so the loop ends with the chain and needs no cap.
 
+### An else-if chain is walked in a loop
+
+The high representation keeps an `else if` as an else branch holding one `if` (`If.else_if()` answers that `if`; the
+syntax tree's `IfStatement.else_if()` does the same), and a `switch` is built into the same chain, one link per case
+(`Switches.switch_chain` builds the cases in order and links them from the last). A walker that went down it by nested
+calls would deepen the stack by its block, statement and `if` functions for every link (#626), so every walker after
+the parser takes the links in a loop: the passes, the proofs, the analyses of the high representation, the lowering,
+the printers, the syntax-tree walk (`AbstractSyntaxTree.Walk`), the markup desugarer and the validators that go into
+branches. A walker does what it does for an `if`, walks the `then` branch, and moves to the next link instead of
+calling itself on the else branch. What it would do on entering the link's block (a scope, a saved flag, a counted
+depth, a found statement) it does there, and what it would do on leaving (a fact joined after both branches, a flag
+put back, a list replaced) it keeps per link and does from the last link back, so everything happens in the order
+the nested calls took and no executable changes bytes. The lowering keeps what `lower_block` and `lower_statement`
+would hold for each link in an `ElseIfLink` (`low_intermediary_representation/lowering/ifs.spite`). Each turn takes
+the next link of the chain, so the loop ends with the chain and needs no cap. Freeing a chain is the free functions'
+work ([Freeing a chain takes no stack per link](OPTIMIZATIONS.md#freeing-a-chain-takes-no-stack-per-link)).
+
+### An operator chain is walked in a loop
+
+`a + b + c` is read left to right into a left-leaning tree, `(a + b) + c`, so a long sum is as deep as it is long
+(#627). The parser already reads it in a loop; every walker after it takes such a chain in a loop too: it goes down
+the left side while each left operand is another operation, handles the leftmost operand, then each link's right
+operand and what it does for the link, from the lowest link up, in the order the nested calls took. The builder
+(`Operators.chained_binary_value`) does so while each link is an ordinary arithmetic operation that reads its left
+side first (no `and` or `or`, no decimal constant, no test of a class or a maybe), the lowering
+(`Values.lower_operation`) while each link is an unfolded operation other than `and` and `or`, and the syntax-tree walk,
+the formatter (`ExpressionPrinter.binary_text`), the rewriting of the passes, the ranges proof and most value walkers
+of the passes and proofs (`<walker>_in_a_chain`) for every operation. A check that only reads the tree
+(`Operators.is_a_decimal_constant`) walks its left side in a loop as well. Some walkers that answer a value for an
+operation from its two sides still call themselves on the left (the folded crashes, the quiet work and the literal
+conversions proofs, the high representation printer and the embedded attributes pass), so a
+sum still costs them a frame per term.
+
 The values builder (`high_intermediary_representation/building/values.spite`) builds the value of every expression.
 Its concerns take the `Context` and the `Values` and do not hold their parent, as `declared_walks.spite` does, so
 `Values(context)` and every caller that holds a `Values` stay as they are; the fields they share (`temporary_count`,

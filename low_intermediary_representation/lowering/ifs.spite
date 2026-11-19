@@ -1,0 +1,104 @@
+var state = FunctionLoweringState()
+
+func Ifs(starting_state: FunctionLoweringState) {
+    state = starting_state
+}
+
+# ../../ARCHITECTURE.md#an-else-if-chain-is-walked-in-a-loop
+func lower_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    var links = List<ElseIfLink>()
+    var next = lowered_up_to_its_else_if(branch, links)
+    while next {
+        next = lowered_up_to_its_else_if(next, links)
+    }
+    while not links.is_empty() {
+        var link = links.remove_last()
+        crash link
+        close_an_else_if(link)
+    }
+}
+
+func lowered_up_to_its_else_if(
+    branch: HighIntermediaryRepresentation.Statements.If,
+    links: List<ElseIfLink>,
+): HighIntermediaryRepresentation.Statements.If? {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var statements = Statements(state)
+    state.line = branch.line
+    var condition = lowering.lower_value(branch.condition)
+    crash branch.condition
+    counting.discard(condition, branch.condition.value_type)
+    counting.release_the_pending()
+    var then_block = lowering.new_block()
+    var after = lowering.new_block()
+    var else_block = after
+    if branch.else_branch {
+        else_block = lowering.new_block()
+    }
+    var test = LowIntermediaryRepresentation.Instructions.Branch(condition.value, then_block, else_block)
+    lowering.emit(test)
+    lowering.switch_to(then_block)
+    statements.lower_block(branch.then_branch)
+    lowering.jump_to(after)
+    var inner = branch.else_if()
+    if inner {
+        lowering.switch_to(else_block)
+        var link = opened_else_if(branch, inner, after)
+        links.append(link)
+        return inner
+    }
+    if branch.else_branch {
+        lowering.switch_to(else_block)
+        statements.lower_block(branch.else_branch)
+        lowering.jump_to(after)
+    }
+    lowering.switch_to(after)
+    return null
+}
+
+func opened_else_if(
+    branch: HighIntermediaryRepresentation.Statements.If,
+    inner: HighIntermediaryRepresentation.Statements.If,
+    after: Integer,
+): ElseIfLink {
+    var link = ElseIfLink(inner, after)
+    state.scopes.append(link.held)
+    link.outer_statements = state.block_statements
+    link.outer_index = state.statement_index
+    link.outer_releases = state.statement_releases
+    link.outer_gathering = state.gathers_for_the_statement
+    state.statement_releases = List<Integer>()
+    crash branch.else_branch
+    state.block_statements = branch.else_branch.statements
+    state.statement_index = 0
+    state.gathers_for_the_statement = false
+    link.outer_pending = state.pending_releases
+    state.pending_releases = List<Integer>()
+    state.fresh_attributes = List<String>()
+    return link
+}
+
+func close_an_else_if(link: ElseIfLink) {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var statements = Statements(state)
+    if not state.terminated {
+        counting.release_the_pending()
+    }
+    state.pending_releases = link.outer_pending
+    state.gathers_for_the_statement = false
+    state.statement_index = state.statement_index + 1
+    statements.release_at_the_statement_end(link.statement)
+    state.statement_releases = link.outer_releases
+    state.gathers_for_the_statement = link.outer_gathering
+    state.block_statements = link.outer_statements
+    state.statement_index = link.outer_index
+    if not state.terminated {
+        link.held.each(counting.release_held)
+    }
+    var last = state.scopes.count() - 1
+    state.scopes.remove_at(last)
+    lowering.jump_to(link.after)
+    lowering.switch_to(link.after)
+}
