@@ -130,6 +130,9 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    frame).
 15. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
    since the running program's manifest; none answers `unchanged` before anything is lowered.
+16. `children_stay_with_their_owner`: in a lowered build, a back attribute that cannot be null (`var parent: Parent`)
+   whose children never outlive their owner holds no count (`BackReferences.hold_back_without_null`, read by
+   `holds_no_count` from the layout on); see `PROOFS.md`.
 
 The sites `recorded_sites` judges hold what the builder resolved where it recorded them (the names in scope with
 their narrowed types, the block and the statement's place in it); `PROOFS.md` lists them.

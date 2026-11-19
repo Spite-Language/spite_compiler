@@ -1477,11 +1477,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   where one of them leaves the function (`return answer`), one attribute pointing both ways that
   [the pair below](#a-pair-linked-through-one-attribute-is-cleared-when-it-goes) does not cover (`first.join(second)`,
   as `tests/memory_leak_summary`), a union or `type` back attribute one of whose classes does not link
-  back, and a back attribute that cannot be null: each keeps its counts and leaks, which `--debug-memory` names at
-  exit. Nothing in the first three proves which side outlives the other; a class that does not link back could be
-  freed while the program still means to hold it; and one that cannot be null has no `null` to answer once its
-  object is freed, so it waits on a proof that no item of the owner's list outlives the owner (D2598,
-  spite_compiler#26).
+  back, and a back attribute that cannot be null that [the proof below](#children-that-never-outlive-their-owner-point-back-without-a-count)
+  does not cover: each keeps its counts and leaks, which `--debug-memory` names at exit. Nothing in the first three
+  proves which side outlives the other; a class that does not link back could be freed while the program still means
+  to hold it; and one that cannot be null has no `null` to answer once its object is freed.
 - **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
 - **Lives in**: `model/back_references.spite` and `model/made_pair_walk.spite`, asked by `ProgramModel.holds_no_count`; the shared back word in
   `high_intermediary_representation/layout.spite` (`place_the_shared_back_words`).
@@ -1491,6 +1490,57 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   tests/back_reference_named_by_two_classes, tests/back_reference_union_items, tests/back_reference_type_items,
   tests/back_reference_union_attribute, tests/back_reference_type_attribute,
   tests/back_reference_made_side_by_side, tests/back_reference_made_side_by_side_leaving.
+
+### Children that never outlive their owner point back without a count
+
+- **Status**: built (#26, Mortaro 2026-11-18, D2598; reach D2601 to D2604 to confirm).
+- **Rule**: a back attribute that cannot be null (`var parent: Parent` in `Child`, set from `Child(name, this)`, the
+  children kept in `Parent`'s `List<Child>`) holds no count when the compiler proves that no child outlives its
+  owner: every child is made by its owner, kept only in its owner's list, and every read of one, in any function, ends
+  while its owner is still held ([memory.md](../spite_documentation/memory.md#a-parent-that-cannot-be-null)). The
+  owner is then freed when its last other holder goes: its `drop()` runs, then the list is let go and each child's
+  `drop()` runs, in the list's order. Where the proof does not hold, the attribute keeps its count and the pair leaks,
+  which `--debug-memory` names at exit; a child is never freed early.
+- **How**: the proof `proofs/children_stay_with_their_owner` names the candidates (`list_owning`): an attribute `a: P`
+  of a class `C` (neither a singleton nor generic, `C` not `P`) where `P` declares exactly one attribute `L: List<C>`
+  (neither of them nullable). It then reads every function
+  the build made (the list class's own functions aside) on the high representation, where every value has its type,
+  and follows each value that is a `C` or the list:
+  - a `C` comes only from a making in a function of `P` that hands `this` where the constructor keeps `a` (each
+    constructor of `C` stores one parameter into `a`, never assigned in it), the list's `get_at`, `first`, `last`,
+    `remove_first`, `remove_last` or `find`, a parameter or local, or `this` in a function of `C`. The list comes
+    only from reading `L` on an anchor, or from a fresh `List<C>()` stored into `this.L` by a function of `P`;
+  - an anchor holds its object for the whole function: `this` in a function of `P`, a parameter never assigned, a
+    local declared once in the function's outer block and never assigned, or `a` read on `this` in a function of `C`
+    or on such a parameter or local of `C` (a caller holds what it passes for the whole call, and a local is let go at
+    its block's end);
+  - a `C` may be kept in a local, read for its attributes, called (a function the build made, never a constructor),
+    passed to a function the build made, compared, tested or narrowed; nothing else: not stored in any attribute,
+    returned, bound in a function value, handed to a function value, a foreign call or a `type` call, carried into a
+    union or a `type`, or shown in a crash report. The list may be read, counted, cleared, searched (`contains`,
+    `index_of`), walked by `each`, `any`, `all`, `count_where`, `find` or `remove_where` with a function the build
+    made that takes a `C`, and appended to only by a function of `P` on its own list with a child it made there;
+    nothing else (`copy()`, `filter`, a local holding the list);
+  - `a` is stored only by a constructor of `C` from its parameter, or `null` by `_attribute_defaults`;
+  - in `drop()` of `P` and of `C`, `this` is only read for its attributes, never `L` or `a`, and stored into, so
+    nothing a freeing runs reads a child of the object being freed or its back attribute;
+  - no listing of `.attributes` reads an object at run time (the reach of D2597).
+  Every `C` read in a function is then held by its owner until the function returns, and the only lasting holder of a
+  `C` is its owner's list, so when the owner goes its children go with it. A `copy()` or `deep_copy()` reaching either
+  class reads the list or stores a `C`, so it breaks the proof. An attribute asked about before the proof ran keeps its
+  count.
+- **Buys**: the pair frees with no `drop()` skipped; a read of `a` costs what a back reference read costs.
+- **Costs**: a back word in `P`, and the read of `a` calls `_back_counted` and stops the program if the object was
+  freed (`low_intermediary_representation/lowering/values.spite`), which the proof means never happens.
+- **Missing**: a child that adds itself (`parent.children.append(this)`), a list held in a local, a child returned,
+  stored or carried anywhere else, a `drop()` that reads the back attribute or calls a function of its own class, a
+  `Dictionary` or another collection of children, and two such attributes on one class: each keeps its counts and
+  leaks.
+- **Falls back**: counted; the docs teach `Parent?` meanwhile (D2598).
+- **Lives in**: `proofs/children_stay_with_their_owner` (`proof.spite`, `child_flows.spite`), run last in the proofs
+  stage and only when the program is lowered; `model/back_references.spite` (`hold_back_without_null`, read by
+  `holds_no_count`).
+- **Checked by**: tests/back_reference_without_null_freed, tests/back_reference_without_null_leaving.
 
 ### A ForeignCallback kept by the object it calls holds that object back
 
