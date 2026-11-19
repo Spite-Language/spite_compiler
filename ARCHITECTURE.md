@@ -298,7 +298,11 @@ type keeps its declared type (`TypedCopies.keeps_its_type`), since that local ma
 
 ### Anything is filled per use
 
-`Anything` is a union whose members the compiler fills with the classes that reach it, and each place that writes
+No program writes `Anything` (`validators/abstract_syntax_tree/anything_named` refuses it outside the standard library,
+D2635): every place names what it holds. The library's reflection classes still hold their values as `Anything`
+(`Spite.Attribute.value` and `.owner`, `Spite.Function.owner`, `Spite.Call` and `FunctionDeclaration._call_on`,
+`part()` of a class known only at run time, the REPL's kept values) until they say what they hold (#623), and those
+places are filled per use as below. `Anything` is a union whose members the compiler fills with the classes that reach it, and each place that writes
 `Anything` (an attribute, a parameter, an answer, a local) is its own: its type is the shape `Anything@<place>`,
 shown as `Anything` (`Types.its_own`, the shape made on first ask by `ProgramModel.anything_keyed`). A value moved
 from one `Anything` into another links them (`Fitting.fitted_into_another_anything`, and a function value's
@@ -307,11 +311,11 @@ parameters and answer through `link_the_anything_parts`), so the classes that re
 enter it (a `call()` parameter typed `Anything` or a `type`, read from `call.arguments`) is linked the same way but
 takes only the classes that fit it (`Fitting.fill_with_the_fitting`), so a class that never reaches the call is never
 asked to fit, and the test (`test_the_fillers`) matches every filler, numbers and enums too. A hole on a `T?` of a
-`type` asking `to_string` goes through `Anything|to_string` like a hole on an `Anything?`, so null shows `null`. Two `Anything`s are the same type everywhere else
+`type` asking `to_string` goes through the compiler's `type Printable` like a hole on an `Anything?`, so null shows `null`. Two `Anything`s are the same type everywhere else
 (`Type.is_the_same_as`). So printing a `Spite.Attribute`'s `.value` asks `to_string` of the classes the attributes
 held, not of the owner kept beside it. An `Anything` shape lists only `to_debug`, which every class has:
-`value.to_string()` and a hole `"{value}"` on an `Anything` pass the value into the shape `Anything|to_string`
-(`Fitting.shown_through_their_own`), which only a class with its own `to_string` fills, so nothing stands in for a
+`value.to_string()` and a hole `"{value}"` on an `Anything` pass the value into the compiler's `type Printable`,
+keyed `Printable` (`Fitting.shown_through_their_own`), which only a class with its own `to_string` fills, so nothing stands in for a
 missing one. An `Anything` written as a generic argument (`List<Anything?>`, `Spite.Function<Anything?, String>`)
 is its own too, keyed by where it is written (`GenericArgument.place`, set by the parser), so each such place mints its
 own class (`List_of_Anything@<place>@_maybe`, `Instances.own_anything_key`). Two such classes differing only in their

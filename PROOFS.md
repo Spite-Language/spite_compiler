@@ -2542,7 +2542,7 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Falls back**: the copy's mistake with ", in its copy for (Link, Chain) that the call at line 10 in Zoo.Zoo makes".
 - **Lives in**: `high_intermediary_representation/building/typed_copies.spite`, `arguments.spite`, `calls.spite`.
 - **Checked by**: tests/type_parameter_copied_per_class, tests/union_parameter_copied_per_class,
-  tests/list_of_a_class_where_anything_is_wanted, tests/type_member_written_in_a_copy_that_fits,
+  tests/list_of_a_class_where_a_type_is_wanted, tests/type_member_written_in_a_copy_that_fits,
   conformance/list_copy_appends_what_does_not_fit, conformance/type_member_written_in_a_copy.
 
 ### A member template fits
