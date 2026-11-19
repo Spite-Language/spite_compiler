@@ -1446,20 +1446,37 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   into cycles of calls (`model/call_cycles.spite`: two functions share one when each calls the other, directly or
   through others), and a call into the reading function's own cycle is a recursive call. A store a recursive call
   would place with a key of more parts than the callee's summary gives it (`walk(node.next)` placing `@0.a` as
-  `@0.next.a`) is left out of the summary, so following recursive calls stops when they add no store the summary
-  does not already hold (D2581, D2592). **Why it ends**: a summary only grows from one round to the next, since a
-  reading places every store of each callee's summary and whether one is left out depends on that store and that
-  call alone; so a round in which no summary grows is the last, and it comes once each summary is drawn from a
-  finite set. It is, taking the cycles callees first: a cycle's summaries hold its functions' own stores (as many as
-  the code writes) and the stores placed through calls into lower cycles (finitely many, those summaries being
-  finite by the same argument), and a call inside the cycle never gives a key more parts, so every key in the cycle
-  has at most as many parts as the longest that entered it, over finitely many names (the program's attribute names,
-  `this`, the parameters' places and the objects the functions make). A store left out can only hide a link: an
-  attribute it hides a link for keeps its counts, and so does one that may point back to its holder (`partner:
-  Person?`, or `beta: Beta?` beside `alpha: Alpha?`) whose name, or whose owning attribute's name, a left-out store
-  wrote, since the link the other way that keeps both counted may be the one left out (#602; before, a store past a
-  four-part budget hid such a link, the attribute was picked as the back reference and its object freed while still
-  held, `tests/back_reference_other_way_six_parts_deep`).
+  `@0.next.a`) is folded: the summary keeps only the first part of its holder and of its value (`@0`, `a`, `@1`),
+  marked folded, and a folded store is placed through every call like any other and folded again, so following
+  recursive calls stops when they add no store the summary does not already hold (D2581, D2592, D2608). **Why it
+  ends**: a summary only grows from one round to the next, since a reading places every store of each callee's
+  summary and whether one is folded depends on that store and that call alone; so a round in which no summary grows
+  is the last, and it comes once each summary is drawn from a finite set. It is, taking the cycles callees first: a
+  cycle's summaries hold its functions' own stores (as many as the code writes) and the stores placed through calls
+  into lower cycles (finitely many, those summaries being finite by the same argument), and a call inside the cycle
+  never gives a key more parts, so every key in the cycle has at most as many parts as the longest that entered it,
+  over finitely many names (the program's attribute names, `this`, the parameters' places and the objects the
+  functions make); a folded store has one part each side. **Why folding hides no other-way link** (the induction
+  step, #634): each store the summaries would hold with no folding and do not is a deeper copy, one recursive call
+  further down, of a store a level above it, and the folded store has its attribute and the first parts of its keys
+  in every reading it is placed in, since a call replaces only a key's first part and keeps the rest; the first
+  parts are all a deeper copy shares with its level, and all a link needs from it. A link counts by its two
+  attribute names; the made rule asks only whether one store's holder is an object some function makes (its key
+  starts with `#`) and its value is not; and a pair made side by side needs both keys to be a single made object,
+  which a deeper copy, with two parts or more on one side, never is. So each reading notes the attribute of each
+  folded store placed in it whose holder is made and value is not (it may be the made store of a link `a|b`) and of
+  each whose value is made and holder is not (it may be the other store of a link `b|a`). A link that folding hides
+  only adds a back reference the program then misses (it keeps counting), unless it is the link the other way of one
+  the made rule picks: an attribute `A` that may point back to its holder (`partner: Person?`, or `beta: Beta?`
+  beside `alpha: Alpha?`) keeps its counts when its owning attribute `O` was noted the first way or `A` the second
+  way, since a folded store may then be the link `O|A` that keeps both counted. A recursion whose deeper copies only
+  repeat the level's own pair (`pair_down(link.next, second)` placing `link.first.beta = second` beside
+  `second.alpha = link.first` one link further each call) notes `beta` and `alpha` the way the level does, so its
+  pair is picked as the level's would be and freed (`tests/back_reference_recursive_call_deeper`); one whose deeper
+  copy closes the other way keeps both counted (`tests/back_reference_other_way_one_call_deeper`,
+  `tests/back_reference_other_way_one_call_deeper_into_the_made`). Before #634 any name a deeper store wrote kept
+  its pair counted (#602; before that, a store past a four-part budget hid such a link, the attribute was picked as
+  the back reference and its object freed while still held, `tests/back_reference_other_way_six_parts_deep`).
   A call whose summary names an object the reading function itself makes (through recursion) adds
   nothing of that object, since it is another call's object under the same name. A link found in one
   function decides the attribute for the whole program. Every class an object back attribute holds gets a back word
@@ -1473,7 +1490,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   constructors, are read the same way with `this` and the two link attributes as the pair. Anything else (an
   argument, a return, a list, an assignment of the local, a function value) lets the pair leave.
 - **Missing**: a call of a function two classes name on a receiver whose class is not known (a local that is not
-  made there), a link only a recursive call places one attribute deeper makes (`walk(node.next)`), two objects made side by side and linked directly
+  made there), a link a recursive call may place the other way one attribute deeper, two objects made side by side and linked directly
   where one of them leaves the function (`return answer`), one attribute pointing both ways that
   [the pair below](#a-pair-linked-through-one-attribute-is-cleared-when-it-goes) does not cover (`first.join(second)`,
   as `tests/memory_leak_summary`), a union or `type` back attribute one of whose classes does not link
@@ -1489,7 +1506,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   tests/back_reference_other_way_six_parts_deep, tests/back_reference_six_parts_deep,
   tests/back_reference_named_by_two_classes, tests/back_reference_union_items, tests/back_reference_type_items,
   tests/back_reference_union_attribute, tests/back_reference_type_attribute,
-  tests/back_reference_made_side_by_side, tests/back_reference_made_side_by_side_leaving.
+  tests/back_reference_made_side_by_side, tests/back_reference_made_side_by_side_leaving,
+  tests/back_reference_recursive_call_deeper, tests/back_reference_recursive_call_deeper_made_together,
+  tests/back_reference_other_way_one_call_deeper, tests/back_reference_other_way_one_call_deeper_into_the_made.
 
 ### Children that never outlive their owner point back without a count
 

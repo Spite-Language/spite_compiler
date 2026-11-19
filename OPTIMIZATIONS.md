@@ -3013,8 +3013,8 @@ what each changes only goes one way over finitely many things.
 - [A back reference](PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects)
   (`model/back_references.spite`): a function's summary of the stores it makes, followed through calls, only grows,
   and a call inside a cycle of calls never makes a key longer (a store it would place deeper, `walk(node.next)`, is
-  left out), so each summary is drawn from finitely many stores and the rounds end, with no limit on a key's parts
-  (four before, #602, #618).
+  folded to the first parts of its keys), so each summary is drawn from finitely many stores and the rounds end, with
+  no limit on a key's parts (four before, #602, #618, #634).
 Measured (#576) building the compiler and the 3 027 spec programs: the kept parameters settle in at most 5
 rounds and the split classes in 6, so the limits of 32 never stopped them.
 
@@ -3025,6 +3025,13 @@ the same (it builds itself to the same bytes as the installed compiler builds it
 before (938 s and 842 s against the installed compiler's 1 045 s and 846 s, alternating, with two other suites
 running). `a_back_reference_found_many_calls_down` settles in 74 rounds and leaves nothing out;
 `back_reference_recursive_call_deeper` leaves out the 2 stores its recursive call would place deeper.
+
+Measured (#634) building the compiler: with deeper stores folded the summaries settle in 35 rounds and hold 425 518
+stores, 53 525 of them folded (74 attribute names), keys up to 11 parts. No attribute of the compiler changes side (it
+links one back reference, `Context.constants`, before and after, and builds itself to the same bytes as the
+installed compiler builds it). Its build takes no longer: 1 763 s and 1 226 s against the installed compiler's
+2 111 s and 1 365 s, alternating on a loaded machine; `enum_reflection` takes a median 1 097 ms to check and 3 217 ms
+to build against 1 059 ms and 3 221 ms.
 
 ## A read from a known object cannot fault, and goes when nothing reads it
 

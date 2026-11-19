@@ -18,7 +18,9 @@ var named_counts = Dictionary<String, Integer>()
 var is_summarizing = false
 var expands_while_summarizing = false
 var appending = ["append", "insert", "prepend", "add", "set_at"]
-var names_left_out = List<String>()
+var folded_stores = List<BackReferenceStore>()
+var left_out_holders = List<String>()
+var left_out_values = List<String>()
 var callers = Dictionary<String, List<String>>()
 var cycles: CallCycles? = null
 var changed_names = List<String>()
@@ -149,16 +151,8 @@ func summarize_a_function(function: FunctionModel) {
         index = index + 1
     }
     var summary = List<BackReferenceStore>()
-    var store_index = 0
-    while store_index < stores.count() {
-        var store = stores[store_index]
-        var holder = summarized_key(store.holder, names)
-        var value = summarized_key(store.value, names)
-        if holder and value {
-            keep_in_a_summary(summary, store, holder, value)
-        }
-        store_index = store_index + 1
-    }
+    keep_the_summarized(summary, stores, names)
+    keep_the_summarized(summary, folded_stores, names)
     var known_count = 0
     var known = summaries[summary_key]
     if known {
@@ -235,28 +229,33 @@ func note_the_class_of_a_parameter(parameter: ParameterModel) {
     classes_of_locals[parameter.name] = class_key
 }
 
+func keep_the_summarized(summary: List<BackReferenceStore>, read: List<BackReferenceStore>, names: List<String>) {
+    var index = 0
+    while index < read.count() {
+        var store = read[index]
+        var holder = summarized_key(store.holder, names)
+        var value = summarized_key(store.value, names)
+        if holder and value {
+            keep_in_a_summary(summary, store, holder, value)
+        }
+        index = index + 1
+    }
+}
+
 # ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
 func keep_in_a_summary(summary: List<BackReferenceStore>, store: BackReferenceStore, holder: String, value: String) {
-    if store.is_left_out {
-        add_once(names_left_out, store.attribute)
-        return
-    }
-    fallback is_kept_in_a_summary(summary, holder, store.attribute, value)
+    fallback is_new_in(summary, holder, store, value)
     var kept = BackReferenceStore(holder, store.attribute, value)
+    kept.is_left_out = store.is_left_out
     summary.append(kept)
 }
 
-func is_kept_in_a_summary(
-    summary: List<BackReferenceStore>,
-    holder: String,
-    attribute: String,
-    value: String,
-): Boolean {
+func is_new_in(found: List<BackReferenceStore>, holder: String, store: BackReferenceStore, value: String): Boolean {
     var index = 0
-    while index < summary.count() {
-        var known = summary[index]
-        var is_the_same = known.holder == holder and known.attribute == attribute and known.value == value
-        fallback not is_the_same
+    while index < found.count() {
+        var known = found[index]
+        var is_the_same = known.holder == holder and known.attribute == store.attribute and known.value == value
+        fallback not is_the_same or known.is_left_out != store.is_left_out
         index = index + 1
     }
     return true
@@ -322,10 +321,31 @@ func expand_a_call(name: String, receiver_key: String, arguments: List<SpiteComp
 # ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
 func follow_a_store(store: BackReferenceStore, holder: String, value: String, summary_key: String) {
     fallback not holder.is_empty() and not store.attribute.is_empty() and not value.is_empty()
+    if store.is_left_out or deepens_around_a_cycle(store, holder, value, summary_key) {
+        fold_a_store(holder, store.attribute, value)
+        return
+    }
     var followed = BackReferenceStore(holder, store.attribute, value)
     followed.is_followed = true
-    followed.is_left_out = deepens_around_a_cycle(store, holder, value, summary_key)
     stores.append(followed)
+}
+
+# ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
+func fold_a_store(holder: String, attribute: String, value: String) {
+    var holder_head = head_of(holder)
+    var value_head = head_of(value)
+    var folded = BackReferenceStore(holder_head, attribute, value_head)
+    folded.is_followed = true
+    folded.is_left_out = true
+    fallback is_new_in(folded_stores, folded.holder, folded, folded.value)
+    folded_stores.append(folded)
+}
+
+func head_of(key: String): String {
+    var parts = key.split(".")
+    var head = parts[0]
+    crash head
+    return head
 }
 
 func deepens_around_a_cycle(store: BackReferenceStore, holder: String, value: String, summary_key: String): Boolean {
@@ -421,6 +441,7 @@ func read_a_function(function: FunctionModel) {
     var declaration: AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration = function.declaration
     start_reading(function, declaration)
     reading_body = declaration.body
+    folded_stores.each(note_a_store_left_out)
     stores.each(link_back)
     stores.each(note_a_store_apart)
     var function_key = function.key()
@@ -433,12 +454,25 @@ func start_reading(function: FunctionModel, declaration: AbstractSyntaxTree.Shap
     reading_class = function.owner
     made_count = 0
     stores = List<BackReferenceStore>()
+    folded_stores = List<BackReferenceStore>()
     locals = List<String>()
     aliases = Dictionary<String, String>()
     classes_of_locals = Dictionary<String, String>()
     declaration.parameters.each(note_a_parameter)
     function.parameters.each(note_the_class_of_a_parameter)
     read_block(declaration.body)
+}
+
+# ../PROOFS.md#a-back-reference-is-picked-from-how-the-program-links-its-objects
+func note_a_store_left_out(store: BackReferenceStore) {
+    var is_holder_made = store.holder.starts_with("#")
+    var is_value_made = store.value.starts_with("#")
+    if is_holder_made and not is_value_made {
+        add_once(left_out_holders, store.attribute)
+    }
+    if is_value_made and not is_holder_made {
+        add_once(left_out_values, store.attribute)
+    }
 }
 
 func note_a_parameter(parameter: AbstractSyntaxTree.Shapes.Declarations.Parameter) {
@@ -858,7 +892,7 @@ func is_owned_across(
     if not may_point_back {
         return true
     }
-    fallback not names_left_out.contains(owning.name) and not names_left_out.contains(attribute.name)
+    fallback not left_out_holders.contains(owning.name) and not left_out_values.contains(attribute.name)
     var other_way = "{owning.name}|{attribute.name}"
     if linked_by_the_made.contains(link) or linked_by_the_made.contains(other_way) {
         return linked_by_the_made.contains(link) and not linked_by_the_made.contains(other_way)
