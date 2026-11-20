@@ -174,9 +174,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   class and name: a constructor's writes to its own object and writes to an object made in the same function, before
   it is stored, copied, passed, called on, taken with a function or returned (for a local made before a loop, before
   the loop if the body hands it on), are not writes to anything a proof reads (`Assignments.hand_on`, which marks the write `is_to_a_fresh_object`); a wait writes nothing in a program that makes no `Concurrent` or
-  `Parallel`, and anything in one that does; a call through a function value reaches the functions taken as values
-  with its signature anywhere in the program, whichever function is read first (`Assignments.call_a_value`, and
-  every function taken as a value only when none is taken with it; a call inside an `Observer` whose `subscribe` is never built reaches nothing, since nothing was ever stored for it to call: `HighProgram.observers_nothing_subscribes_to`), and a function that only calls its parameters reaches the functions each caller passes it; a
+  `Parallel`, and anything in one that does; a call through a function value reaches only the functions that can
+  flow into what it calls ([A call through a function value reaches what flows into it](#a-call-through-a-function-value-reaches-what-flows-into-it), `Assignments.call_a_value`; a call inside an `Observer` whose `subscribe` is never built reaches nothing, since nothing was ever stored for it to call: `HighProgram.observers_nothing_subscribes_to`), and a function that only calls its parameters reaches the functions each caller passes it; a
   foreign call reaches the functions handed to a `ForeignCallback` (`Assignments.note_a_callback`), which C may call
   back, and through them what they call and take as values, never every function value; a
   `drop()` that may run is followed too. Inside a loop, a call anywhere in the body undoes a narrowing made before
@@ -247,6 +246,31 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   conformance/getter_with_an_effect_after_crash, conformance/getter_with_an_effect_after_fallback,
   conformance/getter_with_an_effect_after_switch, conformance/getter_read_after_a_call_that_changes_it,
   conformance/getter_read_after_a_write_that_changes_it.
+
+### A call through a function value reaches what flows into it
+
+- **Status**: built (spite_compiler#640), for [A call keeps a proof it cannot change](#a-call-keeps-a-proof-it-cannot-change).
+- **Rule**: one flow over the whole built program answers which functions a call through a function value may run.
+  Every function taken as a value (`clearer.clear`) flows from where it is taken into the places it is written:
+  a local or a parameter of one function, an attribute of a class (every object of the class shares it), what a
+  function answers, and the items of a list class (`_write_value` in, `_read_value` out), so a generic class holding a
+  `List<Spite.Function<V, Nothing>>` or an attribute of a function type is followed for each class it is made for.
+  A call passes its arguments to the parameters of the function it calls, a call through a `type` to each filler's
+  member, and a call through a function value to the parameters of each function that reaches it, and takes what they
+  answer, until nothing new flows. The call then reaches what flowed into the value it calls, and nothing when nothing
+  did. No count caps it: every place gets each function once. A function value handed to a function that only calls
+  its parameters counts as called where it is handed, whatever holds it (`apply(listener)`; before, only a function
+  taken right there or a parameter did, and a value read from an attribute was dropped).
+- **Falls back**: where the flow cannot follow a value (one cast from `Anything` or a union, answered by a foreign
+  call or a function with no body, a `Function.Fact`, a parameter of a function nobody calls in the program or of one
+  handed to C, a local of a value logged outside its function), the call reaches every function taken as a value with
+  its signature, and every function taken as a value when none is taken with it, as before (#543).
+- **Lives in**: `high_intermediary_representation/function_value_reach.spite` (`FunctionValueReach.reached_by`), asked
+  by `assignments.spite` (`call_a_value`, `pass_a_function_value`) for the narrowings, by `waits.spite` for the
+  singleton locks and by `proofs/no_thread_counts/thread_reach.spite` for what another thread runs.
+- **Checked by**: tests/function_value_reach, tests/function_value_reach_through_a_watcher,
+  conformance/function_value_reach_flows_there, conformance/function_value_handed_to_a_function_that_calls_it,
+  tests/value_call_reaches_functions_taken_later.
 
 ### An address keeps its owner alive
 
@@ -2096,7 +2120,7 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Status**: built.
 - **Rule**: code that can run on another thread is every function a `Parallel` or a `Concurrent` starts (a band of
   a banded loop among them: the compiler starts it with the same IR node), every function those call, every constructor and attribute defaults of what they make, and, where they call a function
-  value, every function the program takes as a value. A class is counted by another thread when that code names a
+  value, every function that can flow into it ([A call through a function value reaches what flows into it](#a-call-through-a-function-value-reaches-what-flows-into-it), the one `Waits.reach`). A class is counted by another thread when that code names a
   value, a local, a parameter, an answer or an attribute of it, or of anything that holds it (an attribute, a list's
   or a dictionary's items, a union's member, a shape's filler); a function value there counts every class whose
   function is taken as a value, and a union or shape whose members are not known counts every class. A program that

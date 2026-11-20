@@ -4453,12 +4453,13 @@ Which singletons keep a lock, and in which form, is decided by the high pass
 
 Which singletons the work of a `Parallel` reaches is found by following calls from each function it starts. A call
 through a function value could call any function the program takes as a value, so it is followed into every such
-function whose parameters and answer have the same types as the value called, not into all of them: a function
-taken as a value only for another shape of call (`amounts.filter(ledger.is_large)` takes a `func(Integer):
-Boolean`, while the work calls a `func(): Integer`) is not reached through it, and a singleton nothing else in the
-work reaches takes no lock. The shapes are gathered from the whole program before any call is followed, so the
-order the functions are read in changes nothing; a call through a value whose shape no function of the program is
-taken with is followed into every function taken as a value.
+function that can flow into the value called ([PROOFS.md](PROOFS.md#a-call-through-a-function-value-reaches-what-flows-into-it)),
+so never into one of another shape: a function taken as a value only for another shape of call
+(`amounts.filter(ledger.is_large)` takes a `func(Integer): Boolean`, while the work calls a `func(): Integer`) is
+not reached through it, and a singleton nothing else in the work reaches takes no lock. The flow is worked out from
+the whole program before any call is followed, so the order the functions are read in changes nothing; where it
+cannot follow the value, the call is followed into every function taken as a value with its shape, and into every
+function taken as a value when none is taken with it.
 
 ```spite
 var ledger = Ledger()

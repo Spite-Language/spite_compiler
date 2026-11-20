@@ -1,0 +1,751 @@
+# ../PROOFS.md#a-call-through-a-function-value-reaches-what-flows-into-it
+
+var model = Model.ProgramModel()
+var signatures = FunctionSignatures()
+var bodies = Dictionary<String, HighFunction>()
+var places = Dictionary<String, Integer>()
+var held = List<List<String>>()
+var holds = Dictionary<String, Boolean>()
+var is_unknown = List<Boolean>()
+var is_unknown_spread = List<Boolean>()
+var spread_counts = List<Integer>()
+var is_waiting = List<Boolean>()
+var flows_to = List<List<Integer>>()
+var edges = Dictionary<String, Boolean>()
+var sites_at = List<List<Integer>>()
+var pending = List<Integer>()
+var site_signatures = List<String>()
+var site_arguments = List<List<Integer>>()
+var site_results = List<Integer>()
+var bound = Dictionary<String, Boolean>()
+var taken_as_values = List<String>()
+var is_taken = Dictionary<String, Boolean>()
+var taken_by_signature = Dictionary<String, List<String>>()
+var called_keys = Dictionary<String, Boolean>()
+var handed_to_foreign_code = List<String>()
+var hands_unknown_values_to_foreign_code = false
+var current_key = ""
+var temporary_count = 0
+var unknown_place = 0
+var visited = -1
+
+func FunctionValueReach(high: HighProgram) {
+    model = high.model
+    unknown_place = place("?")
+    is_unknown[unknown_place] = true
+    wake(unknown_place)
+    high.built_functions.each(note_a_body)
+    high.built_functions.each(walk_a_function)
+    high.built_functions.each(note_unseen_callers)
+    solve()
+}
+
+# ../PROOFS.md#a-call-through-a-function-value-reaches-what-flows-into-it
+func reached_by(called: SpiteCompiler.Value, function_key: String): List<String> {
+    var found = List<String>()
+    var found_keys = Dictionary<String, Boolean>()
+    var known = gather(called, function_key, found, found_keys)
+    if not known {
+        var signature = signatures.signature_of(called.value_type)
+        var every = fallback_for(signature)
+        add_the_new(every, found, found_keys)
+    }
+    return found
+}
+
+func gather(
+    value: SpiteCompiler.Value?,
+    function_key: String,
+    found: List<String>,
+    found_keys: Dictionary<String, Boolean>,
+): Boolean {
+    if not value {
+        return true
+    }
+    switch value {
+        Values.Function.Value: return gather_a_taken_function(value, found, found_keys)
+        Values.LocalRead: return gather_a_local(value, function_key, found, found_keys)
+        Values.AttributeRead: return gather_a_place("attribute:{value.attribute.owner}.{value.attribute.name}", found, found_keys)
+        Values.Conversion: return gather_a_conversion(value, function_key, found, found_keys)
+        Values.Call: return gather_a_call(value, found, found_keys)
+        Values.ShapeCall: return gather_a_shape_call(value, found, found_keys)
+        Values.Function.ValueCall: return gather_a_value_call(value, function_key, found, found_keys)
+        Values.NullConstant: return true
+        Values.MakeObject: return false
+        Values.ForeignCall: return false
+        Values.MachineOperation: return false
+        Values.Negation: return false
+        Values.NumberRoom: return false
+        Values.PresenceTest: return false
+        Values.WholeNumber: return false
+        Values.DecimalNumber: return false
+        Values.TextConstant: return false
+        Values.ThisRead: return false
+        Values.Class.Object: return false
+        Values.Class.OfValue: return false
+        Values.Class.Membership: return false
+        Values.EnumFromText: return false
+        Values.EnumText: return false
+        Values.Function.Fact: return false
+    }
+}
+
+func gather_a_taken_function(
+    taken: Values.Function.Value,
+    found: List<String>,
+    found_keys: Dictionary<String, Boolean>,
+): Boolean {
+    var key = taken.function.key()
+    add_a_new(key, found, found_keys)
+    return true
+}
+
+func gather_a_local(
+    local: Values.LocalRead,
+    function_key: String,
+    found: List<String>,
+    found_keys: Dictionary<String, Boolean>,
+): Boolean {
+    fallback bodies.contains(function_key)
+    return gather_a_place("{function_key}|{local.name}", found, found_keys)
+}
+
+func gather_a_conversion(
+    conversion: Values.Conversion,
+    function_key: String,
+    found: List<String>,
+    found_keys: Dictionary<String, Boolean>,
+): Boolean {
+    fallback conversion.converted and is_a_function(conversion.converted.value_type)
+    return gather(conversion.converted, function_key, found, found_keys)
+}
+
+func gather_a_call(call: Values.Call, found: List<String>, found_keys: Dictionary<String, Boolean>): Boolean {
+    var key = call.function.key()
+    if call.function.name == "_read_value" {
+        return gather_a_place("items:{call.function.owner}", found, found_keys)
+    }
+    fallback bodies.contains(key)
+    return gather_a_place("return:{key}", found, found_keys)
+}
+
+func gather_a_shape_call(
+    call: Values.ShapeCall,
+    found: List<String>,
+    found_keys: Dictionary<String, Boolean>,
+): Boolean {
+    var answer = true
+    var keys = shape_member_places(call.shape.key, call.member.name)
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        if not gather_a_place(key, found, found_keys) {
+            answer = false
+        }
+        index = index + 1
+    }
+    return answer
+}
+
+func gather_a_value_call(
+    call: Values.Function.ValueCall,
+    function_key: String,
+    found: List<String>,
+    found_keys: Dictionary<String, Boolean>,
+): Boolean {
+    crash call.called
+    var targets = reached_by(call.called, function_key)
+    var answer = true
+    var index = 0
+    while index < targets.count() {
+        var target = targets[index]
+        if not gather_a_place("return:{target}", found, found_keys) {
+            answer = false
+        }
+        index = index + 1
+    }
+    return answer
+}
+
+func gather_a_place(key: String, found: List<String>, found_keys: Dictionary<String, Boolean>): Boolean {
+    if not places.contains(key) {
+        return true
+    }
+    var index = places[key]
+    crash index
+    var keys = held[index]
+    crash keys
+    add_the_new(keys, found, found_keys)
+    return is_unknown[index] != true
+}
+
+func add_the_new(keys: List<String>, found: List<String>, found_keys: Dictionary<String, Boolean>) {
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        add_a_new(key, found, found_keys)
+        index = index + 1
+    }
+}
+
+func add_a_new(key: String, found: List<String>, found_keys: Dictionary<String, Boolean>) {
+    fallback not found_keys.contains(key)
+    found_keys[key] = true
+    found.append(key)
+}
+
+# ../PROOFS.md#a-call-through-a-function-value-reaches-what-flows-into-it
+func fallback_for(signature: String): List<String> {
+    var same = taken_by_signature[signature]
+    if same {
+        return same
+    }
+    return taken_as_values
+}
+
+func is_a_function(of_type: Model.Type): Boolean {
+    return of_type.kind == 'function'
+}
+
+func place(key: String): Integer {
+    if places.contains(key) {
+        var known = places[key]
+        crash known
+        return known
+    }
+    var index = held.count()
+    places[key] = index
+    var no_keys = List<String>()
+    held.append(no_keys)
+    is_unknown.append(false)
+    is_unknown_spread.append(false)
+    spread_counts.append(0)
+    is_waiting.append(false)
+    var no_places = List<Integer>()
+    flows_to.append(no_places)
+    var no_sites = List<Integer>()
+    sites_at.append(no_sites)
+    return index
+}
+
+func temporary_place(): Integer {
+    temporary_count = temporary_count + 1
+    return place("made:{temporary_count}")
+}
+
+func flow(from: Integer, into: Integer) {
+    fallback from >= 0 and into >= 0 and from != into
+    var edge = "{from}>{into}"
+    fallback not edges.contains(edge)
+    edges[edge] = true
+    var successors = flows_to[from]
+    crash successors
+    successors.append(into)
+    var keys = held[from]
+    crash keys
+    var index = 0
+    while index < keys.count() {
+        var key = keys[index]
+        add_a_key(into, key)
+        index = index + 1
+    }
+    if is_unknown[from] == true {
+        mark_unknown(into)
+    }
+}
+
+func add_a_key(index: Integer, key: String) {
+    var mark = "{index}|{key}"
+    fallback not holds.contains(mark)
+    holds[mark] = true
+    var keys = held[index]
+    crash keys
+    keys.append(key)
+    wake(index)
+}
+
+func mark_unknown(index: Integer) {
+    fallback is_unknown[index] != true
+    is_unknown[index] = true
+    wake(index)
+}
+
+func wake(index: Integer) {
+    fallback is_waiting[index] != true
+    is_waiting[index] = true
+    pending.append(index)
+}
+
+func solve() {
+    while not pending.is_empty() {
+        var index = pending.remove_last()
+        crash index
+        is_waiting[index] = false
+        spread(index)
+    }
+}
+
+func spread(index: Integer) {
+    var keys = held[index]
+    crash keys
+    var successors = flows_to[index]
+    crash successors
+    var sites = sites_at[index]
+    crash sites
+    var position = spread_counts[index]
+    crash position
+    var count = keys.count()
+    spread_counts[index] = count
+    while position < count {
+        var key = keys[position]
+        hand_a_key(successors, sites, key)
+        position = position + 1
+    }
+    fallback is_unknown[index] == true and is_unknown_spread[index] != true
+    is_unknown_spread[index] = true
+    successors.each(mark_unknown)
+    sites.each(bind_the_fallback)
+}
+
+func hand_a_key(successors: List<Integer>, sites: List<Integer>, key: String) {
+    var index = 0
+    while index < successors.count() {
+        var successor = successors[index]
+        crash successor
+        add_a_key(successor, key)
+        index = index + 1
+    }
+    var site_index = 0
+    while site_index < sites.count() {
+        var site = sites[site_index]
+        crash site
+        bind(site, key)
+        site_index = site_index + 1
+    }
+}
+
+# ../PROOFS.md#a-call-through-a-function-value-reaches-what-flows-into-it
+func bind_the_fallback(site: Integer) {
+    var signature = site_signatures[site]
+    crash signature
+    var every = fallback_for(signature)
+    var index = 0
+    while index < every.count() {
+        var key = every[index]
+        bind(site, key)
+        index = index + 1
+    }
+}
+
+func bind(site: Integer, key: String) {
+    var mark = "{site}@{key}"
+    fallback not bound.contains(mark)
+    bound[mark] = true
+    var arguments = site_arguments[site]
+    crash arguments
+    bind_the_parameters(key, arguments)
+    var result = site_results[site]
+    crash result
+    if result >= 0 and bodies.contains(key) {
+        var answered = place("return:{key}")
+        flow(answered, result)
+    }
+}
+
+func bind_the_parameters(key: String, arguments: List<Integer>) {
+    var body = bodies[key]
+    fallback body
+    var parameters = body.function.parameters
+    var index = 0
+    while index < arguments.count() and index < parameters.count() {
+        var argument = arguments[index]
+        crash argument
+        if argument >= 0 {
+            var parameter = parameters[index]
+            var parameter_place = place("{key}|{parameter.name}")
+            flow(argument, parameter_place)
+        }
+        index = index + 1
+    }
+}
+
+func note_a_body(function: HighFunction) {
+    var key = function.function.key()
+    bodies[key] = function
+}
+
+# ../PROOFS.md#a-call-through-a-function-value-reaches-what-flows-into-it
+func note_unseen_callers(function: HighFunction) {
+    var key = function.function.key()
+    var is_seen = called_keys.contains(key) or is_taken.contains(key)
+    var is_handed = handed_to_foreign_code.contains(key) or hands_unknown_values_to_foreign_code and is_taken.contains(key)
+    fallback is_handed or not is_seen
+    var parameters = function.function.parameters
+    var index = 0
+    while index < parameters.count() {
+        var parameter = parameters[index]
+        if is_a_function(parameter.parameter_type) {
+            var parameter_place = place("{key}|{parameter.name}")
+            mark_unknown(parameter_place)
+        }
+        index = index + 1
+    }
+}
+
+func walk_a_function(function: HighFunction) {
+    current_key = function.function.key()
+    walk_a_block(function.body)
+}
+
+func walk_a_block(block: Statements.Block?) {
+    fallback block
+    block.statements.each(walk_a_statement)
+}
+
+func walk_a_statement(statement: SpiteCompiler.Statement) {
+    switch statement {
+        Statements.Declare: walk_into_a_local(statement.name, statement.value)
+        Statements.Assign.Assign: walk_into_a_local(statement.name, statement.value)
+        Statements.Assign.Attribute: walk_an_attribute_write(statement)
+        Statements.Assign.ThroughShape: walk_a_shape_write(statement)
+        Statements.Evaluate: walk_an_evaluation(statement)
+        Statements.Return: walk_into(statement.value, "return:{current_key}")
+        Statements.If: walk_an_if(statement)
+        Statements.While: walk_a_while(statement)
+        Statements.Stop: walk_a_stop(statement)
+        Statements.Block: walk_a_block(statement)
+    }
+}
+
+func walk_into_a_local(name: String, value: SpiteCompiler.Value?) {
+    walk_into(value, "{current_key}|{name}")
+}
+
+func walk_into(value: SpiteCompiler.Value?, key: String) {
+    visit(value)
+    var from = visited
+    fallback from >= 0
+    var into = place(key)
+    flow(from, into)
+}
+
+func walk_an_attribute_write(written: Statements.Assign.Attribute) {
+    visit(written.object)
+    var attribute = written.attribute
+    walk_into(written.value, "attribute:{attribute.owner}.{attribute.name}")
+}
+
+func walk_a_shape_write(written: Statements.Assign.ThroughShape) {
+    visit(written.object)
+    visit(written.value)
+    var from = visited
+    fallback from >= 0
+    var fillers = model.fillers_of(written.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        var attribute_place = place("attribute:{filler.name}.{written.member}")
+        flow(from, attribute_place)
+        var setter = "{filler.name}.set_{written.member}"
+        var arguments = [from]
+        bind_the_parameters(setter, arguments)
+        index = index + 1
+    }
+}
+
+func walk_an_evaluation(evaluated: Statements.Evaluate) {
+    visit(evaluated.value)
+    visit(evaluated.waited)
+}
+
+# ../ARCHITECTURE.md#an-else-if-chain-is-walked-in-a-loop
+func walk_an_if(branch: Statements.If) {
+    var link: Statements.If? = branch
+    while link {
+        var current = link
+        visit(current.condition)
+        walk_a_block(current.then_branch)
+        link = current.else_if()
+        if not link {
+            walk_a_block(current.else_branch)
+        }
+    }
+}
+
+func walk_a_while(loop: Statements.While) {
+    visit(loop.condition)
+    walk_a_block(loop.body)
+}
+
+func walk_a_stop(stop: Statements.Stop) {
+    stop.shown.each(visit_a_shown)
+    visit(stop.then)
+}
+
+func visit_a_shown(value: SpiteCompiler.Value) {
+    visit(value)
+}
+
+func visit(value: SpiteCompiler.Value?) {
+    visited = -1
+    fallback value
+    switch value {
+        Values.Call: visit_a_call(value)
+        Values.Conversion: visit_a_conversion(value)
+        Values.AttributeRead: visit_an_attribute(value)
+        Values.Class.OfValue: visit_only(value.described)
+        Values.Class.Membership: visit_only(value.tested)
+        Values.EnumFromText: visit_only(value.text)
+        Values.EnumText: visit_only(value.number)
+        Values.ForeignCall: visit_a_foreign_call(value)
+        Values.Function.Value: visit_a_taken_function(value)
+        Values.Function.ValueCall: visit_a_value_call(value)
+        Values.MachineOperation: visit_a_chain(value)
+        Values.MakeObject: visit_a_making(value)
+        Values.Negation: visit_only(value.negated)
+        Values.NumberRoom: visit_both(value.made, value.number)
+        Values.PresenceTest: visit_only(value.tested)
+        Values.ShapeCall: visit_a_shape_call(value)
+        Values.LocalRead: visit_a_local(value)
+        Values.Function.Fact: visit_an_unknown(value)
+        Values.WholeNumber: return
+        Values.DecimalNumber: return
+        Values.TextConstant: return
+        Values.NullConstant: return
+        Values.ThisRead: return
+        Values.Class.Object: return
+    }
+}
+
+func visit_only(value: SpiteCompiler.Value?) {
+    visit(value)
+    visited = -1
+}
+
+func visit_both(first: SpiteCompiler.Value?, second: SpiteCompiler.Value?) {
+    visit(first)
+    visit(second)
+    visited = -1
+}
+
+func visit_an_unknown(value: SpiteCompiler.Value) {
+    visited = -1
+    if is_a_function(value.value_type) {
+        visited = unknown_place
+    }
+}
+
+# ../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
+func visit_a_chain(operation: Values.MachineOperation) {
+    var links = [operation]
+    var lowest = operation
+    var next = left_link_of(lowest)
+    while next {
+        links.append(next)
+        lowest = next
+        next = left_link_of(lowest)
+    }
+    visit(lowest.left)
+    var index = links.count() - 1
+    while index >= 0 {
+        var link = links[index]
+        crash link
+        visit(link.right)
+        index = index - 1
+    }
+    visited = -1
+}
+
+func left_link_of(operation: Values.MachineOperation): Values.MachineOperation? {
+    var left = operation.left
+    fallback left.class == Values.MachineOperation
+    return left
+}
+
+func visit_a_local(local: Values.LocalRead) {
+    visited = -1
+    fallback is_a_function(local.value_type)
+    visited = place("{current_key}|{local.name}")
+}
+
+func visit_an_attribute(read: Values.AttributeRead) {
+    visit(read.object)
+    visited = -1
+    fallback is_a_function(read.value_type)
+    var attribute = read.attribute
+    visited = place("attribute:{attribute.owner}.{attribute.name}")
+}
+
+func visit_a_conversion(conversion: Values.Conversion) {
+    visit(conversion.converted)
+    var from = visited
+    visited = -1
+    fallback is_a_function(conversion.value_type)
+    if conversion.converted and is_a_function(conversion.converted.value_type) {
+        visited = from
+        return
+    }
+    visited = unknown_place
+}
+
+func visit_a_taken_function(taken: Values.Function.Value) {
+    visit(taken.receiver)
+    var key = taken.function.key()
+    if not is_taken.contains(key) {
+        is_taken[key] = true
+        taken_as_values.append(key)
+    }
+    var signature = signatures.signature_of(taken.value_type)
+    if not taken_by_signature.contains(signature) {
+        var none_yet = List<String>()
+        taken_by_signature[signature] = none_yet
+    }
+    var same = taken_by_signature[signature]
+    crash same
+    if not same.contains(key) {
+        same.append(key)
+    }
+    var made = temporary_place()
+    add_a_key(made, key)
+    visited = made
+}
+
+func places_of(arguments: List<SpiteCompiler.Value>): List<Integer> {
+    var found = List<Integer>()
+    var index = 0
+    while index < arguments.count() {
+        var argument = arguments[index]
+        visit(argument)
+        found.append(visited)
+        index = index + 1
+    }
+    return found
+}
+
+func visit_a_call(call: Values.Call) {
+    visit(call.receiver)
+    var key = call.function.key()
+    called_keys[key] = true
+    var arguments = places_of(call.arguments)
+    if call.function.name == "_write_value" {
+        var stored = arguments.last()
+        var items = place("items:{call.function.owner}")
+        if stored {
+            flow(stored, items)
+        }
+    } else {
+        bind_the_parameters(key, arguments)
+    }
+    visited = -1
+    fallback is_a_function(call.value_type)
+    if call.function.name == "_read_value" {
+        visited = place("items:{call.function.owner}")
+        return
+    }
+    visited = unknown_place
+    if bodies.contains(key) {
+        visited = place("return:{key}")
+    }
+}
+
+func visit_a_shape_call(call: Values.ShapeCall) {
+    visit(call.receiver)
+    var arguments = places_of(call.arguments)
+    var fillers = model.fillers_of(call.shape.key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        var member_key = "{filler.name}.{call.member.name}"
+        called_keys[member_key] = true
+        bind_the_parameters(member_key, arguments)
+        index = index + 1
+    }
+    visited = -1
+    fallback is_a_function(call.value_type)
+    var answered = temporary_place()
+    var keys = shape_member_places(call.shape.key, call.member.name)
+    var key_index = 0
+    while key_index < keys.count() {
+        var key = keys[key_index]
+        var from = place(key)
+        flow(from, answered)
+        key_index = key_index + 1
+    }
+    visited = answered
+}
+
+func shape_member_places(shape_key: String, member: String): List<String> {
+    var found = List<String>()
+    var fillers = model.fillers_of(shape_key)
+    var index = 0
+    while index < fillers.count() {
+        var filler = fillers[index]
+        found.append("return:{filler.name}.{member}")
+        found.append("return:{filler.name}.get_{member}")
+        found.append("attribute:{filler.name}.{member}")
+        index = index + 1
+    }
+    return found
+}
+
+func visit_a_value_call(call: Values.Function.ValueCall) {
+    visit(call.called)
+    var called_place = visited
+    if called_place < 0 {
+        called_place = unknown_place
+    }
+    var arguments = places_of(call.arguments)
+    var site = site_signatures.count()
+    crash call.called
+    var signature = signatures.signature_of(call.called.value_type)
+    site_signatures.append(signature)
+    site_arguments.append(arguments)
+    var result = -1
+    if is_a_function(call.value_type) {
+        result = place("result:{site}")
+    }
+    site_results.append(result)
+    var sites = sites_at[called_place]
+    crash sites
+    sites.append(site)
+    wake(called_place)
+    visited = result
+}
+
+func visit_a_foreign_call(call: Values.ForeignCall) {
+    visit(call.library)
+    call.arguments.each(hand_to_foreign_code)
+    visited = -1
+    if is_a_function(call.value_type) {
+        visited = unknown_place
+    }
+}
+
+# ../PROOFS.md#a-call-through-a-function-value-reaches-what-flows-into-it
+func hand_to_foreign_code(argument: SpiteCompiler.Value) {
+    visit(argument)
+    fallback is_a_function(argument.value_type)
+    if argument.class == Values.Function.Value {
+        var key = argument.function.key()
+        handed_to_foreign_code.append(key)
+    } else {
+        hands_unknown_values_to_foreign_code = true
+    }
+}
+
+func visit_a_making(made: Values.MakeObject) {
+    var class_key = made.value_type.name
+    called_keys["{class_key}._attribute_defaults"] = true
+    if class_key == "ForeignCallback" {
+        made.arguments.each(hand_to_foreign_code)
+        visited = -1
+        return
+    }
+    var arguments = places_of(made.arguments)
+    if made.constructor {
+        var constructor_key = made.constructor.key()
+        called_keys[constructor_key] = true
+        bind_the_parameters(constructor_key, arguments)
+    }
+    visited = -1
+}
