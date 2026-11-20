@@ -11,8 +11,8 @@ The program's folders: which class file each name reaches.
   folder and its place inside it (a library file as `standard_library.spite` shows it), never where the build ran.
 - `packages.spite` and `pinned_copy.spite`: the package a path belongs to and the copy of a git-pinned one.
 - `folder_map.spite`'s `makes_a_class` is the one place that says whether a folder is a class: every root is one,
-  given an implied class when it holds no file of its own (the program's entry class is its root, D2669, D2676,
-  D2677); the library's folders are not.
+  given an implied class when it holds no file of its own (the program's entry class is its root, D2669, D2676);
+  the library's folders are none (D2679).
   `join_the_library_reopenings` gives a root class's file or folder named like a library class or folder the
   library's name, so it reopens it, and `join_an_earlier_roots_reopenings` gives a loaded root's folder named like
   a root loaded before it that root's name (`mods/game/` reopens `Game`, D2678).
