@@ -282,7 +282,7 @@ func built(): Panel {
 }
 ```
 
-`Panel` declares `var children = List<Anything>()`, and `built` replaces it before anything reads it, so the panel is
+`Panel` declares `var children = List<Component>()`, and `built` replaces it before anything reads it, so the panel is
 made with a copy of its defaults that leaves `children` out: the default list is never made. A tag
 (`<Panel><Note/></Panel>`) is written this way, so every tag with children made a list and dropped it at once:
 `tests/jsx_nested_tags_set_children` went from 1337 allocations to 833.

@@ -282,7 +282,7 @@ later stage reads is put back here; one that is not would let an uncalled functi
 ### A call copies a function taking a union or a type
 
 A call of a function of the program's own classes whose parameter is a `union`, a `type` or a generic holding one
-(`List<Anything>`) keeps each argument whose type is a class that fits as it is (`Arguments.fitted_or_kept`), and
+(`List<Shape>`) keeps each argument whose type is a class that fits as it is (`Arguments.fitted_or_kept`), and
 calls the copy of the function for those types (`building/typed_copies.spite`), named `<name>_typed_<types>` and kept
 in `Context.known_function_copies`. The copy has the original's declaration with those parameters retyped, so the
 builder builds and checks it like hand-written code: a member read is direct, and a mistake that only that copy
@@ -296,40 +296,30 @@ copied, nor is a function already copied on the way to this copy for types of a 
 the size of each type it is bound to), so a recursion that wraps its argument calls it as written (#601), and a parameter the body assigns or copies into a local with no written
 type keeps its declared type (`TypedCopies.keeps_its_type`), since that local may later hold any value of it.
 
-### Anything is filled per use
+### A type is filled by the classes that reach it
 
-No program writes `Anything` (`validators/abstract_syntax_tree/anything_named` refuses it outside the standard library,
-D2635): every place names what it holds. The library's reflection classes still hold their values as `Anything`
-(`Spite.Attribute.value` and `.owner`, `Spite.Function.owner`, `Spite.Call` and `FunctionDeclaration._call_on`,
-`part()` of a class known only at run time, the REPL's kept values) until they say what they hold (#623), and those
-places are filled per use as below. `Anything` is a union whose members the compiler fills with the classes that reach it, and each place that writes
-`Anything` (an attribute, a parameter, an answer, a local) is its own: its type is the shape `Anything@<place>`,
-shown as `Anything` (`Types.its_own`, the shape made on first ask by `ProgramModel.anything_keyed`). A value moved
-from one `Anything` into another links them (`Fitting.fitted_into_another_anything`, and a function value's
-parameters and answer through `link_the_anything_parts`), so the classes that reach one reach the other, and
-`follow_the_shape_links` repeats until no link adds a class. A place whose values are tested at run time before they
-enter it (a `call()` parameter typed `Anything` or a `type`, read from `call.arguments`) is linked the same way but
-takes only the classes that fit it (`Fitting.fill_with_the_fitting`), so a class that never reaches the call is never
-asked to fit, and the test (`test_the_fillers`) matches every filler, numbers and enums too. A hole on a `T?` of a
-`type` asking `to_string` goes through the compiler's `type Printable` like a hole on an `Anything?`, so null shows `null`. Two `Anything`s are the same type everywhere else
-(`Type.is_the_same_as`). So printing a `Spite.Attribute`'s `.value` asks `to_string` of the classes the attributes
-held, not of the owner kept beside it. An `Anything` shape lists only `to_debug`, which every class has:
-`value.to_string()` and a hole `"{value}"` on an `Anything` pass the value into the compiler's `type Printable`,
-keyed `Printable` (`Fitting.shown_through_their_own`), which only a class with its own `to_string` fills, so nothing stands in for a
-missing one. An `Anything` written as a generic argument (`List<Anything?>`, `Spite.Function<Anything?, String>`)
-is its own too, keyed by where it is written (`GenericArgument.place`, set by the parser), so each such place mints its
-own class (`List_of_Anything@<place>@_maybe`, `Instances.own_anything_key`). Two such classes differing only in their
-places are the same type (`Type.without_places`); a value moved from one into the other joins them
-(`Fitting.fitted_into_another_place`): their `Anything`s are linked both ways, since both now hold the one object, and
-the joined classes (`ProgramModel.join_the_families`) fill every shape any of them fills, so a test of the class
-while running finds the object whichever of them it was made as. One object is then used through the functions of
-several classes, so a class with a place keeps its declared layout (`keeps_its_declared_layout` in `Layout`,
-`AttributeUses` and `UnreadAttributes`, and its named numbers stay): every class of a family lays the object out the
-same way, whatever each one's own uses would drop or move. A place is never shown: the class is shown as written
-(`List<Anything?>`, `Instances.shown_present_argument`), and a stop names its function without the place
-(`FunctionModel.shown_owner`, `Type.without_places`).
+Every place names what it holds (D2635, D2637): no program and no library class writes `Anything`
+(`validators/abstract_syntax_tree/anything_named` refuses it), so no type is filled with every class. A `type` is
+filled by the classes that reach it, and a value moved from one `type` into another links them
+(`Fitting.refill_a_shape`, remembered in `Context.shape_links`), so `follow_the_shape_links` repeats until no link
+adds a class. A hole `"{value}"` or `value.to_string()` on a `T?` of a `type` asking `to_string` passes the value into the
+compiler's own `type Printable`, keyed `Printable` (`Fitting.shown_through_their_own`), which only a class with its
+own `to_string` fills, so null shows `null` and nothing stands in for a missing one.
 
-`==` on a value typed by a `type`, a union or `Anything` passes both sides into the compiler's own shape
+The reflection classes say what they hold with types a program can write. A `Spite.Attribute<Value>` is minted per
+value type (`Writing.attribute_type_of`, `Instances.generic_instance_of`; its key starts `Spite.Attribute_of_`,
+`Type.is_a_bound_attribute`): an instance's attribute named in the code or by a declaration answers one of its own
+class (`Reads.named_attribute_object`), and a walk calls its function only on the attributes whose class fits that
+function's `Value` (`WalkedLists.takes_the_attribute`), reading `.value` fitted into it. Its writer is a function of the
+owner's class (`Writers.writer_of`) made only when `Value` is the attribute's own type. An instance's attributes listed as a
+value are refused (`InstanceAttributeNamed`), since which attribute each item is would be known only while running.
+An object made from a class known only at run time is a `Console.Debuggable` (`Making.made_anew_type`), and a
+`Spite.Call` of a declaration known only at run time takes no arguments: its wrapper (`Wrappers.calling_on_wrapper`,
+`_called_on`) tests the instance's class and calls the function, and stops for one that takes arguments. The REPL keeps each `var` in a singleton the compiler writes for its name
+and class (`Reload.KeptValues`, `.spite/build/spite/kept_<name>_as_<Class>.spite`): `_loop.keep` and `_loop.kept` in the
+session's code are the compiler's own calls, never library functions.
+
+`==` on a value typed by a `type` or a union passes both sides into the compiler's own shape
 `held_equals|<type>` (`Equality.held_equal`), whose one member `equals` every class that reaches the value fills with
 its own `equals`, written or given (`Equality.need_the_held_equals`, through the same links as any shape). The lowering
 dispatches on the left side's class and answers `false` when the right side's class differs
