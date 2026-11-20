@@ -516,8 +516,8 @@ syntax tree's `IfStatement.else_if()` does the same), and a `switch` is built in
 (`Switches.switch_chain` builds the cases in order and links them from the last). A walker that went down it by nested
 calls would deepen the stack by its block, statement and `if` functions for every link (#626), so every walker after
 the parser takes the links in a loop: the passes, the proofs, the analyses of the high representation, the lowering,
-the printers, the syntax-tree walk (`AbstractSyntaxTree.Walk`), the markup desugarer and the validators that go into
-branches. A walker does what it does for an `if`, walks the `then` branch, and moves to the next link instead of
+the printers, the syntax-tree walk (`AbstractSyntaxTree.Walk`), the markup desugarer, the validators that go into
+branches and the fixes that look for a chain's last line (`FixableSite.last_line_of`). A walker does what it does for an `if`, walks the `then` branch, and moves to the next link instead of
 calling itself on the else branch. What it would do on entering the link's block (a scope, a saved flag, a counted
 depth, a found statement) it does there, and what it would do on leaving (a fact joined after both branches, a flag
 put back, a list replaced) it keeps per link and does from the last link back, so everything happens in the order
@@ -525,6 +525,8 @@ the nested calls took and no executable changes bytes. The lowering keeps what `
 would hold for each link in an `ElseIfLink` (`low_intermediary_representation/lowering/ifs.spite`). Each turn takes
 the next link of the chain, so the loop ends with the chain and needs no cap. Freeing a chain is the free functions'
 work ([Freeing a chain takes no stack per link](OPTIMIZATIONS.md#freeing-a-chain-takes-no-stack-per-link)).
+Sampled on a 597-link chain and the 1201-case `switch` of `tests/file_content_budget`, no stage after the parser goes
+deeper than it does for a 20-link chain; the deepest stack of a build is the formatter's (#608).
 
 ### An operator chain is walked in a loop
 
