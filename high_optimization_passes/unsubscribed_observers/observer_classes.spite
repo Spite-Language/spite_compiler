@@ -1,0 +1,260 @@
+# ../../OPTIMIZATIONS.md#an-observer-nothing-subscribes-to-is-never-told
+
+var no_program = Model.ProgramModel()
+var program = HighIntermediaryRepresentation.HighProgram(no_program)
+var touched_attributes = List<String>()
+var mentioned = List<String>()
+var candidates = List<String>()
+var kept_candidates = List<String>()
+var library = Mapping.LibraryFile()
+var defaults_by_class = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+
+func ObserverClasses(high: HighIntermediaryRepresentation.HighProgram) {
+    program = high
+}
+
+# ../../OPTIMIZATIONS.md#an-observer-nothing-subscribes-to-is-never-told
+func leave_out_the_unread() {
+    note_the_touched_attributes()
+    program.model.order.each(leave_out_unread_observer_attributes)
+    program.unsubscribed_observers.each(note_a_candidate)
+    keep_the_mentioned_candidates()
+    leave_out_the_candidates()
+}
+
+func note_the_touched_attributes() {
+    var index = 0
+    while index < program.built_functions.count() {
+        var built = program.built_functions[index]
+        var rewriting = HighOptimizationPasses.Rewriting(this)
+        rewriting.rewrite_block(built.body)
+        if built.function.name == "_attribute_defaults" {
+            defaults_by_class[built.function.owner] = built
+        } else {
+            note_the_writes(built.body)
+        }
+        index = index + 1
+    }
+}
+
+func note_the_writes(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    var index = 0
+    while index < block.statements.count() {
+        var statement = block.statements[index]
+        if statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute {
+            note_an_attribute(statement.attribute)
+        } else if statement.class == HighIntermediaryRepresentation.Statements.Block {
+            note_the_writes(statement)
+        } else if statement.class == HighIntermediaryRepresentation.Statements.While {
+            note_the_writes(statement.body)
+        } else if statement.class == HighIntermediaryRepresentation.Statements.If {
+            note_the_writes_of_an_if(statement)
+        }
+        index = index + 1
+    }
+}
+
+# ../../ARCHITECTURE.md#an-else-if-chain-is-walked-in-a-loop
+func note_the_writes_of_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    var link: HighIntermediaryRepresentation.Statements.If? = branch
+    while link {
+        var current = link
+        note_the_writes(current.then_branch)
+        link = current.else_if()
+        if not link {
+            note_the_writes(current.else_branch)
+        }
+    }
+}
+
+func note_an_attribute(attribute: Model.AttributeModel) {
+    var key = "{attribute.owner}.{attribute.name}"
+    fallback not touched_attributes.contains(key)
+    touched_attributes.append(key)
+}
+
+func rewritten(value: SpiteCompiler.Value): SpiteCompiler.Value {
+    if value.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        note_an_attribute(value.attribute)
+    }
+    return value
+}
+
+# ../../OPTIMIZATIONS.md#an-observer-nothing-subscribes-to-is-never-told
+func leave_out_unread_observer_attributes(model: Model.ClassModel) {
+    var kept = List<Model.AttributeModel>()
+    var left_out = List<String>()
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        if holds_an_untouched_observer(attribute) {
+            left_out.append(attribute.name)
+            model.left_out_attributes.append(attribute)
+        } else {
+            kept.append(attribute)
+        }
+        index = index + 1
+    }
+    fallback not left_out.is_empty()
+    model.declared_attributes = kept
+    var defaults = defaults_by_class[model.key]
+    fallback defaults
+    var kept_defaults = List<SpiteCompiler.Statement>()
+    var statement_index = 0
+    while statement_index < defaults.body.statements.count() {
+        var statement = defaults.body.statements[statement_index]
+        if not writes_one_of(statement, left_out) {
+            kept_defaults.append(statement)
+        }
+        statement_index = statement_index + 1
+    }
+    defaults.body.statements = kept_defaults
+}
+
+func writes_one_of(statement: SpiteCompiler.Statement, names: List<String>): Boolean {
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute
+    fallback statement.object and statement.object.class == HighIntermediaryRepresentation.Values.ThisRead
+    return names.contains(statement.attribute.name)
+}
+
+func holds_an_untouched_observer(attribute: Model.AttributeModel): Boolean {
+    var held = attribute.attribute_type
+    fallback held.kind == 'object' and program.unsubscribed_observers.contains(held.name)
+    var key = "{attribute.owner}.{attribute.name}"
+    return not touched_attributes.contains(key)
+}
+
+func note_a_candidate(observer_key: String) {
+    candidates.append(observer_key)
+    var observer = program.model.class_named(observer_key)
+    fallback observer
+    var told = observer.bound_types["$value"]
+    fallback told and told.kind == 'object'
+    fallback not candidates.contains(told.name)
+    var told_class = program.model.class_named(told.name)
+    fallback told_class and library.holds(told_class.file.path)
+    candidates.append(told.name)
+}
+
+# ../../OPTIMIZATIONS.md#an-observer-nothing-subscribes-to-is-never-told
+func keep_the_mentioned_candidates() {
+    var changed = true
+    while changed {
+        mentioned = List<String>()
+        note_the_mentions()
+        changed = false
+        var index = 0
+        while index < candidates.count() {
+            var candidate = candidates[index]
+            if mentioned.contains(candidate) and not kept_candidates.contains(candidate) {
+                kept_candidates.append(candidate)
+                changed = true
+            }
+            index = index + 1
+        }
+    }
+}
+
+func is_left_out(class_key: String): Boolean {
+    return candidates.contains(class_key) and not kept_candidates.contains(class_key)
+}
+
+func note_the_mentions() {
+    var index = 0
+    while index < program.built_functions.count() {
+        var built = program.built_functions[index]
+        if not is_left_out(built.function.owner) {
+            note_the_mentions_of(built)
+        }
+        index = index + 1
+    }
+    var class_index = 0
+    while class_index < program.model.order.count() {
+        var model = program.model.order[class_index]
+        if not is_left_out(model.key) {
+            note_the_attribute_types(model)
+        }
+        class_index = class_index + 1
+    }
+}
+
+func note_the_mentions_of(built: HighIntermediaryRepresentation.HighFunction) {
+    var mentions = ObserverMentions(this)
+    var rewriting = HighOptimizationPasses.Rewriting(mentions)
+    var read = HighIntermediaryRepresentation.Statements.Block(0)
+    var index = 0
+    while index < built.body.statements.count() {
+        var statement = built.body.statements[index]
+        if not writes_an_absent_attribute(statement) {
+            read.statements.append(statement)
+        }
+        index = index + 1
+    }
+    rewriting.rewrite_block(read)
+    var parameter_index = 0
+    while parameter_index < built.function.parameters.count() {
+        var parameter = built.function.parameters[parameter_index]
+        note_a_type(parameter.parameter_type)
+        parameter_index = parameter_index + 1
+    }
+    fallback built.function.answer
+    note_a_type(built.function.answer)
+}
+
+# ../../OPTIMIZATIONS.md#an-observer-nothing-subscribes-to-is-never-told
+func writes_an_absent_attribute(statement: SpiteCompiler.Statement): Boolean {
+    fallback statement.class == HighIntermediaryRepresentation.Statements.Assign.Attribute
+    var key = "{statement.attribute.owner}.{statement.attribute.name}"
+    return program.absent_attributes.contains(key)
+}
+
+func note_the_attribute_types(model: Model.ClassModel) {
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var key = "{attribute.owner}.{attribute.name}"
+        if not program.absent_attributes.contains(key) {
+            note_a_type(attribute.attribute_type)
+        }
+        index = index + 1
+    }
+}
+
+func note_a_type(noted: Model.Type) {
+    if candidates.contains(noted.name) and not mentioned.contains(noted.name) {
+        mentioned.append(noted.name)
+    }
+    noted.members.each(note_a_type)
+    fallback noted.signature
+    noted.signature.parameters.each(note_a_type)
+    fallback noted.signature.answer
+    note_a_type(noted.signature.answer)
+}
+
+# ../../OPTIMIZATIONS.md#an-observer-nothing-subscribes-to-is-never-told
+func leave_out_the_candidates() {
+    var kept_functions = List<HighIntermediaryRepresentation.HighFunction>()
+    var index = 0
+    while index < program.built_functions.count() {
+        var built = program.built_functions[index]
+        if not is_left_out(built.function.owner) {
+            kept_functions.append(built)
+        }
+        index = index + 1
+    }
+    program.built_functions = kept_functions
+    var kept_classes = List<Model.ClassModel>()
+    var class_index = 0
+    while class_index < program.model.order.count() {
+        var model = program.model.order[class_index]
+        var is_noted = program.model.left_out_classes.contains(model.key)
+        if is_left_out(model.key) and not is_noted {
+            program.model.left_out_classes.append(model.key)
+        } else if not is_left_out(model.key) {
+            kept_classes.append(model)
+        }
+        class_index = class_index + 1
+    }
+    program.model.order = kept_classes
+}

@@ -3061,6 +3061,26 @@ read through `strtof` and `strtod`, which the low evaluation never runs, so this
 executable. A conversion that answers an object (`Color`, `Date`) stays a call, which the low evaluation folds where it
 can. A build that inspects the running program (`--development`, `--hot-reload`, `--repl`) keeps the call.
 
+## An observer nothing subscribes to is never told
+
+An `Observer<Value>` whose `subscribe` no reached function calls never holds a function, so telling it anything does
+nothing ([collections.md](../spite_documentation/collections.md#observer-tells-who-subscribed)). The first high pass,
+`unsubscribed_observers`, finds each `Observer` class whose `subscribe` was not built and leaves out every `notify`
+and `unsubscribe` on one of them, with the values only that call read: the change a `List` or a `Dictionary` made to
+tell (`ListChange`, `DictionaryChange`) and the item it read for it, when making and reading them do nothing else.
+An attribute holding such an observer that nothing else reads or writes is then absent, its default
+making nothing, and the observer classes and change classes no kept code names leave the program's class order with
+their functions, so every other class keeps its id. A list nothing observes is the list it was
+before observers existed: the same layout and the same code, only the library's line numbers in its crash texts
+moved. The functions a later pass builds go through the same
+pass (`FunctionBuilding.build_the_needed`). It is decided per `Observer` class, so one subscription to a
+`List<Integer>` keeps the telling in every `List<Integer>`. A build that inspects the running program
+(`--development`, `--hot-reload`, `--repl`) keeps every observer. What runs before the pass reads such an
+observer the same way: a call through a function value inside it reaches nothing, for what a call may assign
+(`Assignments`) and whether it waits (`Building.Facts`), since nothing was ever stored for it to call
+(`HighIntermediaryRepresentation.UntoldObservers`), so a list that tells nobody does not make its callers wait or
+lose their proofs.
+
 ## An operand the evaluation knows is written as a constant
 
 When an arithmetic or a comparison is left with one operand the evaluation knows but the register holding it is

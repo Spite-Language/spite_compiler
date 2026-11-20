@@ -130,10 +130,6 @@ clearing a function's facts once it has, so no fact outlives the round that prov
    frame).
 15. `reload_changed_classes`: in a reload compile (`--reload-at`), which of the program's files and classes changed
    since the running program's manifest; none answers `unchanged` before anything is lowered.
-16. `children_stay_with_their_owner`: in a lowered build, a back attribute that cannot be null (`var parent: Parent`)
-   whose children never outlive their owner holds no count (`BackReferences.hold_back_without_null`, read by
-   `holds_no_count` from the layout on); see `PROOFS.md`.
-
 The sites `recorded_sites` judges hold what the builder resolved where it recorded them (the names in scope with
 their narrowed types, the block and the statement's place in it); `PROOFS.md` lists them.
 
@@ -149,6 +145,17 @@ their narrowed types, the block and the statement's place in it); `PROOFS.md` li
 
 ### The high passes, in order
 
+First, `unsubscribed_observers`: each `Observer` class whose `subscribe` was not built is never told, so its
+   `notify` and `unsubscribe` calls are left out, with the locals only they read, its attributes nothing else touches
+   are absent, and the observer and change classes no kept code names leave `HighProgram.model.order`
+   ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#an-observer-nothing-subscribes-to-is-never-told)); before that it marks each
+   function value handed to an observer to hold its owner back
+   ([PROOFS.md](PROOFS.md#a-function-subscribed-to-an-observer-holds-its-owner-back)). `FunctionBuilding` runs the
+   same leaving out over the functions a later pass builds, and it runs once more right before `untouched_attributes`, for the classes a pass made since (`indexed_lists` makes a `Dictionary` for its index).
+   Right after it, the proof `children_stay_with_their_owner`, registered through `HighOptimizationPasses.Proving`
+   so it reads the program without the telling nobody hears: in a lowered build, a back attribute that cannot be null
+   (`var parent: Parent`) whose children never outlive their owner holds no count
+   (`BackReferences.hold_back_without_null`, read by `holds_no_count` from the layout on); see `PROOFS.md`.
 0. `literal_answers`: a number or an enum value the proof `literal_conversions` worked out replaces its call.
    Right after it, `walked_lists`: a list of a few plain items made only to be handed to a function whose body only
    walks it (`proofs/walked_lists`, asked per call) is a call of the function's copy taking the items

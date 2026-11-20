@@ -176,7 +176,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   the loop if the body hands it on), are not writes to anything a proof reads (`Assignments.hand_on`, which marks the write `is_to_a_fresh_object`); a wait writes nothing in a program that makes no `Concurrent` or
   `Parallel`, and anything in one that does; a call through a function value reaches the functions taken as values
   with its signature anywhere in the program, whichever function is read first (`Assignments.call_a_value`, and
-  every function taken as a value only when none is taken with it), and a function that only calls its parameters reaches the functions each caller passes it; a
+  every function taken as a value only when none is taken with it; a call inside an `Observer` whose `subscribe` is never built reaches nothing, since nothing was ever stored for it to call: `HighProgram.observers_nothing_subscribes_to`), and a function that only calls its parameters reaches the functions each caller passes it; a
   foreign call reaches the functions handed to a `ForeignCallback` (`Assignments.note_a_callback`), which C may call
   back, and through them what they call and take as values, never every function value; a
   `drop()` that may run is followed too. Inside a loop, a call anywhere in the body undoes a narrowing made before
@@ -1581,8 +1581,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `Dictionary` or another collection of children, and two such attributes on one class: each keeps its counts and
   leaks.
 - **Falls back**: counted; the docs teach `Parent?` meanwhile (D2598).
-- **Lives in**: `proofs/children_stay_with_their_owner` (`proof.spite`, `child_flows.spite`), run last in the proofs
-  stage and only when the program is lowered; `model/back_references.spite` (`hold_back_without_null`, read by
+- **Lives in**: `proofs/children_stay_with_their_owner` (`proof.spite`, `child_flows.spite`), registered among the
+  high passes right after `unsubscribed_observers` (so a list's telling nobody hears is not a way out for a child),
+  and only when the program is lowered; `model/back_references.spite` (`hold_back_without_null`, read by
   `holds_no_count`).
 - **Checked by**: tests/back_reference_without_null_freed, tests/back_reference_without_null_leaving.
 
@@ -1672,6 +1673,31 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   (`lower_function_value`).
 - **Checked by**: tests/fn_own_function_attribute_cycle, tests/own_function_default_holds_its_owner_back.
 
+### A function subscribed to an observer holds its owner back
+
+- **Status**: built (spite_compiler#637, to confirm).
+- **Rule**: a function value made where it is handed to `Observer.subscribe` or `unsubscribe`, directly or through
+  functions that only hand that parameter on (`List.subscribe`, a class's own `watch_degrees(reader)`), holds its
+  owner without a count, so a reader that holds what it observes (`Row` holding the list it subscribed to) is freed
+  when its last other holder goes. A call through it counts the owner up for the call; once the owner was freed the
+  call does nothing, so `notify` skips a reader that is gone.
+- **How**: `high_optimization_passes/unsubscribed_observers/held_subscribers.spite`, before the observers nothing
+  subscribes to are left out, finds the functions that hand a parameter on to an `Observer`'s `subscribe` or
+  `unsubscribe` (until no more are found) and marks each `Spite.Function` value made as such an argument
+  (`holds_its_receiver_back`, `holds_its_owner_for_the_call`, `skips_a_freed_owner`), when its function answers
+  nothing and its owner is an object of an ordinary class (not a singleton, not the entry, not a `String`). The owner
+  gets a back slot (`ProgramModel.owners_held_by_observers`, read by `layout.spite`), and the value's address is the
+  entry `<function>$held_or_skipped` (`held_owner_entries.spite`), which returns at once when the owner was freed.
+  `subscribe` and `unsubscribe` are marked alike, so the two values are `==`.
+- **Buys**: a reader holding what it observes is freed, with its `drop()`.
+- **Costs**: a back slot in the owner, a count up and down around each call, and the observer keeps the link of a
+  reader that is gone (one small object) until the observer is freed.
+- **Missing**: a function value stored first and subscribed later, and a resumable function, keep their counts, so
+  such a cycle leaks and `--debug-memory` names it.
+- **Lives in**: `high_optimization_passes/unsubscribed_observers/held_subscribers.spite`,
+  `low_intermediary_representation/lowering/held_owner_entries.spite`, `high_intermediary_representation/layout.spite`.
+- **Checked by**: tests/an_observer_reader_holding_its_list_is_freed.
+
 ### A copy never shares or remakes a C registration
 
 - **Status**: built (#512, Mortaro 2026-11-15, reach D2537 to confirm).
@@ -1703,7 +1729,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   proof below shows that nothing its copy reaches can be reached twice.
 - **Proof that drops the table**: for a class with no `deep_copy()` of its own, worked out per program from its
   monomorphised classes. It holds when the class cannot reach itself (no cycle, no back reference, no `type`
-  attribute anywhere it reaches), has no bound type that is copied (generic items can repeat), and the classes
+  attribute anywhere it reaches, a class with its own `deep_copy()` reaching only through its bound types, so a list's observer is no cycle), has no bound type that is copied (generic items can repeat), and the classes
   each of its copied attributes can reach (through object attributes, bound types and union members, a class
   with its own `deep_copy()`, `List` and `Dictionary` included, through its bound types only) are disjoint from
   those every other copied attribute can reach. Two ways to one object part at some object: at this class
