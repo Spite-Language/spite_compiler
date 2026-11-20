@@ -1,0 +1,187 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+
+func BuildSettingReads(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+# ../../OPTIMIZATIONS.md#build-settings-are-constants
+func folded_build_read(target: SpiteCompiler.Value, name: String): SpiteCompiler.Value? {
+    var held = target.value_type
+    fallback held.kind == 'object' and held.name == "Build" and not held.is_nullable
+    var flags = context.build_flags
+    var is_live = flags["hot_reload"] == "true" or flags["repl"] == "true" or flags["development"] == "true"
+    fallback not is_live or is_a_library_option(name)
+    context.folded_build_reads = context.folded_build_reads + 1
+    return folded_setting_named(name)
+}
+
+# ../../../spite_documentation/programs.md#compile-time-settings-build
+func is_a_library_option(name: String): Boolean {
+    var library = Mapping.LibraryFile()
+    var path = context.path()
+    fallback library.holds(path)
+    var symbols = context.resolver.state.symbols
+    var paths = symbols.files.keys()
+    var index = 0
+    while index < paths.count() {
+        var source_path = paths[index]
+        var source = symbols.files[source_path]
+        crash source
+        var is_the_library_build = source.namespace == "Build" and library.holds(source_path)
+        if is_the_library_build and declares_a_field(source, name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func declares_a_field(source: AbstractSyntaxTree.Shapes.SourceFile, name: String): Boolean {
+    var index = 0
+    while index < source.declarations.count() {
+        var declaration = source.declarations[index]
+        if declaration.class == AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration and declaration.name == name {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+# ../../OPTIMIZATIONS.md#build-settings-are-constants
+func folded_setting_named(name: String): SpiteCompiler.Value? {
+    var settings = context.program.class_named("Build")
+    fallback settings
+    var field = settings.attribute_named(name)
+    fallback field
+    var field_type = field.attribute_type
+    fallback field_type.kind == 'scalar' or field_type.kind == 'object' and field_type.name == "String"
+    var given = context.build_value_given(name)
+    if given {
+        return build_value_of(given, field_type)
+    }
+    fallback field.declaration
+    var written = field.declaration.value
+    return build_default_of(written, field_type)
+}
+
+func build_value_of(given: String, field_type: Model.Type): SpiteCompiler.Value? {
+    if field_type.name == "String" {
+        return values.described_text(given)
+    }
+    if field_type.name == "Boolean" {
+        var flag = 0
+        if given == "true" {
+            flag = 1
+        }
+        var boolean = context.boolean()
+        return HighIntermediaryRepresentation.Values.WholeNumber(boolean, flag, false)
+    }
+    var scalar = values.scalars.of(field_type.name)
+    fallback scalar
+    if scalar.is_decimal {
+        return HighIntermediaryRepresentation.Values.DecimalNumber(field_type, given, false)
+    }
+    var number: Long? = given
+    fallback number
+    return HighIntermediaryRepresentation.Values.WholeNumber(field_type, number, false)
+}
+
+func build_default_of(written: SpiteCompiler.Expression?, field_type: Model.Type): SpiteCompiler.Value? {
+    var fitting = Fitting(context, values)
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.TextLiteral {
+        fallback field_type.name == "String" and written.pieces.count() <= 1
+        var piece = written.pieces.first()
+        if not piece {
+            return values.described_text("")
+        }
+        fallback not piece.hole
+        return values.described_text(piece.text)
+    }
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return build_literal_of(written, field_type)
+    }
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return build_field_default_of(written.name, field_type)
+    }
+    fallback is_a_constant_default(written)
+    return fitting.fitted_value_of(written, field_type)
+}
+
+func build_field_default_of(name: String, field_type: Model.Type): SpiteCompiler.Value? {
+    var settings = context.program.class_named("Build")
+    fallback settings and values.build_defaults_read < 16
+    var other = settings.attribute_named(name)
+    fallback other and other.attribute_type.name == field_type.name
+    values.build_defaults_read = values.build_defaults_read + 1
+    var folded = folded_setting_named(name)
+    values.build_defaults_read = values.build_defaults_read - 1
+    return folded
+}
+
+func build_literal_of(
+    written: AbstractSyntaxTree.Shapes.Expressions.LiteralExpression,
+    field_type: Model.Type,
+): SpiteCompiler.Value? {
+    var fitting = Fitting(context, values)
+    if written.kind == 'keyword_true' {
+        return build_value_of("true", field_type)
+    }
+    if written.kind == 'keyword_false' {
+        return build_value_of("false", field_type)
+    }
+    fallback written.kind == 'integer_literal' or written.kind == 'decimal_literal'
+    return fitting.fitted_value_of(written, field_type)
+}
+
+# ../../OPTIMIZATIONS.md#build-settings-are-constants
+func is_a_constant_default(written: SpiteCompiler.Expression?): Boolean {
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return written.kind == 'integer_literal' or written.kind == 'decimal_literal'
+    }
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.UnaryExpression {
+        return written.operator == 'minus' and is_a_constant_default(written.operand)
+    }
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression {
+        return is_a_constant_operation(written)
+    }
+    return false
+}
+
+# ../../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
+func is_a_constant_operation(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
+    var operators = Operators(context, values)
+    fallback not operators.is_a_comparison(binary.operator)
+    var links = [binary]
+    var lowest = binary
+    var next = constant_left_link_of(lowest)
+    while next {
+        fallback not operators.is_a_comparison(next.operator)
+        links.append(next)
+        lowest = next
+        next = constant_left_link_of(lowest)
+    }
+    var found = is_a_constant_default(lowest.left)
+    var index = links.count() - 1
+    while found and index >= 0 {
+        var link = links[index]
+        crash link
+        found = is_a_constant_default(link.right)
+        index = index - 1
+    }
+    return found
+}
+
+func constant_left_link_of(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+): AbstractSyntaxTree.Shapes.Expressions.BinaryExpression? {
+    var left = binary.left
+    fallback left.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression
+    return left
+}
