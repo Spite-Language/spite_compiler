@@ -5577,3 +5577,25 @@ func Plain() {
     console.print("no prompt, no reload slots, no allocation table")
 }
 ```
+
+## A setter that only stores is the plain write
+
+Every attribute has a `set_x` and a `get_x` (D2656): the ones a class does not write are the compiler's own,
+`attributes["x"].value = value` and `return attributes["x"].value`, and they are never made as functions where an
+access runs them. A setter that only stores its parameter and a getter that only answers the storage, the compiler's
+or one the class writes that way (a template's too), are compiled as the plain write and read of the field, and
+`attributes["x"].value` with a name known while compiling is the plain field as well (no `Spite.Attribute` is made).
+A compiler-written accessor is made as a small function only where a `Spite.Call` runs it, and inlined like any other.
+A lookup by a name known while compiling (`Watched.functions["set_{name}"]` in a walk) held in a `var` that only an
+`if` and a `Spite.Call` read is never made at run time: the `if` keeps one branch and the call is direct.
+
+**When it applies:** every attribute access with no setter or getter doing more than store or answer. **What a user
+can observe:** nothing: the 86 benchmarks compile to executables of the same size as before the rule (spite_compiler#635).
+
+```spite
+var level = 0
+
+func raise() {
+    level = level + 1
+}
+```
