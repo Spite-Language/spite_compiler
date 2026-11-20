@@ -883,7 +883,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   the branch not taken is never built, so nothing is left for a proof to judge (D1110).
 - **Checked by**: tests/codegen_member_fold, tests/walked_class_fold, tests/private_walk, tests/codegen_short_circuit,
   tests/codegen_kind_tests, tests/codegen_class_test, tests/build_settings, tests/folded_helpers,
-  tests/folded_functions, tests/folded_argument_count, tests/decided_and_false, tests/decided_and_false_after_a_call.
+  tests/folded_functions, tests/folded_argument_count, tests/decided_and_false, tests/decided_and_false_after_a_call,
+  tests/a_class_test_on_a_number and its `_local`, `_attribute`, `_parameter` and `_switch` siblings (a number,
+  held in place with no header, answers a class test from its type: `type_tests.spite`, `class_test_in_place`).
 
 ### A split class behaves as the class
 
