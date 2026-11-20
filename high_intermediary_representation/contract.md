@@ -36,7 +36,7 @@ like "is this call ever reached" or "may this value be null" has no answer on th
   over the written expressions) and the helpers several concerns use. Its concerns take the `Context` and the `Values`
   and never hold the parent; one that needs another makes it as a local (`var fitting = Fitting(context, values)`).
   `building/operators.spite` holds the binary and unary values, logic, comparisons and class tests;
-  `building/type_tests.spite` a class test against a `type` and the classes it fills that `type` with;
+  `building/type_tests.spite` a class test, `value.class.satisfies_type(...)` on a named value's class and the classes it fills that `type` with;
   `building/literals.spite` the literal, default, text, enum and `this` values; `building/fitting.spite` `fitted`, the
   conversions, unions, shapes and signatures; `building/collections.spite` the list, dictionary and object literals, the
   index and the foreign call; `building/reads.spite` names, members, getters and attributes, `building/build_setting_reads.spite` the build settings read as constants;
