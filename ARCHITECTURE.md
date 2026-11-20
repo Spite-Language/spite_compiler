@@ -562,6 +562,26 @@ template, pattern matching and the template match; `naming` plurals and inflecti
 the reflection questions, the waits and writes questions and the folded counts. A caller outside names the concern:
 `operators.condition_of`, `fitting.fitted`.
 
+A link never works over the links below it again, so a chain costs time in proportion to its length (#649). The
+builder answers `is_a_decimal_constant` for every written link once, from the lowest up
+(`Operators.decimal_links_of`), before it walks the chain (`chain_link_at`), and hands each link the constant fold of
+the links below (`finished_with_the_folded_left`), which `operated_value` uses only while its left side is still the
+one it was handed (no swap, no comparison of equals, no maybe made present). The ranges proof carries the range of
+the links below up the chain (`prove_after_both` is handed both sides' ranges) instead of asking `range_of` of the
+left side, which would fold the whole chain below each link.
+
+### An operation is written out only when asked
+
+A `MachineOperation` keeps how it was written for the texts that name it: the constant overflow error, the overflow
+check's message in the executable, the optimization report and `--high-ir`. Its `WrittenOperation` holds the
+expression it was built from (`expression`, `shows_its_sides` when its sides are the operation's left and right,
+`before` for the `0 - ` of a negation), and `Printers.Spite.WrittenOperationPrinter` writes the text (`text`,
+`left_text`, `right_text`) only when one of those asks. An operation the compiler made itself (`total + measure(item)`,
+a banded loop's count) has no expression and keeps its text in `whole`, `left` and `right`. Writing the text of every
+link of a chain while building would cost text as long as the chain for each link (#649). The tree an operation
+points to is the one it was built from; a fix that rewrites the tree restarts the compile, so the text never shows a
+later tree.
+
 ## The targets
 
 A target is a folder of `generators/` (`windows_x64`), chosen once by which one `spite_compiler.spite` makes; no

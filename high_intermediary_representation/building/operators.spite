@@ -4,6 +4,10 @@ var no_table = Symbols.SymbolTable(no_folders)
 var no_resolver = NameResolution.Resolver(no_table)
 var context = Context(no_program, no_resolver)
 var values = Values(context)
+var is_left_folded_by_the_chain = false
+var left_folded_by_the_chain: Long? = null
+var is_made_folded = false
+var made_folded: Long? = null
 
 func Operators(starting_context: Context, starting_values: Values) {
     context = starting_context
@@ -38,6 +42,10 @@ func is_a_decimal_constant(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryE
         lowest = link
         link = left_link_of(link)
     }
+    return is_a_decimal_bottom(lowest)
+}
+
+func is_a_decimal_bottom(lowest: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): Boolean {
     fallback values.is_a_number_literal(lowest.left)
     return holds_a_decimal(lowest.left) or holds_a_decimal(lowest.right)
 }
@@ -100,9 +108,8 @@ func double_constant(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpress
     var left = constant_operand(binary.left, double_type)
     var right = constant_operand(binary.right, double_type)
     var operator = operator_of(binary.operator)
-    var printer = Printers.Spite.ExpressionPrinter(binary)
-    var shown = printer.text()
-    var written = HighIntermediaryRepresentation.Values.WrittenOperation(shown, "", "", "")
+    var written = HighIntermediaryRepresentation.Values.WrittenOperation("", "", "", "")
+    written.expression = binary
     return HighIntermediaryRepresentation.Values.MachineOperation(double_type, operator, left, right, written)
 }
 
@@ -191,25 +198,104 @@ func binary_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression
 
 # ../../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
 func chained_binary_value(binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression): SpiteCompiler.Value {
+    var written_links = written_links_of(binary)
+    var decimals = decimal_links_of(written_links)
     var links = [binary]
     var lowest = binary
-    var next = chain_link_of(lowest.left)
+    var depth = 1
+    var next = chain_link_at(written_links, decimals, depth)
     while next {
         links.append(next)
         lowest = next
-        next = chain_link_of(lowest.left)
+        depth = depth + 1
+        next = chain_link_at(written_links, decimals, depth)
     }
     var left_value = values.value_of(lowest.left, null)
+    var folded = folded_whole(left_value)
     var index = links.count() - 1
     while index > 0 {
         var link = links[index]
         crash link
-        var made = finished_with_the_left(link, left_value)
+        var made = finished_with_the_folded_left(link, left_value, folded)
+        folded = folded_after(made)
         context.log_a_call_as_it_is_built(made)
         left_value = made
         index = index - 1
     }
     return finished_with_the_left(binary, left_value)
+}
+
+func written_links_of(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+): List<AbstractSyntaxTree.Shapes.Expressions.BinaryExpression> {
+    var links = [binary]
+    var next = left_link_of(binary)
+    while next {
+        links.append(next)
+        next = left_link_of(next)
+    }
+    return links
+}
+
+# ../../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
+func decimal_links_of(links: List<AbstractSyntaxTree.Shapes.Expressions.BinaryExpression>): List<Boolean> {
+    var decimals = List<Boolean>()
+    var holds_below = true
+    var index = links.count() - 1
+    while index >= 0 {
+        var link = links[index]
+        crash link
+        var holds = holds_below and is_decimal_arithmetic(link.operator) and is_a_literal_tree(link.right)
+        if holds and index == links.count() - 1 {
+            holds = is_a_decimal_bottom(link)
+        }
+        decimals.append(holds)
+        holds_below = holds
+        index = index - 1
+    }
+    return decimals
+}
+
+func is_a_decimal_link(decimals: List<Boolean>, index: Integer): Boolean {
+    var held = decimals[decimals.count() - 1 - index]
+    fallback held
+    return true
+}
+
+# ../../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
+func chain_link_at(
+    links: List<AbstractSyntaxTree.Shapes.Expressions.BinaryExpression>,
+    decimals: List<Boolean>,
+    index: Integer,
+): AbstractSyntaxTree.Shapes.Expressions.BinaryExpression? {
+    fallback index + 1 < links.count()
+    var expression = links[index]
+    var operator = expression.operator
+    var arithmetic = operator == 'plus' or operator == 'minus' or operator == 'star' or operator == 'slash'
+    fallback arithmetic or operator == 'percent'
+    var goes_left = not is_a_decimal_link(decimals, index + 1) or is_a_literal_tree(expression.right)
+    fallback goes_left and not is_a_decimal_link(decimals, index)
+    return expression
+}
+
+func finished_with_the_folded_left(
+    binary: AbstractSyntaxTree.Shapes.Expressions.BinaryExpression,
+    left_value: SpiteCompiler.Value,
+    folded_left: Long?,
+): SpiteCompiler.Value {
+    is_left_folded_by_the_chain = left_value.value_type.kind != 'handle'
+    left_folded_by_the_chain = folded_left
+    is_made_folded = false
+    var made = finished_with_the_left(binary, left_value)
+    is_left_folded_by_the_chain = false
+    return made
+}
+
+func folded_after(made: SpiteCompiler.Value): Long? {
+    if is_made_folded {
+        return made_folded
+    }
+    return folded_whole(made)
 }
 
 func chain_link_of(expression: SpiteCompiler.Expression?): AbstractSyntaxTree.Shapes.Expressions.BinaryExpression? {
@@ -245,6 +331,7 @@ func finished_binary(
     var right = given_right
     var asks_if_equal = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
     if asks_if_equal {
+        is_left_folded_by_the_chain = false
         var typed = TypedCopies(context, values)
         left = typed.as_declared(binary.left, left)
         right = typed.as_declared(binary.right, right)
@@ -252,6 +339,7 @@ func finished_binary(
     var swaps = Validators.HighIntermediaryRepresentation.SwappedComparison.Validator()
     var swap_answer = swaps.check(context, binary, left.value_type, right.value_type, values)
     if swap_answer.is_fixable() {
+        is_left_folded_by_the_chain = false
         var fixing = Fixes.AfterBuilding.EveryFix()
         fixing.fixed_a_comparison(context, binary, left.value_type, right.value_type, values)
         return operated_value(binary, right, left)
@@ -269,6 +357,9 @@ func operated_value(
     note_an_order(binary, given_left.value_type, right.value_type)
     var fitting = Fitting(context, values)
     var left = given_left
+    var knows_the_left_fold = is_left_folded_by_the_chain
+    var given_left_fold = left_folded_by_the_chain
+    is_left_folded_by_the_chain = false
     var operator = operator_of(binary.operator)
     var asks_if_equal = binary.operator == 'equal_equal' or binary.operator == 'not_equal'
     var equal_held: SpiteCompiler.Value? = null
@@ -301,6 +392,7 @@ func operated_value(
         var symbol = operator_symbol_of(binary)
         values.note_a_maybe_null("operand", left, symbol, left.value_type)
         left = values.as_present(left)
+        knows_the_left_fold = false
     }
     if is_machine_comparable(left.value_type) {
         var fitted_right = fitting.fitted(right, left.value_type)
@@ -313,16 +405,14 @@ func operated_value(
             return decided
         }
         var answer = answer_type_of(operator, left.value_type)
-        var printer = Printers.Spite.ExpressionPrinter(binary)
-        var shown = printer.text()
-        var left_printer = Printers.Spite.ExpressionPrinter(binary.left)
-        var shown_left = left_printer.text()
-        var right_printer = Printers.Spite.ExpressionPrinter(binary.right)
-        var shown_right = right_printer.text()
-        var written = HighIntermediaryRepresentation.Values.WrittenOperation(shown, shown_left, shown_right, "")
+        var written = HighIntermediaryRepresentation.Values.WrittenOperation("", "", "", "")
+        written.expression = binary
+        written.shows_its_sides = true
         var made = HighIntermediaryRepresentation.Values.MachineOperation(answer, operator, left, fitted_right, written)
         var overflow = Validators.HighIntermediaryRepresentation.ConstantOverflow.Validator()
-        var folded_made = folded_operation(made)
+        var folded_made = folded_link_of_the_chain(made, knows_the_left_fold, given_left_fold)
+        is_made_folded = true
+        made_folded = folded_made
         var overflow_answer = overflow.check(context, made, folded_made)
         context.tell(overflow_answer)
         return made
@@ -430,6 +520,20 @@ func folded_whole(value: SpiteCompiler.Value?): Long? {
         return folded_operation(value)
     }
     return null
+}
+
+# ../../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
+func folded_link_of_the_chain(
+    made: HighIntermediaryRepresentation.Values.MachineOperation,
+    knows_the_left_fold: Boolean,
+    given_left_fold: Long?,
+): Long? {
+    var folded_left = given_left_fold
+    if not knows_the_left_fold {
+        folded_left = folded_whole(made.left)
+    }
+    var folded_right = folded_whole(made.right)
+    return folded_link(made, folded_left, folded_right)
 }
 
 # ../../ARCHITECTURE.md#an-operator-chain-is-walked-in-a-loop
@@ -1898,13 +2002,13 @@ func unary_value(
         zero_value = HighIntermediaryRepresentation.Values.DecimalNumber(operand.value_type, "-0.0", false)
     }
     crash unary.operand
-    var printer = Printers.Spite.ExpressionPrinter(unary.operand)
-    var negated = printer.text()
     var negative = ""
     if operand.class == HighIntermediaryRepresentation.Values.DecimalNumber and operand.is_written {
         negative = "-{operand.written}"
     }
-    var written = HighIntermediaryRepresentation.Values.WrittenOperation("0 - {negated}", "", "", negative)
+    var written = HighIntermediaryRepresentation.Values.WrittenOperation("", "", "", negative)
+    written.expression = unary.operand
+    written.before = "0 - "
     return HighIntermediaryRepresentation.Values.MachineOperation(
         operand.value_type,
         'subtract',
