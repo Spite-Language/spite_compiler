@@ -907,8 +907,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   refuses an answer that would decide itself; the study it reads is `high_intermediary_representation/building/facts.spite`
   (`waits`, `waits_through`), which the builder also reads for the frame starts; a second study in `high_intermediary_representation/waits.spite`
   (embedded: the lowering's own, for what each call suspends).
-- **Checked by**: tests/waiting_systems, tests/entry_function_waits, tests/pooled_loads_wait, tests/default_handles,
-  tests/reflection_objects, tests/function_waits_dropped; conformance/function_waits_paradox.
+- **Checked by**: tests/entry_function_waits, tests/reflection_objects; conformance/function_waits_paradox.
 
 ### How many arguments a function takes
 
@@ -947,7 +946,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   (`fits_a_vector`, with `uses_this_as_a_value`, and `is_kept_inline` for each attribute, which the proof asks
   too, so its refusal and the answer an `Items<T>` folds never disagree), is still asked while building by `reads.spite`
   and `fills.spite` (`is_fixed_size`), which choose the form of what they build from it.
-- **Checked by**: tests/items_columns, tests/folded_checks, tests/folded_lends, tests/lent_list_elements,
+- **Checked by**: tests/folded_checks, tests/folded_lends, tests/lent_list_elements,
   tests/reflection_objects; conformance/folded_crash.
 
 ### Whether a function writes a parameter
@@ -1804,7 +1803,7 @@ refuses nothing (D1781).
 - **Missing**: lists of nullable items, and a test of a path through the item.
 - **Falls back**: a counted read and its release.
 - **Lives in**: the lowering, `values.spite` (`lower_presence_test`), `list_reads.spite`.
-- **Checked by**: tests/tested_items, tests/items_presence.
+- **Checked by**: tests/tested_items.
 
 ### An item used at once is not counted
 
@@ -1816,7 +1815,7 @@ refuses nothing (D1781).
 - **Falls back**: a counted read.
 - **Lives in**: the lowering, `calls.spite` (`is_a_held_receiver`, `is_a_held_item`,
   `is_a_held_argument`).
-- **Checked by**: tests/items_at_once, tests/held_item_arguments.
+- **Checked by**: tests/held_item_arguments.
 
 ### A list held only in a slot of another list
 
@@ -2203,7 +2202,7 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   refused there as before.
 - **Lives in**: `high_intermediary_representation/waits.spite` (`touch_what_reads_a_changing_attribute`),
   `function_lowering.spite` (`is_locked_here`), `calls.spite` (`lower_call`).
-- **Checked by**: tests/singleton_stateless_calls, tests/singleton_function_values, tests/steady_singleton_reads
+- **Checked by**: tests/singleton_function_values, tests/steady_singleton_reads
   (output only).
 
 ### Reading functions share the lock
