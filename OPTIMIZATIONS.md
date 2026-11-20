@@ -3033,6 +3033,12 @@ installed compiler builds it). Its build takes no longer: 1 763 s and 1 226 s ag
 2 111 s and 1 365 s, alternating on a loaded machine; `enum_reflection` takes a median 1 097 ms to check and 3 217 ms
 to build against 1 059 ms and 3 221 ms.
 
+Measured (#645) building the compiler: no pair of the compiler is reached through an attribute path, so the group walk
+never runs on it; it still links one back reference, `Context.constants`, and builds itself to the same bytes in two
+rounds. `enum_reflection`, alternating with the installed compiler and #634's on a loaded machine, takes at best
+636 ms to check and 2 262 ms to build against 627 ms and 2 322 ms (installed) and 641 ms and 2 271 ms (#634); the
+medians (820, 676, 684 ms and 2 497, 2 339, 2 457 ms) move with the load.
+
 ## A read from a known object cannot fault, and goes when nothing reads it
 
 A read of a word the evaluation proves lies inside a live known object is marked as one that cannot fault, and the

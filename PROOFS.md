@@ -1417,7 +1417,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 ### A back reference is picked from how the program links its objects
 
-- **Status**: partly built (D759, D1396, D2525, D2526, D2580).
+- **Status**: partly built (D759, D1396, D2525, D2526, D2580, D2609 to confirm).
 - **Rule**: an attribute `a: T?` of a class `C` holds no count when one function both sets `c.a = t` and stores `c`
   into `t`'s attribute `f`, which holds a `C` ([memory.md](../spite_documentation/memory.md)); never from the class
   graph alone, since taking an owning reference for a back one would free an object the program still holds. A
@@ -1428,7 +1428,12 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   Two objects one function makes side by side and links to each other directly (`question.answer = answer` beside
   `answer.question = question`) both die with that function when neither leaves it, so the attribute of the one made
   later is the back reference: when every function that links the two attributes this way makes the same one later
-  and keeps both objects in, and no function stores into that attribute any other way (D2580).
+  and keeps both objects in, and no function stores into that attribute any other way (D2580). A pair one function
+  makes where one object is reached through an attribute of an object it makes (`last.first`, the `Alpha` a `Link`
+  constructor made) and the other is held by a `var` of its outer block, linked both ways there or by the functions
+  it calls (`pair_down(head, second, 2)`), points back from the object reached through the attribute: when nothing
+  the function makes leaves it, the object its outer `var` holds outlives every object it made, so that back
+  reference is never read once its object is freed, but by a `drop()` as the function's names go (D2609).
 - **How**: each function of the program is read for the stores it makes: `x.a = y`, `x.f.append(y)` (and
   `insert`, `prepend`, `add`, `set_at`), `x.f[k] = y`, and a constructor that keeps its argument in an attribute. A
   call of a program function adds that function's own stores, with `this` and its parameters replaced by the call's
@@ -1488,9 +1493,27 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   receiver of an attribute read, a link store, a narrowing alone, or the receiver of a call of one of the two
   classes' functions whose answer is discarded or holds no object; the functions called that way, and the classes'
   constructors, are read the same way with `this` and the two link attributes as the pair. Anything else (an
-  argument, a return, a list, an assignment of the local, a function value) lets the pair leave.
+  argument, a return, a list, an assignment of the local, a function value) lets the pair leave. A pair reached
+  through an attribute path (a closing pair whose holder key has two parts or more and starts at an object the
+  reading makes, and whose value is a single object it makes, held by one name declared once, in the outer block) is
+  read by `model/made_group_walk.spite` from that function (the root): its group is every object made there and every
+  value read from one of the group through an attribute whose type may reach the back attribute's class (a class
+  whose attributes or bound types reach it, a union, `type`, function or unknown class counting as reaching; a
+  singleton never in it). The walk follows the group into every function called with one of it (its parameters bound
+  to what they are given), every method called on one of it (the receiver's class known), and the constructors,
+  attribute defaults and `drop()` of every class it makes that may reach the back class. It refuses: a group value
+  returned, put in a list, an index, a text or an operator, stored anywhere but in a group object's attribute, or
+  handed to a function value or a function it cannot read (a compiler-written function, a template, a walk copy); a
+  group name assigned a value from outside the group, the outer `var` assigned at all, a value from outside stored
+  in a group object's attribute that may reach the back class, and a store of the back attribute other than
+  `group.a = held` (or `null`) in a function read by an explicit call. A function the root reaches through calls
+  holds a store of the back attribute that counts as linked only when every mention of its name in the program is
+  a call the accepted walks read, from a root or a function itself kept this way (the largest such set), and the
+  name is none the compiler may call without it being written (`drop`, `equals`, `to_string`, `get_` and `set_`
+  names, `_` names, and the others it calls by name). Every other store of the back attribute keeps it counted.
 - **Missing**: a call of a function two classes name on a receiver whose class is not known (a local that is not
-  made there), a link a recursive call may place the other way one attribute deeper, two objects made side by side and linked directly
+  made there), a link a recursive call may place the other way one attribute deeper, a pair whose two objects are
+  both reached through attributes, or whose held object is not in the outer block, two objects made side by side and linked directly
   where one of them leaves the function (`return answer`), one attribute pointing both ways that
   [the pair below](#a-pair-linked-through-one-attribute-is-cleared-when-it-goes) does not cover (`first.join(second)`,
   as `tests/memory_leak_summary`), a union or `type` back attribute one of whose classes does not link
@@ -1499,7 +1522,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   proves which side outlives the other; a class that does not link back could be freed while the program still means
   to hold it; and one that cannot be null has no `null` to answer once its object is freed.
 - **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
-- **Lives in**: `model/back_references.spite` and `model/made_pair_walk.spite`, asked by `ProgramModel.holds_no_count`; the shared back word in
+- **Lives in**: `model/back_references.spite`, `model/made_pair_walk.spite` and `model/made_group_walk.spite`, asked by `ProgramModel.holds_no_count`; the shared back word in
   `high_intermediary_representation/layout.spite` (`place_the_shared_back_words`).
 - **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls,
   tests/back_reference_two_levels, tests/a_back_reference_found_many_calls_down (73 calls down),
@@ -1508,7 +1531,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   tests/back_reference_union_attribute, tests/back_reference_type_attribute,
   tests/back_reference_made_side_by_side, tests/back_reference_made_side_by_side_leaving,
   tests/back_reference_recursive_call_deeper, tests/back_reference_recursive_call_deeper_made_together,
-  tests/back_reference_other_way_one_call_deeper, tests/back_reference_other_way_one_call_deeper_into_the_made.
+  tests/back_reference_other_way_one_call_deeper, tests/back_reference_other_way_one_call_deeper_into_the_made,
+  tests/back_reference_made_together_other_way, tests/back_reference_made_together_leaving,
+  tests/back_reference_made_together_linked_elsewhere.
 
 ### Children that never outlive their owner point back without a count
 
