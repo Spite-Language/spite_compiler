@@ -15,7 +15,7 @@ The program's folders: which class file each name reaches.
   the library's folders are none (D2679).
   `join_the_library_reopenings` gives a root class's file or folder named like a library class or folder the
   library's name, so it reopens it, and `join_an_earlier_roots_reopenings` gives a loaded root's folder named like
-  a root loaded before it that root's name (`mods/game/` reopens `Game`, D2678).
+  a root loaded before it that root's name, so a mod's folder named like the program reopens its classes (D2678).
 - `names.spite`: the last segment of a path, and the one right spelling of a name.
 - `misnamed.spite`: a file or folder of the program not named in snake_case that has one right spelling; the map
   notes it instead of refusing it and names its classes by the right spelling, and `fixes/symbols/misnamed_path` renames it.
