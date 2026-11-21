@@ -1750,7 +1750,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   attribute's name anywhere in the program is a call through it, a narrowing, a store into it, a `null` store or a
   hand-off to `subscribe`/`unsubscribe` of a `List`, `Dictionary` or `Observer` the class holds; for the list, every
   mention is `append`, `insert`, `count`, `is_empty` or `clear`, an item called directly (`acts[0](change)`), or an
-  item kept in a local (`var act = acts[0]`) whose name is mentioned only that way. The class is not a singleton, not
+  item kept in a local (`var act = acts[0]`) that is only narrowed and handed to `subscribe`/`unsubscribe` (a call
+  through such a local could outlive the object). The class is not a singleton, not
   generic, not the library's, and the compiler makes no `copy()` or `deep_copy()` of it (a copy would share the value
   bound to the original). A call through the value holds the owner for the call (`<function>$held`).
 - **How**: `model/own_function_values.spite` (`stores_its_own_held_back`, `only_called` counting stores,
