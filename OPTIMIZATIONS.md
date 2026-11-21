@@ -4986,11 +4986,8 @@ that list ([a fused chain leaves its first list](PROOFS.md#a-fused-chain-leaves-
 append to it, remove from it or write its items keeps the chain step by step, each step on its own copy as written,
 and the optimisation report lists it under "Chains run step by step" (`tests/fused_chain_changes_its_list`).
 
-A chain on a `Vector` is fused the same way, on the first vector's class, so `each_` after `filter_` writes into the
-vector's own items and not into a filtered copy (`tests/vector_items_run`).
-
 **Not built:** a `filter_` or `find_by_` after a `map_`, a passed function (`filter(f)`), chains on a
-`Dictionary`'s values or on `Items`.
+`Dictionary`'s values.
 
 ## A function only a replaced call reached is not compiled
 
