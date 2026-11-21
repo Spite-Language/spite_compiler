@@ -3081,6 +3081,20 @@ observer the same way: a call through a function value inside it reaches nothing
 (`HighIntermediaryRepresentation.UntoldObservers`), so a list that tells nobody does not make its callers wait or
 lose their proofs.
 
+## An observer finds an equal subscriber by its hash
+
+`Observer.subscribe` keeps an equal function bound to an equal owner once (D2614), and `unsubscribe` finds it, without
+comparing with every link: each link keeps a hash of its function value, and the links also form a tree by the bits of
+that hash (`_zero`, `_one`), so a lookup compares only the links on one path, about the logarithm of their number
+(spite_compiler#662). The hash is the compiler's (`Observer._hash_of`, built per function type beside the comparers
+in `building/function_comparers.spite`): the candidate function's number, mixed with the owner's `Integer`, `Long`,
+`Short` and `Byte` attributes and its texts' lengths when the owner's class uses the given `equals`, so equal values
+always hash alike; an owner with its own `equals`, a number or a singleton adds nothing, and such subscribers share
+one path. The end of the links is kept (`_last`), a link that unsubscribes or whose reader was freed is a hole until
+the holes outnumber the links, and a full walk letting go of freed readers runs when the links have doubled since
+the last one, so `subscribe` and `unsubscribe` cost the same on average whatever the number held; `notify` walks the
+links in the order they subscribed and closes the holes, as before.
+
 ## An operand the evaluation knows is written as a constant
 
 When an arithmetic or a comparison is left with one operand the evaluation knows but the register holding it is

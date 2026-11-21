@@ -1700,41 +1700,76 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 ### A function subscribed to an observer holds its owner back
 
-- **Status**: built (spite_compiler#637, to confirm).
-- **Rule**: a function value made where it is handed to `Observer.subscribe` or `unsubscribe`, directly or through
-  functions that only hand that parameter on (`List.subscribe`, a class's own `watch_degrees(reader)`), holds its
-  owner without a count, so a reader that holds what it observes (`Row` holding the list it subscribed to) is freed
-  when its last other holder goes. A call through it counts the owner up for the call; once the owner was freed the
-  call does nothing, and the observer lets go of that reader's link at its next `notify`, `subscribe` or
-  `unsubscribe` (D2688). The same holds for a value first held in a local that is only handed so (`var act = changed`,
-  then `names.subscribe(act)`), and for an attribute whose default names the class's own function (below) handed to
-  `subscribe` or `unsubscribe` of a standard library `List`, `Dictionary` or `Observer` held in an attribute or a
-  parameter: that read is made a fresh value of the same function on the same object, held the same way.
-- **How**: `high_optimization_passes/unsubscribed_observers/held_subscribers.spite`, before the observers nothing
-  subscribes to are left out, finds the functions that hand a parameter on to an `Observer`'s `subscribe` or
-  `unsubscribe` (until no more are found) and marks each `Spite.Function` value made as such an argument
-  (`holds_its_receiver_back`, `holds_its_owner_for_the_call`, `skips_a_freed_owner`), when its function answers
-  nothing and its owner is an object of an ordinary class (not a singleton, not the entry, not a `String`). The owner
-  gets a back slot (`ProgramModel.owners_held_by_observers`, read by `layout.spite`), and the value's address is the
-  entry `<function>$held_or_skipped` (`held_owner_entries.spite`), which returns at once when the owner was freed.
-  `subscribe` and `unsubscribe` are marked alike, so the two values are `==`. A local is marked when its one
-  declaration makes the value, nothing assigns it again and every read of it is so handed; an attribute read is
-  replaced when `model/own_function_values.spite` counted the mention as handed. `Observer._is_bound_to_a_freed_object`
-  (`intrinsics.spite`) answers whether a link's value holds its owner back and that owner's count is 0, so the
-  observer clears the link; comparing two function values reads each candidate's entry address without making a
-  value (`values.spite`, `address_of_a_made_value`), so `subscribe` allocates only its own link.
-- **Buys**: a reader holding what it observes is freed, with its `drop()`.
-- **Costs**: a back slot in the owner, a count up and down around each call, a look at each link's value on
-  `notify`, `subscribe` and `unsubscribe`, and the link of a reader that is gone (one small object and the owner's
-  memory) until the observer's next such call.
-- **Missing**: a function value stored by a function and subscribed later, one read from a list or a parameter of a
-  function that does not only hand it on, a local read for anything else, and a resumable function, keep their
-  counts, so such a cycle leaks and `--debug-memory` names it. `subscribe` still compares with every link held, to
-  keep subscribing an equal function once.
-- **Lives in**: `high_optimization_passes/unsubscribed_observers/held_subscribers.spite`,
+- **Status**: built (spite_compiler#637, #658, #659, #661, to confirm).
+- **Rule**: an observer never holds the object its subscribed function is bound to: `Observer.subscribe` keeps
+  `_held_back(function)`, the same function on the same owner held without a count, however the value reached it
+  (made where it is handed, held in a local, read from an attribute or a list, kept by another function or answered
+  by one). A reader that holds what it observes (`Row` holding the list it subscribed to) is freed when its last other
+  holder goes. A call through the link counts the owner up for the call; once the owner was freed the call does
+  nothing, and the observer lets go of that reader's link (D2688, D2689): at its next `notify`, when a `subscribe` or
+  an `unsubscribe` meets the link on its way through the links, or at the walk `subscribe` runs whenever the links
+  have doubled since the last one. A value made where it is handed to `subscribe` (directly or through functions that
+  only hand that parameter on, `List.subscribe`, a class's own `watch_degrees(reader)`), first held in a local only
+  handed so, or read from an attribute whose default names the class's own function, is made held there already, so
+  `subscribe` makes nothing more for it.
+- **How**: `Observer._held_back` is answered by a function the compiler builds per function type beside the
+  comparers (`building/function_comparers.spite`, `held_form_of`): for each function taken as a value with that
+  type whose owner may be held back (an object of an ordinary class, not a singleton, not the entry, not a `String`),
+  a value whose address is that function's plain entry is answered as a fresh value of the same function on the same
+  owner, made `<function>$held_or_skipped` (`held_owner_entries.spite`), which returns at once when the owner was
+  freed; any other value (already held, a number's, a singleton's) is answered as it is. Each such owner gets a back
+  slot (`ProgramModel.owners_held_by_observers`, read by `layout.spite`). The direct forms are still marked by
+  `high_optimization_passes/unsubscribed_observers/held_subscribers.spite` (`holds_its_receiver_back`,
+  `holds_its_owner_for_the_call`, `skips_a_freed_owner`) so their value is held from the start.
+  `Observer._is_bound_to_a_freed_object` (`intrinsics.spite`) answers whether a link's value holds its owner back and
+  that owner's count is 0, so the observer clears the link and never compares it; comparing two function values reads
+  each candidate's entry address without making a value (`values.spite`, `address_of_a_made_value`).
+- **Buys**: a reader holding what it observes is freed, with its `drop()`, whatever way its function reached
+  `subscribe`.
+- **Costs**: a back slot in each owner whose function of an observed type is taken as a value, a count up and down
+  around each call, one small value made by `subscribe` for a value that was not held, a look at the links met on
+  `subscribe` and `unsubscribe`, and the link of a reader that is gone (one small object and the owner's memory) until
+  the observer lets go of it.
+- **Missing**: a resumable function keeps its count (its entry cannot be held), so such a cycle leaks and
+  `--debug-memory` names it. A cycle that does not pass through the observer (the reader also keeping its own function
+  value) is the next rule's.
+- **Lives in**: `high_intermediary_representation/building/function_comparers.spite`, `building/calls.spite`
+  (`observer_intrinsic`), `high_optimization_passes/unsubscribed_observers/held_subscribers.spite`,
   `low_intermediary_representation/lowering/held_owner_entries.spite`, `high_intermediary_representation/layout.spite`.
 - **Checked by**: tests/an_observer_reader_holding_its_list_is_freed, tests/an_observer_lets_go_of_freed_readers,
-  tests/an_observer_reader_subscribing_its_attribute_is_freed, tests/an_observer_reader_subscribing_a_local_is_freed.
+  tests/an_observer_reader_subscribing_its_attribute_is_freed, tests/an_observer_reader_subscribing_a_local_is_freed,
+  tests/an_observer_reader_subscribing_from_a_list_is_freed, tests/an_observer_reader_kept_by_a_function_is_freed.
+
+### A function value its owner stores in itself holds it back
+
+- **Status**: built (spite_compiler#661, D2690 to confirm).
+- **Rule**: a function value bound to an object and stored by a function into one of that object's own attributes
+  (`act = given` in `keep(given)`, called as `keep(changed)`), or appended to a `List` the object holds in an attribute
+  (`acts.append(changed)`, `acts.insert(0, changed)`), holds the object without a count, so the object is freed when
+  its last other holder goes. It holds when the program never lets the value out of the object: every mention of the
+  attribute's name anywhere in the program is a call through it, a narrowing, a store into it, a `null` store or a
+  hand-off to `subscribe`/`unsubscribe` of a `List`, `Dictionary` or `Observer` the class holds; for the list, every
+  mention is `append`, `insert`, `count`, `is_empty` or `clear`, an item called directly (`acts[0](change)`), or an
+  item kept in a local (`var act = acts[0]`) whose name is mentioned only that way. The class is not a singleton, not
+  generic, not the library's, and the compiler makes no `copy()` or `deep_copy()` of it (a copy would share the value
+  bound to the original). A call through the value holds the owner for the call (`<function>$held`).
+- **How**: `model/own_function_values.spite` (`stores_its_own_held_back`, `only_called` counting stores,
+  `only_listed`) picks the attributes. Each store into such an attribute (`building/assignments.spite`) and each
+  `append` or `insert` into such a list (`building/calls.spite`, `hold_what_it_lists`) passes the value through a
+  function built per function type and class beside the comparers (`own_held_form_of`): a plain value of one of the
+  class's functions bound to the very object stored into is answered as a fresh value of it held back; any other value
+  as it is, so a function bound to another object keeps its count. The function is rebuilt with no candidates when the
+  compiler made a copy of the class, so nothing is held then.
+- **Buys**: the cycle such a store makes frees, with no `drop()` skipped.
+- **Costs**: a back slot in the owner, one look and one small value per store of the owner's own function, and a
+  count up and down around each call through it.
+- **Missing**: the value stored any other way (in another object's attribute, a `Dictionary`, a list item set by
+  index), read for anything else, or held by a class the compiler copies, keeps its count, so such a cycle leaks and
+  `--debug-memory` names it.
+- **Lives in**: `model/own_function_values.spite`, `high_intermediary_representation/building/function_comparers.spite`,
+  `building/assignments.spite`, `building/calls.spite`.
+- **Checked by**: tests/an_observer_reader_subscribing_from_a_list_is_freed,
+  tests/an_observer_reader_kept_by_a_function_is_freed.
 
 ### A copy never shares or remakes a C registration
 

@@ -5,11 +5,19 @@ var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
 var library = Mapping.LibraryFile()
 var told_classes = ["List<", "Dictionary<", "Observer<"]
 var handed_names = List<String>()
+var stored_held = List<String>()
+var listing_members = ["append", "insert", "count", "is_empty", "clear"]
 
 # ../PROOFS.md#a-function-value-bound-to-its-own-owner-holds-it-back
 func function_held_back(program: ProgramModel, attribute: AttributeModel): FunctionModel? {
     learn(program)
     return held_back["{attribute.owner}.{attribute.name}"]
+}
+
+# ../PROOFS.md#a-function-value-its-owner-stores-in-itself-holds-it-back
+func stores_its_own_held_back(program: ProgramModel, attribute: AttributeModel): Boolean {
+    learn(program)
+    return stored_held.contains("{attribute.owner}.{attribute.name}")
 }
 
 func owners_of(program: ProgramModel): List<String> {
@@ -22,16 +30,18 @@ func learn(program: ProgramModel) {
     fallback not is_learned
     is_learned = true
     var candidates = List<AttributeModel>()
+    var stored = List<AttributeModel>()
     var functions = Dictionary<String, FunctionModel>()
     var index = 0
     while index < program.order.count() {
         var model = program.order[index]
         if not model.is_singleton and model.bound_types.count() == 0 {
             add_the_candidates_of(model, candidates, functions)
+            add_the_stored_candidates_of(program, model, stored, functions)
         }
         index = index + 1
     }
-    fallback not candidates.is_empty()
+    fallback not candidates.is_empty() or not stored.is_empty()
     var walk = AbstractSyntaxTree.Walk(no_file)
     index = 0
     while index < program.order.count() {
@@ -48,12 +58,58 @@ func learn(program: ProgramModel) {
         var key = "{attribute.owner}.{attribute.name}"
         var function = functions[key]
         crash function
-        if only_called(walk, attribute.name) {
+        if only_called(walk, attribute.name, false) {
             held_back[key] = function
             add_an_owner(attribute.owner)
         }
         index = index + 1
     }
+    index = 0
+    while index < stored.count() {
+        var attribute = stored[index]
+        if is_kept_to_itself(walk, attribute) {
+            stored_held.append("{attribute.owner}.{attribute.name}")
+        }
+        index = index + 1
+    }
+}
+
+# ../PROOFS.md#a-function-value-its-owner-stores-in-itself-holds-it-back
+func is_kept_to_itself(walk: AbstractSyntaxTree.Walk, attribute: AttributeModel): Boolean {
+    if attribute.attribute_type.kind == 'function' {
+        return only_called(walk, attribute.name, true)
+    }
+    return only_listed(walk, attribute.name)
+}
+
+# ../PROOFS.md#a-function-value-its-owner-stores-in-itself-holds-it-back
+func add_the_stored_candidates_of(
+    program: ProgramModel,
+    model: ClassModel,
+    stored: List<AttributeModel>,
+    functions: Dictionary<String, FunctionModel>,
+) {
+    var index = 0
+    while index < model.declared_attributes.count() {
+        var attribute = model.declared_attributes[index]
+        var key = "{model.key}.{attribute.name}"
+        var held = attribute.attribute_type
+        var is_a_holder = held.kind == 'function' or is_a_list_of_functions(program, held)
+        var is_the_programs = not library.holds(model.file.path)
+        if is_a_holder and is_the_programs and not functions.contains(key) {
+            stored.append(attribute)
+        }
+        index = index + 1
+    }
+}
+
+func is_a_list_of_functions(program: ProgramModel, held: Type): Boolean {
+    fallback held.kind == 'object' and not held.is_nullable
+    var list = program.class_named(held.name)
+    fallback list and list.shown.starts_with("List<") and library.holds(list.file.path)
+    var item = list.bound_types["$element_type"]
+    fallback item
+    return item.kind == 'function'
 }
 
 func add_the_candidates_of(
@@ -238,7 +294,7 @@ func handed_count(name: String): Integer {
 }
 
 # ../PROOFS.md#a-function-value-bound-to-its-own-owner-holds-it-back
-func only_called(walk: AbstractSyntaxTree.Walk, name: String): Boolean {
+func only_called(walk: AbstractSyntaxTree.Walk, name: String, counts_stores: Boolean): Boolean {
     var uses = 0
     var kept = handed_count(name)
     var index = 0
@@ -262,10 +318,72 @@ func only_called(walk: AbstractSyntaxTree.Walk, name: String): Boolean {
         crash found.statement
         if keeps_the_name(found.statement, name) {
             kept = kept + 1
+        } else if counts_stores and stores_into_the_name(found.statement, name) {
+            kept = kept + 1
         }
         index = index + 1
     }
     return uses == kept
+}
+
+func stores_into_the_name(statement: SpiteCompiler.WrittenStatement, name: String): Boolean {
+    fallback statement.class == AbstractSyntaxTree.Shapes.Statements.AssignmentStatement
+    return is_the_name(statement.target, name)
+}
+
+# ../PROOFS.md#a-function-value-its-owner-stores-in-itself-holds-it-back
+func only_listed(walk: AbstractSyntaxTree.Walk, name: String): Boolean {
+    var uses = 0
+    var kept = 0
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        crash found.expression
+        var expression = found.expression
+        if is_the_name(expression, name) {
+            uses = uses + 1
+        }
+        if found.is_called and is_a_listing_member(expression, name) {
+            kept = kept + 1
+        }
+        if found.is_called and is_an_item_of(expression, name) {
+            kept = kept + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        crash found.statement
+        if declares_an_item_only_called(walk, found.statement, name) {
+            kept = kept + 1
+        }
+        index = index + 1
+    }
+    return uses == kept
+}
+
+func is_a_listing_member(expression: SpiteCompiler.Expression, name: String): Boolean {
+    fallback expression.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    fallback listing_members.contains(expression.name)
+    return is_the_name(expression.target, name)
+}
+
+func is_an_item_of(expression: SpiteCompiler.Expression?, name: String): Boolean {
+    fallback expression
+    fallback expression.class == AbstractSyntaxTree.Shapes.Expressions.IndexExpression
+    return is_the_name(expression.target, name)
+}
+
+# ../PROOFS.md#a-function-value-its-owner-stores-in-itself-holds-it-back
+func declares_an_item_only_called(
+    walk: AbstractSyntaxTree.Walk,
+    statement: SpiteCompiler.WrittenStatement,
+    name: String,
+): Boolean {
+    fallback statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement
+    fallback is_an_item_of(statement.value, name)
+    return only_called(walk, statement.name, false)
 }
 
 func is_the_name(expression: SpiteCompiler.Expression?, name: String): Boolean {
