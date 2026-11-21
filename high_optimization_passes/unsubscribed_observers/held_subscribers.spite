@@ -7,7 +7,13 @@ var handing_keys = List<String>()
 var handing_positions = List<Integer>()
 var current: HighIntermediaryRepresentation.HighFunction? = null
 var is_marking = false
+var is_counting = false
 var found_more = false
+var read_counts = Dictionary<String, Integer>()
+var handed_counts = Dictionary<String, Integer>()
+var declared = Dictionary<String, HighIntermediaryRepresentation.Statements.Declare>()
+var declared_twice = List<String>()
+var assigned = List<String>()
 
 func HeldSubscribers(high: HighIntermediaryRepresentation.HighProgram) {
     program = high
@@ -56,14 +62,93 @@ func hands_on(key: String, position: Integer): Boolean {
 func note_the_handing(built: HighIntermediaryRepresentation.HighFunction) {
     current = built
     var rewriting = HighOptimizationPasses.Rewriting(this)
+    if is_marking {
+        hold_the_handed_locals_back(built)
+    }
     rewriting.rewrite_block(built.body)
+}
+
+# ../../PROOFS.md#a-function-subscribed-to-an-observer-holds-its-owner-back
+func hold_the_handed_locals_back(built: HighIntermediaryRepresentation.HighFunction) {
+    read_counts = Dictionary<String, Integer>()
+    handed_counts = Dictionary<String, Integer>()
+    declared = Dictionary<String, HighIntermediaryRepresentation.Statements.Declare>()
+    declared_twice = List<String>()
+    assigned = List<String>()
+    is_counting = true
+    var counting = HighOptimizationPasses.Rewriting(this)
+    counting.rewrite_block(built.body)
+    is_counting = false
+    fallback not handed_counts.is_empty()
+    note_the_declarations(built.body)
+    var names = handed_counts.keys()
+    names.each(hold_a_handed_local_back)
+}
+
+# ../../PROOFS.md#a-function-subscribed-to-an-observer-holds-its-owner-back
+func hold_a_handed_local_back(name: String) {
+    fallback handed_counts[name] == read_counts[name]
+    fallback not declared_twice.contains(name) and not assigned.contains(name)
+    var declaration = declared[name]
+    fallback declaration and declaration.value
+    hold_back(declaration.value)
+}
+
+func note_the_declarations(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(note_a_declaration)
+}
+
+func note_a_declaration(statement: SpiteCompiler.Statement) {
+    if statement.class == HighIntermediaryRepresentation.Statements.Declare {
+        note_a_declared_name(statement)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Assign.Assign {
+        assigned.append(statement.name)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.Block {
+        note_the_declarations(statement)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.While {
+        note_the_declarations(statement.body)
+    } else if statement.class == HighIntermediaryRepresentation.Statements.If {
+        note_the_declarations_of_an_if(statement)
+    }
+}
+
+func note_a_declared_name(declaration: HighIntermediaryRepresentation.Statements.Declare) {
+    if declared.contains(declaration.name) {
+        declared_twice.append(declaration.name)
+    }
+    declared[declaration.name] = declaration
+}
+
+# ../../ARCHITECTURE.md#an-else-if-chain-is-walked-in-a-loop
+func note_the_declarations_of_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    var link: HighIntermediaryRepresentation.Statements.If? = branch
+    while link {
+        var current_link = link
+        note_the_declarations(current_link.then_branch)
+        link = current_link.else_if()
+        if not link {
+            note_the_declarations(current_link.else_branch)
+        }
+    }
 }
 
 func rewritten(value: SpiteCompiler.Value): SpiteCompiler.Value {
     if value.class == HighIntermediaryRepresentation.Values.Call {
         note_a_call(value)
+    } else if value.class == HighIntermediaryRepresentation.Values.LocalRead and is_counting {
+        count_in(read_counts, value.name)
     }
     return value
+}
+
+func count_in(counts: Dictionary<String, Integer>, name: String) {
+    var count = counts[name]
+    if count {
+        counts[name] = count + 1
+    } else {
+        counts[name] = 1
+    }
 }
 
 func note_a_call(call: HighIntermediaryRepresentation.Values.Call) {
@@ -71,11 +156,59 @@ func note_a_call(call: HighIntermediaryRepresentation.Values.Call) {
     var index = 0
     while index < call.arguments.count() {
         var argument = call.arguments[index]
-        if hands_on(key, index) {
+        if hands_on(key, index) and is_counting {
+            count_a_handed_local(argument)
+        } else if hands_on(key, index) and is_marking {
+            call.arguments[index] = held_form_of(argument)
+        } else if hands_on(key, index) {
             note_a_handed_argument(argument)
         }
         index = index + 1
     }
+}
+
+func count_a_handed_local(argument: SpiteCompiler.Value) {
+    var name = local_name_of(argument)
+    fallback not name.is_empty()
+    count_in(handed_counts, name)
+}
+
+func local_name_of(argument: SpiteCompiler.Value): String {
+    if argument.class == HighIntermediaryRepresentation.Values.Conversion {
+        fallback argument.converted
+        return local_name_of(argument.converted)
+    }
+    fallback argument.class == HighIntermediaryRepresentation.Values.LocalRead
+    return argument.name
+}
+
+# ../../PROOFS.md#a-function-subscribed-to-an-observer-holds-its-owner-back
+func held_form_of(argument: SpiteCompiler.Value): SpiteCompiler.Value {
+    var made = made_from_a_held_attribute(argument)
+    if made {
+        hold_back(made)
+        return made
+    }
+    hold_back(argument)
+    return argument
+}
+
+# ../../PROOFS.md#a-function-subscribed-to-an-observer-holds-its-owner-back
+func made_from_a_held_attribute(argument: SpiteCompiler.Value): HighIntermediaryRepresentation.Values.Function.Value? {
+    fallback not argument.value_type.is_nullable
+    var read = argument
+    if read.class == HighIntermediaryRepresentation.Values.Conversion {
+        fallback read.kind == 'present' and read.converted
+        read = read.converted
+    }
+    fallback read.class == HighIntermediaryRepresentation.Values.AttributeRead and read.object
+    var bound = program.model.function_held_back(read.attribute)
+    fallback bound
+    var parameter_types = bound.parameters.map_parameter_types()
+    var signature = Model.Signature(parameter_types, bound.answer, false)
+    var function_type = Model.Type('function', "Spite.Function")
+    function_type.signature = signature
+    return HighIntermediaryRepresentation.Values.Function.Value(function_type, bound, read.object)
 }
 
 func note_a_handed_argument(argument: SpiteCompiler.Value) {
