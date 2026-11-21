@@ -273,6 +273,12 @@ and assigned members of a shape, the functions, attributes, enums, unions and sh
 names each attribute's library looks up). So what the proofs, the high passes,
 the lowering and the outputs read is what the reached functions made, and the executable does not change.
 
+What no build reaches (a branch every copy rules out, a function taking a `type` nobody calls, a generic class
+nothing makes) is still read for one mistake: after `check_the_unreached`, `building/unbuilt_class_tests.spite`
+walks every function of the program's own files and hands each `.class` or codegen value compared with `==`/`!=`
+that no copy built (`Context.built_comparisons`, noted by the fix and by `binary_value`) to the class-test
+validator, which the type-test fix rewrites or refuses as in built code.
+
 The validators the builder calls refuse in every function. The proofs that run after building
 (`proven_present`, `every_attribute_is_read`, the rules after building) read the reached functions only, since
 they prove facts the executable relies on; `every_attribute_is_read` also counts the reads of the checked ones,
