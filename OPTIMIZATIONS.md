@@ -3088,12 +3088,17 @@ comparing with every link: each link keeps a hash of its function value, and the
 that hash (`_zero`, `_one`), so a lookup compares only the links on one path, about the logarithm of their number
 (spite_compiler#662). The hash is the compiler's (`Observer._hash_of`, built per function type beside the comparers
 in `building/function_comparers.spite`): the candidate function's number, mixed with the owner's `Integer`, `Long`,
-`Short` and `Byte` attributes and its texts' lengths when the owner's class uses the given `equals`, so equal values
-always hash alike; an owner with its own `equals`, a number or a singleton adds nothing, and such subscribers share
-one path. The end of the links is kept (`_last`), a link that unsubscribes or whose reader was freed is a hole until
-the holes outnumber the links, and a full walk letting go of freed readers runs when the links have doubled since
-the last one, so `subscribe` and `unsubscribe` cost the same on average whatever the number held; `notify` walks the
-links in the order they subscribed and closes the holes, as before.
+`Short` and `Byte` attributes that only its constructors set (no other function in the program assigns that name,
+`model/own_function_values.spite`, `is_set_only_while_made`) when the owner's class uses the given `equals`, so equal
+values always hash alike, also after a reader changed; an owner with its own `equals`, a number or a singleton adds
+nothing, and such subscribers share one path. The end of the links is kept (`_last`), a link that unsubscribes or
+whose reader was freed is a hole until the holes outnumber the links, and a full walk letting go of freed readers runs
+when the links have doubled since the last one, so `subscribe` and `unsubscribe` cost the same on average whatever the
+number held; `notify` walks the links in the order they subscribed and closes the holes, and the tree is laid again by
+the next `subscribe` or `unsubscribe`, so `notify` reaches none of the tree's code. Nothing of it is built for a
+program that never subscribes: the hash and held-back functions are made only where `subscribe` is built, and the
+model reads the program's own stored function values only when a function attribute is assigned or a list of
+functions is appended to.
 
 ## An operand the evaluation knows is written as a constant
 

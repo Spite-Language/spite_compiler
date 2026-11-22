@@ -1,12 +1,12 @@
 var is_learned = false
+var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+var program_walk: AbstractSyntaxTree.Walk? = null
 var held_back = Dictionary<String, FunctionModel>()
 var owners = List<String>()
-var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
 var library = Mapping.LibraryFile()
 var told_classes = ["List<", "Dictionary<", "Observer<"]
 var handed_names = List<String>()
-var stored_held = List<String>()
-var listing_members = ["append", "insert", "count", "is_empty", "clear"]
+var stored_held: List<String>? = null
 
 # ../PROOFS.md#a-function-value-bound-to-its-own-owner-holds-it-back
 func function_held_back(program: ProgramModel, attribute: AttributeModel): FunctionModel? {
@@ -16,8 +16,9 @@ func function_held_back(program: ProgramModel, attribute: AttributeModel): Funct
 
 # ../PROOFS.md#a-function-value-its-owner-stores-in-itself-holds-it-back
 func stores_its_own_held_back(program: ProgramModel, attribute: AttributeModel): Boolean {
-    learn(program)
-    return stored_held.contains("{attribute.owner}.{attribute.name}")
+    fallback may_hold_functions(attribute.attribute_type)
+    var stored = learned_stored(program)
+    return stored.contains("{attribute.owner}.{attribute.name}")
 }
 
 func owners_of(program: ProgramModel): List<String> {
@@ -30,27 +31,17 @@ func learn(program: ProgramModel) {
     fallback not is_learned
     is_learned = true
     var candidates = List<AttributeModel>()
-    var stored = List<AttributeModel>()
     var functions = Dictionary<String, FunctionModel>()
     var index = 0
     while index < program.order.count() {
         var model = program.order[index]
         if not model.is_singleton and model.bound_types.count() == 0 {
             add_the_candidates_of(model, candidates, functions)
-            add_the_stored_candidates_of(program, model, stored, functions)
         }
         index = index + 1
     }
-    fallback not candidates.is_empty() or not stored.is_empty()
-    var walk = AbstractSyntaxTree.Walk(no_file)
-    index = 0
-    while index < program.order.count() {
-        var model = program.order[index]
-        var first = walk.expressions.count()
-        walk_the_class(walk, model)
-        note_the_handed_names(program, model, walk, first)
-        index = index + 1
-    }
+    fallback not candidates.is_empty()
+    var walk = walked(program)
     fallback lists_no_attributes_at_run_time(walk)
     index = 0
     while index < candidates.count() {
@@ -64,14 +55,74 @@ func learn(program: ProgramModel) {
         }
         index = index + 1
     }
+}
+
+# ../PROOFS.md#a-function-value-its-owner-stores-in-itself-holds-it-back
+func learned_stored(program: ProgramModel): List<String> {
+    var known = stored_held
+    if known {
+        return known
+    }
+    var held = List<String>()
+    stored_held = held
+    var stored = List<AttributeModel>()
+    var index = 0
+    while index < program.order.count() {
+        var model = program.order[index]
+        if not model.is_singleton and model.bound_types.count() == 0 {
+            add_the_stored_candidates_of(program, model, stored)
+        }
+        index = index + 1
+    }
+    if stored.is_empty() {
+        return held
+    }
+    var walk = walked(program)
+    if not lists_no_attributes_at_run_time(walk) {
+        return held
+    }
     index = 0
     while index < stored.count() {
         var attribute = stored[index]
         if is_kept_to_itself(walk, attribute) {
-            stored_held.append("{attribute.owner}.{attribute.name}")
+            held.append("{attribute.owner}.{attribute.name}")
         }
         index = index + 1
     }
+    return held
+}
+
+# ../OPTIMIZATIONS.md#an-observer-finds-an-equal-subscriber-by-its-hash
+func is_set_only_while_made(program: ProgramModel, attribute: AttributeModel): Boolean {
+    var walk = walked(program)
+    fallback lists_no_attributes_at_run_time(walk)
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        crash found.statement
+        var is_a_constructor = found.function_name != found.function_name.lower_case()
+        fallback is_a_constructor or not stores_into_the_name(found.statement, attribute.name)
+        index = index + 1
+    }
+    return true
+}
+
+func walked(program: ProgramModel): AbstractSyntaxTree.Walk {
+    var known = program_walk
+    if known {
+        return known
+    }
+    var walk = AbstractSyntaxTree.Walk(no_file)
+    var index = 0
+    while index < program.order.count() {
+        var model = program.order[index]
+        var first = walk.expressions.count()
+        walk_the_class(walk, model)
+        note_the_handed_names(program, model, walk, first)
+        index = index + 1
+    }
+    program_walk = walk
+    return walk
 }
 
 # ../PROOFS.md#a-function-value-its-owner-stores-in-itself-holds-it-back
@@ -83,28 +134,38 @@ func is_kept_to_itself(walk: AbstractSyntaxTree.Walk, attribute: AttributeModel)
 }
 
 # ../PROOFS.md#a-function-value-its-owner-stores-in-itself-holds-it-back
-func add_the_stored_candidates_of(
-    program: ProgramModel,
-    model: ClassModel,
-    stored: List<AttributeModel>,
-    functions: Dictionary<String, FunctionModel>,
-) {
+func add_the_stored_candidates_of(program: ProgramModel, model: ClassModel, stored: List<AttributeModel>) {
     var index = 0
     while index < model.declared_attributes.count() {
         var attribute = model.declared_attributes[index]
-        var key = "{model.key}.{attribute.name}"
-        var held = attribute.attribute_type
-        var is_a_holder = held.kind == 'function' or is_a_list_of_functions(program, held)
-        var is_the_programs = not library.holds(model.file.path)
-        if is_a_holder and is_the_programs and not functions.contains(key) {
-            stored.append(attribute)
+        if may_hold_functions(attribute.attribute_type) {
+            add_a_stored_candidate(program, model, attribute, stored)
         }
         index = index + 1
     }
 }
 
+func add_a_stored_candidate(
+    program: ProgramModel,
+    model: ClassModel,
+    attribute: AttributeModel,
+    stored: List<AttributeModel>,
+) {
+    fallback not library.holds(model.file.path)
+    fallback not own_function_named_by_the_default(model, attribute)
+    var held = attribute.attribute_type
+    fallback held.kind == 'function' or is_a_list_of_functions(program, held)
+    stored.append(attribute)
+}
+
+func may_hold_functions(held: Type): Boolean {
+    if held.kind == 'function' {
+        return true
+    }
+    return held.kind == 'object' and not held.is_nullable and held.name.starts_with("List_of_Function")
+}
+
 func is_a_list_of_functions(program: ProgramModel, held: Type): Boolean {
-    fallback held.kind == 'object' and not held.is_nullable
     var list = program.class_named(held.name)
     fallback list and list.shown.starts_with("List<") and library.holds(list.file.path)
     var item = list.bound_types["$element_type"]
@@ -365,7 +426,9 @@ func only_listed(walk: AbstractSyntaxTree.Walk, name: String): Boolean {
 
 func is_a_listing_member(expression: SpiteCompiler.Expression, name: String): Boolean {
     fallback expression.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
-    fallback listing_members.contains(expression.name)
+    var member = expression.name
+    var is_kept = member == "append" or member == "insert" or member == "count"
+    fallback is_kept or member == "is_empty" or member == "clear"
     return is_the_name(expression.target, name)
 }
 
