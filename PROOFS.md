@@ -1038,6 +1038,28 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: tests/lent_default_keeps_a_call_on_what_it_is_handed, tests/default_kept_chain_calls_what_it_kept,
   tests/default_kept_writes_through_an_argument.
 
+### A making that runs to its end on what it makes changes nothing
+
+- **Status**: built.
+- **Rule**: `HighIntermediaryRepresentation.Closed.Makings` runs a making while compiling, statement by statement,
+  over what the making makes itself. A number, `null` and each object it makes are known (its attributes as its
+  defaults and functions write them); a text, a decimal, anything read through an object it did not make, and a
+  list or dictionary it has stored into are not. It follows `if`s and loops by their conditions, calls into a
+  function of an object it made, and appends or dictionary writes (keys hashed by the library: a number or a
+  `String`) into a collection it made. It gives up at a condition it does not know, a write or call on anything it
+  did not make, a `crash` or stop reached, a conversion that may halt, arithmetic outside the `Integer` and `Long`
+  room it works in (a division only of known non-negative numbers), a foreign call, a function value called, a wait,
+  a class with a `drop()`, a singleton made with arguments, 20000 steps or 48 calls deep. A run that reaches its end
+  wrote only objects it made, called nothing outside, and stopped, so leaving the making out changes nothing but its
+  own work; the singletons it used first are handed back, in order, as the quiet rules hand them.
+- **Buys**: a default the constructor replaces or nothing reads is left out even when its making loops, writes a
+  dictionary or holds a `crash` it never reaches ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-making-that-runs-to-its-end-on-what-it-makes-is-quiet)).
+- **Falls back**: not quiet; the default is made.
+- **Lives in**: `high_intermediary_representation/closed` (`makings.spite`, with `value.spite` and
+  `object.spite`), asked by `quiet_values.spite` for the defaults `replaced_defaults` drops, when a making is not
+  quiet by [the rules above](#a-quiet-value-changes-nothing-handed-in-and-never-halts).
+- **Checked by**: tests/default_replaced_runs_on_what_it_makes, tests/default_kept_runs_into_a_crash.
+
 ### The one class a `type` admits
 
 - **Status**: built (wider than the old rule).

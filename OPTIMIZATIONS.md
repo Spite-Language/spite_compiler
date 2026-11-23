@@ -233,6 +233,47 @@ make a `Customer` and a `List<Line>` makes neither
 The trimmed defaults are decided by the high pass `high_optimization_passes/replaced_defaults`, which records them
 for the lowering.
 
+## A making that runs to its end on what it makes is quiet
+
+```spite
+var no_program = Model.ProgramModel()
+var layout = Layout(no_program)
+
+func Layout(starting_program: Model.ProgramModel) {
+    program = starting_program
+    offsets["Spite.FunctionValue.address"] = 16
+    program.order.each(note_the_back_references)
+    if program.reload_host {
+        seed_the_class_ids(program.reload_host)
+    }
+    ...
+}
+```
+
+`Layout(no_program)` loops, writes a dictionary and can reach a `crash`, so the rules
+[above](#defaults-the-constructor-replaces-are-never-made) cannot call it quiet. But the program it is handed is one
+its own defaults just made: its lists are empty and its `reload_host` is `null`, so every loop stops before its first
+turn and the `if` is never taken. When a default left out is not quiet by those rules, the compiler runs its making
+while compiling, on what the making itself makes ([the proof](PROOFS.md#a-making-that-runs-to-its-end-on-what-it-makes-changes-nothing)):
+numbers, `null` and the objects it makes are known, everything else (a text, a parameter of the class whose default
+it is, an object handed in) is not. If the run reaches its end, the default is quiet and goes. Every `FunctionLowering`
+the lowering makes (one per lowered piece of code) replaced a `FunctionLoweringState` whose defaults made a whole
+`ProgramModel`, `Layout` and `LoweredProgram`; it now makes none.
+
+**When it applies:** to a default the constructor replaces, or one nothing reads, whose making
+`high_optimization_passes/replaced_defaults` asks about. The run follows calls into the functions of the objects it
+made, `if`s and loops whose conditions it knows, and appends and dictionary writes (keyed by a number or a `String`)
+into a list or dictionary it made, after which that collection's contents are no longer known.
+
+**When it does not apply:** the run gives up, and the default is made as written, at anything it cannot follow: a
+condition it does not know, a write or a call on an object it did not make, a `crash` or a stop it reaches, a
+conversion or arithmetic that could stop the program, a foreign call, a function value called, a wait, a class with a
+`drop()`, a singleton called or made with arguments, more than 20000 steps or 48 calls deep. A singleton the making
+uses first keeps that first use, as above.
+
+**What a program can observe:** fewer allocations and less time. The run is the making's own work, so leaving it out
+leaves out nothing but that work.
+
 ## A default only left-out defaults read is never made
 
 ```spite
