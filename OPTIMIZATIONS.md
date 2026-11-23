@@ -1852,7 +1852,18 @@ so `spite.frame` lines name the guard's function and its callers as before.
 
 Every register the moved blocks write is renamed in one step, past the values passed in, so a call that answers a
 value and its presence (`Boolean?`) keeps the two apart: renamed one at a time, the value's new number was the
-presence's old one, and the report read a present `false` as missing (#488).
+presence's old one, and the report read a present `false` as missing (#488). The cold function holds only those
+registers, numbered in the order they had, not the caller's whole register count, and the blocks the move left empty
+leave the caller, whose jumps are renumbered past them (#546). A cold function's frame holds a slot per register, so
+before this each one carried the caller's frame: 73 178 slots for `rank_of$cold0` in
+`tests/many_crash_arms_in_a_row_still_build`, whose `rank_of` kept 8 824 blocks around its 13 instructions.
+
+The search for the runs is linear in the function's blocks per run it moves: which blocks can still return is
+settled by one walk back from the blocks that return (before, rounds over every block until none changed, a round
+per block in a chain), the entries are marked in one sweep, and the region, the registers it writes and the
+registers written outside it are marks, not lists searched with `contains`. The walk finds the same blocks: a block
+returns when it may return itself, leaves to a block outside the function or reaches one that returns, and the walk
+marks exactly the blocks that reach a returning one, the least answer the rounds settled on too.
 
 ## A reported call's answer is let go after its check
 
@@ -2889,6 +2900,20 @@ depth-first order (the block's parent there is a predecessor handled earlier in 
 climbs), so each step lowers a number that cannot go below the first block's 0. They stopped at 100 000 steps
 before, which no walk can reach: it takes at most one step per reached block, and the compiler's and the spec
 programs' longest meeting took under 50 (#548).
+
+## Compile-time evaluation starts each block from one frame
+
+The evaluation while compiling starts every block it does not reach by a straight line from the same state: the
+registers that one `Constant` alone writes hold their value, and every other register is unknown. It made that state
+anew for each block, a frame of every register of the function, so a function cost its blocks times its registers
+(#547: a function of 9 449 blocks and 73 178 registers built 690 million slots). The frame is now made and seeded once
+per function and kept as its start (`Frame.keep_as_the_start`); the frame notes each register it sets or forgets, and
+before the next block only those registers go back to their start (`back_to_the_start`). A register past the start's
+count, written by the evaluation since, is added unknown, as the new frame had it.
+
+The output is unchanged: before each block the frame holds exactly what the new seeded frame held (every register a
+block changed is restored from the start, every other one still is the start, and the block and position are 0), so
+every instruction is evaluated against the same values as before. The cost is the registers a block changes.
 
 ## Every loop after lowering settles with no round limit
 

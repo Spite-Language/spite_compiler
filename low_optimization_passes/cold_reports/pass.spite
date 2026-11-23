@@ -3,7 +3,12 @@ var operands = LowOptimizationPasses.Operands()
 var function = LowIntermediaryRepresentation.LowFunction("", 0)
 var made = List<LowIntermediaryRepresentation.LowFunction>()
 var stops = List<Boolean>()
+var entered = List<Boolean>()
 var region = List<Integer>()
+var in_region = List<Boolean>()
+var region_positions = List<Integer>()
+var emptied = List<Boolean>()
+var register_total = 0
 var smallest_region = 8
 var empty_label = -1
 var cold_count = 0
@@ -27,14 +32,24 @@ func cool(cooled: LowIntermediaryRepresentation.LowFunction) {
     fallback is_plain and not cooled.key.contains("$cold")
     function = cooled
     cold_count = 0
+    register_total = operands.most_register_of(cooled)
+    emptied = List<Boolean>()
+    var index = 0
+    while index < function.blocks.count() {
+        emptied.append(false)
+        index = index + 1
+    }
     var keeps_going = true
     while keeps_going {
         keeps_going = moved_one_region()
     }
+    fallback cold_count > 0
+    leave_out_the_emptied()
 }
 
 func moved_one_region(): Boolean {
     find_the_stops()
+    find_the_entries()
     var index = 0
     while index < function.blocks.count() {
         if is_an_entry(index) and is_movable_from(index) {
@@ -46,25 +61,54 @@ func moved_one_region(): Boolean {
     return false
 }
 
+# ../../OPTIMIZATIONS.md#a-crashs-report-is-a-cold-call
 func find_the_stops() {
     var returns = List<Boolean>()
+    var predecessors = List<List<Integer>>()
+    var waiting = List<Integer>()
     var index = 0
     while index < function.blocks.count() {
-        var ends_here = may_return_here(index)
-        returns.append(ends_here)
+        returns.append(false)
+        var coming = List<Integer>()
+        predecessors.append(coming)
         index = index + 1
     }
-    var changed = true
-    while changed {
-        changed = false
-        var block_index = 0
-        while block_index < function.blocks.count() {
-            var known = returns[block_index] == true
-            if not known and reaches_a_return(block_index, returns) {
-                returns[block_index] = true
-                changed = true
+    index = 0
+    while index < function.blocks.count() {
+        var next = successors_of(index)
+        var leaves_the_function = false
+        var position = 0
+        while position < next.count() {
+            var following = next[position]
+            var is_known = following >= 0 and following < returns.count()
+            if is_known {
+                var coming = predecessors[following]
+                crash coming
+                coming.append(index)
+            } else {
+                leaves_the_function = true
             }
-            block_index = block_index + 1
+            position = position + 1
+        }
+        if leaves_the_function or may_return_here(index) {
+            returns[index] = true
+            waiting.append(index)
+        }
+        index = index + 1
+    }
+    while not waiting.is_empty() {
+        var returning = waiting.remove_last()
+        crash returning
+        var coming = predecessors[returning]
+        crash coming
+        var position = 0
+        while position < coming.count() {
+            var from = coming[position]
+            if returns[from] != true {
+                returns[from] = true
+                waiting.append(from)
+            }
+            position = position + 1
         }
     }
     stops = List<Boolean>()
@@ -123,23 +167,6 @@ func may_return_here(index: Integer): Boolean {
     }
 }
 
-func reaches_a_return(index: Integer, returns: List<Boolean>): Boolean {
-    var next = successors_of(index)
-    var position = 0
-    while position < next.count() {
-        var following = next[position]
-        var is_known = following >= 0 and following < returns.count()
-        if not is_known {
-            return true
-        }
-        if returns[following] == true {
-            return true
-        }
-        position = position + 1
-    }
-    return false
-}
-
 func stops_at(index: Integer): Boolean {
     fallback index >= 0 and index < stops.count()
     return stops[index] == true
@@ -160,38 +187,62 @@ func successors_of(index: Integer): List<Integer> {
     return found
 }
 
-func is_an_entry(index: Integer): Boolean {
-    fallback index != 0 and stops_at(index)
+func find_the_entries() {
+    entered = List<Boolean>()
+    var index = 0
+    while index < function.blocks.count() {
+        entered.append(false)
+        index = index + 1
+    }
     var from = 0
     while from < function.blocks.count() {
-        var next = successors_of(from)
-        var leads_here = next.contains(index)
-        if leads_here and not stops_at(from) {
-            return true
+        if not stops_at(from) {
+            var next = successors_of(from)
+            next.each(enter)
         }
         from = from + 1
     }
-    return false
+}
+
+func enter(index: Integer) {
+    if index >= 0 and index < entered.count() {
+        entered[index] = true
+    }
+}
+
+func is_an_entry(index: Integer): Boolean {
+    fallback index != 0 and stops_at(index)
+    return entered[index] == true
 }
 
 func is_movable_from(entry: Integer): Boolean {
     region = List<Integer>()
-    region.append(entry)
+    in_region = List<Boolean>()
+    var block_index = 0
+    while block_index < function.blocks.count() {
+        in_region.append(false)
+        block_index = block_index + 1
+    }
+    add_to_the_region(entry)
     var position = 0
     while position < region.count() {
         var here = region[position]
         var next = successors_of(here)
-        var index = 0
-        while index < next.count() {
-            var following = next[index]
-            if not region.contains(following) {
-                region.append(following)
-            }
-            index = index + 1
-        }
+        next.each(add_to_the_region)
         position = position + 1
     }
     return is_closed(entry) and is_worth_moving() and is_supported()
+}
+
+func add_to_the_region(block_index: Integer) {
+    fallback not is_in_the_region(block_index)
+    region.append(block_index)
+    in_region[block_index] = true
+}
+
+func is_in_the_region(block_index: Integer): Boolean {
+    fallback block_index >= 0 and block_index < in_region.count()
+    return in_region[block_index] == true
 }
 
 func is_closed(entry: Integer): Boolean {
@@ -201,8 +252,8 @@ func is_closed(entry: Integer): Boolean {
         var index = 0
         while index < next.count() {
             var following = next[index]
-            var enters = following != entry and region.contains(following)
-            fallback not enters or region.contains(from)
+            var enters = following != entry and is_in_the_region(following)
+            fallback not enters or is_in_the_region(from)
             index = index + 1
         }
         from = from + 1
@@ -283,16 +334,34 @@ func is_movable(instruction: SpiteCompiler.Instruction): Boolean {
 
 func lives_are_untouched(): Boolean {
     var used = registers_of(true)
-    var defined = registers_of(false)
-    var outside = defined_outside()
+    var written = registers_of(false)
+    var defined = marks_of(written)
+    var written_outside = defined_outside()
+    var outside = marks_of(written_outside)
     var index = 0
     while index < used.count() {
         var register = used[index]
-        var is_both = defined.contains(register) and outside.contains(register)
+        var is_both = defined[register] == true and outside[register] == true
         fallback not is_both
         index = index + 1
     }
     return true
+}
+
+func marks_of(registers: List<Integer>): List<Boolean> {
+    var marks = List<Boolean>()
+    var register = 0
+    while register < register_total {
+        marks.append(false)
+        register = register + 1
+    }
+    var index = 0
+    while index < registers.count() {
+        var marked = registers[index]
+        marks[marked] = true
+        index = index + 1
+    }
+    return marks
 }
 
 func defined_outside(): List<Integer> {
@@ -305,7 +374,7 @@ func defined_outside(): List<Integer> {
     var block_index = 0
     while block_index < function.blocks.count() {
         var block = function.blocks[block_index]
-        if not region.contains(block_index) {
+        if not is_in_the_region(block_index) {
             var index = 0
             while index < block.instructions.count() {
                 var instruction = block.instructions[index]
@@ -342,13 +411,13 @@ func registers_of(wants_uses: Boolean): List<Integer> {
     return found
 }
 
-func live_ins(): List<Integer> {
-    var used = registers_of(true)
-    var defined = registers_of(false)
+func live_ins(defined: List<Boolean>): List<Integer> {
+    var read = registers_of(true)
+    var used = marks_of(read)
     var found = List<Integer>()
     var register = 0
-    while register < function.register_count {
-        var comes_in = used.contains(register) and not defined.contains(register)
+    while register < register_total {
+        var comes_in = used[register] == true and defined[register] != true
         if comes_in {
             found.append(register)
         }
@@ -358,19 +427,27 @@ func live_ins(): List<Integer> {
 }
 
 func move_the_region(entry: Integer) {
-    var incoming = live_ins()
+    var written = registers_of(false)
+    var defined = marks_of(written)
+    var incoming = live_ins(defined)
     var shift = incoming.count()
     var key = "{function.key}$cold{cold_count}"
     cold_count = cold_count + 1
     var cold = LowIntermediaryRepresentation.LowFunction(key, shift)
-    cold.register_count = function.register_count + shift
     var renaming = LowOptimizationPasses.Renaming()
+    var next_register = shift
     var register = 0
-    while register < function.register_count {
-        renaming.renames.append(register + shift)
-        renaming.definition_renames.append(register + shift)
+    while register < register_total {
+        var renamed = -1
+        if defined[register] == true {
+            renamed = next_register
+            next_register = next_register + 1
+        }
+        renaming.renames.append(renamed)
+        renaming.definition_renames.append(renamed)
         register = register + 1
     }
+    cold.register_count = next_register
     var parameter = 0
     while parameter < shift {
         var passed = incoming[parameter]
@@ -388,10 +465,12 @@ func move_the_region(entry: Integer) {
             line = first_line
         }
         cold.blocks.append(block)
-        var emptied = LowIntermediaryRepresentation.LowBlock()
-        function.blocks[at] = emptied
+        var left = LowIntermediaryRepresentation.LowBlock()
+        function.blocks[at] = left
+        emptied[at] = true
         index = index + 1
     }
+    note_the_region_positions()
     cold.blocks.each(point_into_the_region)
     made.append(cold)
     write_the_call(entry, key, incoming, line)
@@ -418,6 +497,21 @@ func cooled_block(block: LowIntermediaryRepresentation.LowBlock, renaming: LowOp
     return line
 }
 
+func note_the_region_positions() {
+    region_positions = List<Integer>()
+    var index = 0
+    while index < function.blocks.count() {
+        region_positions.append(-1)
+        index = index + 1
+    }
+    var position = 0
+    while position < region.count() {
+        var at = region[position]
+        region_positions[at] = position
+        position = position + 1
+    }
+}
+
 func point_into_the_region(block: LowIntermediaryRepresentation.LowBlock) {
     var last = block.instructions.last()
     if last.class == LowIntermediaryRepresentation.Instructions.Jump {
@@ -430,7 +524,51 @@ func point_into_the_region(block: LowIntermediaryRepresentation.LowBlock) {
 }
 
 func position_of(block_index: Integer): Integer {
-    var found = region.index_of(block_index)
+    var found = region_positions[block_index]
+    crash found
+    crash found >= 0
+    return found
+}
+
+func leave_out_the_emptied() {
+    var positions = List<Integer>()
+    var kept = List<LowIntermediaryRepresentation.LowBlock>()
+    var index = 0
+    while index < function.blocks.count() {
+        var position = kept.count()
+        positions.append(position)
+        var block = function.blocks[index]
+        if emptied[index] != true {
+            kept.append(block)
+        }
+        index = index + 1
+    }
+    function.blocks = kept
+    var block_index = 0
+    while block_index < kept.count() {
+        var block = kept[block_index]
+        point_past_the_emptied(block, positions)
+        block_index = block_index + 1
+    }
+}
+
+func point_past_the_emptied(block: LowIntermediaryRepresentation.LowBlock, positions: List<Integer>) {
+    var last = block.instructions.last()
+    if last.class == LowIntermediaryRepresentation.Instructions.Jump {
+        last.block = kept_position(last.block, positions)
+    }
+    if last.class == LowIntermediaryRepresentation.Instructions.Branch {
+        last.when_true = kept_position(last.when_true, positions)
+        last.when_false = kept_position(last.when_false, positions)
+    }
+}
+
+func kept_position(block_index: Integer, positions: List<Integer>): Integer {
+    if block_index < 0 or block_index >= positions.count() {
+        return block_index
+    }
+    crash emptied[block_index] != true
+    var found = positions[block_index]
     crash found
     return found
 }
