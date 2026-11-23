@@ -198,7 +198,7 @@ func call_trampoline(function_type: Model.Type, label: Integer, message: String)
     stop_when_zero(making, value, stopping, calling)
     stop_in(making, stopping, message)
     making.switch_to(calling)
-    call_through(making, value, parameters, function_type)
+    call_through(making, value, parameters, function_type, -1)
     lowering.state.program.lowered_functions.append(making.state.function)
     return key
 }
@@ -318,7 +318,13 @@ func stop_in(making: FunctionLowering, stopping: Integer, message: String) {
     making.emit(stopped)
 }
 
-func call_through(making: FunctionLowering, value: Integer, parameters: List<Integer>, function_type: Model.Type) {
+func call_through(
+    making: FunctionLowering,
+    value: Integer,
+    parameters: List<Integer>,
+    function_type: Model.Type,
+    entered: Integer,
+) {
     var signature = function_type.signature_or_empty()
     var address = making.new_register()
     var loaded_address = LowIntermediaryRepresentation.Instructions.Load(
@@ -357,6 +363,7 @@ func call_through(making: FunctionLowering, value: Integer, parameters: List<Int
     }
     var called = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments, false, -1, 0)
     making.emit(called)
+    leave(making, entered)
     var answered = LowIntermediaryRepresentation.Instructions.Return(target, -1, false)
     making.emit(answered)
 }
@@ -367,6 +374,7 @@ func call_through_held_back(
     value: Integer,
     parameters: List<Integer>,
     function_type: Model.Type,
+    entered: Integer,
 ) {
     var making_counting = Counting(making.state)
     var signature = function_type.signature_or_empty()
@@ -413,6 +421,7 @@ func call_through_held_back(
     var called = LowIntermediaryRepresentation.Instructions.CallAt(target, address, arguments, false, -1, 0)
     making.emit(called)
     making_counting.release(owner)
+    leave(making, entered)
     var answered = LowIntermediaryRepresentation.Instructions.Return(target, -1, false)
     making.emit(answered)
 }
@@ -508,6 +517,7 @@ func kept_without_a_context(
     making.start(key)
     var signature = passed.value_type.signature_or_empty()
     var parameters = take_the_c_parameters(making, signature.parameters, -1)
+    var entered = enter(making)
     var trampoline_slot = making.new_register()
     var trampoline_addressed = LowIntermediaryRepresentation.Instructions.DataAddress(trampoline_slot, label)
     making.emit(trampoline_addressed)
@@ -527,7 +537,7 @@ func kept_without_a_context(
     stop_when_zero(making, called, trampoline_stopping, calling)
     stop_in(making, trampoline_stopping, dropped)
     making.switch_to(calling)
-    call_through(making, called, parameters, passed.value_type)
+    call_through(making, called, parameters, passed.value_type, entered)
     lowering.state.program.lowered_functions.append(making.state.function)
     return key
 }
@@ -587,11 +597,12 @@ func kept_with_a_context(
         context_at = 0
     }
     var parameters = take_the_c_parameters(making, parameter_types, context_at)
+    var entered = enter(making)
     var called = value_of_the_ticket(making, context_at, dropped)
     if passed.holds_its_receiver_back {
-        call_through_held_back(making, called, parameters, passed.value_type)
+        call_through_held_back(making, called, parameters, passed.value_type, entered)
     } else {
-        call_through(making, called, parameters, passed.value_type)
+        call_through(making, called, parameters, passed.value_type, entered)
     }
     lowering.state.program.lowered_functions.append(making.state.function)
     return key
@@ -904,4 +915,25 @@ func take_the_place(
     var ticket = unchecked(making, 'bits_or', count_part, place)
     var answered = LowIntermediaryRepresentation.Instructions.Return(ticket, entry, false)
     making.emit(answered)
+}
+
+# ../../OPTIMIZATIONS.md#a-cycle-is-freed-by-a-count-that-knows-it
+func enter(making: FunctionLowering): Integer {
+    if not lowering.state.program.collects_cycles {
+        return -1
+    }
+    lowering.state.program.enters_the_cycles = true
+    var entered = making.new_register()
+    var no_arguments = List<Integer>()
+    var called = LowIntermediaryRepresentation.Instructions.Call(entered, "_cycle_enter", no_arguments, -1, false)
+    making.emit(called)
+    return entered
+}
+
+func leave(making: FunctionLowering, entered: Integer) {
+    fallback entered >= 0
+    var arguments = List<Integer>()
+    arguments.append(entered)
+    var called = LowIntermediaryRepresentation.Instructions.Call(-1, "_cycle_leave", arguments, -1, false)
+    making.emit(called)
 }

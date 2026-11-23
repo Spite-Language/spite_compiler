@@ -14,7 +14,7 @@ var _blacks = 104
 var _whites = 128
 var _roots = 152
 var _order = 176
-var _record_size = 200
+var _record_size = 384
 var _pair = 16
 var _high_half = 32
 var _spreading: Long = -7046029254386353131
@@ -46,6 +46,13 @@ func TrialDeletion(starting_lowering: FunctionLowering) {
 # ../../OPTIMIZATIONS.md#a-cycle-is-freed-by-a-count-that-knows-it
 func write(table_size: Integer) {
     lowering.state.program.cycle_record = machine.zeroed_label(_record_size)
+    lowering.state.program.name_state(lowering.state.program.cycle_record, "cycles")
+    var threads = CycleThreads(machine)
+    if lowering.state.program.uses_threads {
+        threads.write()
+    } else {
+        threads.write_nothing_to_do()
+    }
     write_the_suspect()
     write_the_let_go()
     write_the_drop_point()
@@ -61,6 +68,8 @@ func write(table_size: Integer) {
 }
 
 func write_nothing_to_do() {
+    var threads = CycleThreads(machine)
+    threads.write_nothing_to_do()
     machine.begin("_cycle_suspect", 1)
     machine.answered_nothing()
     machine.finish()
@@ -72,6 +81,10 @@ func write_nothing_to_do() {
 func write_the_drop_point() {
     machine.begin("_cycle_drop_point", 0)
     var base = record()
+    if lowering.state.program.uses_threads {
+        var threads = CycleThreads(machine)
+        threads.return_unless_alone(base)
+    }
     count_an_event(base)
     var no_arguments = machine.none_listed()
     machine.called_for_nothing("_cycle_maybe_collect", no_arguments)
@@ -114,11 +127,22 @@ func write_the_suspect() {
     var present = machine.opened_when(missing)
     machine.answered_nothing()
     machine.closed(present)
-    var base = record()
-    count_an_event(base)
     var word = machine.loaded(0, 8)
     var plain = machine.compared_to('greater_or_equal', word, 0)
     var marking = machine.opened_when(plain)
+    if lowering.state.program.uses_threads {
+        mark_among_threads()
+    } else {
+        mark_alone(word)
+    }
+    machine.closed(marking)
+    var no_arguments = machine.none_listed()
+    machine.called_for_nothing("_cycle_drop_point", no_arguments)
+    machine.answered_nothing()
+    machine.finish()
+}
+
+func mark_alone(word: Integer) {
     var mask = machine.constant_of(_count_mask)
     var count = machine.both(word, mask)
     var counted = machine.compared_to('less', count, _skipped)
@@ -129,11 +153,26 @@ func write_the_suspect() {
     var passed = machine.one_listed(0)
     machine.called_for_nothing("_cycle_add", passed)
     machine.closed(counting)
+}
+
+# ../../OPTIMIZATIONS.md#a-cycle-is-freed-by-a-count-that-knows-it
+func mark_among_threads() {
+    var threads = CycleThreads(machine)
+    threads.locked()
+    var word = machine.loaded(0, 8)
+    var plain = machine.compared_to('greater_or_equal', word, 0)
+    var marking = machine.opened_when(plain)
+    var mask = machine.constant_of(_count_mask)
+    var count = machine.both(word, mask)
+    var counted = machine.compared_to('less', count, _skipped)
+    var counting = machine.opened_when(counted)
+    var bit = suspect_bit()
+    threads.set_the_suspect_bit(0, bit)
+    var passed = machine.one_listed(0)
+    machine.called_for_nothing("_cycle_add", passed)
+    machine.closed(counting)
     machine.closed(marking)
-    var no_arguments = machine.none_listed()
-    machine.called_for_nothing("_cycle_maybe_collect", no_arguments)
-    machine.answered_nothing()
-    machine.finish()
+    threads.unlocked()
 }
 
 func write_the_let_go() {
@@ -141,8 +180,16 @@ func write_the_let_go() {
     var bit = suspect_bit()
     var gone = machine.compared('equal', 1, bit)
     var held = machine.opened_when(gone)
+    var threads = CycleThreads(machine)
+    var among_threads = lowering.state.program.uses_threads
+    if among_threads {
+        threads.locked()
+    }
     var passed = machine.one_listed(0)
     machine.called_for_nothing("_cycle_remove", passed)
+    if among_threads {
+        threads.unlocked()
+    }
     machine.stored_number(0, 8, 0)
     var yes = machine.constant_of(1)
     machine.answered(yes)
@@ -599,6 +646,11 @@ func walked(object: Integer, mode: Integer) {
 func write_the_collect() {
     machine.begin("_cycle_collect", 0)
     var base = record()
+    var threads = CycleThreads(machine)
+    var among_threads = lowering.state.program.uses_threads
+    if among_threads {
+        threads.walk_alone_or_answer(base)
+    }
     machine.stored_number(base, _collecting, 1)
     emptied(base, _roots)
     emptied(base, _grays)
@@ -611,10 +663,19 @@ func write_the_collect() {
     scan_the_roots(base)
     each_white_of_the_grays(base, _restore_mode)
     mark_the_whites(base)
+    if among_threads {
+        threads.let_the_others_in(base)
+    }
     each_white(base, _drop_mode)
     each_white(base, _clear_mode)
     free_the_whites(base)
+    if among_threads {
+        threads.locked()
+    }
     compact_the_order(base)
+    if among_threads {
+        threads.unlocked()
+    }
     var walked_count = machine.loaded(base, _grays + 8)
     var freed = machine.loaded(base, _whites + 8)
     var kept_count = machine.difference_of(walked_count, freed)

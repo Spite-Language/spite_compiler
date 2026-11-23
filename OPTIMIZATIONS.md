@@ -1234,12 +1234,26 @@ be null, a held-back function value) is freed by a count that knows it, written 
   walked once per its size. The end of the program collects after the singletons go, until a walk frees nothing.
 - The colors live in bits 61 and 62 only while the walk runs, when no code of the program does. Immortal objects
   (a count of 2^60) and the whites' mark (2^59) are never walked, and a cycle-capable class never lives in a frame.
+- **Threads** (`cycle_threads.spite`, written only into a program that starts a thread). The walk needs every count
+  of a cycle-capable object to hold still, so it runs only where no other thread runs code of the program. A word of
+  the record counts the others: `_pool_submit` adds one before a piece of work can start and the pool's worker takes
+  it back after the work has let go of everything (bands, calls run at once, the helpers of a wait), and the
+  trampoline of a `ForeignCallback` adds one while C runs it on a thread of its own (on the program's thread it
+  adds nothing). A drop point and a closing store count an event and try the walk only while that word is zero,
+  so bands and helpers never collect and never write the shared event count; the collector then claims the word
+  with one compare-exchange (zero to a flag), and a `ForeignCallback` that arrives meanwhile waits at the
+  trampoline until the walk is done. The flag is given back before the first `drop()` runs, so a `drop()` may
+  start work or wait for C as anywhere else. The suspect set is shared, so marking (a compare-exchange on the count
+  word, which another thread may be counting) and taking a suspect out take a spin lock; the walk itself takes none.
+  Resumable functions, the prompt and the reloader run on the program's thread, so they collect like any other code:
+  a waiting call's frame holds counts like any holder. In a prompt or a `--hot-reload` build the collector is
+  written whenever a class can close a cycle, so a line or a reload that writes the first closing store swaps in
+  ordinary functions; its record is named state (`cycles`) and its class table a constant.
 
-**When it applies:** to a single-threaded program (no work run at once, no thread a foreign callback starts) that
-writes a closing store, outside the prompt and a hot-reloaded build. A program with no closing store carries none of it.
+**When it applies:** to every program that writes a closing store: one thread or many, the prompt and a
+hot-reloaded build. A program with no closing store carries none of it.
 
-**When it does not apply:** a program with threads keeps its counts as before, and such a cycle leaks until one side
-lets go. A cycle through a work handle is never walked.
+**When it does not apply:** a cycle through a work handle is never walked.
 
 **What a program can observe:** a cycle's `drop()`s run at the next collection instead of never, all of the cycle's
 before any of its memory goes; `--debug-memory` balances.
