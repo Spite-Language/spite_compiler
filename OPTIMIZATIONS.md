@@ -1224,14 +1224,19 @@ be null, a held-back function value) is freed by a count that knows it, written 
   pending list) tests for zero as before; only on the path where the count stays above zero does a negative word (a
   suspect) call `_cycle_let_go`, which frees a suspect whose count reached zero (bit 63 alone). An object that is never a suspect pays one test there and nothing else.
 - **Collecting.** At the threshold of events (closing stores, and drop points: a block letting go of a local that may be in a
-  cycle, `_cycle_drop_point`), `_cycle_collect` runs trial
+  cycle, `_cycle_drop_point`), or once the suspects have doubled, `_cycle_collect` runs trial
   deletion from every suspect over the cycle-capable objects, with lists instead of the stack: it takes away the counts
   they hold of each other (gray), gives them back to whatever is still counted from outside and what it reaches
   (black), and frees the rest (white): first their counts of the black ones are given back, then every white's
   `drop()` runs while all of them still live, then their slots holding each other are cleared, then each is freed by
-  its class's `_free_{key}`, which skips the `drop()` by the mark the count holds. The next threshold is a quarter of the
-  objects the walk kept, plus one, so a small cycle is freed at the event that let it go and a large structure is
-  walked once per its size. The end of the program collects after the singletons go, until a walk frees nothing.
+  its class's `_free_{key}`, which skips the `drop()` by the mark the count holds. The walk is due again after
+  `kept / 4 + kept * kept / 16384 + 1` events, `kept` being the objects it walked and kept, or once the suspects are
+  more than twice the ones it kept: a small structure is checked at the event that lets a cycle go (a walk of a few
+  objects per event), and a large one waits longer than its size, so the walks over it become a vanishing share of
+  the events, while the doubling of the suspects (every cycle holds one) keeps the cyclic garbage that waits no
+  larger than what lives, the way a tracing collector sizes its heap. With only `kept / 4 + 1` the compiler's own
+  trees, whose recursive classes make every list append a closing store, were walked about once per four drop points:
+  `--check` of the compiler took 1176 s instead of 105 s. The end of the program collects after the singletons go, until a walk frees nothing.
 - The colors live in bits 61 and 62 only while the walk runs, when no code of the program does. Immortal objects
   (a count of 2^60) and the whites' mark (2^59) are never walked, and a cycle-capable class never lives in a frame.
 - **Threads** (`cycle_threads.spite`, written only into a program that starts a thread). The walk needs every count
