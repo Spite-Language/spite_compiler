@@ -3024,14 +3024,29 @@ Measured (#569): 32 objects are reached in 17 of the compiler's functions and 36
 Measured (#602) building the compiler and the 3 145 spec programs: a quiet singleton's check goes 1 singleton deep in the compiler and 4 in the spec programs (3 before the new
 `quiet_singleton_chain_five_deep`), so the old 4 never stopped it.
 
-### Passes run a set number of times
+### Two whole passes repeat until a round changes nothing
 
-Two passes repeat a whole step exactly twice, as a pipeline, not as a search for a fixed point:
-`loop_invariants` moves what each loop does not change twice over all the loops (the second time moves out of an
-outer loop what the first moved out of an inner one), and `live_values` finds the lives and removes unread values
-twice. A third time would move nothing in the compiler or the spec programs, and would remove more
-values only in two spec programs' constructors (`singleton_guard`, `singleton_lock_calls`). Running both until a round
-changes nothing is decided, not built yet (#583).
+`loop_invariants` moves what each loop does not change over all the loops, and again (the next round moves out of
+an outer loop what the last moved out of an inner one), until a round moves nothing; `live_values` finds the lives
+and removes unread values until a round removes nothing (#583). Before, both ran exactly two rounds.
+
+- They settle: a `live_values` round that changes something removes an instruction and adds none. A
+  `loop_invariants` round that changes something moves an instruction into a loop's preheader, which lies in one
+  loop fewer than the block it left (loops nest, so the preheader of a loop inside another is inside that one),
+  or lifts a region of a loop into a register, which each loop and region does once (`was_promoted`) and only for
+  region names the function already has; the blocks, their edges and dominators stay as they are. So the lifts run
+  out, and between two lifts the sum of the instructions' loop depths falls with every move.
+- The output is unchanged wherever the old two rounds were enough: a round that changes nothing leaves every
+  input of the next round as it was (the function, its edges, dominators and definitions, the regions already
+  lifted), so the next round would change nothing either. Every change goes through `hoist`, which marks the
+  round, so a round that marks nothing is such a round. A function where the first round of `loop_invariants`
+  moves nothing now stops there instead of running the second round for nothing.
+- Measured (#583): the compiler built by the settled passes is byte for byte the one two rounds built (the fixed
+  point of the change is its first round), and the 3 255 spec programs print the same. As #569 measured, a third
+  round moves nothing in the compiler or the spec programs, and removes more values only in two spec programs'
+  constructors (`singleton_guard`, `singleton_lock_calls`), which now lose them. A self-build round took 974 s
+  before and 949 s after, within the noise of a shared machine: `live_values` runs in bands, so a round it saves
+  barely shows on the wall clock.
 
 ## Every loop before lowering settles with no round limit
 
