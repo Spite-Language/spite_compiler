@@ -1223,8 +1223,10 @@ be null, a held-back function value) is freed by a count that knows it, written 
 - **Letting go.** Every place that counts down (`_release`, its copies in place, a known class's direct release, the
   pending list) tests for zero as before; only on the path where the count stays above zero does a negative word (a
   suspect) call `_cycle_let_go`, which frees a suspect whose count reached zero (bit 63 alone). An object that is never a suspect pays one test there and nothing else.
-- **Collecting.** At the threshold of events (closing stores, and drop points: a block letting go of a local that may be in a
-  cycle, `_cycle_drop_point`), or once the suspects have doubled, `_cycle_collect` runs trial
+- **Collecting.** An event is a suspect's count going down while it stays alive (`_cycle_let_go`), the only way a
+  cycle that was held becomes garbage. At the threshold of events, or once the suspects have doubled, the collector is
+  due (a word of its record); the next drop point (a block letting go of a local that may be in a cycle,
+  `_cycle_drop_point`, a load and a test the inliner copies in place) then calls `_cycle_collect`, which runs trial
   deletion from every suspect over the cycle-capable objects, with lists instead of the stack: it takes away the counts
   they hold of each other (gray), gives them back to whatever is still counted from outside and what it reaches
   (black), and frees the rest (white): first their counts of the black ones are given back, then every white's
@@ -1236,7 +1238,9 @@ be null, a held-back function value) is freed by a count that knows it, written 
   the events, while the doubling of the suspects (every cycle holds one) keeps the cyclic garbage that waits no
   larger than what lives, the way a tracing collector sizes its heap. With only `kept / 4 + 1` the compiler's own
   trees, whose recursive classes make every list append a closing store, were walked about once per four drop points:
-  `--check` of the compiler took 1176 s instead of 105 s. The end of the program collects after the singletons go, until a walk frees nothing.
+  `--check` of the compiler took 1176 s instead of 105 s. The end of the program collects after the singletons go, until a walk frees nothing, when that can be seen: a
+  cycle-capable class declares `drop()`, or the build counts memory (`--debug-memory`, the prompt, a program that reads
+  its live allocations) or reloads; otherwise the process ending frees it all the same, and the walk is left out.
 - The colors live in bits 61 and 62 only while the walk runs, when no code of the program does. Immortal objects
   (a count of 2^60) and the whites' mark (2^59) are never walked, and a cycle-capable class never lives in a frame.
 - **Threads** (`cycle_threads.spite`, written only into a program that starts a thread). The walk needs every count
