@@ -1546,7 +1546,10 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   proves which side outlives the other; a class that does not link back could be freed while the program still means
   to hold it; and one that cannot be null has no `null` to answer once its object is freed.
 - **Falls back**: counted; the cycle leaks until the program clears the `T?` field that closes it.
-- **Lives in**: `model/back_references.spite`, `model/made_pair_walk.spite` and `model/made_group_walk.spite`, asked by `ProgramModel.holds_no_count`; the shared back word in
+- **Lives in**: `model/back_references.spite`, `model/made_pair_walk.spite` and `model/made_group_walk.spite`, asked by `ProgramModel.holds_no_count`, which reads the program's links only for an attribute that can be null and
+  holds an object, a union or a `type` (the only ones the rule above picks): any other is answered from
+  [the proof below](#children-that-never-outlive-their-owner-point-back-without-a-count) alone, so a `--check` whose
+  deep copies ask only about lists and numbers never reads them; the shared back word in
   `high_intermediary_representation/layout.spite` (`place_the_shared_back_words`).
 - **Checked by**: tests/parent_back_reference, tests/back_reference_two_functions, tests/back_reference_calls,
   tests/back_reference_two_levels, tests/a_back_reference_found_many_calls_down (73 calls down),
