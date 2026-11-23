@@ -3666,6 +3666,28 @@ release or a report laid out after the loop does not hold its register through t
 
 What a user can observe: nothing but time; a crash report reads its numbers from wherever the values live.
 
+## Values whose lives do not overlap share a frame slot
+
+A value's frame slot is not its own for the whole function: values whose lives do not overlap share one. Each value
+is live from the first to the last position of its stretches ([above](#values-live-in-registers)), counting a write
+nothing reads and a parameter's arrival at the function's start. A scan over the positions gives each value, when
+its life starts, a slot freed by a value whose life ended at an earlier position, or a new one; the frame holds as
+many slots as values were ever live at one position. A value read and written in one instruction holds both its
+slot and the slot of the value it replaces, since both lives reach that position.
+
+Every load or store of a slot happens where its value is live: a read, a write, a store around a call, a move on an
+edge into a block the value is live in, a crash report's number. So two values that share a slot are never both
+in it, and what each reads is what it last stored. A value with no life at all (written only in a block no path
+reaches) takes the first slot, and asking for its slot anywhere a path reaches stops the compiler naming the
+mistake. A function that waits (`resumable`) keeps one slot per value, since its frame is an object of its own.
+
+It applies to every function. A function that inlined much keeps as many slots as it holds values at once, rather
+than one per value it ever made: frames of hundreds of kilobytes become a few kilobytes, so deep recursion needs far
+less stack.
+
+What a user can observe: nothing but time and stack. A program that recursed deep enough to run out of stack may
+now finish.
+
 ## A value leaves a scratch register only around a call
 
 A value the scratch registers `r10`, `r9` and `r8` cannot hold for its whole life, because a call in one of its
