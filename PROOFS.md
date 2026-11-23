@@ -161,6 +161,16 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   conformance/path_narrow_loop, conformance/narrowed_path_undone_below, conformance/narrowed_local_undone_in_loop,
   conformance/assigned_start_undoes_narrowing, conformance/index_store_undoes_narrowing.
 
+### A call handed what holds a path may change it
+
+- **Status**: built (D3020 to D3022, to confirm; spite_compiler#666).
+- **Rule**: when a rule decides a written proof is needless (a copy made to narrow, a check after a call), a call handed an object on the path, as an argument or the receiver, counts as one that may change the path, whatever it reaches: after `var cu = bunda.cu`, `clean(bunda)` and `bunda.clean()` keep the copy, and so does `this.clean()` for a copy of an attribute of `this`, and a function value bound to `bunda`. A call handed only the copy (`clean(cu)`), or nothing on the path, is followed as [a call keeps a proof](#a-call-keeps-a-proof-it-cannot-change) follows it. The refusal of a narrowed read past a call is unchanged: it still follows the call.
+- **Buys**: a file loaded by several programs settles. What a call reaches depends on the program (shape fillers, function values, a generic bound by reflection), so the same `unmount` was a needless copy in one program and a kept one in another, and the fix one wrote the other refused.
+- **How**: `NarrowedRead.path_value` holds the read's path (the copied value for a copy); `KeptCopies.is_handed_what_holds_it` collects the objects along it and compares them with what each call between the copy and the read is handed (`Writes.is_the_same_place`).
+- **Falls back**: a holder that reaches the call without being handed (through `this`, a singleton, an alias such as `var other = bunda`, or an object it is stored in) is left to the program's own reach. That is never unsafe: the rule only ever keeps a copy or a check the program's reach would drop, and a fix it still makes is re-checked by every program that loads the file.
+- **Lives in**: `proofs/proven_checks/kept_copies.spite`, shared by the copy fixer (`keeps_a_value`) and the repeated-check refusal (`is_a_new_proof`).
+- **Checked by**: tests/copy_kept_across_a_call_handed_its_holder, conformance/copy_to_narrow_across_a_call_handed_only_the_copy, tests/copy_kept_across_a_call_that_may_assign_it.
+
 ### A call keeps a proof it cannot change
 
 - **Status**: built, for every narrowing a read relies on without a test and for the `[]` and count proofs, which keep a test.
@@ -334,7 +344,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   before its source changes is allowed
   ([failure.md](../spite_documentation/failure.md#nothing-fails-silently)).
   A path holding a written call is never a copy's source, since writing it again calls again; a copy through a getter keeps a value when the getter may have an effect, or when a call or a write before the read may assign what it reads (`kept_copies.spite`: `getter_may_change_under`), and one through a getter that only reads is a copy like any other.
-  A local whose source (an attribute, or one along its path) a call or a write through any object may change between the copy and a read of the local keeps a value, so it is not a copy: the builder records those reads as `NarrowedRead`s with their `copy_line`, and `proven_checks` asks the question `narrowings_kept_across_calls` asks.
+  A local whose source (an attribute, or one along its path) a call or a write through any object may change between the copy and a read of the local keeps a value, so it is not a copy: the builder records those reads as `NarrowedRead`s with their `copy_line`, and `proven_checks` asks the question `narrowings_kept_across_calls` asks, plus one of its own: a call handed an object on the path keeps the copy in every program ([A call handed what holds a path may change it](#a-call-handed-what-holds-a-path-may-change-it)).
   The fix renames every use of the copy, and a copy of a copy names the first source: each `Fixes.Renaming` also renames a path an earlier one wrote that starts at its name, and rewrites the source of a later one in the same function that does (`fixes.spite`: `rename_every_use`).
 - **Buys**: one name per value.
 - **Falls back**: refused, "'watcher' only copies 'tracker' so it can be narrowed: narrow 'tracker' itself ('fallback
