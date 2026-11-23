@@ -1234,7 +1234,7 @@ be null, a held-back function value) is freed by a count that knows it, written 
   (black), and frees the rest (white): first their counts of the black ones are given back, then every white's
   `drop()` runs while all of them still live, then their slots holding each other are cleared, then each is freed by
   its class's `_free_{key}`, which skips the `drop()` by the mark the count holds. The walk is due again after
-  `kept / 4 + kept * kept / 16384 + 1` events, `kept` being the objects it walked and kept, or once the suspects are
+  `kept / 4 + kept * kept / 1024 + 1` events, `kept` being the objects it walked and kept, or once the suspects are
   more than twice the ones it kept: a small structure is checked at the event that lets a cycle go (a walk of a few
   objects per event), and a large one waits longer than its size, so the walks over it become a vanishing share of
   the events, while the doubling of the suspects (every cycle holds one) keeps the cyclic garbage that waits no
