@@ -1003,6 +1003,9 @@ answer walk followed one template, never a second.
     as deep as itself (`lowering/deep_links.spite`) is freed onto a pending list, its `_free_<class>` calling
     `_free_onto_<class>` and `_free_the_pending` (`lowering/pending_frees.spite`)
     ([Freeing a deep structure takes no stack per level](OPTIMIZATIONS.md#freeing-a-deep-structure-takes-no-stack-per-level)).
+  - a cycle no proven form frees is freed by a count that knows it: the holder of a store that can close a cycle
+    is a suspect, and trial deletion from the suspects runs at drop points and at the end
+    ([A cycle is freed by a count that knows it](OPTIMIZATIONS.md#a-cycle-is-freed-by-a-count-that-knows-it)).
 - A `Buffer`'s room is sized by the compiler (D659): a buffer proven never to grow keeps its bytes inside the
   value that holds it, exactly `size` of them; every other buffer keeps a heap block that grows.
 - A class whose only memory is a room of at most 8 bytes, and nothing else, is a number: its value travels in a
