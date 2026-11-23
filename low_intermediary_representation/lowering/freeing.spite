@@ -1,4 +1,6 @@
 var _items_are_last = -2
+var _count_mask: Long = 2305843009213693951
+var _collected_mark: Long = 288230376151711744
 var _nothing_pending = -1
 var no_program = Model.ProgramModel()
 var high = HighIntermediaryRepresentation.HighProgram(no_program)
@@ -40,6 +42,10 @@ func note_built(function: HighIntermediaryRepresentation.HighFunction) {
 func lower_the_release() {
     var keys = layout.class_ids.keys()
     links.study(keys)
+    var was_collecting = program.collects_cycles
+    if program.uses_threads {
+        program.collects_cycles = false
+    }
     lowering.start("_release")
     var object = lowering.new_register()
     lowering.state.function.parameter_count = 1
@@ -79,8 +85,10 @@ func lower_the_release() {
     var compared_count = LowIntermediaryRepresentation.Instructions.Compare(gone, 'equal', lowered_count, zero, true)
     lowering.emit(compared_count)
     var freeing = lowering.new_block()
-    var gone_test = LowIntermediaryRepresentation.Instructions.Branch(gone, freeing, done)
+    var held = held_block(done, program.collects_cycles)
+    var gone_test = LowIntermediaryRepresentation.Instructions.Branch(gone, freeing, held)
     lowering.emit(gone_test)
+    check_a_suspect(held, object, lowered_count, freeing, done)
     lowering.switch_to(freeing)
     var passed = List<Integer>()
     passed.append(object)
@@ -97,6 +105,7 @@ func lower_the_release() {
     var singletons = singleton_slots.keys()
     singletons.each(lower_a_destroy)
     singletons.each(lower_a_reflected_let_go)
+    write_the_cycle_collector(was_collecting)
     fallback layout.holds_anything_back()
     lower_the_back_counted()
     lower_the_back_count("_point_back", 1)
@@ -700,7 +709,11 @@ func free_the_parts(model: Model.ClassModel, object: Integer) {
 func drop_the_object(model: Model.ClassModel, object: Integer) {
     var dropping = model.function_named("drop")
     if dropping {
-        call_the_drop(dropping, object)
+        if program.collects_cycles and program.cycle_capable.contains(model.key) {
+            call_the_drop_unless_collected(dropping, object)
+        } else {
+            call_the_drop(dropping, object)
+        }
     }
     if layout.is_back_held(model.key) {
         var zero = lowering.constant(0)
@@ -809,8 +822,11 @@ func release_directly(held: Integer, key: String) {
     var gone = lowering.new_register()
     var compared_left = LowIntermediaryRepresentation.Instructions.Compare(gone, 'equal', left, zero, true)
     lowering.emit(compared_left)
-    var gone_test = LowIntermediaryRepresentation.Instructions.Branch(gone, freeing, after)
+    var collects = program.collects_cycles and program.cycle_capable.contains(key)
+    var still_held = held_block(after, collects)
+    var gone_test = LowIntermediaryRepresentation.Instructions.Branch(gone, freeing, still_held)
     lowering.emit(gone_test)
+    check_a_suspect(still_held, held, left, freeing, after)
     lowering.switch_to(freeing)
     var arguments = List<Integer>()
     arguments.append(held)
@@ -1177,4 +1193,82 @@ func give_the_memory_back(key: String, object: Integer) {
     }
     var freed = LowIntermediaryRepresentation.Instructions.Free(object)
     lowering.emit(freed)
+}
+
+# ../../OPTIMIZATIONS.md#a-cycle-is-freed-by-a-count-that-knows-it
+func held_block(done: Integer, collects: Boolean): Integer {
+    if not collects {
+        return done
+    }
+    return lowering.new_block()
+}
+
+# ../../OPTIMIZATIONS.md#a-cycle-is-freed-by-a-count-that-knows-it
+func check_a_suspect(held: Integer, object: Integer, left: Integer, freeing: Integer, done: Integer) {
+    fallback held != done
+    lowering.switch_to(held)
+    var zero = lowering.constant(0)
+    var negative = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(negative, 'less', left, zero, true)
+    lowering.emit(compared)
+    var letting = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(negative, letting, done)
+    lowering.emit(test)
+    lowering.switch_to(letting)
+    var answer = lowering.new_register()
+    var arguments = List<Integer>()
+    arguments.append(object)
+    arguments.append(left)
+    var let_go = LowIntermediaryRepresentation.Instructions.Call(answer, "_cycle_let_go", arguments, -1, false)
+    lowering.emit(let_go)
+    var gone = lowering.new_register()
+    var compared_answer = LowIntermediaryRepresentation.Instructions.Compare(gone, 'not_equal', answer, zero, true)
+    lowering.emit(compared_answer)
+    var gone_test = LowIntermediaryRepresentation.Instructions.Branch(gone, freeing, done)
+    lowering.emit(gone_test)
+}
+
+# ../../OPTIMIZATIONS.md#a-cycle-is-freed-by-a-count-that-knows-it
+func call_the_drop_unless_collected(dropping: Model.FunctionModel, object: Integer) {
+    var word = lowering.new_register()
+    var loaded = LowIntermediaryRepresentation.Instructions.Load(word, object, 8, 'bits_64', true, "", false)
+    lowering.emit(loaded)
+    var mask = lowering.constant(_count_mask)
+    var count = lowering.new_register()
+    var masked = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        count,
+        'bits_and',
+        word,
+        mask,
+        'bits_64',
+        true,
+        false,
+    )
+    lowering.emit(masked)
+    var mark = lowering.constant(_collected_mark)
+    var collected = lowering.new_register()
+    var compared = LowIntermediaryRepresentation.Instructions.Compare(collected, 'greater_or_equal', count, mark, true)
+    lowering.emit(compared)
+    var dropping_block = lowering.new_block()
+    var after = lowering.new_block()
+    var test = LowIntermediaryRepresentation.Instructions.Branch(collected, after, dropping_block)
+    lowering.emit(test)
+    lowering.switch_to(dropping_block)
+    call_the_drop(dropping, object)
+    lowering.jump_to(after)
+    lowering.switch_to(after)
+}
+
+# ../../OPTIMIZATIONS.md#a-cycle-is-freed-by-a-count-that-knows-it
+func write_the_cycle_collector(was_collecting: Boolean) {
+    var collecting = TrialDeletion(lowering)
+    if not program.collects_cycles {
+        if was_collecting {
+            collecting.write_nothing_to_do()
+        }
+        return
+    }
+    var walks = SuspectWalks(links, lowering, built)
+    var size = walks.write()
+    collecting.write(size)
 }

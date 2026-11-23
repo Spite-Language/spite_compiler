@@ -1045,6 +1045,47 @@ The next mode is the class's own: a never-seen class whose every link leads back
 into a spine as it goes (no list at all), and a class holding a `List` of its own kind could keep its children in the
 list block itself; neither is written yet.
 
+## A cycle is freed by a count that knows it
+
+A cycle the compiler proves no simpler way (a back reference, a pair cleared where its names go, a parent that cannot
+be null, a held-back function value) is freed by a count that knows it, written only where a cycle can be closed
+(`low_intermediary_representation/lowering/closing_stores.spite`, `suspect_walks.spite`, `trial_deletion.spite`):
+
+- **Where a cycle can be closed.** The graph of which class holds which through a counted link (an attribute that is
+  released, a list's items, a function value's receiver, which is every class one of whose functions is taken as a
+  value, a union's members, the classes fitting a `type`, and anything for a type the compiler cannot narrow) gives
+  its components; a class is cycle capable when its component has two classes or it holds itself. A store closes a
+  cycle when its holder is cycle capable and its value may be a class of the holder's component: an attribute store
+  that is not the constructor's first store of a fresh slot and not an attribute default, and `append`, `prepend`,
+  `insert` and `set_at` on a `List` or a `Dictionary`. A store into an object no other object reaches yet can never
+  close a cycle, so a function value made, an object literal or a default costs nothing.
+- **The suspects.** A closing store calls `_cycle_suspect(holder)`: bit 63 of the holder's count marks it, and it goes
+  into a hash set (on the process heap, never counted by `--debug-memory`). Every runtime cycle holds the holder of
+  the store that closed it last, so every cycle holds a suspect. A suspect stays in the set while it lives.
+- **Letting go.** Every place that counts down (`_release`, its copies in place, a known class's direct release, the
+  pending list) tests for zero as before; only on the path where the count stays above zero does a negative word (a
+  suspect) call `_cycle_let_go`, which frees a suspect whose count reached zero (bit 63 alone) and otherwise counts an
+  event. An object that is never a suspect pays one test there and nothing else.
+- **Collecting.** At the threshold of events (closing stores and suspect let-gos), `_cycle_collect` runs trial
+  deletion from every suspect over the cycle-capable objects, with lists instead of the stack: it takes away the counts
+  they hold of each other (gray), gives them back to whatever is still counted from outside and what it reaches
+  (black), and frees the rest (white): first their counts of the black ones are given back, then every white's
+  `drop()` runs while all of them still live, then their slots holding each other are cleared, then each is freed by
+  its class's `_free_{key}`, which skips the `drop()` by the mark the count holds. The next threshold is the number of
+  objects the walk kept, plus one, so a small cycle is freed at the event that let it go and a large structure is
+  walked once per its size. The end of the program collects after the singletons go, until a walk frees nothing.
+- The colors live in bits 61 and 62 only while the walk runs, when no code of the program does. Immortal objects
+  (a count of 2^60) and the whites' mark (2^59) are never walked, and a cycle-capable class never lives in a frame.
+
+**When it applies:** to a single-threaded program (no `Concurrent` work, no thread a foreign callback starts) that
+writes a closing store, outside the prompt and a hot-reloaded build.
+
+**When it does not apply:** a program with threads keeps its counts as before, and such a cycle leaks until one side
+lets go. A cycle through a work handle is never walked.
+
+**What a program can observe:** a cycle's `drop()`s run at the next collection instead of never, all of the cycle's
+before any of its memory goes; `--debug-memory` balances.
+
 ## Counts are atomic only in a program with threads
 
 Taking and letting go of a count is a plain addition and subtraction on the object's count, unless the program can
