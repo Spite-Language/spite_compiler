@@ -258,7 +258,8 @@ while compiling, on what the making itself makes ([the proof](PROOFS.md#a-making
 numbers, `null` and the objects it makes are known, everything else (a text, a parameter of the class whose default
 it is, an object handed in) is not. If the run reaches its end, the default is quiet and goes. Every `FunctionLowering`
 the lowering makes (one per lowered piece of code) replaced a `FunctionLoweringState` whose defaults made a whole
-`ProgramModel`, `Layout` and `LoweredProgram`; it now makes none.
+`ProgramModel`, `Layout` and `LoweredProgram`; it now makes none, and `tests/enum_reflection` builds in 1.22 s instead
+of 1.79 s (median of 10, #326).
 
 **When it applies:** to a default the constructor replaces, or one nothing reads, whose making
 `high_optimization_passes/replaced_defaults` asks about. The run follows calls into the functions of the objects it
