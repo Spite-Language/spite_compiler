@@ -1046,10 +1046,11 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   defaults and functions write them); a text, a decimal, anything read through an object it did not make, and a
   list or dictionary it has stored into are not. It follows `if`s and loops by their conditions, calls into a
   function of an object it made, and appends or dictionary writes (keys hashed by the library: a number or a
-  `String`) into a collection it made. It gives up at a condition it does not know, a write or call on anything it
+  `String`) into a collection it made; a taken `fallback`'s record (`Spite.Asserts.failed` with no stream) is no
+  output, so it is passed over, and the trail a crash report prints loses that making's lines. It gives up at a condition it does not know, a write or call on anything it
   did not make, a `crash` or stop reached, a conversion that may halt, arithmetic outside the `Integer` and `Long`
   room it works in (a division only of known non-negative numbers), a foreign call, a function value called, a wait,
-  a class with a `drop()`, a singleton made with arguments, 20000 steps or 48 calls deep. A run that reaches its end
+  a class with a `drop()`, a singleton made with arguments, 100000 steps or 48 calls deep. A run that reaches its end
   wrote only objects it made, called nothing outside, and stopped, so leaving the making out changes nothing but its
   own work; the singletons it used first are handed back, in order, as the quiet rules hand them.
 - **Buys**: a default the constructor replaces or nothing reads is left out even when its making loops, writes a

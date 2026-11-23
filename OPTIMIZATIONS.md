@@ -268,8 +268,10 @@ into a list or dictionary it made, after which that collection's contents are no
 **When it does not apply:** the run gives up, and the default is made as written, at anything it cannot follow: a
 condition it does not know, a write or a call on an object it did not make, a `crash` or a stop it reaches, a
 conversion or arithmetic that could stop the program, a foreign call, a function value called, a wait, a class with a
-`drop()`, a singleton called or made with arguments, more than 20000 steps or 48 calls deep. A singleton the making
-uses first keeps that first use, as above.
+`drop()`, a singleton called or made with arguments, more than 100000 steps or 48 calls deep. A singleton the making
+uses first keeps that first use, as above. A `fallback` the run takes is followed (its quiet record of the
+taken fallback is not output), so a making left out leaves no line in the trail of taken fallbacks a crash report
+prints.
 
 **What a program can observe:** fewer allocations and less time. The run is the making's own work, so leaving it out
 leaves out nothing but that work.
