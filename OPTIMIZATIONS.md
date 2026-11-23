@@ -1223,10 +1223,12 @@ be null, a held-back function value) is freed by a count that knows it, written 
 - **Letting go.** Every place that counts down (`_release`, its copies in place, a known class's direct release, the
   pending list) tests for zero as before; only on the path where the count stays above zero does a negative word (a
   suspect) call `_cycle_let_go`, which frees a suspect whose count reached zero (bit 63 alone). An object that is never a suspect pays one test there and nothing else.
-- **Collecting.** An event is a suspect's count going down while it stays alive (`_cycle_let_go`), the only way a
-  cycle that was held becomes garbage. At the threshold of events, or once the suspects have doubled, the collector is
-  due (a word of its record); the next drop point (a block letting go of a local that may be in a cycle,
-  `_cycle_drop_point`, a load and a test the inliner copies in place) then calls `_cycle_collect`, which runs trial
+- **Collecting.** An event is a drop point (a block letting go of a local that may be in a cycle) or a suspect's count
+  going down while it stays alive (`_cycle_let_go`). A word of the record counts the events down from the threshold,
+  and is set to zero once the suspects have doubled; the drop point is written in place
+  (`released_in_place/drop_points.spite`: the count down and a test, after a test that no other thread runs in a
+  program with threads) and calls `_cycle_when_due` only when the word reaches zero, which calls
+  `_cycle_collect`, which runs trial
   deletion from every suspect over the cycle-capable objects, with lists instead of the stack: it takes away the counts
   they hold of each other (gray), gives them back to whatever is still counted from outside and what it reaches
   (black), and frees the rest (white): first their counts of the black ones are given back, then every white's
