@@ -1283,8 +1283,13 @@ stores and calls, for attribute stores and `append`/`set_at` alike:
   called on keeps `this`. A function the program does not build keeps every argument; one the compiler writes in place
   (`_write_value`) keeps its arguments but not its receiver. Calls that reach each other assume the best while they are
   open and keep only answers that did not lean on that assumption.
-- **What no object holds.** A local whose every assignment is an object made there by a constructor that keeps no
-  `this` (or a copy of such a local), and that the function never keeps. A parameter (not `this`) of a function the
+- **What no object holds.** A local just assigned an object made there by a constructor that keeps no `this`, from
+  that assignment until the function first keeps it, read in order: a branch that falls through counts in both
+  ways, a branch that always leaves (`return`, a stop) does not, and a loop counts what its whole body keeps before
+  its first pass. An attribute of such a local whose objects only their owner holds: every store of the attribute
+  stores an object just made (by a constructor that keeps no `this`), no read of it is kept anywhere, no `copy()` of
+  its class is built and nothing writes it by reflection. So a tree built downward (a node made, its children
+  appended, then the node returned) and a list filled before it is handed on mark nothing. A parameter (not `this`) of a function the
   program calls only directly, never as a value, not a constructor, `drop()`, an operator's function or a function the
   compiler calls itself, when every call passes a holder no object holds. In a prompt or a `--hot-reload` build, or a
   program that calls by reflection (`Spite.Call`), parameters are not followed, since calls are made that the build
