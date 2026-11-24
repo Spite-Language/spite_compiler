@@ -42,7 +42,7 @@ Target: a changed function reloads in well under 0.1 s of swapping, after the co
    manifest, compiles the program, and compares the digest of every function's machine code with the manifest's.
    A digest leaves out the four bytes of every reference that leaves the function and puts in its place what it
    names (`call Hero.grow`, `state singleton.World`, `import Sleep`, the text a constant holds), so a function
-   whose code is the same compiles to the same digest wherever it lands. Every function whose digest changed, and
+   whose code is the same compiles to the same digest wherever it lands. A foreign call's site, the number a fault report reads back as `foreign=` and `from=`, is a number worked out from that text, not its place in the compile, for the same reason. Every function whose digest changed, and
    every function the running program lacks, is written into `<program>.reload_<n>`, laid out at the given address,
    with every reference resolved against the running program: a call to a function the program has goes to its
    start (and so through its slot), state the program holds is the program's, and new state and constants are
