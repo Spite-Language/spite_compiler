@@ -1227,7 +1227,8 @@ be null, a held-back function value) is freed by a count that knows it, written 
   going down while it stays alive (`_cycle_let_go`). A word of the record counts the events down from the threshold,
   and is set to zero once the suspects have doubled; the drop point is written in place
   (`released_in_place/drop_points.spite`: the count down and a test, after a test that no other thread runs in a
-  program with threads) and calls `_cycle_when_due` only when the word reaches zero, which calls
+  program with threads, written after inlining, which weighs a drop point as nothing, so a function inlines as it
+  would with no collector) and calls `_cycle_when_due` only when the word reaches zero, which calls
   `_cycle_collect`, which runs trial
   deletion from every suspect over the cycle-capable objects, with lists instead of the stack: it takes away the counts
   they hold of each other (gray), gives them back to whatever is still counted from outside and what it reaches
