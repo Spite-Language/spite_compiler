@@ -163,8 +163,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 ### A call handed what holds a path may change it
 
-- **Status**: built (D3020 to D3023, to confirm; spite_compiler#666).
-- **Rule**: when a rule decides a written proof is needless (a copy made to narrow, a check after a call), a call handed an object on the path, as an argument or the receiver, counts as one that may change the path, whatever it reaches: after `var cu = bunda.cu`, `clean(bunda)` and `bunda.clean()` keep the copy, and so does a function value bound to `bunda`. `this` is never such a holder (D3023): after `var cu = this.cu`, an own call such as `clean()` is followed by what it can write, like any call. A call handed only the copy (`clean(cu)`), or nothing on the path, is followed as [a call keeps a proof](#a-call-keeps-a-proof-it-cannot-change) follows it. The refusal of a narrowed read past a call is unchanged: it still follows the call.
+- **Status**: built (D2703 to D2706, to confirm; spite_compiler#666).
+- **Rule**: when a rule decides a written proof is needless (a copy made to narrow, a check after a call), a call handed an object on the path, as an argument or the receiver, counts as one that may change the path, whatever it reaches: after `var cu = bunda.cu`, `clean(bunda)` and `bunda.clean()` keep the copy, and so does a function value bound to `bunda`. `this` is never such a holder (D2706): after `var cu = this.cu`, an own call such as `clean()` is followed by what it can write, like any call. A call handed only the copy (`clean(cu)`), or nothing on the path, is followed as [a call keeps a proof](#a-call-keeps-a-proof-it-cannot-change) follows it. The refusal of a narrowed read past a call is unchanged: it still follows the call.
 - **Buys**: a file loaded by several programs settles. What a call reaches depends on the program (shape fillers, function values, a generic bound by reflection), so the same `unmount` was a needless copy in one program and a kept one in another, and the fix one wrote the other refused.
 - **How**: `NarrowedRead.path_value` holds the read's path (the copied value for a copy); `KeptCopies.is_handed_what_holds_it` collects the objects along it and compares them with what each call between the copy and the read is handed (`Writes.is_the_same_place`).
 - **Falls back**: `this` handed to a call, and a holder that reaches the call without being handed (through `this`, a singleton, an alias such as `var other = bunda`, or an object it is stored in) is left to the program's own reach. That is never unsafe: the rule only ever keeps a copy or a check the program's reach would drop, and a fix it still makes is re-checked by every program that loads the file.
@@ -1376,7 +1376,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 ### A text that only ever holds constant texts is compared by its address
 
-- **Status**: built, registered last among the high passes, on the final representation (D3010, to confirm).
+- **Status**: built, registered last among the high passes, on the final representation (D2707, confirmed by Mortaro).
 - **Rule**: every text and every collection has a place: a name or a parameter of a function, a function's answer,
   an attribute of a class, or the items of the lists and dictionaries of a place. A text flows from where it is made
   to the place it is given (a name assigned, a parameter passed, an answer returned, an attribute written, an item
@@ -1407,7 +1407,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 ### A dictionary whose keys only ever hold constant texts hashes their addresses
 
 - **Status**: built, in the proof [a text that only ever holds constant texts is compared by its
-  address](#a-text-that-only-ever-holds-constant-texts-is-compared-by-its-address) (D3012, to confirm).
+  address](#a-text-that-only-ever-holds-constant-texts-is-compared-by-its-address) (D2709, to confirm).
 - **Rule**: a dictionary's place has a place for its keys beside the one for its values; joined dictionaries join
   their keys, and a tainted dictionary taints its keys. The key handed to `get_at`, `set_at`, `contains` and
   `remove_at` flows into the keys; `keys()` answers a list whose items are those keys; `copy()` and `deep_copy()`
