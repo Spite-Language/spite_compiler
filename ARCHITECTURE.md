@@ -232,7 +232,12 @@ First, `unsubscribed_observers`: each `Observer` class whose `subscribe` was not
    singleton is made (`HighProgram.steady_singleton_attributes`), whose loads `made_singletons` marks invariant.
    Last, the proof `alone_counts` walks what may run at once (`run_at_once.spite`, the walk `set_lists` reads too)
    on the final representation and marks each function that runs alone (`HighFunction.runs_alone`), which the
-   lowering counts plainly.
+   lowering counts plainly. After it, the proof `constant_text_holders` follows every text from where it is made to
+   where it is compared and marks each `String.equals` whose two sides only ever hold literals living in the data
+   (`Call.compares_constant_texts`); the lowering compares their addresses
+   ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-text-that-only-ever-holds-constant-texts-is-compared-by-its-address)).
+   It runs on the final representation because identity, unlike equality, is not kept by the passes: a read
+   `untouched_attributes` rebuilds, for one, makes its text again.
 
 Passes 2 to 15 run only when the program is lowered (not with `--check`). Passes 7 to 15 make the decisions the
 lowering reads, so the lowering only lowers; they read nothing a later high pass changes. The layout and the studies of calls

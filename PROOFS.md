@@ -1336,6 +1336,57 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Checked by**: tests/constant_texts (counts with `--debug-memory`, and literals appended to, written by
   `append_code` and kept).
 
+### A text that only ever holds constant texts is compared by its address
+
+- **Status**: built, registered last among the high passes, on the final representation (D3010, to confirm).
+- **Rule**: every text and every collection has a place: a name or a parameter of a function, a function's answer,
+  an attribute of a class, or the items of the lists and dictionaries of a place. A text flows from where it is made
+  to the place it is given (a name assigned, a parameter passed, an answer returned, an attribute written, an item
+  appended, inserted or set, a dictionary value set); lists and dictionaries are joined as in [a list used only as
+  a set](#a-list-used-only-as-a-set), so every name for one list shares its items. A place is tainted when a text
+  that is not a literal living in the data can reach it: a join, a slice, a `String()`, the answer of a call the
+  proof does not follow, a conversion out of a union, the `this` of `String`, a text read through a shape or a
+  function value. A list or a dictionary handed to code the proof does not follow (a function it does not walk, a
+  foreign call, a function value, a shape, a conversion into a union) taints its items. The parameters and answers
+  of a function taken as a value, of a shape's filler, of the entry, of `String` and `Buffer`, and of every function
+  no call of the program reaches (the code that calls it is the compiler's) are tainted, and so is a parameter a
+  call leaves out. Taint goes along the flows and from a list to its items until nothing changes. A call of the
+  library's `String.equals` whose receiver and argument are in places no taint reaches compares two literals of the
+  data. Handing a text to code is not a taint: a text is never written once it lives in the data. The compile-time
+  evaluation reads a literal as a copy that keeps the literal's count; it compares two copies of one literal as the
+  same object, gives up on comparing a copy whose words changed, and writes a copy it answers as the literal's
+  address, so a folded call keeps the identity too.
+- **Buys**: [a text that only ever holds constant texts is compared by its
+  address](OPTIMIZATIONS.md#a-text-that-only-ever-holds-constant-texts-is-compared-by-its-address)
+  (`Call.compares_constant_texts`).
+- **Falls back**: the call to `String.equals`, as before; so does every marked call of a program whose texts are not
+  held whole, which the lowering checks.
+- **Lives in**: `proofs/constant_text_holders` (`places.spite`, the places, the flows and the taint;
+  `proof.spite`, the walk), registered through `HighOptimizationPasses.Proving`.
+- **Checked by**: tests/texts_compared_by_address (literals through a list, a parameter, an attribute and a
+  dictionary compare the same, and a join and a slice equal to a literal still compare equal).
+
+### A dictionary whose keys only ever hold constant texts hashes their addresses
+
+- **Status**: built, in the proof [a text that only ever holds constant texts is compared by its
+  address](#a-text-that-only-ever-holds-constant-texts-is-compared-by-its-address) (D3012, to confirm).
+- **Rule**: a dictionary's place has a place for its keys beside the one for its values; joined dictionaries join
+  their keys, and a tainted dictionary taints its keys. The key handed to `get_at`, `set_at`, `contains` and
+  `remove_at` flows into the keys; `keys()` answers a list whose items are those keys; `copy()` and `deep_copy()`
+  share them. A dictionary class (one copy of `Dictionary` the program builds) hashes by address when every call of
+  those functions on any of its dictionaries, from outside the class, is on a place whose keys no taint reaches,
+  its key type is `String`, and no function of the class is taken as a value or fills a shape. Calls the class makes
+  on itself are not counted: they hand on keys its callers handed it.
+- **Buys**: [a dictionary whose keys only ever hold constant texts hashes their
+  addresses](OPTIMIZATIONS.md#a-dictionary-whose-keys-only-ever-hold-constant-texts-hashes-their-addresses)
+  (`Call.hashes_constant_texts` on the class's `_text_hash` call, `Call.compares_constant_keys` on its `_same_text`
+  call).
+- **Falls back**: the class hashes and compares bytes, as before; so does a program whose texts are not held whole.
+- **Lives in**: `proofs/constant_text_holders` (`mark_the_dictionaries`), lowered in `lowering/calls.spite`.
+- **Checked by**: tests/texts_compared_by_address (a dictionary of literal keys answers, orders and prints as
+  before, and its class's `_tag_of` hashes no bytes; a dictionary of the same shape given a joined key keeps hashing
+  bytes).
+
 ### A data constant is never counted
 
 - **Status**: built, embedded in the pass `low_optimization_passes/uncounted_constants` (D2200, to confirm).

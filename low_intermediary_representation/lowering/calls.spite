@@ -1,4 +1,5 @@
 var state = FunctionLoweringState()
+var _address_hash_multiplier: Long = 6364136223846793005
 
 func Calls(starting_state: FunctionLoweringState) {
     state = starting_state
@@ -14,6 +15,56 @@ func lowered_call_arguments(call: HighIntermediaryRepresentation.Values.Call): L
     arguments.append(receiver.value)
     add_arguments(arguments, call.arguments, unknown)
     return arguments
+}
+
+# ../../OPTIMIZATIONS.md#a-text-that-only-ever-holds-constant-texts-is-compared-by-its-address
+func compared_constant_texts(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var values = Values(state)
+    var compared = call.arguments[0]
+    crash compared
+    crash call.receiver
+    var same = HighIntermediaryRepresentation.Values.MachineOperation(
+        call.value_type,
+        'equal',
+        call.receiver,
+        compared,
+        null,
+    )
+    return values.lower_operation(same)
+}
+
+# ../../OPTIMIZATIONS.md#a-dictionary-whose-keys-only-ever-hold-constant-texts-hashes-their-addresses
+func compared_constant_keys(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var values = Values(state)
+    var held = call.arguments[0]
+    var asked = call.arguments[1]
+    crash held
+    crash asked
+    var same = HighIntermediaryRepresentation.Values.MachineOperation(call.value_type, 'equal', held, asked, null)
+    return values.lower_operation(same)
+}
+
+# ../../OPTIMIZATIONS.md#a-dictionary-whose-keys-only-ever-hold-constant-texts-hashes-their-addresses
+func hashed_by_address(call: HighIntermediaryRepresentation.Values.Call): Lowered {
+    var lowering = FunctionLowering(state)
+    var counting = Counting(state)
+    var text = call.arguments[0]
+    crash text
+    var address = lowering.lower_value(text)
+    var multiplier = lowering.constant(_address_hash_multiplier)
+    var target = lowering.new_register()
+    var mixed = LowIntermediaryRepresentation.Instructions.Arithmetic(
+        target,
+        'multiply',
+        address.value,
+        multiplier,
+        'bits_64',
+        false,
+        true,
+    )
+    lowering.emit(mixed)
+    counting.discard(address, text.value_type)
+    return lowering.single(target)
 }
 
 func unknown_callees(): List<String> {
@@ -145,6 +196,15 @@ func lower_call(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var is_an_intrinsic = not call.function.has_a_body() and not call.function.is_written_by_the_compiler
     if is_an_intrinsic {
         return intrinsic.lowered(call)
+    }
+    if call.compares_constant_texts and state.layout.holds_texts_whole() {
+        return compared_constant_texts(call)
+    }
+    if call.compares_constant_keys and state.layout.holds_texts_whole() {
+        return compared_constant_keys(call)
+    }
+    if call.hashes_constant_texts and state.layout.holds_texts_whole() {
+        return hashed_by_address(call)
     }
     var reads = ListReads(lowering)
     if reads.is_a_count(call) {

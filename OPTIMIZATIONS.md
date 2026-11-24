@@ -703,7 +703,8 @@ it](PROOFS.md#a-text-is-written-only-while-nothing-else-holds-it), in a program 
 `made.append_code(code)`) is made on each evaluation, as before, and so is every literal of a program that breaks
 the proof, of a `--development`, `--repl` or `--hot-reload` build, or whose texts are not held whole. Text appended
 in place (`text = "{text}more"`) starts from the literal in the data and copies it at the first append, since
-its count is never 1. The compile-time evaluation reads such a text as a fresh one.
+its count is never 1. The compile-time evaluation reads such a text as a copy with the same count, so it copies it
+at the first append too.
 
 **What a program can observe:** fewer allocations under `--debug-memory`, `program.live_allocations()` and
 `program.live_bytes()`, and the time. Two evaluations of one literal answer the same object. `--optimization-report`
@@ -712,6 +713,110 @@ starts that is written (or the function that answers it); when the proof breaks 
 one line instead, at the place that breaks it or at the entry
 (`tests/text_literals_made_on_each_evaluation`, `tests/text_literals_all_made_when_a_text_is_shared`). An
 `--optimization-report` asked with `--check` runs the proof too, so the report says what a build would do.
+
+## A text that only ever holds constant texts is compared by its address
+
+Every distinct text literal is laid out once in the program's data ([a text literal is made once in the program's
+data](#a-text-literal-is-made-once-in-the-programs-data): `LoweredProgram.constant_texts` gives one label per
+text), so the address of a literal is a number fixed while compiling, one per distinct text in the build, and two
+literals are equal exactly when their addresses are. Where [a text only ever holds constant
+texts](PROOFS.md#a-text-that-only-ever-holds-constant-texts-is-compared-by-its-address) on both sides of the
+library's `String.equals` (what `==` and `!=` between texts call), the call is lowered as one compare of the two
+addresses. Nothing is turned back into text: the number is the address of the text itself, so printing, joining,
+`length`, slicing and every call that takes any `String` read the literal as before. A dictionary whose keys are
+all such texts hashes them by their address too ([below](#a-dictionary-whose-keys-only-ever-hold-constant-texts-hashes-their-addresses)).
+
+```spite
+var _sites = List<String>()
+var _counts = List<Integer>()
+
+func failed(site: String) {
+    var newest = _sites.last()
+    if newest == site {
+        var at = _counts.count() - 1
+        var count = _counts[at]
+        crash count
+        _counts[at] = count + 1
+        return
+    }
+    _sites.append(site)
+    _counts.append(1)
+}
+```
+
+When every call of `failed` hands it a literal, `_sites` only ever holds literals, and `newest == site` is one
+compare instead of a walk over two texts that usually share their first fifty bytes. This is the fallback ring of
+`Spite.Asserts.failed`, unchanged in the library: the compiler passes each `fallback`'s site as a literal, so in the
+compiler's own `--check` the ring's comparisons are gone: `Spite.Asserts.failed` went from 8.3% of the samples to
+3.1% and `String._matches_at` under it from 4.5% to none. With the dictionaries below as well, the run went from
+109.4 s to 100.3 s (median of five, alternating, on a busy machine) and a self-build from 1185 s to 1101 s.
+
+The [compile-time evaluation](#calls-on-constants-are-run-while-compiling) reads a literal as a copy of its own,
+which keeps the literal's count as at run time (so it is never freed there and an append copies it first); two copies
+of one literal compare as the same object there, and a copy a folded call answers is written as the literal's address
+instead of being made again, so evaluating a call while compiling keeps the identity this needs (and makes one
+allocation fewer). A comparison of a copy whose bytes changed is left to run.
+
+**Why the answers are unchanged:** `String.equals` answers whether two texts hold the same bytes, and reads nothing
+else. A literal living in the data is never written ([a text is written only while nothing else holds
+it](PROOFS.md#a-text-is-written-only-while-nothing-else-holds-it)) and never freed, and two equal literals share one
+label, so two such texts hold the same bytes exactly when they are the same object. The proof marks a call only
+when every value either side can hold at run time is such a literal; the call is the library's own `equals` (a
+program that declares its own `equals` on `String` is never marked), which has no effect but its answer.
+
+**When it applies:** to `==` and `!=` between two texts, each of which is a literal, or a name, a parameter, a
+function's answer, an attribute, a list's item or a dictionary's value every source of which is one, in a program
+where literals live in the data and texts are held whole.
+
+**When it does not apply:** a side that may hold a text made at run time (a join, a slice, a `String()`, a text read
+from a file or the command line), one that went through a union, a shape, a function value, a foreign call or a
+function the proof does not follow, and every comparison of a `--development`, `--repl` or `--hot-reload` build.
+There the texts are compared byte by byte as before.
+
+**What a program can observe:** the time. Every answer, every text printed and every count under `--debug-memory`
+is the same.
+
+## A dictionary whose keys only ever hold constant texts hashes their addresses
+
+A `Dictionary` with `String` keys hashes a key by walking its bytes and compares two keys byte by byte
+([a dictionary hashes a key once](#a-dictionary-hashes-a-key-once-cheaply)). Where [every key a dictionary class is
+ever handed is a literal living in the data](PROOFS.md#a-dictionary-whose-keys-only-ever-hold-constant-texts-hashes-their-addresses),
+the class hashes a key by its address (one multiply by the dictionary's own multiplier, whose high 32 bits are the
+slot's tag) and compares two keys by their addresses: in that class's `_tag_of` the call of `_text_hash` and in its
+`_same_key` the call of `_same_text` are lowered to those instead. The library is unchanged.
+
+```spite
+var counts = Dictionary<String, Integer>()
+
+func noted(kind: String) {
+    var count = counts[kind]
+    if count {
+        counts[kind] = count + 1
+    } else {
+        counts[kind] = 1
+    }
+}
+```
+
+When every call of `noted` hands it a literal, `counts` is hashed and searched by addresses.
+
+**Why the answers are unchanged:** the order of a dictionary is the order of its key list, which a hash never
+touches (`keys()`, `values()`, `each`, `to_debug` and `==` read the lists), so only where a key's slot is changes.
+Every key of the class, set or asked, is a literal of the data, and two such keys are equal exactly when their
+addresses are, so equal keys get one tag and one slot as before. The decision is per class, so a copy, a deep copy
+and `==` between two dictionaries of the class (which hashes one's keys into the other's table) all use the same
+hash. The address may differ from run to run; nothing a program reads depends on where a slot is.
+
+**When it applies:** to a dictionary class (one `Dictionary<String, V>` of the program) every `get_at`, `set_at`,
+`contains` and `remove_at` of which, on any dictionary of the class, is handed a key that only ever holds literals,
+and none of whose dictionaries goes where the proof cannot follow (a union, a shape, a function value, a foreign
+call, a function the proof does not walk), in a program where literals live in the data.
+
+**When it does not apply:** one key from anywhere else in any dictionary of the class (a join, a text read from a
+file, a key built from a number) keeps the whole class hashing bytes, and so does a function of the class taken as
+a value. The compile-time evaluation does not fold a lookup that hashes an address.
+
+**What a program can observe:** the time. Every answer, order and text is the same.
 
 ## A text split only to search it is scanned in place
 
