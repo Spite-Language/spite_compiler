@@ -1222,7 +1222,7 @@ be null, a held-back function value) is freed by a count that knows it, written 
   the store that closed it last, so every cycle holds a suspect. A suspect stays in the set while it lives.
 - **Letting go.** Every place that counts down (`_release`, its copies in place, a known class's direct release, the
   pending list) tests for zero as before; only on the path where the count stays above zero does a negative word (a
-  suspect) call `_cycle_let_go`, which frees a suspect whose count reached zero (bit 63 alone). An object that is never a suspect pays one test there and nothing else.
+  suspect) call `_cycle_let_go`, which frees a suspect whose count reached zero (bit 63 alone). An object that is never a suspect pays one test there and nothing else. A count down the compiler writes in place for a value whose class can hold no cycle (`frees_no_suspect` on the release) leaves even that test out.
 - **Collecting.** An event is a drop point (a block letting go of a local that may be in a cycle) or a suspect's count
   going down while it stays alive (`_cycle_let_go`). A word of the record counts the events down from the threshold,
   and is set to zero once the suspects have doubled; the drop point is written in place
@@ -1235,11 +1235,11 @@ be null, a held-back function value) is freed by a count that knows it, written 
   (black), and frees the rest (white): first their counts of the black ones are given back, then every white's
   `drop()` runs while all of them still live, then their slots holding each other are cleared, then each is freed by
   its class's `_free_{key}`, which skips the `drop()` by the mark the count holds. The walk is due again after
-  `kept / 4 + kept * kept / 1024 + 1` events, `kept` being the objects it walked and kept, or once the suspects are
-  more than twice the ones it kept: a small structure is checked at the event that lets a cycle go (a walk of a few
+  `kept / 4 + kept * kept / 256 + 1` events, `kept` being the objects it walked and kept, or once the suspects are
+  more than four times the ones it kept: a small structure is checked at the event that lets a cycle go (a walk of a few
   objects per event), and a large one waits longer than its size, so the walks over it become a vanishing share of
-  the events, while the doubling of the suspects (every cycle holds one) keeps the cyclic garbage that waits no
-  larger than what lives, the way a tracing collector sizes its heap. With only `kept / 4 + 1` the compiler's own
+  the events, while the growth of the suspects (every cycle holds one) keeps the cyclic garbage that waits at most
+  three times what lives, the way a tracing collector sizes its heap. With only `kept / 4 + 1` the compiler's own
   trees, whose recursive classes make every list append a closing store, were walked about once per four drop points:
   `--check` of the compiler took 1176 s instead of 105 s. The end of the program collects after the singletons go, until a walk frees nothing, when that can be seen: a
   cycle-capable class declares `drop()`, or the build counts memory (`--debug-memory`, the prompt, a program that reads
