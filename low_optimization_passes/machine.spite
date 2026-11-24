@@ -32,6 +32,7 @@ var function_tag_base = -1000002
 var unknown_tag = -1000001
 var largest_object = 16777216
 var checks = LowIntermediaryRepresentation.Checks()
+var numbers = LowIntermediaryRepresentation.Numbers()
 var is_checked = false
 var most_memory_words = 4194304
 var deepest = 200
@@ -361,42 +362,6 @@ func little_into_object(object: Integer, at: Integer, size: Integer, value: Long
     }
 }
 
-func swapped(value: Long, size: Integer): Long {
-    var result: Long = 0
-    var index = 0
-    while index < size {
-        var moved = value.shifted_right(8 * index)
-        var read = moved.bits_and(_byte_mask)
-        var placed = read.shifted_left(8 * (size - 1 - index))
-        result = result.bits_or(placed)
-        index = index + 1
-    }
-    return result
-}
-
-func extended(value: Long, size: Integer, is_signed: Boolean): Long {
-    if size >= 8 {
-        return value
-    }
-    var one: Long = 1
-    var span = one.shifted_left(8 * size)
-    var low = value.bits_and(span - 1)
-    var half = one.shifted_left(8 * size - 1)
-    if is_signed and low >= half {
-        return low - span
-    }
-    return low
-}
-
-func size_of_width(width: LowIntermediaryRepresentation.Instructions.Load.Width): Integer {
-    switch width {
-        'bits_8': return 1
-        'bits_16': return 2
-        'bits_32': return 4
-        'bits_64': return 8
-    }
-}
-
 func executed(instruction: SpiteCompiler.Instruction, frame: Frame): Integer {
     switch instruction {
         LowIntermediaryRepresentation.Instructions.Constant: return constant(instruction, frame)
@@ -495,7 +460,7 @@ func arithmetic(operation: LowIntermediaryRepresentation.Instructions.Arithmetic
     }
     var left = frame.value_of(operation.left)
     var right = frame.value_of(operation.right)
-    var size = size_of_width(operation.width)
+    var size = numbers.size_of_width(operation.width)
     switch operation.operator {
         'add': return added(operation, frame, left, right, size)
         'subtract': return subtracted(operation, frame, left, right, size)
@@ -505,8 +470,8 @@ func arithmetic(operation: LowIntermediaryRepresentation.Instructions.Arithmetic
         'bits_and': return bitwise(operation, frame, left, right, size)
         'bits_or': return bitwise(operation, frame, left, right, size)
         'bits_xor': return bitwise(operation, frame, left, right, size)
-        'shift_left': return shifted(operation, frame, left, right, size)
-        'shift_right': return shifted(operation, frame, left, right, size)
+        'shift_left': return shifted(operation, frame, left, right)
+        'shift_right': return shifted(operation, frame, left, right)
         'square_root': return failure()
     }
 }
@@ -517,21 +482,12 @@ func finished_whole(
     result: Long,
     size: Integer,
 ): Integer {
-    var kept = extended(result, size, operation.is_signed)
+    var kept = numbers.extended(result, size, operation.is_signed)
     if is_checked and kept != result {
         return failure()
     }
     frame.set(operation.target, kept, -1)
     return 0
-}
-
-func unsigned_less(left: Long, right: Long): Boolean {
-    var left_negative = left < 0
-    var right_negative = right < 0
-    if left_negative != right_negative {
-        return right_negative
-    }
-    return left < right
 }
 
 func added(
@@ -541,7 +497,7 @@ func added(
     right: Long,
     size: Integer,
 ): Integer {
-    var result = left.wrapping_sum(right)
+    var result = wrapped(operation, left, right)
     var wide = size == 8 and is_checked
     var left_negative = left < 0
     var right_negative = right < 0
@@ -554,7 +510,7 @@ func added(
     if not canonical_operands(operation, left, right, size) {
         return failure()
     }
-    if wide and not operation.is_signed and unsigned_less(result, left) {
+    if wide and not operation.is_signed and numbers.unsigned_less(result, left) {
         return failure()
     }
     return finished_whole(operation, frame, result, size)
@@ -567,7 +523,7 @@ func subtracted(
     right: Long,
     size: Integer,
 ): Integer {
-    var result = left.wrapping_subtract(right)
+    var result = wrapped(operation, left, right)
     var wide = size == 8 and is_checked
     var left_negative = left < 0
     var right_negative = right < 0
@@ -580,7 +536,7 @@ func subtracted(
     if not canonical_operands(operation, left, right, size) {
         return failure()
     }
-    if wide and not operation.is_signed and unsigned_less(left, right) {
+    if wide and not operation.is_signed and numbers.unsigned_less(left, right) {
         return failure()
     }
     return finished_whole(operation, frame, result, size)
@@ -595,8 +551,8 @@ func canonical_operands(
     if size == 8 or not is_checked {
         return true
     }
-    var left_kept = extended(left, size, operation.is_signed)
-    var right_kept = extended(right, size, operation.is_signed)
+    var left_kept = numbers.extended(left, size, operation.is_signed)
+    var right_kept = numbers.extended(right, size, operation.is_signed)
     return left_kept == left and right_kept == right
 }
 
@@ -611,7 +567,7 @@ func multiplied(
     right: Long,
     size: Integer,
 ): Integer {
-    var result = left.wrapping_multiply(right)
+    var result = wrapped(operation, left, right)
     var exact = is_small(left) and is_small(right)
     if not exact and is_checked and size == 8 and operation.is_signed {
         exact = product_is_exact(left, right, result)
@@ -665,14 +621,15 @@ func bitwise(
     right: Long,
     size: Integer,
 ): Integer {
-    var result = left.bits_exclusive_or(right)
-    if operation.operator == 'bits_and' {
-        result = left.bits_and(right)
-    }
-    if operation.operator == 'bits_or' {
-        result = left.bits_or(right)
-    }
+    var result = wrapped(operation, left, right)
     return finished_whole(operation, frame, result, size)
+}
+
+# ../PROOFS.md#a-making-that-runs-to-its-end-on-what-it-makes-changes-nothing
+func wrapped(operation: LowIntermediaryRepresentation.Instructions.Arithmetic, left: Long, right: Long): Long {
+    var result = numbers.wrapped(operation.operator, left, right)
+    crash result
+    return result
 }
 
 func shifted(
@@ -680,31 +637,13 @@ func shifted(
     frame: Frame,
     left: Long,
     right: Long,
-    size: Integer,
 ): Integer {
     if is_checked {
         return failure()
     }
-    var masked = right.bits_and(63)
-    var count: Integer? = masked
-    crash count
-    var result = left.shifted_left(count)
-    if operation.operator == 'shift_right' {
-        result = shifted_right_of(left, count, operation.is_signed)
-    }
-    var kept = extended(result, size, operation.is_signed)
+    var kept = numbers.shifted(operation, left, right)
     frame.set(operation.target, kept, -1)
     return 0
-}
-
-func shifted_right_of(value: Long, count: Integer, is_signed: Boolean): Long {
-    var moved = value.shifted_right(count)
-    if is_signed or count == 0 or value >= 0 {
-        return moved
-    }
-    var largest: Long = _largest_long
-    var mask = largest.shifted_right(count - 1)
-    return moved.bits_and(mask)
 }
 
 func pointer_arithmetic(
@@ -752,7 +691,7 @@ func compare(test: LowIntermediaryRepresentation.Instructions.Compare, frame: Fr
     }
     if left_tag == right_tag or is_the_same_text(left_tag, right_tag) {
         var ordered_signed = test.is_signed or left_tag != -1
-        holds = compared(test.comparison, left, right, ordered_signed)
+        holds = numbers.compared(test.comparison, left, right, ordered_signed)
     } else {
         var equality = test.comparison == 'equal' or test.comparison == 'not_equal'
         if not equality or not are_distinct(left_tag, left, right_tag, right) {
@@ -783,26 +722,6 @@ func is_a_place(tag: Integer): Boolean {
         return tag < freed.count() and freed[tag] == false
     }
     return tag != -1
-}
-
-func compared(
-    comparison: LowIntermediaryRepresentation.Instructions.Compare.Comparison,
-    left: Long,
-    right: Long,
-    is_signed: Boolean,
-): Boolean {
-    var less = left < right
-    if not is_signed {
-        less = unsigned_less(left, right)
-    }
-    switch comparison {
-        'equal': return left == right
-        'not_equal': return left != right
-        'less': return less
-        'less_or_equal': return less or left == right
-        'greater': return not less and left != right
-        'greater_or_equal': return not less
-    }
 }
 
 func float_of(bits: Long): Float {
@@ -1027,8 +946,8 @@ func decimal_into_whole(
     var truncated = value.truncate()
     var whole: Long? = truncated
     crash whole
-    var size = size_of_width(conversion.whole_width)
-    var kept = extended(whole, size, conversion.whole_is_signed)
+    var size = numbers.size_of_width(conversion.whole_width)
+    var kept = numbers.extended(whole, size, conversion.whole_is_signed)
     frame.set(conversion.target, kept, -1)
     return 0
 }
@@ -1173,7 +1092,7 @@ func read_memory(loaded: LowIntermediaryRepresentation.Instructions.Load, frame:
     var tag = frame.tag_of(loaded.address)
     var base = frame.value_of(loaded.address)
     var at = base.wrapping_sum(loaded.offset)
-    var size = size_of_width(loaded.width)
+    var size = numbers.size_of_width(loaded.width)
     if is_object(tag) {
         return load_from_object(loaded, frame, tag, at, size)
     }
@@ -1210,10 +1129,7 @@ func load_from_object(
         return failure()
     }
     var value = little_from_object(object, place, size)
-    if loaded.is_swapped {
-        value = swapped(value, size)
-    }
-    var kept = extended(value, size, loaded.is_signed)
+    var kept = numbers.loaded(loaded.width, loaded.is_signed, loaded.is_swapped, value)
     frame.set(loaded.target, kept, -1)
     return 0
 }
@@ -1245,10 +1161,7 @@ func load_from_data(
         value = value.bits_or(placed)
         index = index + 1
     }
-    if loaded.is_swapped {
-        value = swapped(value, size)
-    }
-    var kept = extended(value, size, loaded.is_signed)
+    var kept = numbers.loaded(loaded.width, loaded.is_signed, loaded.is_swapped, value)
     frame.set(loaded.target, kept, -1)
     return 0
 }
@@ -1257,7 +1170,7 @@ func write_memory(stored: LowIntermediaryRepresentation.Instructions.Store, fram
     var object = frame.tag_of(stored.address)
     var base = frame.value_of(stored.address)
     var at = base.wrapping_sum(stored.offset)
-    var size = size_of_width(stored.width)
+    var size = numbers.size_of_width(stored.width)
     if not is_object(object) or not reaches(object, at, size) {
         return failure()
     }
@@ -1277,10 +1190,8 @@ func write_memory(stored: LowIntermediaryRepresentation.Instructions.Store, fram
     if any_tag_in(object, place, size) {
         return failure()
     }
-    if stored.is_swapped {
-        value = swapped(value, size)
-    }
-    little_into_object(object, place, size, value)
+    var little = numbers.stored(stored.width, stored.is_swapped, value)
+    little_into_object(object, place, size, little)
     return 0
 }
 

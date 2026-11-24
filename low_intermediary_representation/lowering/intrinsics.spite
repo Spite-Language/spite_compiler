@@ -393,6 +393,17 @@ func let_go(call: HighIntermediaryRepresentation.Values.Call): Lowered {
 }
 
 func typed_access(call: HighIntermediaryRepresentation.Values.Call, key: String): Lowered {
+    var meanings = Meanings()
+    var operation = meanings.number_operation(call)
+    if operation {
+        return worked(call, operation)
+    }
+    if meanings.hands_on_the_receiver(call.function.name) {
+        return same_bits(call)
+    }
+    if meanings.hands_on_the_argument(call.function.name) {
+        return key_bits(call)
+    }
     if call.function.name == "_read_value" {
         return read_value(call)
     } else if call.function.name == "_write_value" {
@@ -401,36 +412,6 @@ func typed_access(call: HighIntermediaryRepresentation.Values.Call, key: String)
         return forget_value(call)
     } else if call.function.name == "_item_size" {
         return item_size(call)
-    } else if call.function.name == "_bits_and" {
-        return bits(call, 'bits_and')
-    } else if call.function.name == "_bits_or" {
-        return bits(call, 'bits_or')
-    } else if call.function.name == "_bits_xor" {
-        return bits(call, 'bits_xor')
-    } else if call.function.name == "_shifted_left" {
-        return bits(call, 'shift_left')
-    } else if call.function.name == "_shifted_right" {
-        return bits(call, 'shift_right')
-    } else if call.function.name == "_wrapping_sum" {
-        return bits(call, 'add')
-    } else if call.function.name == "_wrapping_subtract" {
-        return bits(call, 'subtract')
-    } else if call.function.name == "_wrapping_multiply" {
-        return bits(call, 'multiply')
-    } else if call.function.name == "_bits_not" {
-        return bits_not(call)
-    } else if call.function.name == "_bits_as_unsigned" {
-        return bits_as_other(call)
-    } else if call.function.name == "_bits_as_signed" {
-        return bits_as_other(call)
-    } else if call.function.name == "_bits" {
-        return same_bits(call)
-    } else if call.function.name == "_key_bits" {
-        return key_bits(call)
-    } else if call.function.name == "_bits_as_float" {
-        return same_bits(call)
-    } else if call.function.name == "_bits_as_double" {
-        return same_bits(call)
     } else if call.function.name == "_square_root" {
         return square_root(call)
     } else if call.function.name == "_sine" {
@@ -549,13 +530,12 @@ func read_at(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var at = argument(call, 0)
     var storage = lowering.storage_of(buffer.value)
     var address = lowering.address_plus(storage, at)
-    crash call.function.answer
-    var answer: Model.Type = call.function.answer
-    var width = lowering.width_of(answer)
+    var meanings = Meanings()
+    var loaded = meanings.load_of(call)
+    crash loaded
     var read = lowering.new_register()
-    var signed = lowering.is_signed(answer)
-    var swapped = call.function.name.contains("_big_endian_")
-    var loaded = LowIntermediaryRepresentation.Instructions.Load(read, address, 0, width, signed, "", swapped)
+    loaded.target = read
+    loaded.address = address
     lowering.emit(loaded)
     if buffer.owned {
         lowering_counting.release(buffer.value)
@@ -606,11 +586,11 @@ func write_at(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var value = argument(call, 1)
     var storage = lowering.storage_of(buffer.value)
     var address = lowering.address_plus(storage, at)
-    var written = call.function.parameters[1]
-    crash written
-    var width = lowering.width_of(written.parameter_type)
-    var is_swapped = call.function.name.contains("_big_endian_")
-    var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, value, width, "", is_swapped)
+    var meanings = Meanings()
+    var stored = meanings.store_of(call)
+    crash stored
+    stored.address = address
+    stored.source = value
     lowering.emit(stored)
     if buffer.owned {
         lowering_counting.release(buffer.value)
@@ -780,19 +760,26 @@ func close_library(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     return lowering.single(-1)
 }
 
-func bits(
+# ../../PROOFS.md#a-making-that-runs-to-its-end-on-what-it-makes-changes-nothing
+func worked(
     call: HighIntermediaryRepresentation.Values.Call,
-    operator: LowIntermediaryRepresentation.Instructions.Arithmetic.Operator,
+    operation: LowIntermediaryRepresentation.Instructions.Arithmetic,
 ): Lowered {
+    var meanings = Meanings()
     var number = lowering.lower_value(call.receiver)
-    var other = argument(call, 0)
-    return unchecked(call, operator, number.value, other)
-}
-
-func bits_not(call: HighIntermediaryRepresentation.Values.Call): Lowered {
-    var number = lowering.lower_value(call.receiver)
-    var every_bit = lowering.constant(-1)
-    return unchecked(call, 'bits_xor', number.value, every_bit)
+    var right = -1
+    var operand = meanings.right_operand(call.function.name)
+    switch operand {
+        'argument': right = argument(call, 0)
+        'every_bit': right = lowering.constant(-1)
+        'zero': right = lowering.constant(0)
+    }
+    var target = lowering.new_register()
+    operation.target = target
+    operation.left = number.value
+    operation.right = right
+    lowering.emit(operation)
+    return lowering.single(target)
 }
 
 func same_bits(call: HighIntermediaryRepresentation.Values.Call): Lowered {
@@ -849,51 +836,6 @@ func c_maths(call: HighIntermediaryRepresentation.Values.Call, c_name: String): 
     return lowering.single(target)
 }
 
-func bits_as_other(call: HighIntermediaryRepresentation.Values.Call): Lowered {
-    var number = lowering.lower_value(call.receiver)
-    var zero = lowering.constant(0)
-    crash call.function.answer
-    var other_type: Model.Type = call.function.answer
-    var target = lowering.new_register()
-    var other_width = lowering.width_of(other_type)
-    var other_is_signed = lowering.is_signed(other_type)
-    var computed = LowIntermediaryRepresentation.Instructions.Arithmetic(
-        target,
-        'bits_or',
-        number.value,
-        zero,
-        other_width,
-        other_is_signed,
-        false,
-    )
-    lowering.emit(computed)
-    return lowering.single(target)
-}
-
-func unchecked(
-    call: HighIntermediaryRepresentation.Values.Call,
-    operator: LowIntermediaryRepresentation.Instructions.Arithmetic.Operator,
-    left: Integer,
-    right: Integer,
-): Lowered {
-    crash call.receiver
-    var number_type = call.receiver.value_type
-    var target = lowering.new_register()
-    var number_width = lowering.width_of(number_type)
-    var number_is_signed = lowering.is_signed(number_type)
-    var computed = LowIntermediaryRepresentation.Instructions.Arithmetic(
-        target,
-        operator,
-        left,
-        right,
-        number_width,
-        number_is_signed,
-        true,
-    )
-    lowering.emit(computed)
-    return lowering.single(target)
-}
-
 func element_type_of(call: HighIntermediaryRepresentation.Values.Call): Model.Type {
     var owner = lowering.state.layout.program.class_named(call.function.owner)
     crash owner
@@ -907,22 +849,8 @@ func slot_size_of(list_key: String, element: Model.Type): Integer {
     if stride > 0 {
         return stride
     }
-    return item_size_of(element)
-}
-
-func item_size_of(element: Model.Type): Integer {
-    if element.kind == 'enumeration' and element.is_nullable {
-        return 9
-    }
-    if element.kind != 'scalar' {
-        return 8
-    }
-    var scalar = lowering.state.scalars.of(element.name)
-    crash scalar
-    if element.is_nullable {
-        return scalar.size + 1
-    }
-    return scalar.size
+    var meanings = Meanings()
+    return meanings.item_size_of(element)
 }
 
 func item_size(call: HighIntermediaryRepresentation.Values.Call): Lowered {
@@ -1013,7 +941,8 @@ func read_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
         return lowering.single(value)
     }
     var presence = lowering.new_register()
-    var presence_offset = item_size_of(element) - 1
+    var meanings = Meanings()
+    var presence_offset = meanings.item_size_of(element) - 1
     var loaded_presence = LowIntermediaryRepresentation.Instructions.Load(
         presence,
         address,
@@ -1055,7 +984,8 @@ func write_value(call: HighIntermediaryRepresentation.Values.Call): Lowered {
     var stored = LowIntermediaryRepresentation.Instructions.Store(address, 0, value.value, width, region, false)
     lowering.emit(stored)
     if lowering.is_a_nullable_scalar(element) {
-        var presence_offset = item_size_of(element) - 1
+        var meanings = Meanings()
+        var presence_offset = meanings.item_size_of(element) - 1
         var stored_presence = LowIntermediaryRepresentation.Instructions.Store(
             address,
             presence_offset,

@@ -4,7 +4,6 @@
 var model = Model.ProgramModel()
 var bodies = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
 var functions_not_quiet = List<String>()
-var quiet_calls = List<String>()
 var singletons_made = List<HighIntermediaryRepresentation.Values.MakeObject>()
 var answered = Dictionary<String, List<HighIntermediaryRepresentation.Values.MakeObject>>()
 var refused = Dictionary<String, Boolean>()
@@ -12,6 +11,10 @@ var locals = Dictionary<String, Value>()
 var this_object: Object? = null
 var answer: Value? = null
 var run_answer = Value('unknown')
+var texts = Dictionary<String, Object>()
+var intrinsics = Intrinsics()
+var meanings = LowIntermediaryRepresentation.Lowering.Meanings()
+var numbers = LowIntermediaryRepresentation.Numbers()
 var has_returned = false
 var has_failed = false
 var steps = 0
@@ -34,6 +37,7 @@ func runs_to_its_end(
     fallback not refused.contains(question)
     singletons_made = List<HighIntermediaryRepresentation.Values.MakeObject>()
     locals = Dictionary<String, Value>()
+    texts = Dictionary<String, Object>()
     this_object = null
     answer = null
     has_returned = false
@@ -89,9 +93,12 @@ func shown_argument(argument: SpiteCompiler.Value): String {
     if argument.class == HighIntermediaryRepresentation.Values.NullConstant {
         return "null"
     }
+    if argument.class == HighIntermediaryRepresentation.Values.TextConstant {
+        var length = argument.text.length()
+        return "text{length}:{argument.text}"
+    }
     var is_a_name = argument.class == HighIntermediaryRepresentation.Values.LocalRead
     is_a_name = is_a_name or argument.class == HighIntermediaryRepresentation.Values.ThisRead
-    is_a_name = is_a_name or argument.class == HighIntermediaryRepresentation.Values.TextConstant
     is_a_name = is_a_name or argument.class == HighIntermediaryRepresentation.Values.DecimalNumber
     if is_a_name {
         return "unknown"
@@ -154,7 +161,7 @@ func value_of(value: SpiteCompiler.Value?): Value {
     switch value {
         HighIntermediaryRepresentation.Values.WholeNumber: return number_of(value.number)
         HighIntermediaryRepresentation.Values.DecimalNumber: return unknown()
-        HighIntermediaryRepresentation.Values.TextConstant: return unknown()
+        HighIntermediaryRepresentation.Values.TextConstant: return text_of(value)
         HighIntermediaryRepresentation.Values.NullConstant: return Value('null')
         HighIntermediaryRepresentation.Values.LocalRead: return local_of(value.name)
         HighIntermediaryRepresentation.Values.ThisRead: return this_value()
@@ -206,15 +213,57 @@ func this_value(): Value {
     return unknown()
 }
 
+func text_of(constant: HighIntermediaryRepresentation.Values.TextConstant): Value {
+    var known = texts[constant.text]
+    if known {
+        return object_value(known)
+    }
+    if constant.value_type.name != "String" {
+        return unknown()
+    }
+    var text = Object("String")
+    text.is_constant = true
+    var text_numbers = meanings.text_numbers(constant.text)
+    hold_the_numbers(text, text_numbers)
+    var buffer = Object("Buffer")
+    buffer.is_constant = true
+    var buffer_numbers = meanings.text_buffer_numbers(constant.text)
+    hold_the_numbers(buffer, buffer_numbers)
+    var storage = Bytes()
+    var written = constant.text.to_buffer()
+    var index = 0
+    while index < written.count() {
+        var code = written[index]
+        crash code
+        var byte = number_of(code)
+        var cell = Cell(byte, 1, 1)
+        storage.write(index, cell)
+        index = index + 1
+    }
+    buffer.storage = storage
+    text.held_values["_buffer"] = object_value(buffer)
+    texts[constant.text] = text
+    return object_value(text)
+}
+
+func hold_the_numbers(object: Object, held: Dictionary<String, Integer>) {
+    var names = held.keys()
+    var index = 0
+    while index < names.count() {
+        var name = names[index]
+        var number = held[name]
+        crash number
+        object.held_values[name] = number_of(number)
+        index = index + 1
+    }
+}
+
 func read_of(read: HighIntermediaryRepresentation.Values.AttributeRead): Value {
     var object = value_of(read.object)
     if object.kind == 'null' {
         return failed()
     }
     if not object.object {
-        return unknown()
-    }
-    if object.object.is_opaque {
         return unknown()
     }
     var known = object.object.held_values[read.attribute.name]
@@ -228,6 +277,18 @@ func read_of(read: HighIntermediaryRepresentation.Values.AttributeRead): Value {
 func converted(conversion: HighIntermediaryRepresentation.Values.Conversion): Value {
     var inner = value_of(conversion.converted)
     var kind = conversion.kind
+    if meanings.is_a_decimal(conversion.value_type) and inner.kind == 'number' {
+        return unknown()
+    }
+    if kind == 'narrow' and inner.kind == 'number' and is_a_whole_narrowing(conversion) {
+        return narrowed(conversion, inner)
+    }
+    if kind == 'zero_when_null' and inner.kind == 'null' {
+        return number_of(0)
+    }
+    if kind == 'zero_when_null' and inner.kind == 'number' {
+        return inner
+    }
     var carries = kind == 'nullable' or kind == 'into_union' or kind == 'into_shape' or kind == 'widen'
     if carries {
         return inner
@@ -243,6 +304,33 @@ func converted(conversion: HighIntermediaryRepresentation.Values.Conversion): Va
         return unknown()
     }
     return failed()
+}
+
+func is_a_whole_narrowing(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
+    fallback conversion.converted
+    var given = conversion.converted.value_type
+    var wanted = conversion.value_type
+    var both_scalars = given.kind == 'scalar' and wanted.kind == 'scalar'
+    fallback both_scalars
+    return not meanings.is_a_decimal(given) and not meanings.is_a_decimal(wanted)
+}
+
+func narrowed(conversion: HighIntermediaryRepresentation.Values.Conversion, inner: Value): Value {
+    crash conversion.converted
+    var bounds = meanings.range_bounds(conversion.converted.value_type, conversion.value_type)
+    var index = 0
+    while index < bounds.count() {
+        var bound = bounds[index]
+        var fits = numbers.compared(bound.comparison, inner.number, bound.limit, bound.compares_signed)
+        if not fits and conversion.answers_null_when_it_does_not_fit {
+            return Value('null')
+        }
+        if not fits {
+            return failed()
+        }
+        index = index + 1
+    }
+    return inner
 }
 
 func made_of(made: HighIntermediaryRepresentation.Values.MakeObject): Value {
@@ -301,15 +389,10 @@ func called(call: HighIntermediaryRepresentation.Values.Call): Value {
     if key == "Spite.Asserts.failed" and is_kept_quiet(arguments) {
         return unknown()
     }
-    if not receiver.object {
-        return failed()
+    if not call.function.has_a_body() {
+        return intrinsic_answer(call, receiver, arguments)
     }
-    var is_quiet_without_a_body = not call.function.has_a_body() and quiet_calls.contains(key)
-    if is_quiet_without_a_body or is_a_store_into_a_collection(call) {
-        receiver.object.is_opaque = true
-        return unknown()
-    }
-    if not call.function.has_a_body() or call.function.owner != receiver.object.class_key {
+    if not receiver.object or call.function.owner != receiver.object.class_key {
         return failed()
     }
     run(key, receiver.object, arguments)
@@ -324,19 +407,17 @@ func is_kept_quiet(arguments: List<Value>): Boolean {
 }
 
 # ../../OPTIMIZATIONS.md#a-making-that-runs-to-its-end-on-what-it-makes-is-quiet
-func is_a_store_into_a_collection(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+func intrinsic_answer(
+    call: HighIntermediaryRepresentation.Values.Call,
+    receiver: Value,
+    arguments: List<Value>,
+): Value {
     var owner = model.class_named(call.function.owner)
-    fallback owner
-    var name = call.function.name
-    var is_a_list = owner.shown.starts_with("List<") and owner.bound_types.contains("$element_type")
-    if is_a_list {
-        return name == "append" or name == "append$set"
+    var answered = intrinsics.answer(call, owner, receiver, arguments)
+    if answered {
+        return answered
     }
-    var is_a_dictionary = owner.shown.starts_with("Dictionary<") and owner.bound_types.contains("$key_type")
-    fallback is_a_dictionary and name == "set_at"
-    var key_type = owner.bound_types["$key_type"]
-    fallback key_type
-    return key_type.kind == 'scalar' or key_type.name == "String"
+    return failed()
 }
 
 func function_value(value: HighIntermediaryRepresentation.Values.Function.Value): Value {
@@ -386,6 +467,9 @@ func operated(operation: HighIntermediaryRepresentation.Values.MachineOperation)
         }
         return unknown()
     }
+    if is_on_decimals(operation) {
+        return failed()
+    }
     if both_known {
         return worked_out(operation, left.number, right.number)
     }
@@ -424,24 +508,42 @@ func is_a_comparison(operation: HighIntermediaryRepresentation.Values.MachineOpe
     return is_an_equality or is_an_order or is_a_reverse_order
 }
 
+func is_on_decimals(operation: HighIntermediaryRepresentation.Values.MachineOperation): Boolean {
+    fallback operation.left
+    return meanings.is_a_decimal(operation.left.value_type)
+}
+
 func compared(operation: HighIntermediaryRepresentation.Values.MachineOperation, left: Long, right: Long): Value {
-    var holds = false
-    switch operation.operator {
-        'equal': holds = left == right
-        'not_equal': holds = left != right
-        'less': holds = left < right
-        'less_or_equal': holds = left <= right
-        'greater': holds = left > right
-        'greater_or_equal': holds = left >= right
-        'add': return failed()
-        'subtract': return failed()
-        'multiply': return failed()
-        'divide': return failed()
-        'remainder': return failed()
-        'and': return failed()
-        'or': return failed()
+    if is_on_decimals(operation) {
+        return unknown()
     }
+    var comparison = comparison_of(operation.operator)
+    if not comparison or not operation.left {
+        return failed()
+    }
+    var is_signed = meanings.is_signed(operation.left.value_type)
+    var holds = numbers.compared(comparison, left, right, is_signed)
     return boolean_of(holds)
+}
+
+func comparison_of(
+    operator: HighIntermediaryRepresentation.Values.MachineOperation.Operator,
+): LowIntermediaryRepresentation.Instructions.Compare.Comparison? {
+    switch operator {
+        'equal': return 'equal'
+        'not_equal': return 'not_equal'
+        'less': return 'less'
+        'less_or_equal': return 'less_or_equal'
+        'greater': return 'greater'
+        'greater_or_equal': return 'greater_or_equal'
+        'add': return null
+        'subtract': return null
+        'multiply': return null
+        'divide': return null
+        'remainder': return null
+        'and': return null
+        'or': return null
+    }
 }
 
 # ../../PROOFS.md#a-making-that-runs-to-its-end-on-what-it-makes-changes-nothing
@@ -589,7 +691,7 @@ func assign(assigned: HighIntermediaryRepresentation.Statements.Assign) {
 func write(written: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
     var object = value_of(written.object)
     var held = value_of(written.value)
-    if not object.object {
+    if not object.object or object.object.is_constant {
         fail()
         return
     }

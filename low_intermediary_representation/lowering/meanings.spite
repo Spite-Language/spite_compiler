@@ -1,0 +1,201 @@
+# ../../PROOFS.md#a-making-that-runs-to-its-end-on-what-it-makes-changes-nothing
+
+enum Operand {
+    'argument'
+    'every_bit'
+    'zero'
+}
+
+var scalars = Model.Scalars()
+
+func width_of(of_type: Model.Type): LowIntermediaryRepresentation.Instructions.Load.Width {
+    if of_type.kind != 'scalar' {
+        return 'bits_64'
+    }
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    if scalar.size == 1 {
+        return 'bits_8'
+    } else if scalar.size == 2 {
+        return 'bits_16'
+    } else if scalar.size == 4 {
+        return 'bits_32'
+    } else {
+        return 'bits_64'
+    }
+}
+
+func is_signed(of_type: Model.Type): Boolean {
+    if of_type.kind != 'scalar' {
+        return true
+    }
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    return scalar.is_signed and not scalar.is_decimal
+}
+
+func is_a_decimal(of_type: Model.Type): Boolean {
+    fallback of_type.kind == 'scalar'
+    var scalar = scalars.of(of_type.name)
+    crash scalar
+    return scalar.is_decimal
+}
+
+func is_a_pointer(of_type: Model.Type): Boolean {
+    var kind = of_type.kind
+    if kind == 'handle' {
+        return true
+    }
+    return kind == 'object' or kind == 'union' or kind == 'shape' or kind == 'function'
+}
+
+func is_held_in_place(of_type: Model.Type): Boolean {
+    return of_type.kind == 'scalar' or of_type.kind == 'enumeration'
+}
+
+func is_a_nullable_scalar(of_type: Model.Type): Boolean {
+    return is_held_in_place(of_type) and of_type.is_nullable
+}
+
+func item_size_of(element: Model.Type): Integer {
+    if element.kind == 'enumeration' and element.is_nullable {
+        return 9
+    }
+    if element.kind != 'scalar' {
+        return 8
+    }
+    var scalar = scalars.of(element.name)
+    crash scalar
+    if element.is_nullable {
+        return scalar.size + 1
+    }
+    return scalar.size
+}
+
+func operator_of(name: String): LowIntermediaryRepresentation.Instructions.Arithmetic.Operator? {
+    if name == "_bits_and" {
+        return 'bits_and'
+    } else if name == "_bits_or" {
+        return 'bits_or'
+    } else if name == "_bits_xor" or name == "_bits_not" {
+        return 'bits_xor'
+    } else if name == "_shifted_left" {
+        return 'shift_left'
+    } else if name == "_shifted_right" {
+        return 'shift_right'
+    } else if name == "_wrapping_sum" {
+        return 'add'
+    } else if name == "_wrapping_subtract" {
+        return 'subtract'
+    } else if name == "_wrapping_multiply" {
+        return 'multiply'
+    } else if is_read_as_the_other_sign(name) {
+        return 'bits_or'
+    }
+    return null
+}
+
+func is_read_as_the_other_sign(name: String): Boolean {
+    return name == "_bits_as_unsigned" or name == "_bits_as_signed"
+}
+
+func right_operand(name: String): Operand {
+    if name == "_bits_not" {
+        return 'every_bit'
+    }
+    if is_read_as_the_other_sign(name) {
+        return 'zero'
+    }
+    return 'argument'
+}
+
+func number_operation(
+    call: HighIntermediaryRepresentation.Values.Call,
+): LowIntermediaryRepresentation.Instructions.Arithmetic? {
+    var operator = operator_of(call.function.name)
+    fallback operator and call.receiver
+    var number_type = call.receiver.value_type
+    var wraps = true
+    if is_read_as_the_other_sign(call.function.name) {
+        crash call.function.answer
+        number_type = call.function.answer
+        wraps = false
+    }
+    var width = width_of(number_type)
+    var signed = is_signed(number_type)
+    return LowIntermediaryRepresentation.Instructions.Arithmetic(-1, operator, -1, -1, width, signed, wraps)
+}
+
+func hands_on_the_receiver(name: String): Boolean {
+    return name == "_bits" or name == "_bits_as_float" or name == "_bits_as_double"
+}
+
+func hands_on_the_argument(name: String): Boolean {
+    return name == "_key_bits"
+}
+
+func is_a_buffer_access(call: HighIntermediaryRepresentation.Values.Call, verb: String): Boolean {
+    var key = call.function.key()
+    return key.starts_with("Buffer._{verb}_") and key.ends_with("_at")
+}
+
+func is_swapped(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    return call.function.name.contains("_big_endian_")
+}
+
+func load_of(call: HighIntermediaryRepresentation.Values.Call): LowIntermediaryRepresentation.Instructions.Load? {
+    fallback is_a_buffer_access(call, "read")
+    fallback call.function.answer
+    var width = width_of(call.function.answer)
+    var signed = is_signed(call.function.answer)
+    var swapped = is_swapped(call)
+    return LowIntermediaryRepresentation.Instructions.Load(-1, -1, 0, width, signed, "", swapped)
+}
+
+func store_of(call: HighIntermediaryRepresentation.Values.Call): LowIntermediaryRepresentation.Instructions.Store? {
+    fallback is_a_buffer_access(call, "write")
+    var written = call.function.parameters[1]
+    fallback written
+    var width = width_of(written.parameter_type)
+    var swapped = is_swapped(call)
+    return LowIntermediaryRepresentation.Instructions.Store(-1, 0, -1, width, "", swapped)
+}
+
+func text_numbers(text: String): Dictionary<String, Integer> {
+    var held = Dictionary<String, Integer>()
+    held["_length"] = text.length()
+    return held
+}
+
+func text_buffer_numbers(text: String): Dictionary<String, Integer> {
+    var length = text.length()
+    var held = Dictionary<String, Integer>()
+    held["_capacity"] = length
+    held["item_count"] = length
+    return held
+}
+
+func range_bounds(given: Model.Type, wanted: Model.Type): List<RangeBound> {
+    var bounds = List<RangeBound>()
+    var given_scalar = scalars.of(given.name)
+    var wanted_scalar = scalars.of(wanted.name)
+    crash given_scalar
+    crash wanted_scalar
+    if scalars.is_below(given_scalar.smallest, wanted_scalar.smallest) {
+        var lowest = whole_bound_of(wanted_scalar.smallest)
+        var above = RangeBound('greater_or_equal', lowest, given_scalar.is_signed)
+        bounds.append(above)
+    }
+    if scalars.is_below(wanted_scalar.largest, given_scalar.largest) {
+        var highest = whole_bound_of(wanted_scalar.largest)
+        var below = RangeBound('less_or_equal', highest, given_scalar.is_signed)
+        bounds.append(below)
+    }
+    return bounds
+}
+
+func whole_bound_of(bound: String): Long {
+    var read: Long? = bound
+    crash read
+    return read
+}

@@ -1042,24 +1042,39 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 - **Status**: built.
 - **Rule**: `HighIntermediaryRepresentation.Closed.Makings` runs a making while compiling, statement by statement,
-  over what the making makes itself. A number, `null` and each object it makes are known (its attributes as its
-  defaults and functions write them); a text, a decimal, anything read through an object it did not make, and a
-  list or dictionary it has stored into are not. It follows `if`s and loops by their conditions, calls into a
-  function of an object it made, and appends or dictionary writes (keys hashed by the library: a number or a
-  `String`) into a collection it made; a taken `fallback`'s record (`Spite.Asserts.failed` with no stream) is no
-  output, so it is passed over, and the trail a crash report prints loses that making's lines. It gives up at a condition it does not know, a write or call on anything it
-  did not make, a `crash` or stop reached, a conversion that may halt, arithmetic outside the `Integer` and `Long`
-  room it works in (a division only of known non-negative numbers), a foreign call, a function value called, a wait,
-  a class with a `drop()`, a singleton made with arguments, 100000 steps or 48 calls deep. A run that reaches its end
-  wrote only objects it made, called nothing outside, and stopped, so leaving the making out changes nothing but its
-  own work; the singletons it used first are handed back, in order, as the quiet rules hand them.
+  over what the making makes itself. A number, `null`, a text constant and each object it makes are known (an
+  object's attributes as its defaults and functions write them; a text constant as the `String` and `Buffer` the
+  lowering writes, its length and bytes, marked never to be written); a decimal and anything read through an object
+  it did not make are not. It follows `if`s and loops by their conditions and calls into a function of an object it
+  made or a text constant, the library's included. A compiler intrinsic (a library function with no body) is
+  answered by `closed/intrinsics.spite` from what the lowering makes of it, `LowIntermediaryRepresentation.Lowering.Meanings`
+  (the one `Arithmetic` a number intrinsic is, the `Load` or `Store` a buffer access is, a list's item size, the
+  bounds a narrowing checks, the numbers a text constant holds), which the lowering itself emits from, worked out by
+  `LowIntermediaryRepresentation.Numbers`, which the compile-time machine (`low_optimization_passes/machine.spite`)
+  works its own instructions out with. So the run cannot disagree with the lowering or the machine: there is one
+  statement of each meaning. A buffer's storage is a map of cells (`closed/bytes.spite`): a write replaces the cells it
+  overlaps, a read answers a cell written at that place and size or the bytes of numbers written whole, anything else
+  is unknown; `_resize_room` drops what lies past the new room, as a resize keeps the rest. A list's items sit at
+  their index times `Meanings.item_size_of`, the size before the layout places objects inside the storage: the
+  library's list code only scales its byte counts by that size (its capacity grows to the larger of twice itself and
+  what is wanted, both counted in that size), so every positive size takes the same path. A taken `fallback`'s record
+  (`Spite.Asserts.failed` with no stream) is no output, so it is passed over, and the trail a crash report prints loses
+  that making's lines. It gives up at a condition it does not know, a write or call on anything it did not make, a
+  write into a text constant, a `crash` or stop reached, a conversion that may halt, arithmetic outside the `Integer`
+  and `Long` room it works in (a division only of known non-negative numbers), an intrinsic `Meanings` does not state
+  (foreign calls, waits, the system, a function value's bits), a function value called, a class with a `drop()`, a
+  singleton made with arguments, 100000 steps or 48 calls deep. A run that reaches its end wrote only objects it made,
+  called nothing outside, and stopped, so leaving the making out changes nothing but its own work; the singletons it
+  used first are handed back, in order, as the quiet rules hand them.
 - **Buys**: a default the constructor replaces or nothing reads is left out even when its making loops, writes a
   dictionary or holds a `crash` it never reaches ([OPTIMIZATIONS.md](OPTIMIZATIONS.md#a-making-that-runs-to-its-end-on-what-it-makes-is-quiet)).
 - **Falls back**: not quiet; the default is made.
-- **Lives in**: `high_intermediary_representation/closed` (`makings.spite`, with `value.spite` and
-  `object.spite`), asked by `quiet_values.spite` for the defaults `replaced_defaults` drops, when a making is not
+- **Lives in**: `high_intermediary_representation/closed` (`makings.spite`, `intrinsics.spite`, `bytes.spite`, with
+  `value.spite`, `object.spite` and `cell.spite`), reading `low_intermediary_representation/lowering/meanings.spite`
+  and `low_intermediary_representation/numbers.spite`; asked by `quiet_values.spite` for the defaults `replaced_defaults` drops, when a making is not
   quiet by [the rules above](#a-quiet-value-changes-nothing-handed-in-and-never-halts).
-- **Checked by**: tests/default_replaced_runs_on_what_it_makes, tests/default_kept_runs_into_a_crash.
+- **Checked by**: tests/default_replaced_runs_on_what_it_makes, tests/default_replaced_runs_through_its_own_buffer,
+  tests/default_kept_runs_into_a_crash.
 
 ### The one class a `type` admits
 

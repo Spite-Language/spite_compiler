@@ -255,21 +255,29 @@ func Layout(starting_program: Model.ProgramModel) {
 its own defaults just made: its lists are empty and its `reload_host` is `null`, so every loop stops before its first
 turn and the `if` is never taken. When a default left out is not quiet by those rules, the compiler runs its making
 while compiling, on what the making itself makes ([the proof](PROOFS.md#a-making-that-runs-to-its-end-on-what-it-makes-changes-nothing)):
-numbers, `null` and the objects it makes are known, everything else (a text, a parameter of the class whose default
-it is, an object handed in) is not. If the run reaches its end, the default is quiet and goes. Every `FunctionLowering`
+numbers, `null`, text constants and the objects it makes are known, everything else (a decimal, a parameter of the
+class whose default it is, an object handed in) is not. If the run reaches its end, the default is quiet and goes. Every `FunctionLowering`
 the lowering makes (one per lowered piece of code) replaced a `FunctionLoweringState` whose defaults made a whole
 `ProgramModel`, `Layout` and `LoweredProgram`; it now makes none, and `tests/enum_reflection` builds in 1.22 s instead
 of 1.79 s (median of 10, #326).
 
 **When it applies:** to a default the constructor replaces, or one nothing reads, whose making
 `high_optimization_passes/replaced_defaults` asks about. The run follows calls into the functions of the objects it
-made, `if`s and loops whose conditions it knows, and appends and dictionary writes (keyed by a number or a `String`)
-into a list or dictionary it made, after which that collection's contents are no longer known.
+made, `if`s and loops whose conditions it knows, and the standard library's own code for lists, dictionaries and
+buffers like any other code, so a program's own class built on a `Buffer` is followed the same way. It knows a text
+constant as the `String` the lowering writes for it (its length and its bytes, never written to), and each compiler
+intrinsic that code meets by what the lowering makes of it, written once in
+`low_intermediary_representation/lowering/meanings.spite` and worked out by the machine's own arithmetic
+(`low_intermediary_representation/numbers.spite`): a buffer's typed reads and writes over the bytes it holds,
+`_resize_room` as a real resize, a list's `_item_size`, `_read_value`, `_write_value` and `_forget_value`, `_key_bits`,
+the bit operations and wrapping arithmetic of whole numbers (unsigned ones compared unsigned), and a narrowing by the
+bounds the lowering checks. No class is named: `List.append` and `Dictionary.set_at` run their own code.
 
 **When it does not apply:** the run gives up, and the default is made as written, at anything it cannot follow: a
-condition it does not know, a write or a call on an object it did not make, a `crash` or a stop it reaches, a
-conversion or arithmetic that could stop the program, a foreign call, a function value called, a wait, a class with a
-`drop()`, a singleton called or made with arguments, more than 100000 steps or 48 calls deep. A singleton the making
+condition it does not know, a write or a call on an object it did not make, a write into a text constant, a `crash` or
+a stop it reaches, a conversion or arithmetic that could stop the program, an intrinsic with no meaning written (a
+foreign call, the system, a wait, a function value's bits), a function value called, a class with a `drop()`, a
+singleton called or made with arguments, more than 100000 steps or 48 calls deep. A singleton the making
 uses first keeps that first use, as above. A `fallback` the run takes is followed (its quiet record of the
 taken fallback is not output), so a making left out leaves no line in the trail of taken fallbacks a crash report
 prints.
