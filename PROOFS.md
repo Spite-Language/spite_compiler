@@ -1023,8 +1023,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **Rule**: `.reads` and `.writes` of a function hold every attribute of a class of the program or its packages
   that its code reads or writes, on any object (`this`, a parameter, an attribute's object, a local, an answer),
   and the same of every function it reaches: calls on any object, a function value whose function is known at the
-  call, constructors, and through a `type` every class that fills it (its getter or setter, or the attribute
-  itself). A call that changes the object it is called on writes the attribute it was called on
+  call, a function it hands to a call as an argument (`items.each(describe)` reaches `describe`), constructors, and
+  through a `type` every class that fills it (its getter or setter, or the attribute itself). A call that changes the object it is called on writes the attribute it was called on
   (`outfit.items.append(x)` writes `Outfit.items`). The standard library's own attributes are left out
   ([reflection.md](../spite_documentation/reflection.md#what-a-function-reads-and-writes)).
 - **Buys**: a render's read set names what it reads of other objects (`character.health` through
@@ -1035,9 +1035,9 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   `.reads` (`Wrappers.settle_the_reaches`) and builds its lists only from the attributes found there, each guarded
   by a fact; when a list grows, the reflection is built again. The proof answers every fact on the finished program
   and halts the compiler if an attribute it finds was not among those built.
-- **Missing**: a call through a function value the study cannot name (one handed in, kept in a list or an
-  attribute) is not followed, nor is code that only runs from a function value taken where the call does not see
-  it.
+- **Missing**: a call through a function value kept in an attribute, a list or a local the study cannot name is not
+  followed (the builder's facts keep their own reach, D2634, not D2632's); the function that hands such a value
+  on is followed only where it hands it to a call.
 - **Falls back**: the facts answer on the finished program; a function the study cannot build reaches nothing.
 - **Lives in**: `building/facts.spite` (`attribute_reach`, `program_attribute_reach`), `building/wrappers.spite`
   (`add_the_reach`, `settle_the_reaches`), the proof `proofs/compile_time_facts` (`check_the_candidates`).
