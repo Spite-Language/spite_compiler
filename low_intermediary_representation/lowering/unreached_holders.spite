@@ -9,6 +9,7 @@ enum Mode {
 var _this = "$this"
 var _alias = "="
 var _read_mark = "@"
+var _made_without_a_constructor = "$made"
 var _protocol_names = ["equals", "hash", "to_text", "to_debug", "compare", "copy", "deep_copy", "drop"]
 var no_program = Model.ProgramModel()
 var no_high = HighIntermediaryRepresentation.HighProgram(no_program)
@@ -39,6 +40,9 @@ var current_function = Model.FunctionModel("", "", null, null, null, null, null,
 var current_occurrences = List<Occurrence>()
 var open = List<String>()
 var together = Dictionary<String, List<String>>()
+var declarations = List<HighIntermediaryRepresentation.Statements.Declare>()
+var declaration_keys = List<String>()
+var makers_of = Dictionary<String, List<String>>()
 var scanned = List<String>()
 var pending_stores = List<HighIntermediaryRepresentation.Statements.Assign.Attribute>()
 var pending_store_keys = List<String>()
@@ -72,6 +76,64 @@ func mark(starting_high: HighIntermediaryRepresentation.HighProgram, hot: Boolea
     mode = 'flowing'
     high.built_functions.each(flow_through_a_function)
     mark_the_parameter_stores()
+    mark_the_frame_only_locals()
+}
+
+func read_a_declaration(declared: HighIntermediaryRepresentation.Statements.Declare) {
+    if mode == 'reading' {
+        declarations.append(declared)
+        declaration_keys.append(current_key)
+    }
+    read_a_definition(declared.name, declared.value)
+}
+
+func note_a_definition_maker(name: String, plain: SpiteCompiler.Value?) {
+    var maker = ""
+    if plain and plain.class == HighIntermediaryRepresentation.Values.MakeObject {
+        maker = _made_without_a_constructor
+        if plain.constructor {
+            maker = plain.constructor.key()
+        }
+    }
+    var key = "{current_key}|{name}"
+    if not makers_of.contains(key) {
+        var none_yet = List<String>()
+        makers_of[key] = none_yet
+    }
+    var makers = makers_of[key]
+    crash makers
+    makers.append(maker)
+}
+
+# ../../OPTIMIZATIONS.md#a-store-into-an-object-no-object-holds-closes-no-cycle
+func mark_the_frame_only_locals() {
+    var index = 0
+    while index < declarations.count() {
+        var declared = declarations[index]
+        var key = declaration_keys[index]
+        crash key
+        if is_held_only_by_frames(key, declared.name) {
+            declared.holds_only_frames = true
+        }
+        index = index + 1
+    }
+}
+
+func is_held_only_by_frames(key: String, name: String): Boolean {
+    var makers = makers_of["{key}|{name}"]
+    var found = occurrences[key]
+    fallback makers and found
+    var index = 0
+    while index < makers.count() {
+        var maker = makers[index]
+        fallback not maker.is_empty()
+        if maker != _made_without_a_constructor {
+            fallback not is_kept(maker, 0)
+        }
+        index = index + 1
+    }
+    var alone = [name]
+    return not holds_any(alone, found)
 }
 
 func sets_by_reflection(key: String): Boolean {
@@ -103,7 +165,7 @@ func read_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
 
 func read_a_statement(statement: SpiteCompiler.Statement) {
     switch statement {
-        HighIntermediaryRepresentation.Statements.Declare: read_a_definition(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Declare: read_a_declaration(statement)
         HighIntermediaryRepresentation.Statements.Assign: read_a_definition(statement.name, statement.value)
         HighIntermediaryRepresentation.Statements.Assign.Attribute: read_an_attribute_store(statement)
         HighIntermediaryRepresentation.Statements.Assign.ThroughShape: read_a_shape_store(statement)
@@ -121,6 +183,9 @@ func read_a_definition(name: String, value: SpiteCompiler.Value?) {
     var plain = stripped(value)
     if mode == 'reading' and plain {
         note_an_alias(name, plain)
+    }
+    if mode == 'reading' {
+        note_a_definition_maker(name, plain)
     }
     if mode == 'flowing' and plain and plain.class == HighIntermediaryRepresentation.Values.LocalRead {
         fallback not copies_an_unheld(name, plain.name)

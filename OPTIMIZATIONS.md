@@ -1298,7 +1298,11 @@ stores and calls, for attribute stores and `append`/`set_at` alike:
 - **Why it is safe.** Such an object lives only in frames for its whole life, so no slot of any object points at it,
   and it is in no cycle; a store into it cannot close one. Anything the proof cannot settle keeps its suspect.
 
-**What a program can observe:** nothing but fewer suspects; a cycle is freed as before.
+The same proof leaves out the drop point of a local that only ever holds such objects: letting it go cannot leave
+a cycle that was held from outside, and any cycle its object held is checked at the next drop point.
+
+**What a program can observe:** nothing but fewer suspects and drop points; a cycle is freed as before, at the
+latest at the next drop point.
 
 ## Counts are atomic only in a program with threads
 
