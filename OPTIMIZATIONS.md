@@ -159,8 +159,9 @@ any statement that reads it or that names `this` other than to assign or read an
 `this` passed on). The default left out must be quiet: a constant, a text, or an object whose making calls nothing
 the compiler cannot see the end of, cannot stop the program (a check on its arguments that the constants given to it
 decide is followed), and whose class has no `drop()`. A making that reads only what is left out with it only touches
-objects it made itself, so it may write through their attributes (`state.symbols = starting_symbols`) and append to
-a list of its own.
+objects it made itself, so it may write through their attributes (`state.symbols = starting_symbols`); an append to
+a list of its own is followed through the list's own code by the
+[run below](#a-making-that-runs-to-its-end-on-what-it-makes-is-quiet), with no rule of its own.
 
 A default may read an attribute that is left out with it: `var writing = Writing(state)` beside `var state = State()`
 goes when the constructor replaces both. Each constructor's left-out defaults count when the compiler asks whether
