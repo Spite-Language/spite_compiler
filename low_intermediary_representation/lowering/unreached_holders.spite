@@ -1,0 +1,761 @@
+# ../../OPTIMIZATIONS.md#a-store-into-an-object-no-object-holds-closes-no-cycle
+
+enum Mode {
+    'reading'
+    'flowing'
+    'scanning'
+}
+
+var _this = "$this"
+var _alias = "="
+var _read_mark = "@"
+var _protocol_names = ["equals", "hash", "to_text", "to_debug", "compare", "copy", "deep_copy", "drop"]
+var no_program = Model.ProgramModel()
+var no_high = HighIntermediaryRepresentation.HighProgram(no_program)
+var high: HighIntermediaryRepresentation.HighProgram = no_high
+var no_layout = HighIntermediaryRepresentation.Layout(no_program)
+var no_state = FunctionLoweringState()
+var no_lowering = FunctionLowering(no_state)
+var cycles = ClosingStores(no_layout, no_lowering)
+var built = Dictionary<String, HighIntermediaryRepresentation.HighFunction>()
+var callers = Dictionary<String, List<CallSite>>()
+var occurrences = Dictionary<String, List<Occurrence>>()
+var readers = Dictionary<String, List<String>>()
+var kept = Dictionary<String, Boolean>()
+var keeping = Dictionary<String, Boolean>()
+var unreached = Dictionary<String, Boolean>()
+var reaching = Dictionary<String, Boolean>()
+var owned = Dictionary<String, Boolean>()
+var stored_otherwise = Dictionary<String, Boolean>()
+var made_by = Dictionary<String, List<String>>()
+var owns_attributes = true
+var shape_members = List<String>()
+var shape_calls = List<String>()
+var taken = List<String>()
+var follows_parameters = true
+var assumed = false
+var current_key = ""
+var current_function = Model.FunctionModel("", "", null, null, null, null, null, null, false, false, false, false)
+var current_occurrences = List<Occurrence>()
+var open = List<String>()
+var scanned = List<String>()
+var pending_stores = List<HighIntermediaryRepresentation.Statements.Assign.Attribute>()
+var pending_store_keys = List<String>()
+var pending_store_parameters = List<Integer>()
+var pending_calls = List<HighIntermediaryRepresentation.Values.Call>()
+var pending_call_keys = List<String>()
+var pending_call_parameters = List<Integer>()
+var mode: Mode = 'reading'
+var capable: Dictionary<String, Integer>
+
+func UnreachedHolders(starting_cycles: ClosingStores, starting_capable: Dictionary<String, Integer>) {
+    cycles = starting_cycles
+    capable = starting_capable
+}
+
+# ../../OPTIMIZATIONS.md#a-store-into-an-object-no-object-holds-closes-no-cycle
+func mark(starting_high: HighIntermediaryRepresentation.HighProgram, hot: Boolean) {
+    high = starting_high
+    fallback not capable.is_empty()
+    var reflected_calls = starting_high.model.class_named("Spite.Call")
+    follows_parameters = not hot and not high.prompt and not reflected_calls
+    if high.assignments {
+        taken = high.assignments.taken_as_values
+    } else {
+        follows_parameters = false
+    }
+    mode = 'reading'
+    high.built_functions.each(read_a_function)
+    var keys = built.keys()
+    owns_attributes = not keys.any(sets_by_reflection)
+    mode = 'flowing'
+    high.built_functions.each(flow_through_a_function)
+    mark_the_parameter_stores()
+}
+
+func sets_by_reflection(key: String): Boolean {
+    return key.starts_with("Spite.Attribute") and key.ends_with(".set_value")
+}
+
+func read_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    var key = function.function.key()
+    built[key] = function
+    current_key = key
+    current_function = function.function
+    current_occurrences = List<Occurrence>()
+    read_a_block(function.body)
+    occurrences[key] = current_occurrences
+}
+
+func flow_through_a_function(function: HighIntermediaryRepresentation.HighFunction) {
+    current_key = function.function.key()
+    current_function = function.function
+    open = List<String>()
+    read_a_block(function.body)
+}
+
+func read_a_block(block: HighIntermediaryRepresentation.Statements.Block?) {
+    fallback block
+    block.statements.each(read_a_statement)
+}
+
+func read_a_statement(statement: SpiteCompiler.Statement) {
+    switch statement {
+        HighIntermediaryRepresentation.Statements.Declare: read_a_definition(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign: read_a_definition(statement.name, statement.value)
+        HighIntermediaryRepresentation.Statements.Assign.Attribute: read_an_attribute_store(statement)
+        HighIntermediaryRepresentation.Statements.Assign.ThroughShape: read_a_shape_store(statement)
+        HighIntermediaryRepresentation.Statements.Evaluate: read_an_evaluation(statement)
+        HighIntermediaryRepresentation.Statements.Return: read_kept(statement.value)
+        HighIntermediaryRepresentation.Statements.If: read_an_if(statement)
+        HighIntermediaryRepresentation.Statements.While: read_a_while(statement)
+        HighIntermediaryRepresentation.Statements.Stop: read_a_stop(statement)
+        HighIntermediaryRepresentation.Statements.Block: read_a_block(statement)
+    }
+}
+
+func read_a_definition(name: String, value: SpiteCompiler.Value?) {
+    fallback value
+    var plain = stripped(value)
+    if mode == 'reading' and plain {
+        note_an_alias(name, plain)
+    }
+    read_kept(value)
+    if mode == 'scanning' {
+        scanned.append(name)
+        return
+    }
+    fallback mode == 'flowing'
+    forget(name)
+    if makes_an_unheld_object(plain) {
+        open.append(name)
+    }
+}
+
+func note_an_alias(name: String, plain: SpiteCompiler.Value) {
+    var read_name = ""
+    if plain.class == HighIntermediaryRepresentation.Values.LocalRead {
+        read_name = plain.name
+    }
+    if plain.class == HighIntermediaryRepresentation.Values.AttributeRead {
+        read_name = attribute_mark(plain.attribute)
+    }
+    fallback not read_name.is_empty()
+    var aliased = Occurrence(read_name, true, _alias, 0)
+    aliased.target = name
+    current_occurrences.append(aliased)
+}
+
+func makes_an_unheld_object(value: SpiteCompiler.Value?): Boolean {
+    fallback value and value.class == HighIntermediaryRepresentation.Values.MakeObject
+    if not value.constructor {
+        return true
+    }
+    var constructor_key = value.constructor.key()
+    return not is_kept(constructor_key, 0)
+}
+
+func forget(name: String) {
+    var at = open.index_of(name)
+    fallback at
+    open.remove_at(at)
+}
+
+func read_an_attribute_store(stored: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    read_kept(stored.value)
+    read_at(stored.object, false, "", 0)
+    if mode == 'reading' {
+        note_how_it_is_stored(stored)
+    }
+    fallback mode == 'flowing' and stores_a_reference(stored)
+    var holder = stripped(stored.object)
+    fallback holder and capable.contains(holder.value_type.name)
+    var at = parameter_held_in(holder)
+    if at > 0 {
+        pending_stores.append(stored)
+        pending_store_keys.append(current_key)
+        pending_store_parameters.append(at)
+        return
+    }
+    if holds_no_object(holder) {
+        stored.closes_no_cycle = true
+    }
+}
+
+func stores_a_reference(stored: HighIntermediaryRepresentation.Statements.Assign.Attribute): Boolean {
+    var kind = stored.attribute.attribute_type.kind
+    return kind == 'object' or kind == 'union' or kind == 'shape' or kind == 'function'
+}
+
+func note_how_it_is_stored(stored: HighIntermediaryRepresentation.Statements.Assign.Attribute) {
+    var plain = stripped(stored.value)
+    var stored_mark = attribute_mark(stored.attribute)
+    if plain and plain.class == HighIntermediaryRepresentation.Values.MakeObject {
+        note_a_maker(stored_mark, plain)
+        return
+    }
+    stored_otherwise[stored_mark] = true
+}
+
+func note_a_maker(stored_mark: String, made: HighIntermediaryRepresentation.Values.MakeObject) {
+    fallback made.constructor
+    if not made_by.contains(stored_mark) {
+        var none_yet = List<String>()
+        made_by[stored_mark] = none_yet
+    }
+    var makers = made_by[stored_mark]
+    crash makers
+    var constructor_key = made.constructor.key()
+    makers.append(constructor_key)
+}
+
+func read_a_shape_store(stored: HighIntermediaryRepresentation.Statements.Assign.ThroughShape) {
+    read_kept(stored.value)
+    read_kept(stored.object)
+    if mode == 'reading' {
+        shape_members.append(stored.member)
+    }
+}
+
+func read_an_evaluation(evaluated: HighIntermediaryRepresentation.Statements.Evaluate) {
+    read_at(evaluated.value, false, "", 0)
+    read_at(evaluated.waited, false, "", 0)
+}
+
+func read_an_if(branch: HighIntermediaryRepresentation.Statements.If) {
+    read_at(branch.condition, false, "", 0)
+    if mode != 'flowing' {
+        read_a_block(branch.then_branch)
+        read_a_block(branch.else_branch)
+        return
+    }
+    var before = open.copy()
+    read_a_block(branch.then_branch)
+    var after_then = open
+    if always_leaves(branch.then_branch) {
+        after_then = before
+    }
+    open = before.copy()
+    read_a_block(branch.else_branch)
+    var after_else = open
+    if always_leaves(branch.else_branch) {
+        after_else = before
+    }
+    open = List<String>()
+    var index = 0
+    while index < before.count() {
+        var name = before[index]
+        if after_then.contains(name) and after_else.contains(name) {
+            open.append(name)
+        }
+        index = index + 1
+    }
+}
+
+func always_leaves(block: HighIntermediaryRepresentation.Statements.Block?): Boolean {
+    fallback block
+    var last = block.statements.last()
+    fallback last
+    return last.class == HighIntermediaryRepresentation.Statements.Return or last.class == HighIntermediaryRepresentation.Statements.Stop
+}
+
+func read_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
+    if mode != 'flowing' {
+        read_at(loop.condition, false, "", 0)
+        read_a_block(loop.body)
+        return
+    }
+    var escaping = escaped_in(loop)
+    escaping.each(forget)
+    var before = open.copy()
+    read_at(loop.condition, false, "", 0)
+    read_a_block(loop.body)
+    var after_body = open
+    open = List<String>()
+    var index = 0
+    while index < before.count() {
+        var name = before[index]
+        if after_body.contains(name) {
+            open.append(name)
+        }
+        index = index + 1
+    }
+}
+
+func escaped_in(loop: HighIntermediaryRepresentation.Statements.While): List<String> {
+    var outer_scanned = scanned
+    scanned = List<String>()
+    mode = 'scanning'
+    read_at(loop.condition, false, "", 0)
+    read_a_block(loop.body)
+    mode = 'flowing'
+    var found = scanned
+    scanned = outer_scanned
+    return found
+}
+
+func read_a_stop(stop: HighIntermediaryRepresentation.Statements.Stop) {
+    stop.shown.each(read_present_kept)
+    read_at(stop.then, false, "", 0)
+}
+
+func read_kept(value: SpiteCompiler.Value?) {
+    read_at(value, true, "", 0)
+}
+
+func read_present_kept(value: SpiteCompiler.Value) {
+    read_kept(value)
+}
+
+# ../../OPTIMIZATIONS.md#a-store-into-an-object-no-object-holds-closes-no-cycle
+func read_at(value: SpiteCompiler.Value?, always: Boolean, callee: String, index: Integer) {
+    fallback value
+    switch value {
+        HighIntermediaryRepresentation.Values.LocalRead: note(value.name, always, callee, index)
+        HighIntermediaryRepresentation.Values.ThisRead: note(_this, always, callee, index)
+        HighIntermediaryRepresentation.Values.Conversion: read_a_conversion(value, always, callee, index)
+        HighIntermediaryRepresentation.Values.Call: read_a_call(value)
+        HighIntermediaryRepresentation.Values.MakeObject: read_a_making(value)
+        HighIntermediaryRepresentation.Values.MachineOperation: read_both(value.left, value.right, always, callee, index)
+        HighIntermediaryRepresentation.Values.AttributeRead: read_an_attribute(value, always, callee, index)
+        HighIntermediaryRepresentation.Values.ShapeCall: read_a_shape_call(value)
+        HighIntermediaryRepresentation.Values.Function.ValueCall: read_all_kept(value.called, value.arguments)
+        HighIntermediaryRepresentation.Values.ForeignCall: read_all_kept(value.library, value.arguments)
+        HighIntermediaryRepresentation.Values.Function.Value: read_kept(value.receiver)
+        HighIntermediaryRepresentation.Values.Negation: read_at(value.negated, false, "", 0)
+        HighIntermediaryRepresentation.Values.PresenceTest: read_at(value.tested, false, "", 0)
+        HighIntermediaryRepresentation.Values.Class.Membership: read_at(value.tested, false, "", 0)
+        HighIntermediaryRepresentation.Values.Class.OfValue: read_at(value.described, false, "", 0)
+        HighIntermediaryRepresentation.Values.NumberRoom: read_both(value.made, value.number, true, "", 0)
+        HighIntermediaryRepresentation.Values.EnumText: read_at(value.number, false, "", 0)
+        HighIntermediaryRepresentation.Values.EnumFromText: read_at(value.text, false, "", 0)
+        HighIntermediaryRepresentation.Values.WholeNumber: return
+        HighIntermediaryRepresentation.Values.DecimalNumber: return
+        HighIntermediaryRepresentation.Values.TextConstant: return
+        HighIntermediaryRepresentation.Values.NullConstant: return
+        HighIntermediaryRepresentation.Values.Class.Object: return
+        HighIntermediaryRepresentation.Values.Function.Fact: return
+    }
+}
+
+func note(name: String, always: Boolean, callee: String, index: Integer) {
+    var found = Occurrence(name, always, callee, index)
+    if mode == 'reading' {
+        current_occurrences.append(found)
+        return
+    }
+    var no_aliases = List<String>()
+    fallback holds(found, no_aliases)
+    if mode == 'scanning' {
+        scanned.append(name)
+        return
+    }
+    forget(name)
+}
+
+func read_an_attribute(
+    read: HighIntermediaryRepresentation.Values.AttributeRead,
+    always: Boolean,
+    callee: String,
+    index: Integer,
+) {
+    if mode == 'reading' {
+        var read_mark = attribute_mark(read.attribute)
+        note(read_mark, always, callee, index)
+        note_a_reader(read_mark)
+    }
+    read_at(read.object, false, "", 0)
+}
+
+func note_a_reader(read_mark: String) {
+    if not readers.contains(read_mark) {
+        var none_yet = List<String>()
+        readers[read_mark] = none_yet
+    }
+    var found = readers[read_mark]
+    crash found
+    if not found.contains(current_key) {
+        found.append(current_key)
+    }
+}
+
+func attribute_mark(attribute: Model.AttributeModel): String {
+    return "{_read_mark}{attribute.owner}.{attribute.name}"
+}
+
+func read_a_conversion(
+    conversion: HighIntermediaryRepresentation.Values.Conversion,
+    always: Boolean,
+    callee: String,
+    index: Integer,
+) {
+    if passes_the_object_on(conversion) {
+        read_at(conversion.converted, always, callee, index)
+    } else {
+        read_kept(conversion.converted)
+    }
+}
+
+func passes_the_object_on(conversion: HighIntermediaryRepresentation.Values.Conversion): Boolean {
+    var kind = conversion.kind
+    return kind == 'present' or kind == 'nullable' or kind == 'proven' or kind == 'narrow' or kind == 'out_of_union'
+}
+
+func read_both(
+    left: SpiteCompiler.Value?,
+    right: SpiteCompiler.Value?,
+    always: Boolean,
+    callee: String,
+    index: Integer,
+) {
+    read_at(left, always, callee, index)
+    read_at(right, always, callee, index)
+}
+
+func read_a_shape_call(call: HighIntermediaryRepresentation.Values.ShapeCall) {
+    if mode == 'reading' and not shape_calls.contains(call.member.name) {
+        shape_calls.append(call.member.name)
+    }
+    read_all_kept(call.receiver, call.arguments)
+}
+
+func read_all_kept(first: SpiteCompiler.Value?, rest: List<SpiteCompiler.Value>) {
+    read_kept(first)
+    rest.each(read_present_kept)
+}
+
+func read_a_call(call: HighIntermediaryRepresentation.Values.Call) {
+    var key = call.function.key()
+    var site = CallSite(current_key)
+    var index = 0
+    while index < call.arguments.count() {
+        var argument = call.arguments[index]
+        var passed = passed_as(argument)
+        site.passed.append(passed)
+        read_at(argument, false, key, index + 1)
+        index = index + 1
+    }
+    read_at(call.receiver, false, key, 0)
+    fallback mode == 'flowing'
+    note_a_site(key, call, site)
+    var receiver = stripped(call.receiver)
+    fallback receiver and capable.contains(receiver.value_type.name)
+    var at = parameter_held_in(receiver)
+    if at > 0 {
+        pending_calls.append(call)
+        pending_call_keys.append(current_key)
+        pending_call_parameters.append(at)
+        return
+    }
+    if holds_no_object(receiver) {
+        call.closes_no_cycle = true
+    }
+}
+
+func passed_as(argument: SpiteCompiler.Value): Integer {
+    var plain = stripped(argument)
+    var not_followed = -1
+    if mode != 'flowing' {
+        return not_followed
+    }
+    if plain and plain.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return passed_local(plain.name)
+    }
+    return not_followed
+}
+
+func passed_local(name: String): Integer {
+    var at = parameter_index(current_function, name)
+    if at > 0 {
+        return at
+    }
+    var not_followed = -1
+    fallback not open.contains(name)
+    return not_followed
+}
+
+func read_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
+    var key = "$unknown"
+    if made.constructor {
+        key = made.constructor.key()
+    }
+    var index = 0
+    while index < made.arguments.count() {
+        var argument = made.arguments[index]
+        read_at(argument, false, key, index + 1)
+        index = index + 1
+    }
+}
+
+func note_a_site(key: String, call: HighIntermediaryRepresentation.Values.Call, site: CallSite) {
+    fallback follows_parameters and takes_a_capable(call.function)
+    if not callers.contains(key) {
+        var none_yet = List<CallSite>()
+        callers[key] = none_yet
+    }
+    var sites = callers[key]
+    crash sites
+    sites.append(site)
+}
+
+func takes_a_capable(function: Model.FunctionModel): Boolean {
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if cycles.reaches_a_capable(capable, parameter.parameter_type) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func stripped(value: SpiteCompiler.Value?): SpiteCompiler.Value? {
+    var current = value
+    var going = true
+    while going and current {
+        var passed_on = passed_on_by(current)
+        if passed_on {
+            current = passed_on
+        } else {
+            going = false
+        }
+    }
+    return current
+}
+
+func passed_on_by(value: SpiteCompiler.Value): SpiteCompiler.Value? {
+    fallback value.class == HighIntermediaryRepresentation.Values.Conversion
+    fallback passes_the_object_on(value)
+    return value.converted
+}
+
+func parameter_held_in(holder: SpiteCompiler.Value): Integer {
+    fallback holder.class == HighIntermediaryRepresentation.Values.LocalRead
+    return parameter_index(current_function, holder.name)
+}
+
+func parameter_index(function: Model.FunctionModel, name: String): Integer {
+    var index = 0
+    while index < function.parameters.count() {
+        var parameter = function.parameters[index]
+        if parameter.name == name {
+            return index + 1
+        }
+        index = index + 1
+    }
+    return 0
+}
+
+# ../../OPTIMIZATIONS.md#a-store-into-an-object-no-object-holds-closes-no-cycle
+func holds_no_object(holder: SpiteCompiler.Value): Boolean {
+    if holder.class == HighIntermediaryRepresentation.Values.LocalRead {
+        return open.contains(holder.name)
+    }
+    fallback holder.class == HighIntermediaryRepresentation.Values.AttributeRead
+    var owner = stripped(holder.object)
+    fallback owner and owner.class == HighIntermediaryRepresentation.Values.LocalRead
+    fallback open.contains(owner.name)
+    var holder_mark = attribute_mark(holder.attribute)
+    return is_owned(holder_mark, holder.attribute)
+}
+
+func aliases_of(name: String, found: List<Occurrence>): List<String> {
+    var aliases = [name]
+    var grown = true
+    while grown {
+        grown = false
+        var index = 0
+        while index < found.count() {
+            var occurrence = found[index]
+            var is_an_alias = occurrence.callee == _alias and aliases.contains(occurrence.name)
+            if is_an_alias and not aliases.contains(occurrence.target) {
+                aliases.append(occurrence.target)
+                grown = true
+            }
+            index = index + 1
+        }
+    }
+    return aliases
+}
+
+func holds_any(aliases: List<String>, found: List<Occurrence>): Boolean {
+    var index = 0
+    while index < found.count() {
+        var occurrence = found[index]
+        if aliases.contains(occurrence.name) and holds(occurrence, aliases) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func holds(occurrence: Occurrence, aliases: List<String>): Boolean {
+    if occurrence.callee.is_empty() {
+        return occurrence.always
+    }
+    if occurrence.callee == _alias {
+        return not aliases.contains(occurrence.target)
+    }
+    return is_kept(occurrence.callee, occurrence.index)
+}
+
+# ../../OPTIMIZATIONS.md#a-store-into-an-object-no-object-holds-closes-no-cycle
+func is_owned(holder_mark: String, attribute: Model.AttributeModel): Boolean {
+    if owned.contains(holder_mark) {
+        return owned[holder_mark] == true
+    }
+    var answer = only_its_owner_holds(holder_mark, attribute)
+    owned[holder_mark] = answer
+    return answer
+}
+
+func only_its_owner_holds(holder_mark: String, attribute: Model.AttributeModel): Boolean {
+    fallback owns_attributes
+    fallback not stored_otherwise.contains(holder_mark) and not shape_members.contains(attribute.name)
+    var makers = made_by[holder_mark]
+    if makers {
+        fallback not makers.any(keeps_its_object)
+    }
+    var copy_key = "{attribute.owner}.copy"
+    fallback not built.contains(copy_key)
+    var reading = readers[holder_mark]
+    if not reading {
+        return true
+    }
+    var index = 0
+    while index < reading.count() {
+        var reader_key = reading[index]
+        var found = occurrences[reader_key]
+        crash found
+        var aliases = aliases_of(holder_mark, found)
+        fallback not holds_any(aliases, found)
+        index = index + 1
+    }
+    return true
+}
+
+# ../../OPTIMIZATIONS.md#a-store-into-an-object-no-object-holds-closes-no-cycle
+func is_kept(key: String, index: Integer): Boolean {
+    var memo_key = "{key}#{index}"
+    if kept.contains(memo_key) {
+        return kept[memo_key] == true
+    }
+    var function = built[key]
+    if not function {
+        return index != 0 or not is_written_in_place(key)
+    }
+    if keeping.contains(memo_key) {
+        assumed = true
+        return false
+    }
+    var found_occurrences = occurrences[key]
+    if not found_occurrences {
+        return true
+    }
+    keeping[memo_key] = true
+    var outer_assumed = assumed
+    assumed = false
+    var name = _this
+    if index > 0 {
+        var parameter = function.function.parameters[index - 1]
+        crash parameter
+        name = parameter.name
+    }
+    var aliases = aliases_of(name, found_occurrences)
+    var answer = holds_any(aliases, found_occurrences)
+    keeping.remove_at(memo_key)
+    if answer or not assumed or keeping.is_empty() {
+        kept[memo_key] = answer
+    }
+    assumed = assumed or outer_assumed
+    return answer
+}
+
+func keeps_its_object(constructor_key: String): Boolean {
+    return is_kept(constructor_key, 0)
+}
+
+func is_written_in_place(key: String): Boolean {
+    var parts = key.split(".")
+    var last = parts.last()
+    fallback last
+    return last.starts_with("_")
+}
+
+func mark_the_parameter_stores() {
+    var index = 0
+    while index < pending_stores.count() {
+        var stored = pending_stores[index]
+        var key = pending_store_keys[index]
+        var at = pending_store_parameters[index]
+        crash key
+        crash at
+        if parameter_is_unreached(key, at) {
+            stored.closes_no_cycle = true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < pending_calls.count() {
+        var call = pending_calls[index]
+        var key = pending_call_keys[index]
+        var at = pending_call_parameters[index]
+        crash key
+        crash at
+        if parameter_is_unreached(key, at) {
+            call.closes_no_cycle = true
+        }
+        index = index + 1
+    }
+}
+
+# ../../OPTIMIZATIONS.md#a-store-into-an-object-no-object-holds-closes-no-cycle
+func parameter_is_unreached(key: String, index: Integer): Boolean {
+    fallback follows_parameters and may_follow(key)
+    fallback not is_kept(key, index)
+    var memo_key = "{key}@{index}"
+    if unreached.contains(memo_key) {
+        return unreached[memo_key] == true
+    }
+    if reaching.contains(memo_key) {
+        assumed = true
+        return true
+    }
+    var sites = callers[key]
+    fallback sites and not sites.is_empty()
+    reaching[memo_key] = true
+    var outer_assumed = assumed
+    assumed = false
+    var answer = every_site_passes_an_unheld(sites, index)
+    reaching.remove_at(memo_key)
+    if not answer or not assumed or reaching.is_empty() {
+        unreached[memo_key] = answer
+    }
+    assumed = assumed or outer_assumed
+    return answer
+}
+
+func every_site_passes_an_unheld(sites: List<CallSite>, index: Integer): Boolean {
+    var site_index = 0
+    while site_index < sites.count() {
+        var site = sites[site_index]
+        var passed = site.passed[index - 1]
+        fallback passed and passed >= 0
+        if passed > 0 {
+            fallback parameter_is_unreached(site.caller, passed)
+        }
+        site_index = site_index + 1
+    }
+    return true
+}
+
+func may_follow(key: String): Boolean {
+    var function = built[key]
+    fallback function
+    var model = function.function
+    fallback not model.is_a_constructor() and not taken.contains(key)
+    fallback not model.name.starts_with("_") and not _protocol_names.contains(model.name)
+    return not shape_calls.contains(model.name)
+}

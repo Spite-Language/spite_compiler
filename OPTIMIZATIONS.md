@@ -1269,6 +1269,31 @@ hot-reloaded build. A program with no closing store carries none of it.
 **What a program can observe:** a cycle's `drop()`s run at the next collection instead of never, all of the cycle's
 before any of its memory goes; `--debug-memory` balances.
 
+## A store into an object no object holds closes no cycle
+
+A store closes a cycle only when the value stored can reach its holder, and an object no other object holds can be
+reached by nothing: a cycle needs every one of its objects held by another. So the compiler proves, before it writes
+the closing stores (`low_intermediary_representation/lowering/unreached_holders.spite`), the holders that only locals
+and parameters ever hold, and a store into one marks no suspect, whatever it stores. One proof over the program's
+stores and calls, for attribute stores and `append`/`set_at` alike:
+
+- **What keeps a value.** A parameter is kept by its function when it, or a local copied from it, is stored (as an
+  attribute's value, or handed to a parameter that is kept, a constructor's included), returned, taken with a
+  function value, handed to a shape, a function value or C, or boxed. A receiver is kept when the function it is
+  called on keeps `this`. A function the program does not build keeps every argument; one the compiler writes in place
+  (`_write_value`) keeps its arguments but not its receiver. Calls that reach each other assume the best while they are
+  open and keep only answers that did not lean on that assumption.
+- **What no object holds.** A local whose every assignment is an object made there by a constructor that keeps no
+  `this` (or a copy of such a local), and that the function never keeps. A parameter (not `this`) of a function the
+  program calls only directly, never as a value, not a constructor, `drop()`, an operator's function or a function the
+  compiler calls itself, when every call passes a holder no object holds. In a prompt or a `--hot-reload` build, or a
+  program that calls by reflection (`Spite.Call`), parameters are not followed, since calls are made that the build
+  does not see.
+- **Why it is safe.** Such an object lives only in frames for its whole life, so no slot of any object points at it,
+  and it is in no cycle; a store into it cannot close one. Anything the proof cannot settle keeps its suspect.
+
+**What a program can observe:** nothing but fewer suspects; a cycle is freed as before.
+
 ## Counts are atomic only in a program with threads
 
 Taking and letting go of a count is a plain addition and subtraction on the object's count, unless the program can
