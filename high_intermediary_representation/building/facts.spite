@@ -5,7 +5,6 @@ var studied = List<String>()
 var pending = List<String>()
 var studied_callees = Dictionary<String, List<String>>()
 var waits_callees = Dictionary<String, List<String>>()
-var same_class_callees = Dictionary<String, List<String>>()
 var waiting_keys = List<String>()
 var written = List<String>()
 var returned = List<String>()
@@ -26,7 +25,13 @@ var held_locals = List<String>()
 var moved_locals = List<String>()
 var singleton_writes = Dictionary<String, List<String>>()
 var library_names = Symbols.LibraryNames()
+var library = Mapping.LibraryFile()
+var attribute_slots = AttributeSlots()
 var untold_observers = List<String>()
+var follows_attributes = false
+var attribute_reads = Dictionary<String, List<String>>()
+var attribute_writes = Dictionary<String, List<String>>()
+var attribute_reaches = Dictionary<String, List<String>>()
 
 func Facts(
     starting_program: Model.ProgramModel,
@@ -101,35 +106,78 @@ func accesses(key: String, slot: String, is_a_write: Boolean): Boolean {
     var asked = List<String>()
     asked.append(key)
     study(asked)
+    if slot.starts_with("o:") {
+        var reached = attribute_reach(key, is_a_write)
+        return reached.contains(slot)
+    }
     var entries = read
     if is_a_write {
         entries = written
     }
-    if not slot.starts_with("a:") {
-        return entries.contains("{key}|{slot}")
-    }
-    var reached = List<String>()
-    reach_in_the_class(key, reached)
-    var index = 0
-    while index < reached.count() {
-        var reached_key = reached[index]
-        if entries.contains("{reached_key}|{slot}") {
-            return true
-        }
-        index = index + 1
-    }
-    return false
+    return entries.contains("{key}|{slot}")
 }
 
-func reach_in_the_class(key: String, reached: List<String>) {
-    fallback not reached.contains(key)
-    reached.append(key)
-    var called = same_class_callees[key]
+# ../../PROOFS.md#what-a-function-reads-and-writes
+func attribute_reach(key: String, is_a_write: Boolean): List<String> {
+    crash follows_attributes
+    var asked = List<String>()
+    asked.append(key)
+    study(asked)
+    var kind = "r"
+    var noted = attribute_reads
+    if is_a_write {
+        kind = "w"
+        noted = attribute_writes
+    }
+    var remembered = attribute_reaches["{kind}|{key}"]
+    if remembered {
+        return remembered
+    }
+    var found = List<String>()
+    var seen = Dictionary<String, Boolean>()
+    var waiting = List<String>()
+    waiting.append(key)
+    while not waiting.is_empty() {
+        var next = waiting.remove_last()
+        crash next
+        if not seen.contains(next) {
+            seen[next] = true
+            add_the_noted(found, noted[next])
+            add_the_callees(waiting, studied_callees[next])
+        }
+    }
+    attribute_reaches["{kind}|{key}"] = found
+    return found
+}
+
+# ../../PROOFS.md#what-a-function-reads-and-writes
+func program_attribute_reach(key: String, is_a_write: Boolean): List<String> {
+    var reached = attribute_reach(key, is_a_write)
+    return reached.filter(is_a_program_attribute)
+}
+
+func is_a_program_attribute(slot: String): Boolean {
+    var owner = attribute_slots.owner_of(slot)
+    var model = program.class_named(owner)
+    fallback model
+    fallback not model.file.path.is_empty() and not library.holds(model.file.path)
+    var name = attribute_slots.name_of(slot)
+    var attribute = model.declared_attributes.find_by_name(name)
+    fallback attribute
+    return true
+}
+
+func add_the_noted(found: List<String>, noted: List<String>?) {
+    fallback noted
+    aliases.add_all(found, noted)
+}
+
+func add_the_callees(waiting: List<String>, called: List<String>?) {
     fallback called
     var index = 0
     while index < called.count() {
         var callee = called[index]
-        reach_in_the_class(callee, reached)
+        waiting.append(callee)
         index = index + 1
     }
 }
@@ -146,6 +194,7 @@ func study(asked: List<String>) {
         }
     }
     fallback studied.count() != before
+    attribute_reaches = Dictionary<String, List<String>>()
     changed = true
     while changed {
         changed = false
@@ -303,9 +352,6 @@ func ensure_lists(key: String) {
     if not waits_callees[key] {
         waits_callees[key] = List<String>()
     }
-    if not same_class_callees[key] {
-        same_class_callees[key] = List<String>()
-    }
 }
 
 func callee_writes(function: Model.FunctionModel, slot: String): Boolean {
@@ -357,14 +403,6 @@ func add_a_called_key(key: String, owner: String) {
     starting = outer
 }
 
-func add_same_class_callee(key: String) {
-    var called = same_class_callees[current_key]
-    crash called
-    if not called.contains(key) {
-        called.append(key)
-    }
-}
-
 func note_waiting() {
     fallback not starting
     if not waiting_keys.contains(current_key) {
@@ -377,7 +415,9 @@ func mark(slots: List<String>) {
     while index < slots.count() {
         var slot = slots[index]
         var entry = "{current_key}|{slot}"
-        if not written.contains(entry) {
+        if slot.starts_with("o:") {
+            note_an_attribute(attribute_writes, slot)
+        } else if not written.contains(entry) {
             written.append(entry)
             note_a_singleton_write(slot)
             write_paths[entry] = current_path
@@ -399,6 +439,28 @@ func note_a_singleton_write(slot: String) {
     if not listed.contains(slot) {
         listed.append(slot)
     }
+}
+
+# ../../PROOFS.md#what-a-function-reads-and-writes
+func note_an_attribute(noted: Dictionary<String, List<String>>, slot: String) {
+    var listed = noted[current_key]
+    if not listed {
+        listed = List<String>()
+        noted[current_key] = listed
+    }
+    crash listed
+    if not listed.contains(slot) {
+        listed.append(slot)
+    }
+}
+
+func attribute_slot(attribute: Model.AttributeModel): List<String> {
+    var found = List<String>()
+    if follows_attributes {
+        var slot = attribute_slots.slot_of(attribute.owner, attribute.name)
+        found.append(slot)
+    }
+    return found
 }
 
 func note_read(slot: String) {
@@ -438,7 +500,7 @@ func read_a_return(value: SpiteCompiler.Value?) {
     while index < found.count() {
         var slot = found[index]
         var entry = "{current_key}|{slot}"
-        if not returned.contains(entry) {
+        if not slot.starts_with("o:") and not returned.contains(entry) {
             returned.append(entry)
             changed = true
         }
@@ -473,10 +535,10 @@ func read_an_attribute_write(statement: HighIntermediaryRepresentation.Statement
     note_a_move(statement.value)
     look(statement.value)
     var target = statement.object
+    var written_attribute = attribute_slot(statement.attribute)
+    mark(written_attribute)
     if target.class == HighIntermediaryRepresentation.Values.ThisRead {
-        var own = List<String>()
-        own.append("this")
-        own.append("a:{statement.attribute.name}")
+        var own = own_slot()
         mark(own)
     } else {
         var reached = roots(target)
@@ -490,6 +552,15 @@ func read_a_shape_write(statement: HighIntermediaryRepresentation.Statements.Ass
     look(statement.object)
     note_a_move(statement.value)
     look(statement.value)
+    if follows_attributes {
+        var fillers = program.fillers_of(statement.shape.key)
+        var filler_index = 0
+        while filler_index < fillers.count() {
+            var filler = fillers[filler_index]
+            write_through_a_filler(filler, statement.member)
+            filler_index = filler_index + 1
+        }
+    }
     var reached = roots(statement.object)
     mark(reached)
     var stored = roots(statement.value)
@@ -608,10 +679,10 @@ func note_a_local(name: String) {
 
 func look_an_attribute(attribute_read: HighIntermediaryRepresentation.Values.AttributeRead) {
     look(attribute_read.object)
-    var object = attribute_read.object
-    if object.class == HighIntermediaryRepresentation.Values.ThisRead {
-        note_read("a:{attribute_read.attribute.name}")
-    }
+    fallback follows_attributes
+    var attribute = attribute_read.attribute
+    var slot = attribute_slots.slot_of(attribute.owner, attribute.name)
+    note_an_attribute(attribute_reads, slot)
 }
 
 func look_a_conversion(conversion: HighIntermediaryRepresentation.Values.Conversion) {
@@ -649,10 +720,6 @@ func look_a_call(call: HighIntermediaryRepresentation.Values.Call) {
         note_waiting()
     }
     add_a_called_key(key, call.function.owner)
-    var receiver = call.receiver
-    if receiver.class == HighIntermediaryRepresentation.Values.ThisRead and call.function.owner == current_owner {
-        add_same_class_callee(key)
-    }
     map_the_writes(call.function, call.receiver, call.arguments)
 }
 
@@ -742,10 +809,6 @@ func look_a_known_value_call(
 ) {
     var key = called.function.key()
     add_callee(key)
-    var receiver = called.receiver
-    if receiver.class == HighIntermediaryRepresentation.Values.ThisRead and called.function.owner == current_owner {
-        add_same_class_callee(key)
-    }
     map_the_writes(called.function, called.receiver, arguments)
 }
 
@@ -782,6 +845,9 @@ func dispatch_to(filler: Model.Type, call: HighIntermediaryRepresentation.Values
     if not reached and call.member.is_an_attribute {
         reached = model.function_named("get_{call.member.name}")
     }
+    if not reached and call.member.is_an_attribute {
+        note_a_filler_attribute(attribute_reads, model, call.member.name)
+    }
     fallback reached
     var key = reached.key()
     add_a_called_key(key, reached.owner)
@@ -799,6 +865,35 @@ func look_a_making(made: HighIntermediaryRepresentation.Values.MakeObject) {
     var key = constructor.key()
     add_callee(key)
     map_the_writes(constructor, null, made.arguments)
+}
+
+# ../../PROOFS.md#what-a-function-reads-and-writes
+func write_through_a_filler(filler: Model.Type, member: String) {
+    fallback not filler.is_a_walked_name
+    var model = program.class_named(filler.name)
+    fallback model
+    var setter = model.function_named("set_{member}")
+    if setter {
+        var key = setter.key()
+        var called = studied_callees[current_key]
+        crash called
+        if not called.contains(key) {
+            called.append(key)
+        }
+        if not studied.contains(key) and bodies[key] and not excluded.contains(key) {
+            pending.append(key)
+        }
+        return
+    }
+    note_a_filler_attribute(attribute_writes, model, member)
+}
+
+func note_a_filler_attribute(noted: Dictionary<String, List<String>>, model: Model.ClassModel, member: String) {
+    fallback follows_attributes
+    var attribute = model.attribute_named(member)
+    fallback attribute
+    var slot = attribute_slots.slot_of(attribute.owner, attribute.name)
+    note_an_attribute(noted, slot)
 }
 
 func is_immutable(of_type: Model.Type): Boolean {
@@ -904,12 +999,15 @@ func roots_of_an_attribute(attribute_read: HighIntermediaryRepresentation.Values
         return found
     }
     var object = attribute_read.object
+    var reached_attribute = attribute_slot(attribute_read.attribute)
     if object.class == HighIntermediaryRepresentation.Values.ThisRead {
         found.append("this")
-        found.append("a:{attribute_read.attribute.name}")
+        aliases.add_all(found, reached_attribute)
         return found
     }
-    return roots(object)
+    var reached = roots(object)
+    aliases.add_all(reached, reached_attribute)
+    return reached
 }
 
 func roots_of_a_call(receiver: SpiteCompiler.Value?, arguments: List<SpiteCompiler.Value>): List<String> {
@@ -959,11 +1057,13 @@ func mentions(value: SpiteCompiler.Value?): List<String> {
 
 func mentions_of_an_attribute(attribute_read: HighIntermediaryRepresentation.Values.AttributeRead): List<String> {
     var object = attribute_read.object
+    var reached_attribute = attribute_slot(attribute_read.attribute)
     if object.class == HighIntermediaryRepresentation.Values.ThisRead {
-        var found = List<String>()
-        found.append("this")
-        found.append("a:{attribute_read.attribute.name}")
+        var found = own_slot()
+        aliases.add_all(found, reached_attribute)
         return found
     }
-    return mentions(object)
+    var reached = mentions(object)
+    aliases.add_all(reached, reached_attribute)
+    return reached
 }

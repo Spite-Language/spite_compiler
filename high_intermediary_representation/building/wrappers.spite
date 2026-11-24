@@ -2,6 +2,7 @@ var state = ReflectionState()
 var feature_flags = Features(state)
 var writing = Writing(state)
 var declarations = Declarations(state)
+var attribute_slots = AttributeSlots()
 
 func Wrappers(starting_state: ReflectionState) {
     state = starting_state
@@ -352,7 +353,7 @@ func declaration_object(
         made_given["is_resumable"] = writing.fact("waits", declared, "")
     }
     if has_facts and with_accesses and feature_flags.has_feature("a") {
-        add_the_reach(made_given, declaration_model, declared, model)
+        add_the_reach(made_given, declaration_model, declared)
         made_given["has_reach"] = writing.flag(true)
     }
     var calls_on_its_instance = declarations.is_written_for_the_program(model) and not model.is_singleton
@@ -537,11 +538,11 @@ func discarding_wrapper(model: Model.ClassModel, declared: Model.FunctionModel):
     return made
 }
 
+# ../../../spite_documentation/reflection.md#what-a-function-reads-and-writes
 func add_the_reach(
     made_given: Dictionary<String, SpiteCompiler.Value>,
     function_model: Model.ClassModel,
     declared: Model.FunctionModel,
-    model: Model.ClassModel,
 ) {
     var declaration_type = writing.reflection_type("Spite.AttributeDeclaration")
     writing.need_the_making(declaration_type)
@@ -549,18 +550,149 @@ func add_the_reach(
     var writes = writing.collection_of(function_model, "_writes")
     made_given["reads"] = reads
     made_given["writes"] = writes
+    var key = declared.key()
+    if not state.context.reach_candidates.contains("u|{key}") {
+        state.context.reach_asked.append(declared)
+        state.context.reach_candidates["u|{key}"] = List<String>()
+    }
+    var read_slots = settled_slots_of("r|{key}")
+    var written_slots = settled_slots_of("w|{key}")
+    var every_slot = settled_slots_of("u|{key}")
+    var index = 0
+    while index < every_slot.count() {
+        var slot = every_slot[index]
+        var declaration = reached_declaration(slot, declaration_type)
+        if read_slots.contains(slot) {
+            var read_fact = writing.fact("reads", declared, slot)
+            writing.appended_when(read_fact, reads, declaration)
+        }
+        if written_slots.contains(slot) {
+            var written_fact = writing.fact("written", declared, slot)
+            writing.appended_when(written_fact, writes, declaration)
+        }
+        index = index + 1
+    }
+}
+
+func settled_slots_of(name: String): List<String> {
+    var known = state.context.reach_candidates[name]
+    if known {
+        return known
+    }
+    return List<String>()
+}
+
+func reached_declaration(slot: String, declaration_type: Model.Type): SpiteCompiler.Value {
+    var owner_key = attribute_slots.owner_of(slot)
+    var name = attribute_slots.name_of(slot)
+    var owner = state.context.program.class_named(owner_key)
+    crash owner
+    var index = attribute_index_of(owner, name)
+    var attribute = owner.declared_attributes[index]
+    crash attribute
+    var made = declarations.attribute_declaration_of(attribute, index, owner)
+    return writing.kept(made, declaration_type)
+}
+
+func attribute_index_of(model: Model.ClassModel, name: String): Integer {
     var index = 0
     while index < model.declared_attributes.count() {
         var attribute = model.declared_attributes[index]
-        var made = declarations.attribute_declaration_of(attribute, index, model)
-        var declaration = writing.kept(made, declaration_type)
-        var slot = "a:{attribute.name}"
-        var read_fact = writing.fact("reads", declared, slot)
-        writing.appended_when(read_fact, reads, declaration)
-        var written_fact = writing.fact("written", declared, slot)
-        writing.appended_when(written_fact, writes, declaration)
+        if attribute.name == name {
+            return index
+        }
         index = index + 1
     }
+    return -1
+}
+
+# ../../PROOFS.md#what-a-function-reads-and-writes
+func settle_the_reaches(built: List<HighIntermediaryRepresentation.HighFunction>): Boolean {
+    fallback not state.context.reach_asked.is_empty()
+    var no_exclusions = List<String>()
+    var facts = Facts(state.context.program, built, no_exclusions)
+    facts.follows_attributes = true
+    var changed = false
+    var index = 0
+    while index < state.context.reach_asked.count() {
+        var declared = state.context.reach_asked[index]
+        if settle_a_reach(declared, facts) {
+            changed = true
+        }
+        index = index + 1
+    }
+    return changed
+}
+
+func settle_a_reach(declared: Model.FunctionModel, facts: Facts): Boolean {
+    var key = declared.key()
+    var found_reads = facts.program_attribute_reach(key, false)
+    var found_writes = facts.program_attribute_reach(key, true)
+    var reads = sorted_slots(found_reads, declared.owner)
+    var writes = sorted_slots(found_writes, declared.owner)
+    var both = found_reads.copy()
+    var aliases = Aliases()
+    aliases.add_all(both, found_writes)
+    var every_slot = sorted_slots(both, declared.owner)
+    var reads_changed = stored("r|{key}", reads)
+    var writes_changed = stored("w|{key}", writes)
+    var every_changed = stored("u|{key}", every_slot)
+    return reads_changed or writes_changed or every_changed
+}
+
+func stored(name: String, found: List<String>): Boolean {
+    var known = state.context.reach_candidates[name]
+    if known {
+        var known_text = known.join(",")
+        var found_text = found.join(",")
+        fallback known_text != found_text
+    }
+    state.context.reach_candidates[name] = found
+    return true
+}
+
+# ../../../spite_documentation/reflection.md#what-a-function-reads-and-writes
+func sorted_slots(found: List<String>, own: String): List<String> {
+    var sorted = List<String>()
+    var index = 0
+    while index < found.count() {
+        var slot = found[index]
+        var place = place_for(sorted, slot, own)
+        sorted.insert(place, slot)
+        index = index + 1
+    }
+    return sorted
+}
+
+func place_for(sorted: List<String>, slot: String, own: String): Integer {
+    var place = 0
+    while place < sorted.count() {
+        var placed = sorted[place]
+        if comes_before(slot, placed, own) {
+            return place
+        }
+        place = place + 1
+    }
+    return place
+}
+
+func comes_before(first: String, second: String, own: String): Boolean {
+    var first_owner = attribute_slots.owner_of(first)
+    var second_owner = attribute_slots.owner_of(second)
+    if first_owner != second_owner {
+        if first_owner == own {
+            return true
+        }
+        fallback second_owner != own
+        return first_owner < second_owner
+    }
+    var model = state.context.program.class_named(first_owner)
+    crash model
+    var first_name = attribute_slots.name_of(first)
+    var second_name = attribute_slots.name_of(second)
+    var first_index = attribute_index_of(model, first_name)
+    var second_index = attribute_index_of(model, second_name)
+    return first_index < second_index
 }
 
 func arguments_of_a_declaration(
