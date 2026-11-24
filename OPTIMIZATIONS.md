@@ -3338,6 +3338,34 @@ rounds. `enum_reflection`, alternating with the installed compiler and #634's on
 636 ms to check and 2 262 ms to build against 627 ms and 2 322 ms (installed) and 641 ms and 2 271 ms (#634); the
 medians (820, 676, 684 ms and 2 497, 2 339, 2 457 ms) move with the load.
 
+## Whether a function sleeps is worked out once
+
+[A wait in a frame](PROOFS.md#a-wait-in-a-frame-is-started) is started only in a loop that sleeps: its body calls
+`Program.sleep`, or calls on `this` a function of its class that sleeps (`frame_starts.spite`). Before (#668), every
+loop gathered the body of every own function it reached again, and a loop that did not sleep was searched again for
+the loops inside it, so a build gathered loops times reachable bodies. Now:
+
+- Each function's body is gathered once per build, into the own functions it calls and whether it calls
+  `Program.sleep` itself.
+- Whether a function sleeps is whether such a direct sleeper is reached from it through those calls. Asked about a
+  function not settled yet, the compiler first collects every function reached from it that is not settled, then
+  marks as sleeping, round after round, each one that calls a sleeping one, until a round marks nothing, and only
+  then settles them all. A function is marked at most once, so the rounds end. Nothing is settled while a cycle of
+  calls is still open, so a cycle cannot answer "does not sleep" too early: the rounds give the least answer, which
+  is exactly reachability. A function's calls on `this` reach only functions of its own class, so the answer does
+  not depend on which loop asks.
+- The answer is the one before. Before, each loop searched depth first, marking a function seen before gathering
+  it and stopping only on a sleeper; a search that ends without one has gathered every function reachable from the
+  loop's body, so it answered reachability too.
+- Only the outermost loops are gathered. A loop inside another is gathered as part of the outer body; if the outer
+  body does not sleep, none of its calls reaches a sleeper, so no inner loop can sleep, and the search inside it,
+  which never noted a loop, is gone. If it sleeps, the outer loop is the one noted, as before.
+
+Measured (#668): the compiler builds itself to the same bytes as the installed compiler builds it, and the spec
+programs' frame tests build to the same bytes. Its own `--check` takes a median 104.6 s against the installed
+compiler's 107.2 s (five runs each, alternating, on a loaded machine); its build takes as long (1 328 s against
+1 312 s side by side, with 1% fewer CPU samples).
+
 ## A read from a known object cannot fault, and goes when nothing reads it
 
 A read of a word the evaluation proves lies inside a live known object is marked as one that cannot fault, and the

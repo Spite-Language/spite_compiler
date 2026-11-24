@@ -14,7 +14,9 @@ var loop_holders = List<String>()
 var loop_owners = List<String>()
 var current_key = ""
 var current_owner = ""
-var sleep_seen = List<String>()
+var sleeping_functions = Dictionary<String, Boolean>()
+var settled_functions = Dictionary<String, Boolean>()
+var own_callees = Dictionary<String, List<String>>()
 var frame_functions = List<String>()
 var candidates = List<HighIntermediaryRepresentation.Statements.Evaluate>()
 var callee_lists = Dictionary<String, List<String>>()
@@ -115,12 +117,10 @@ func find_loops_in_branches(branch: HighIntermediaryRepresentation.Statements.If
     }
 }
 
+# ../../OPTIMIZATIONS.md#whether-a-function-sleeps-is-worked-out-once
 func find_loops_in_a_while(loop: HighIntermediaryRepresentation.Statements.While) {
-    sleep_seen = List<String>()
     if block_sleeps(loop.body) {
         note_a_loop(loop.body)
-    } else {
-        find_loops_in(loop.body)
     }
 }
 
@@ -148,12 +148,94 @@ func block_sleeps(block: HighIntermediaryRepresentation.Statements.Block): Boole
 }
 
 func sleeps_through(call: HighIntermediaryRepresentation.Values.Call): Boolean {
+    fallback is_an_own_call(call)
     var key = call.function.key()
-    fallback is_an_own_call(call) and not sleep_seen.contains(key)
-    sleep_seen.append(key)
+    if not settled_functions.contains(key) {
+        settle_the_functions_reached_from(key)
+    }
+    return sleeping_functions.contains(key)
+}
+
+# ../../OPTIMIZATIONS.md#whether-a-function-sleeps-is-worked-out-once
+func settle_the_functions_reached_from(first_key: String) {
+    var reached = [first_key]
+    var on_the_way = Dictionary<String, Boolean>()
+    on_the_way[first_key] = true
+    var index = 0
+    while index < reached.count() {
+        var key = reached[index]
+        note_the_calls_of(key)
+        var callees = own_callees[key]
+        crash callees
+        var callee_index = 0
+        while callee_index < callees.count() {
+            var callee = callees[callee_index]
+            if not settled_functions.contains(callee) and not on_the_way.contains(callee) {
+                reached.append(callee)
+                on_the_way[callee] = true
+            }
+            callee_index = callee_index + 1
+        }
+        index = index + 1
+    }
+    spread_the_sleep(reached)
+}
+
+func note_the_calls_of(key: String) {
+    var callees = List<String>()
     var high = bodies[key]
-    fallback high
-    return block_sleeps(high.body)
+    if high {
+        var found_calls = mentions()
+        found_calls.gather_block(high.body)
+        var index = 0
+        while index < found_calls.calls.count() {
+            var call = found_calls.calls[index]
+            var called = call.function.key()
+            if called == "Program.sleep" {
+                sleeping_functions[key] = true
+            } else if is_an_own_call(call) {
+                callees.append(called)
+            }
+            index = index + 1
+        }
+    }
+    own_callees[key] = callees
+}
+
+func spread_the_sleep(reached: List<String>) {
+    var changed = true
+    while changed {
+        changed = false
+        var index = 0
+        while index < reached.count() {
+            var key = reached[index]
+            if not sleeping_functions.contains(key) and calls_a_sleeper(key) {
+                sleeping_functions[key] = true
+                changed = true
+            }
+            index = index + 1
+        }
+    }
+    var settled_index = 0
+    while settled_index < reached.count() {
+        var key = reached[settled_index]
+        settled_functions[key] = true
+        settled_index = settled_index + 1
+    }
+}
+
+func calls_a_sleeper(key: String): Boolean {
+    var callees = own_callees[key]
+    crash callees
+    var index = 0
+    while index < callees.count() {
+        var callee = callees[index]
+        if sleeping_functions.contains(callee) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
 }
 
 func is_an_own_call(call: HighIntermediaryRepresentation.Values.Call): Boolean {
