@@ -1,0 +1,384 @@
+var no_program = Model.ProgramModel()
+var no_folders = Mapping.FolderMap()
+var no_table = Symbols.SymbolTable(no_folders)
+var no_resolver = NameResolution.Resolver(no_table)
+var context = Context(no_program, no_resolver)
+var values = Values(context)
+var rule = Validators.HighIntermediaryRepresentation.Foreign.Validator()
+var kinds = ["WideText", "Text", "Bytes"]
+var whole_numbers = ["Integer", "Long", "UnsignedInteger", "UnsignedLong", "Short", "UnsignedShort"]
+var _first_room_size = 256
+
+func Rooms(starting_context: Context, starting_values: Values) {
+    context = starting_context
+    values = starting_values
+}
+
+# ../../../spite_documentation/foreign_libraries.md#rooms
+func room_call(
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    call_name: String,
+    declared: Model.FunctionModel,
+    holder: SpiteCompiler.Expression,
+    symbol: String,
+    sizing: String,
+): SpiteCompiler.Value {
+    var room_index = room_index_of(declared, sizing)
+    var room_answer = rule.check_a_room(context, room_index, declared.name, sizing)
+    context.tell(room_answer)
+    if room_index < 0 {
+        return value_of_text("0", null)
+    }
+    var room = declared.parameters[room_index]
+    crash room
+    var room_type = room.parameter_type
+    var size_index = -1
+    if sizing != "fixed_size" {
+        size_index = size_index_of(declared, room_index)
+    }
+    var prefix = "{call_name}_room"
+    var count = ""
+    var answer = ""
+    if sizing == "fixed_size" {
+        var zeroed = zeroed_text(room_type)
+        declared_text(prefix, room_type, zeroed)
+        answer = called(prefix, call_name, declared, holder, symbol, call, room_index, size_index, "", prefix)
+        return filled_room(prefix, room_type, answer, "!= 0", prefix)
+    }
+    var kind = kind_of(room_type)
+    var units = 1
+    if kind == "WideText" {
+        units = 2
+    }
+    var size_name = "{prefix}_size"
+    var integer = context.scalar_type("Integer")
+    if sizing == "answer_is_what_arrived" {
+        var size_parameter = declared.parameters[size_index]
+        crash size_parameter
+        var given = filled(call_name, size_parameter.name, size_parameter.parameter_type, declared)
+        declared_local(size_name, size_parameter.parameter_type, given)
+    } else if sizing == "asked_with_no_room_first" {
+        declared_text(size_name, integer, "0")
+    } else {
+        var first_size = _first_room_size.to_string()
+        declared_text(size_name, integer, first_size)
+    }
+    var buffer_type = Model.Type('object', "Buffer")
+    var made = "Buffer({size_name} * {units})"
+    declared_text(prefix, buffer_type, made)
+    answer = called(prefix, call_name, declared, holder, symbol, call, room_index, size_index, size_name, prefix)
+    count = answer
+    if answer.is_empty() {
+        count = size_name
+    }
+    if sizing == "answer_is_the_size_needed" or sizing == "doubled_until_it_fits" {
+        grown_while_short(prefix, call_name, declared, holder, symbol, call, room_index, size_index, sizing, units)
+    }
+    if sizing == "asked_with_no_room_first" {
+        asked_again(prefix, call_name, declared, holder, symbol, call, room_index, size_index, units)
+    }
+    var field = field_of(room_type)
+    var filled_text = "\{{field}: DynamicLibrary.{kind}({prefix}, {count})}"
+    var holds = "> 0"
+    if sizing == "answer_is_what_arrived" {
+        holds = ">= 0"
+    }
+    return filled_room(prefix, room_type, answer, holds, filled_text)
+}
+
+func called(
+    prefix: String,
+    call_name: String,
+    declared: Model.FunctionModel,
+    holder: SpiteCompiler.Expression,
+    symbol: String,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    room_index: Integer,
+    size_index: Integer,
+    size_name: String,
+    room_name: String,
+): String {
+    var foreign = foreign_value(call_name, declared, holder, symbol, call, room_index, size_index, size_name, room_name)
+    if not declared.answer or declared.answer.is_nothing() {
+        var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(foreign, context.line)
+        context.pending.append(evaluated)
+        return ""
+    }
+    var answer_name = "{prefix}_answer"
+    declared_local(answer_name, declared.answer, foreign)
+    return answer_name
+}
+
+func grown_while_short(
+    prefix: String,
+    call_name: String,
+    declared: Model.FunctionModel,
+    holder: SpiteCompiler.Expression,
+    symbol: String,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    room_index: Integer,
+    size_index: Integer,
+    sizing: String,
+    units: Integer,
+) {
+    var answer_name = "{prefix}_answer"
+    var size_name = "{prefix}_size"
+    var integer = context.scalar_type("Integer")
+    var buffer_type = Model.Type('object', "Buffer")
+    var body = HighIntermediaryRepresentation.Statements.Block(context.line)
+    var grown = answer_name
+    if sizing == "doubled_until_it_fits" {
+        grown = "{size_name} * 2"
+    }
+    assign_text(body, size_name, grown, integer)
+    assign_text(body, prefix, "Buffer({size_name} * {units})", buffer_type)
+    var again = foreign_value(call_name, declared, holder, symbol, call, room_index, size_index, size_name, prefix)
+    assign_value(body, answer_name, again)
+    var short = value_of_text("{answer_name} >= {size_name}", null)
+    var looped = HighIntermediaryRepresentation.Statements.While(short, body, context.line)
+    context.pending.append(looped)
+}
+
+func asked_again(
+    prefix: String,
+    call_name: String,
+    declared: Model.FunctionModel,
+    holder: SpiteCompiler.Expression,
+    symbol: String,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    room_index: Integer,
+    size_index: Integer,
+    units: Integer,
+) {
+    var answer_name = "{prefix}_answer"
+    var size_name = "{prefix}_size"
+    var integer = context.scalar_type("Integer")
+    var buffer_type = Model.Type('object', "Buffer")
+    var body = HighIntermediaryRepresentation.Statements.Block(context.line)
+    assign_text(body, size_name, answer_name, integer)
+    assign_text(body, prefix, "Buffer({size_name} * {units})", buffer_type)
+    var again = foreign_value(call_name, declared, holder, symbol, call, room_index, size_index, size_name, prefix)
+    assign_value(body, answer_name, again)
+    var measured = value_of_text("{answer_name} > 0", null)
+    var asked = HighIntermediaryRepresentation.Statements.If(measured, body, null, context.line, "")
+    context.pending.append(asked)
+}
+
+func filled_room(
+    prefix: String,
+    room_type: Model.Type,
+    answer: String,
+    holds: String,
+    filled_text: String,
+): SpiteCompiler.Value {
+    if answer.is_empty() {
+        return value_of_text(filled_text, room_type)
+    }
+    var result_type = room_type.nullable()
+    var result_name = "{prefix}_filled"
+    declared_text(result_name, result_type, "null")
+    var body = HighIntermediaryRepresentation.Statements.Block(context.line)
+    assign_text(body, result_name, filled_text, room_type)
+    var succeeded = value_of_text("{answer} {holds}", null)
+    var kept = HighIntermediaryRepresentation.Statements.If(succeeded, body, null, context.line, "")
+    context.pending.append(kept)
+    return value_of_text(result_name, result_type)
+}
+
+func foreign_value(
+    call_name: String,
+    declared: Model.FunctionModel,
+    holder: SpiteCompiler.Expression,
+    symbol: String,
+    call: AbstractSyntaxTree.Shapes.Expressions.CallExpression,
+    room_index: Integer,
+    size_index: Integer,
+    size_name: String,
+    room_name: String,
+): SpiteCompiler.Value {
+    var arguments = List<SpiteCompiler.Value>()
+    var index = 0
+    while index < declared.parameters.count() {
+        var parameter = declared.parameters[index]
+        if index == room_index {
+            var room = value_of_text(room_name, null)
+            arguments.append(room)
+        } else if index == size_index and not size_name.is_empty() {
+            var size = value_of_text(size_name, parameter.parameter_type)
+            arguments.append(size)
+        } else {
+            var given = filled(call_name, parameter.name, parameter.parameter_type, declared)
+            arguments.append(given)
+        }
+        index = index + 1
+    }
+    var line = context.line
+    var library = values.value_of(holder, null)
+    context.line = line
+    var collections = Collections(context, values)
+    return collections.declared_foreign_call(library, symbol, arguments, declared.answer, call)
+}
+
+func filled(
+    call_name: String,
+    name: String,
+    filled_type: Model.Type,
+    declared: Model.FunctionModel,
+): SpiteCompiler.Value {
+    var key = "{call_name}.{name}"
+    var hidden = context.known_call_arguments[key]
+    var known_call = Validators.HighIntermediaryRepresentation.KnownCall.Validator()
+    var filled_answer = known_call.check_a_filled_argument(context, hidden, call_name, name, declared.name)
+    context.tell(filled_answer)
+    crash hidden
+    var known = KnownCalls(context, values)
+    return known.filled_value(key, filled_type, hidden)
+}
+
+func declared_local(name: String, declared_type: Model.Type, value: SpiteCompiler.Value) {
+    var internal_name = context.scope.declare(name, declared_type)
+    var declared = HighIntermediaryRepresentation.Statements.Declare(
+        internal_name,
+        declared_type,
+        value,
+        context.line,
+        "",
+    )
+    context.pending.append(declared)
+}
+
+func declared_text(name: String, declared_type: Model.Type, text: String) {
+    var value = value_of_text(text, declared_type)
+    declared_local(name, declared_type, value)
+}
+
+func assign_text(
+    body: HighIntermediaryRepresentation.Statements.Block,
+    name: String,
+    text: String,
+    assigned_type: Model.Type,
+) {
+    var value = value_of_text(text, assigned_type)
+    assign_value(body, name, value)
+}
+
+func assign_value(body: HighIntermediaryRepresentation.Statements.Block, name: String, value: SpiteCompiler.Value) {
+    var internal_name = context.scope.internal_name_of(name)
+    crash internal_name
+    var assigned = HighIntermediaryRepresentation.Statements.Assign(internal_name, value, context.line)
+    body.statements.append(assigned)
+}
+
+func value_of_text(text: String, expected: Model.Type?): SpiteCompiler.Value {
+    var lexer = AbstractSyntaxTree.Lexer(text, context.line)
+    var tokens = lexer.tokens_of()
+    var path = context.path()
+    var parser = AbstractSyntaxTree.Parser(path, "", tokens)
+    var written = parser.expression()
+    var value = values.value_of(written, expected)
+    if not expected {
+        return value
+    }
+    var fitting = Fitting(context, values)
+    return fitting.fitted(value, expected)
+}
+
+func room_index_of(declared: Model.FunctionModel, sizing: String): Integer {
+    var index = 0
+    while index < declared.parameters.count() {
+        var parameter = declared.parameters[index]
+        if is_a_room(parameter.parameter_type, sizing) {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+func is_a_room(of_type: Model.Type, sizing: String): Boolean {
+    fallback of_type.kind == 'shape'
+    if sizing == "fixed_size" {
+        return true
+    }
+    return not kind_of(of_type).is_empty()
+}
+
+func size_index_of(declared: Model.FunctionModel, room_index: Integer): Integer {
+    var index = room_index + 1
+    while index < declared.parameters.count() {
+        if is_a_whole_number(declared, index) {
+            return index
+        }
+        index = index + 1
+    }
+    index = room_index - 1
+    while index >= 0 {
+        if is_a_whole_number(declared, index) {
+            return index
+        }
+        index = index - 1
+    }
+    return -1
+}
+
+func is_a_whole_number(declared: Model.FunctionModel, index: Integer): Boolean {
+    var parameter = declared.parameters[index]
+    crash parameter
+    var of_type = parameter.parameter_type
+    return of_type.kind == 'scalar' and whole_numbers.contains(of_type.name)
+}
+
+func kind_of(room_type: Model.Type): String {
+    var member = room_member(room_type)
+    fallback member
+    fallback member.answer
+    var index = 0
+    while index < kinds.count() {
+        var kind = kinds[index]
+        if member.answer.name == "DynamicLibrary.{kind}" {
+            return kind
+        }
+        index = index + 1
+    }
+    return ""
+}
+
+func field_of(room_type: Model.Type): String {
+    var member = room_member(room_type)
+    crash member
+    return member.name
+}
+
+func room_member(room_type: Model.Type): Model.FunctionModel? {
+    var shape = context.program.shape_keyed(room_type.name)
+    fallback shape
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.is_an_attribute {
+            return member
+        }
+        index = index + 1
+    }
+    return null
+}
+
+func zeroed_text(room_type: Model.Type): String {
+    var shape = context.program.shape_keyed(room_type.name)
+    crash shape
+    var fields = List<String>()
+    var index = 0
+    while index < shape.members.count() {
+        var member = shape.members[index]
+        if member.is_an_attribute and member.answer {
+            var zero = "0"
+            if member.answer.name == "Float" or member.answer.name == "Double" {
+                zero = "0.0"
+            }
+            fields.append("{member.name}: {zero}")
+        }
+        index = index + 1
+    }
+    var listed = fields.join(", ")
+    return "\{{listed}}"
+}
