@@ -2660,8 +2660,11 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Rule**: a value fits a `type`, and a `$T` its constraint, on its attributes, its functions, their types and
   not-null ([values_and_types.md](../spite_documentation/values_and_types.md#inline-types-and-duck-typing)).
 - **How**: a class passed as a `type` must have each attribute with the type's type, and each function with as many
-  parameters, the same parameter types and the same answer (D1136), the type's own name meaning the type, any
-  class that fits it, never only the class being checked (spite_compiler#545); while a class is judged against a
+  parameters, exactly the same parameter types (a parameter typed by the type's own name is also met by the class
+  itself, so `Integer`'s `sum(Integer)` meets `Number`; a narrower class that fits is not, spite_compiler#415) and
+  the same answer (D1136), the type's own name elsewhere meaning the type, any class that fits it, never only the
+  class being checked (spite_compiler#545); a `type` given to a constrained `generic` is compared member by member
+  the same way (spite_compiler#415); while a class is judged against a
   `type`, the class counts as fitting it inside the members, so a missing member is what the refusal names. A member whose type is a union is filled by the same union or by one of its classes; one whose type is a
   `type` by the same `type`, or by a class or a union whose classes each have the `type`'s members; one whose type
   is a function value by a function value with the same parameter types and answer (D1255).
@@ -2677,9 +2680,10 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
   'scaled' takes 2 argument(s), but the type needs 1".
 - **Lives in**: embedded, `fitting.spite` (`filled_shape`, `fits_as_a_class`), `constraints.spite`.
 - **Checked by**: conformance/shape_mismatch, shape_function_mismatch, shape_attribute_type_mismatch,
-  shape_return_type_mismatch, shape_parameter_type_mismatch, generic_constraints, generic_constraint_nullable,
-  generic_constraint_not_a_type, shape_operator_without_function, generic_constraint_mistyped,
-  tests/nullable_meets_printable.
+  shape_return_type_mismatch, shape_parameter_type_mismatch, shape_parameter_narrower_than_the_type,
+  shape_parameter_wider_than_the_type, generic_constraints, generic_constraint_nullable,
+  generic_constraint_not_a_type, generic_constraint_given_a_type, shape_operator_without_function,
+  generic_constraint_mistyped, tests/nullable_meets_printable, tests/generic_constraint_given_a_type_that_fits.
 
 ### A value written through a `type` fits the attribute
 
