@@ -359,9 +359,9 @@ func fill_named(
     rule_answer = rule.check_a_refill(context, filled, call_name, argument_name)
     context.tell(rule_answer)
     var value = fitting.fitted_value_of(statement.value, parameter.parameter_type)
-    if context.known_foreign_symbols[call_name] {
+    if passes_itself(statement, call_name) {
         context.known_call_arguments[key] = key
-        context.known_foreign_fills[key] = value
+        context.known_call_fills[key] = value
         return HighIntermediaryRepresentation.Statements.Block(statement.line)
     }
     var hidden = context.scope.declare("{call_name}_{argument_name}", parameter.parameter_type)
@@ -373,6 +373,96 @@ func fill_named(
         statement.line,
         "",
     )
+}
+
+# ../../OPTIMIZATIONS.md#a-filled-argument-nothing-changes-is-passed-itself
+func passes_itself(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement, call_name: String): Boolean {
+    var written = statement.value
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        return true
+    }
+    fallback written.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    fallback context.scope.internal_name_of(written.name)
+    fallback context.current_function.declaration
+    var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+    var walk = AbstractSyntaxTree.Walk(no_file)
+    walk.read_function(context.current_function.declaration)
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        if found.statement and found.statement.class == statement.class and found.statement.line == statement.line and found.holder {
+            return leaves_the_name_alone(found.holder, found.statement, call_name, written.name)
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func leaves_the_name_alone(
+    holder: AbstractSyntaxTree.Shapes.Statements.Block,
+    fill: SpiteCompiler.WrittenStatement,
+    call_name: String,
+    name: String,
+): Boolean {
+    var place = 0
+    while place < holder.statements.count() and holder.statements[place] !== fill {
+        place = place + 1
+    }
+    var index = place + 1
+    while index < holder.statements.count() {
+        var later = holder.statements[index]
+        var no_file = AbstractSyntaxTree.Shapes.SourceFile("", "")
+        var walk = AbstractSyntaxTree.Walk(no_file)
+        walk.read_statement(later)
+        fallback not walk.assigns(name) and not declares(walk, name)
+        if runs_the_call(walk, call_name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func declares(walk: AbstractSyntaxTree.Walk, name: String): Boolean {
+    var index = 0
+    while index < walk.statements.count() {
+        var found = walk.statements[index]
+        var statement = found.statement
+        if statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement and statement.name == name {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func runs_the_call(walk: AbstractSyntaxTree.Walk, call_name: String): Boolean {
+    var index = 0
+    while index < walk.expressions.count() {
+        var found = walk.expressions[index]
+        var expression = found.expression
+        if expression.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression and calls_through(expression, call_name) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func calls_through(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, call_name: String): Boolean {
+    var callee = call.callee
+    fallback callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression and callee.name == "call"
+    var target = callee.target
+    fallback target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    return target.name == call_name
+}
+
+func filled_value(key: String, filled_type: Model.Type, hidden: String): SpiteCompiler.Value {
+    var passed = context.known_call_fills[key]
+    if passed {
+        return passed
+    }
+    return HighIntermediaryRepresentation.Values.LocalRead(filled_type, hidden)
 }
 
 func parameter_named(declared: Model.FunctionModel, name: String): Model.ParameterModel? {
@@ -413,8 +503,8 @@ func ran_named(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression, call_
         rule_answer = rule.check_a_filled_argument(context, filled, call_name, parameter.name, declared.name)
         context.tell(rule_answer)
         crash filled
-        var read = HighIntermediaryRepresentation.Values.LocalRead(parameter.parameter_type, filled)
-        arguments.append(read)
+        var passed = filled_value(key, parameter.parameter_type, filled)
+        arguments.append(passed)
         index = index + 1
     }
     var instance = HighIntermediaryRepresentation.Values.LocalRead(instance_type, hidden)

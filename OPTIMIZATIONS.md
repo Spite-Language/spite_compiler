@@ -5967,3 +5967,25 @@ func raise() {
     level = level + 1
 }
 ```
+
+## A filled argument nothing changes is passed itself
+
+A `Spite.Call` or a `DynamicLibrary.Call` takes each argument when it is filled (`call.arguments["text"] = text`),
+so the value is kept in a field of the call until `call()` runs. When the filled value is a literal, or a local or
+parameter that no statement between the fill and `call()` in the same block assigns or declares again, the
+compiler keeps no field: `call()` is handed the value itself. Nothing can change what the field would hold, so the
+call gets the same value, and a text is not copied or counted a second time.
+
+**When it applies:** a fill whose `call()` is in the same block, filled with a literal or a local or parameter
+that the statements between leave alone. **What a user can observe:** nothing but the allocation counts of
+`--debug-memory` (`tests/memory_debug_memory_fill`, 40 allocations).
+
+```spite
+func write(stream: Integer, text: String, length: Integer) {
+    var call = DynamicLibrary.Call(library.functions["write"])
+    call.arguments["stream"] = stream
+    call.arguments["text"] = text
+    call.arguments["length"] = length
+    call.call()
+}
+```
