@@ -1032,8 +1032,11 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 - **How**: the study (`building/facts.spite`, with `follows_attributes`) notes each attribute read or written as a
   slot `o:<class>.<attribute>` per function, and an answer is the union over every function the study saw it call,
   however deep. At each quiet point of the build the builder studies every function whose declaration carries
-  `.reads` (`Wrappers.settle_the_reaches`) and builds its lists only from the attributes found there, each guarded
-  by a fact; when a list grows, the reflection is built again. The proof answers every fact on the finished program
+  `.reads` (`Wrappers.settle_the_reaches`, one study for all of them) and builds its lists only from the attributes
+  found there, each guarded by a fact; when a list grows, the reflection is built again. Each list is filled by a
+  function of its own (`_reach_reads_<function>`, `_reach_written_<function>`, on the list), rebuilt only when its
+  attributes change, so a class's fill stays one call per list however far its functions reach, and no function the
+  compiler writes grows with the program. The proof answers every fact on the finished program
   and halts the compiler if an attribute it finds was not among those built.
 - **Missing**: a call through a function value kept in an attribute, a list or a local the study cannot name is not
   followed (the builder's facts keep their own reach, D2634, not D2632's); the function that hands such a value

@@ -3,6 +3,7 @@ var feature_flags = Features(state)
 var writing = Writing(state)
 var declarations = Declarations(state)
 var attribute_slots = AttributeSlots()
+var slot_indexes = Dictionary<String, Integer>()
 
 func Wrappers(starting_state: ReflectionState) {
     state = starting_state
@@ -568,21 +569,90 @@ func add_the_reach(
     }
     var read_slots = settled_slots_of("r|{key}")
     var written_slots = settled_slots_of("w|{key}")
-    var every_slot = settled_slots_of("u|{key}")
+    fill_a_reach(reads, declared, "reads", read_slots, declaration_type)
+    fill_a_reach(writes, declared, "written", written_slots, declaration_type)
+}
+
+# ../../PROOFS.md#what-a-function-reads-and-writes
+func fill_a_reach(
+    listed: SpiteCompiler.Value,
+    declared: Model.FunctionModel,
+    question: String,
+    slots: List<String>,
+    declaration_type: Model.Type,
+) {
+    fallback not slots.is_empty()
+    var list_model = state.context.class_of(listed.value_type)
+    var key = declared.key()
+    var name = "_reach_{question}_{key}"
+    var filler = reach_filler(list_model, name)
+    var slots_text = slots.join(",")
+    var known_slots = state.context.reach_filler_slots[name]
+    crash known_slots
+    if known_slots != slots_text {
+        filler.body = reach_body(listed.value_type, declared, question, slots, declaration_type)
+        state.context.reach_filler_slots[name] = slots_text
+    }
+    var no_arguments = List<SpiteCompiler.Value>()
+    var called = HighIntermediaryRepresentation.Values.Call(filler.function, listed, no_arguments, "", "")
+    var evaluated = HighIntermediaryRepresentation.Statements.Evaluate(called, 0)
+    state.statements.append(evaluated)
+}
+
+func reach_filler(list_model: Model.ClassModel, name: String): HighIntermediaryRepresentation.HighFunction {
+    var known = state.context.reach_fillers[name]
+    if known and list_model.function_named(name) {
+        return known
+    }
+    var is_synthetic = true
+    var made = Model.FunctionModel(
+        name,
+        list_model.key,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        is_synthetic,
+        false,
+        false,
+        false,
+    )
+    list_model.declared_functions.append(made)
+    var body = HighIntermediaryRepresentation.Statements.Block(0)
+    var function = HighIntermediaryRepresentation.HighFunction(made, body)
+    state.context.synthetic_functions.append(function)
+    state.context.reach_fillers[name] = function
+    state.context.reach_filler_slots[name] = ""
+    return function
+}
+
+func reach_body(
+    list_type: Model.Type,
+    declared: Model.FunctionModel,
+    question: String,
+    slots: List<String>,
+    declaration_type: Model.Type,
+): HighIntermediaryRepresentation.Statements.Block {
+    var outer = state.statements
+    var outer_declares_in_scope = state.declares_in_scope
+    state.statements = List<SpiteCompiler.Statement>()
+    state.declares_in_scope = false
+    var own = HighIntermediaryRepresentation.Values.ThisRead(list_type)
     var index = 0
-    while index < every_slot.count() {
-        var slot = every_slot[index]
+    while index < slots.count() {
+        var slot = slots[index]
         var declaration = reached_declaration(slot, declaration_type)
-        if read_slots.contains(slot) {
-            var read_fact = writing.fact("reads", declared, slot)
-            writing.appended_when(read_fact, reads, declaration)
-        }
-        if written_slots.contains(slot) {
-            var written_fact = writing.fact("written", declared, slot)
-            writing.appended_when(written_fact, writes, declaration)
-        }
+        var fact = writing.fact(question, declared, slot)
+        writing.appended_when(fact, own, declaration)
         index = index + 1
     }
+    var body = HighIntermediaryRepresentation.Statements.Block(0)
+    body.statements = state.statements
+    state.statements = outer
+    state.declares_in_scope = outer_declares_in_scope
+    return body
 }
 
 func settled_slots_of(name: String): List<String> {
@@ -631,6 +701,15 @@ func settle_the_reaches(built: List<HighIntermediaryRepresentation.HighFunction>
     var no_exclusions = List<String>()
     var facts = Facts(state.context.program, studied, no_exclusions)
     facts.follows_attributes = true
+    var asked_keys = List<String>()
+    var asked_index = 0
+    while asked_index < state.context.reach_asked.count() {
+        var asked = state.context.reach_asked[asked_index]
+        var asked_key = asked.key()
+        asked_keys.append(asked_key)
+        asked_index = asked_index + 1
+    }
+    facts.study(asked_keys)
     var changed = false
     var index = 0
     while index < state.context.reach_asked.count() {
@@ -649,14 +728,9 @@ func settle_a_reach(declared: Model.FunctionModel, facts: Facts): Boolean {
     var found_writes = facts.program_attribute_reach(key, true)
     var reads = sorted_slots(found_reads, declared.owner)
     var writes = sorted_slots(found_writes, declared.owner)
-    var both = found_reads.copy()
-    var aliases = Aliases()
-    aliases.add_all(both, found_writes)
-    var every_slot = sorted_slots(both, declared.owner)
     var reads_changed = stored("r|{key}", reads)
     var writes_changed = stored("w|{key}", writes)
-    var every_changed = stored("u|{key}", every_slot)
-    return reads_changed or writes_changed or every_changed
+    return reads_changed or writes_changed
 }
 
 func stored(name: String, found: List<String>): Boolean {
@@ -672,22 +746,42 @@ func stored(name: String, found: List<String>): Boolean {
 
 # ../../../spite_documentation/reflection.md#what-a-function-reads-and-writes
 func sorted_slots(found: List<String>, own: String): List<String> {
-    var sorted = List<String>()
+    var owners = List<String>()
+    var by_owner = Dictionary<String, List<String>>()
     var index = 0
     while index < found.count() {
         var slot = found[index]
-        var place = place_for(sorted, slot, own)
-        sorted.insert(place, slot)
+        var owner = attribute_slots.owner_of(slot)
+        var listed = by_owner[owner]
+        if not listed {
+            listed = List<String>()
+            by_owner[owner] = listed
+            var place = place_of_an_owner(owners, owner, own)
+            owners.insert(place, owner)
+        }
+        crash listed
+        listed.append(slot)
         index = index + 1
+    }
+    var sorted = List<String>()
+    var owner_index = 0
+    while owner_index < owners.count() {
+        var owner = owners[owner_index]
+        var listed = by_owner[owner]
+        crash listed
+        var in_order = listed.sort_by(index_of_a_slot)
+        in_order.each(sorted.append)
+        owner_index = owner_index + 1
     }
     return sorted
 }
 
-func place_for(sorted: List<String>, slot: String, own: String): Integer {
+func place_of_an_owner(owners: List<String>, owner: String, own: String): Integer {
+    fallback owner != own
     var place = 0
-    while place < sorted.count() {
-        var placed = sorted[place]
-        if comes_before(slot, placed, own) {
+    while place < owners.count() {
+        var placed = owners[place]
+        if placed != own and owner < placed {
             return place
         }
         place = place + 1
@@ -695,23 +789,18 @@ func place_for(sorted: List<String>, slot: String, own: String): Integer {
     return place
 }
 
-func comes_before(first: String, second: String, own: String): Boolean {
-    var first_owner = attribute_slots.owner_of(first)
-    var second_owner = attribute_slots.owner_of(second)
-    if first_owner != second_owner {
-        if first_owner == own {
-            return true
-        }
-        fallback second_owner != own
-        return first_owner < second_owner
+func index_of_a_slot(slot: String): Integer {
+    var known = slot_indexes[slot]
+    if known {
+        return known
     }
-    var model = state.context.program.class_named(first_owner)
+    var owner_key = attribute_slots.owner_of(slot)
+    var model = state.context.program.class_named(owner_key)
     crash model
-    var first_name = attribute_slots.name_of(first)
-    var second_name = attribute_slots.name_of(second)
-    var first_index = attribute_index_of(model, first_name)
-    var second_index = attribute_index_of(model, second_name)
-    return first_index < second_index
+    var name = attribute_slots.name_of(slot)
+    var found = attribute_index_of(model, name)
+    slot_indexes[slot] = found
+    return found
 }
 
 func arguments_of_a_declaration(
