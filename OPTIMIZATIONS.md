@@ -5971,8 +5971,8 @@ func raise() {
 ## A filled argument nothing changes is passed itself
 
 A `Spite.Call` or a `DynamicLibrary.Call` takes each argument when it is filled (`call.arguments["text"] = text`),
-so the value is kept in a field of the call until `call()` runs. When the filled value is a literal, or a local or
-parameter that no statement between the fill and `call()` in the same block assigns or declares again, the
+so the value is kept in a field of the call until `call()` runs. When the filled value is a literal, a function of the class named
+directly, or a local or parameter that no statement between the fill and `call()` in the same block assigns or declares again, the
 compiler keeps no field: `call()` is handed the value itself. Nothing can change what the field would hold, so the
 call gets the same value, and a text is not copied or counted a second time.
 
