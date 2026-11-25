@@ -2644,6 +2644,21 @@ The rules are in [concurrency.md](../spite_documentation/concurrency.md) and, fo
 - **Checked by**: conformance/singleton_circle, conformance/singleton_circle_through_an_object;
   tests/singleton_circle.
 
+### Objects that make each other in a circle are an error
+
+- **Status**: built (spite_compiler#670).
+- **Rule**: following, from every class, the attribute defaults that construct a class and the constructor lines
+  that do before its first `if`, `while`, `switch`, `return`, `fallback` or `crash`, a path back to the start is
+  refused ([classes_and_files.md](../spite_documentation/classes_and_files.md#objects-that-make-each-other-in-a-circle)),
+  at the line that begins it in the first class the walk reaches: "'Flow' makes 'Grid', which makes 'Flow': objects
+  that make each other in a circle never finish being made, ...". A link is a call named like the class it makes,
+  not a preset or a one-argument conversion; a singleton ends the walk, so a circle through one is the singleton rule's.
+- **Falls back**: a making under a condition, inside a function the constructor calls, or after a statement that
+  may leave is not followed, and such a circle overflows the stack when it runs.
+- **Lives in**: `validators/name_resolution/making_circle`.
+- **Checked by**: conformance/defaults_make_each_other, conformance/constructor_makes_in_a_circle;
+  tests/making_circle_broken.
+
 ### Build settings are constants
 
 - **Status**: built.
