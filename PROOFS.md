@@ -1566,10 +1566,14 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
 
 ### A back reference is picked from how the program links its objects
 
-- **Status**: partly built (D759, D1396, D2525, D2526, D2580, D2609 to confirm).
+- **Status**: partly built (D759, D1396, D2525, D2526, D2580, D2609, D2746 to confirm).
 - **Rule**: an attribute `a: T?` of a class `C` holds no count when one function both sets `c.a = t` and stores `c`
   into `t`'s attribute `f`, which holds a `C` ([memory.md](../spite_documentation/memory.md)); never from the class
-  graph alone, since taking an owning reference for a back one would free an object the program still holds. A
+  graph alone, since taking an owning reference for a back one would free an object the program still holds. When
+  a function makes `t` and links it this way (`leaf = Leaf(this)`), the made object is the one that points back, so
+  `a` keeps its count whatever `f` is: a `f` that cannot be null (`var tree: Tree`) keeps its count too, and the
+  cycle is freed by the count that knows it (D2746, #678; before, `a` was picked and the made object, held by
+  nothing else, was freed at once, so `a` read `null`). A
   collection `f` holds a `C` when its items are `C`, a union with `C` among its members, or a `type` every member of
   which `C` declares (D2525). An attribute `a: U?` holding a union, or `a: S?` holding a `type`, holds no count when
   every class it may hold links back that way: each class member of the union, or each class of the program that
@@ -1621,8 +1625,8 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   folded store placed in it whose holder is made and value is not (it may be the made store of a link `a|b`) and of
   each whose value is made and holder is not (it may be the other store of a link `b|a`). A link that folding hides
   only adds a back reference the program then misses (it keeps counting), unless it is the link the other way of one
-  the made rule picks: an attribute `A` that may point back to its holder (`partner: Person?`, or `beta: Beta?`
-  beside `alpha: Alpha?`) keeps its counts when its owning attribute `O` was noted the first way or `A` the second
+  the made rule picks: an attribute `A` (`partner: Person?`, `beta: Beta?` beside `alpha: Alpha?`, or `leaf: Leaf?`
+  beside `tree: Tree`, D2746) keeps its counts when its owning attribute `O` was noted the first way or `A` the second
   way, since a folded store may then be the link `O|A` that keeps both counted. A recursion whose deeper copies only
   repeat the level's own pair (`pair_down(link.next, second)` placing `link.first.beta = second` beside
   `second.alpha = link.first` one link further each call) notes `beta` and `alpha` the way the level does, so its
@@ -1685,7 +1689,7 @@ the syntax tree that need the built program run as the proof `proofs/rules_after
   tests/back_reference_recursive_call_deeper, tests/back_reference_recursive_call_deeper_made_together,
   tests/back_reference_other_way_one_call_deeper, tests/back_reference_other_way_one_call_deeper_into_the_made,
   tests/back_reference_made_together_other_way, tests/back_reference_made_together_leaving,
-  tests/back_reference_made_together_linked_elsewhere.
+  tests/back_reference_made_together_linked_elsewhere, tests/back_reference_constructor_keeps_this.
 
 ### Children that never outlive their owner point back without a count
 
