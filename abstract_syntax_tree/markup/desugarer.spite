@@ -5,6 +5,8 @@ var assembling = false
 var owner_name = "this"
 var is_live = false
 var in_an_assembly = false
+var live_region = -1
+var live_owner = ""
 var file: AbstractSyntaxTree.Shapes.SourceFile
 var kept: KeptRender
 var live: LivePieces
@@ -13,7 +15,7 @@ var live: LivePieces
 func Desugarer(starting_file: AbstractSyntaxTree.Shapes.SourceFile) {
     file = starting_file
     kept = KeptRender(starting_file)
-    live = LivePieces(starting_file, kept)
+    live = LivePieces(starting_file, kept, types)
     types.learn_the_file(file)
 }
 
@@ -81,8 +83,9 @@ func lower_a_statement(statement: SpiteCompiler.WrittenStatement) {
 }
 
 func lower_a_loop(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
+    fallback not lowers_a_live_block(statement)
     kept.enter(true)
-    live.enter()
+    live.enter(statement)
     lower_a_body(statement, statement.body)
     live.leave()
     kept.leave(true)
@@ -91,7 +94,7 @@ func lower_a_loop(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement
 # ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
 func lower_an_assignment(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
     if in_an_assembly {
-        live.forget_a_local(statement.target)
+        live.learn_an_assignment(statement)
     }
     held.append(statement)
 }
@@ -103,8 +106,9 @@ func lower_a_body(statement: SpiteCompiler.WrittenStatement, body: AbstractSynta
 
 # ../../ARCHITECTURE.md#an-else-if-chain-is-walked-in-a-loop
 func lower_the_branches(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    fallback not lowers_a_live_block(statement)
     kept.enter(false)
-    live.enter()
+    live.enter(statement)
     var opened = List<AbstractSyntaxTree.Shapes.Statements.IfStatement>()
     var outers = List<List<SpiteCompiler.WrittenStatement>>()
     var last = statement
@@ -140,8 +144,9 @@ func lower_the_branches(statement: AbstractSyntaxTree.Shapes.Statements.IfStatem
 }
 
 func lower_the_cases(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement) {
+    fallback not lowers_a_live_block(statement)
     kept.enter(false)
-    live.enter()
+    live.enter(statement)
     statement.cases.each(lower_a_case)
     live.leave()
     kept.leave(false)
@@ -153,6 +158,74 @@ func lower_a_case(switch_case: AbstractSyntaxTree.Shapes.Statements.SwitchCase) 
     crash switch_case.body
     switch_case.written_count = switch_case.body.statements.count()
     lower_a_block(switch_case.body)
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func lowers_a_live_block(statement: SpiteCompiler.WrittenStatement): Boolean {
+    fallback assembling_live() and live.depth == 0
+    fallback live.holds_tags(statement)
+    fallback live.starts_a_block(statement)
+    var index = live.current_region
+    var outer = start_a_region(index)
+    lower_a_statement(statement)
+    finish_a_region(index, outer, statement.line)
+    return true
+}
+
+func assembling_live(): Boolean {
+    return in_an_assembly and is_live and live_region < 0
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func start_a_region(index: Integer): List<SpiteCompiler.WrittenStatement> {
+    var outer = held
+    held = List<SpiteCompiler.WrittenStatement>()
+    live_region = index
+    live_owner = owner_name
+    owner_name = "live_owner_{index}"
+    return outer
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func finish_a_region(index: Integer, outer: List<SpiteCompiler.WrittenStatement>, line: Integer) {
+    var lowered = held
+    held = outer
+    owner_name = live_owner
+    live_region = -1
+    live.add_a_region(index, live_owner, lowered)
+    if live_owner != "this" and live.needs_a_handle(live_owner) {
+        var handle = named("_live_site_{live_owner}", line)
+        var kept_handle = named(live_owner, line)
+        var keeps = AbstractSyntaxTree.Shapes.Statements.AssignmentStatement(handle, kept_handle)
+        keeps.line = line
+        place(keeps)
+    }
+    var earlier = live.earlier_counts(index, live_owner)
+    var fixed = named("_live_fixed_{index}", line)
+    var counted = parsed_value("{live_owner}.children.count(){earlier}", line)
+    var fixing = AbstractSyntaxTree.Shapes.Statements.AssignmentStatement(fixed, counted)
+    fixing.line = line
+    place(fixing)
+    var call = parsed_value("_live_{index}()", line)
+    var calling = AbstractSyntaxTree.Shapes.Statements.ExpressionStatement(call)
+    calling.line = line
+    place(calling)
+}
+
+# ../../../spite_documentation/markup.md#a-brace-among-the-children
+func lowers_a_live_child(name: String, child: AbstractSyntaxTree.Shapes.Markup.Child): Boolean {
+    fallback assembling_live() and live.depth == 0
+    fallback child.expression
+    fallback live.starts_a_child(child.expression)
+    var index = live.current_region
+    var outer_owner = owner_name
+    owner_name = name
+    var outer = start_a_region(index)
+    var entry = entry_of(child)
+    attach_a_child(owner_name, child, entry)
+    finish_a_region(index, outer, child.line)
+    owner_name = outer_owner
+    return true
 }
 
 # ../../../spite_documentation/markup.md#a-constructor-assembles-its-tags
@@ -184,6 +257,13 @@ func lower_a_child_statement(name: String, child: AbstractSyntaxTree.Shapes.Mark
 
 # ../../../spite_documentation/markup.md#a-constructor-assembles-its-tags
 func attach(name: String, owner_name: String, line: Integer) {
+    if live_region >= 0 and owner_name == "live_owner_{live_region}" {
+        insert(name, owner_name, line)
+        return
+    }
+    if live_region >= 0 {
+        live.note_a_parent_site(owner_name)
+    }
     var linked = parsed_value(owner_name, line)
     assign(name, "parent", linked, line)
     var owner = parsed_value(owner_name, line)
@@ -200,6 +280,32 @@ func attach(name: String, owner_name: String, line: Integer) {
     var appended = AbstractSyntaxTree.Shapes.Statements.ExpressionStatement(call)
     appended.line = line
     place(appended)
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func insert(name: String, owner_name: String, line: Integer) {
+    var at = "live_at_{live_region}"
+    var lines = List<String>()
+    lines.append("{name}.parent = {owner_name}")
+    lines.append("{owner_name}.children.insert({at}, {name})")
+    lines.append("{at} = {at} + 1")
+    var statements = parsed_statements(lines, line)
+    statements.each(place)
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func parsed_statements(lines: List<String>, line: Integer): List<SpiteCompiler.WrittenStatement> {
+    var text = lines.join("\n")
+    var wrapped = "func _live_parsed() \{\n{text}\n}"
+    var lexer = AbstractSyntaxTree.Lexer(wrapped, line - 1)
+    var made_tokens = lexer.tokens_of()
+    var parser = AbstractSyntaxTree.Parser(file.path, file.namespace, made_tokens)
+    var parsed = parser.parse_file()
+    var first = parsed.declarations.first()
+    crash first
+    crash first.class == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration
+    crash first.body
+    return first.body.statements
 }
 
 # ../../../spite_documentation/markup.md#a-constructor-assembles-its-tags
@@ -237,7 +343,7 @@ func lower_a_variable(statement: AbstractSyntaxTree.Shapes.Statements.VariableSt
     var element = statement.markup
     if not element {
         if in_an_assembly {
-            live.learn_a_local(statement.name, statement.value)
+            live.learn_a_local(statement)
         }
         held.append(statement)
         return
@@ -296,6 +402,11 @@ func built(element: AbstractSyntaxTree.Shapes.Markup.Element): String {
         base = last.snake_case()
     }
     var name = fresh_name(base, element.line)
+    if live_region >= 0 and not element.calls_a_function() {
+        take(element, name)
+        fill(element, name)
+        return name
+    }
     var made = made_value(element)
     var no_type: SpiteCompiler.Type? = null
     var declared = AbstractSyntaxTree.Shapes.Statements.VariableStatement(name, no_type, made)
@@ -307,6 +418,49 @@ func built(element: AbstractSyntaxTree.Shapes.Markup.Element): String {
     }
     fill(element, name)
     return name
+}
+
+# ../../../spite_documentation/markup.md#a-tag-in-a-live-block-is-matched
+func take(element: AbstractSyntaxTree.Shapes.Markup.Element, name: String) {
+    live.learn_a_region_site(name, element.tag)
+    var lines = List<String>()
+    var key = element.written_attributes.find_by_name("key")
+    if key {
+        var value = value_of(key)
+        var printer = Printers.Spite.ExpressionPrinter(value)
+        var printed = printer.text()
+        lines.append("var {name}_key = {printed}")
+        lines.append("var {name}_place = -1")
+        lines.append("var {name}_look = 0")
+        lines.append("while {name}_look < _live_last_{name}.count() \{")
+        lines.append("    var {name}_held = _live_last_{name}[{name}_look]")
+        lines.append("    var {name}_same = {name}_held.key == {name}_key")
+        lines.append("    if {name}_place < 0 and {name}_same \{")
+        lines.append("        {name}_place = {name}_look")
+        lines.append("    }")
+        lines.append("    {name}_look = {name}_look + 1")
+        lines.append("}")
+    } else {
+        lines.append("var {name}_place = -1")
+        lines.append("if not _live_last_{name}.is_empty() \{")
+        lines.append("    {name}_place = 0")
+        lines.append("}")
+    }
+    lines.append("var {name} = _live_take_{name}({name}_place)")
+    var statements = parsed_statements(lines, element.line)
+    statements.each(place)
+    fallback key
+    statements.each(note_a_key_comparison)
+    file.live_key_tags.append(element.tag)
+}
+
+func note_a_key_comparison(statement: SpiteCompiler.WrittenStatement) {
+    fallback statement.class == AbstractSyntaxTree.Shapes.Statements.WhileStatement and statement.body
+    var compared = statement.body.statements[1]
+    crash compared
+    fallback compared.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement and compared.value
+    fallback compared.value.class == AbstractSyntaxTree.Shapes.Expressions.BinaryExpression
+    file.live_keys.append(compared.value)
 }
 
 # ../../../spite_documentation/markup.md#a-render-keeps-what-it-made
@@ -369,7 +523,7 @@ func assign(name: String, attribute: String, value: SpiteCompiler.Expression, li
     fallback assembling and is_live
     fallback live.takes(name, attribute, value)
     fallback live.needs_a_handle(name)
-    var handle = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("_live_{name}")
+    var handle = AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression("_live_site_{name}")
     handle.line = line
     var kept_handle = named(name, line)
     var keeps = AbstractSyntaxTree.Shapes.Statements.AssignmentStatement(handle, kept_handle)
@@ -398,13 +552,22 @@ func add_a_run(
     var index = 0
     while index < child_run.count() {
         var child = child_run[index]
-        var entry = entry_of(child)
-        entries.append(entry)
-        if assembling {
-            attach_a_child(name, child, entry)
+        if not assembling or not lowers_a_live_child(name, child) {
+            var entry = entry_of(child)
+            entries.append(entry)
+            attach_when_assembling(name, child, entry)
         }
         index = index + 1
     }
+}
+
+func attach_when_assembling(
+    name: String,
+    child: AbstractSyntaxTree.Shapes.Markup.Child,
+    entry: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+) {
+    fallback assembling
+    attach_a_child(name, child, entry)
 }
 
 # ../../../spite_documentation/markup.md#a-constructor-assembles-its-tags

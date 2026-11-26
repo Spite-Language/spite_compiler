@@ -1,40 +1,96 @@
 var watched = List<String>()
 var watched_types = List<String>()
 var written_setters = List<String>()
+var function_declarations = Dictionary<String, AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration>()
 var local_names = List<String>()
-var local_texts = List<String>()
-var local_values = List<SpiteCompiler.Expression>()
-var unfollowed = List<String>()
+var local_values = Dictionary<String, SpiteCompiler.Expression>()
+var definers = List<SpiteCompiler.WrittenStatement>()
+var definer_names = List<String>()
+var unfollowed_locals = List<String>()
 var sites = List<String>()
 var site_types = List<String>()
 var handled = List<String>()
 var pieces = List<String>()
 var piece_reads = List<String>()
 var piece_owners = List<Integer>()
+var unfollowed_pieces = List<Integer>()
 var depth = 0
+var opening: SpiteCompiler.WrittenStatement? = null
+var opening_holds_tags = false
+var reads = List<String>()
+var watches = List<String>()
+var used_definers = List<SpiteCompiler.WrittenStatement>()
+var read_functions = List<String>()
+var unfollowed_texts = List<String>()
+var in_a_function = false
+var written_texts = List<String>()
+var function_locals = List<String>()
+var attribute_names = List<String>()
+var changing_calls = [
+    "append"
+    "prepend"
+    "insert"
+    "remove_at"
+    "remove_first"
+    "remove_last"
+    "clear"
+    "set_at"
+    "sort"
+    "reverse"
+    "subscribe"
+    "unsubscribe"
+]
+var in_the_region = false
+var reading_region: SpiteCompiler.WrittenStatement? = null
+var given_inside = Dictionary<String, SpiteCompiler.WrittenStatement>()
+var region_locals = Dictionary<String, String>()
+var region_indexes = List<Integer>()
+var region_owners = List<String>()
+var region_bodies = List<List<SpiteCompiler.WrittenStatement>>()
+var region_definitions = Dictionary<Integer, String>()
+var region_sites = List<String>()
+var region_site_tags = List<String>()
+var region_site_pieces = List<Integer>()
+var parent_sites = List<String>()
+var current_region = -1
+var copied_definers = List<SpiteCompiler.WrittenStatement>()
+var identifier_letters = "abcdefghijklmnopqrstuvwxyz0123456789_"
 var file: AbstractSyntaxTree.Shapes.SourceFile
 var kept: KeptRender
+var types: VisibleTypes
 
 # ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
-func LivePieces(starting_file: AbstractSyntaxTree.Shapes.SourceFile, starting_kept: KeptRender) {
+func LivePieces(
+    starting_file: AbstractSyntaxTree.Shapes.SourceFile,
+    starting_kept: KeptRender,
+    starting_types: VisibleTypes,
+) {
     file = starting_file
     kept = starting_kept
+    types = starting_types
     file.declarations.each(learn_a_declaration)
 }
 
 func learn_a_declaration(declaration: SpiteCompiler.Declaration) {
     if declaration.class == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration {
         written_setters.append(declaration.name)
+        function_declarations[declaration.name] = declaration
         return
     }
     fallback declaration.class == AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration
+    attribute_names.append(declaration.name)
     var written = kept.type_of_an_attribute(declaration)
-    fallback not written.is_empty() and not written.starts_with("List<")
+    fallback not written.is_empty()
     watched.append(declaration.name)
     watched_types.append(written)
 }
 
-func enter() {
+# ../../../spite_documentation/markup.md#a-local-given-again
+func enter(statement: SpiteCompiler.WrittenStatement) {
+    if depth == 0 {
+        opening = statement
+        opening_holds_tags = holds_tags(statement)
+    }
     depth = depth + 1
 }
 
@@ -48,92 +104,926 @@ func learn_a_site(name: String, tag: String) {
     site_types.append(tag)
 }
 
-# ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
-func learn_a_local(name: String, value: SpiteCompiler.Expression?) {
-    fallback value
+# ../../../spite_documentation/markup.md#a-local-given-again
+func learn_a_local(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    var name = statement.name
+    fallback statement.value
     if local_names.contains(name) or depth > 0 {
-        unfollowed.append(name)
+        unfollowed_locals.append(name)
         return
     }
-    var printer = Printers.Spite.ExpressionPrinter(value)
-    var printed = printer.text()
     local_names.append(name)
-    local_texts.append("var {name} = {printed}")
-    local_values.append(value)
+    local_values[name] = statement.value
+    definers.append(statement)
+    definer_names.append(name)
 }
 
-func forget_a_local(target: SpiteCompiler.Expression?) {
-    fallback target
-    fallback target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
-    unfollowed.append(target.name)
+# ../../../spite_documentation/markup.md#a-local-given-again
+func learn_an_assignment(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    fallback statement.target
+    fallback statement.target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    var name = statement.target.name
+    fallback local_names.contains(name)
+    local_values.remove_at(name)
+    if depth == 0 {
+        definers.append(statement)
+        definer_names.append(name)
+        return
+    }
+    if not opening {
+        unfollowed_locals.append(name)
+        return
+    }
+    if opening_holds_tags {
+        given_inside[name] = opening
+        return
+    }
+    definers.append(opening)
+    definer_names.append(name)
+}
+
+# ../../../spite_documentation/markup.md#a-constructor-assembles-its-tags
+func holds_tags(statement: SpiteCompiler.WrittenStatement): Boolean {
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.ExpressionStatement {
+        return stands_as_a_tag(statement)
+    }
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.IfStatement {
+        return block_holds_tags(statement.then_branch) or block_holds_tags(statement.else_branch)
+    }
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.WhileStatement {
+        return block_holds_tags(statement.body)
+    }
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.SwitchStatement {
+        return statement.cases.any(case_holds_tags)
+    }
+    if statement.class == AbstractSyntaxTree.Shapes.Statements.Block {
+        return block_holds_tags(statement)
+    }
+    return kept.statement_holds_markup(statement)
+}
+
+func stands_as_a_tag(statement: AbstractSyntaxTree.Shapes.Statements.ExpressionStatement): Boolean {
+    fallback statement.markup
+    return true
+}
+
+func block_holds_tags(block: AbstractSyntaxTree.Shapes.Statements.Block?): Boolean {
+    fallback block
+    return block.statements.any(holds_tags)
+}
+
+func case_holds_tags(switch_case: AbstractSyntaxTree.Shapes.Statements.SwitchCase): Boolean {
+    return block_holds_tags(switch_case.body)
 }
 
 # ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
 func takes(name: String, attribute: String, value: SpiteCompiler.Expression): Boolean {
     fallback sites.contains(name) and attribute != "parent"
-    var reads = List<String>()
-    var definitions = List<String>()
-    var follows = gathered(value, reads, definitions)
-    fallback follows and not reads.is_empty()
+    start_reading()
+    read_expression(value)
+    var follows = unfollowed_texts.is_empty()
+    fallback not reads.is_empty() or not watches.is_empty() or not follows
     var printer = Printers.Spite.ExpressionPrinter(value)
     var printed = printer.text()
     var index = pieces.count()
     var lines = List<String>()
     lines.append("func _live_{index}() \{")
-    lines.append("    fallback _live_{name}")
-    var place = 0
-    while place < definitions.count() {
-        var definition = definitions[place]
-        lines.append("    {definition}")
-        place = place + 1
-    }
-    lines.append("    _live_{name}.{attribute} = {printed}")
+    lines.append("    fallback _live_site_{name}")
+    add_the_definitions(lines)
+    lines.append("    _live_site_{name}.{attribute} = {printed}")
     lines.append("}")
     var text = lines.join("\n")
     pieces.append(text)
-    place = 0
+    note_the_reads(index)
+    var piece_line = line_of(value)
+    note_the_writes("\{{printed}}", piece_line)
+    if not follows {
+        unfollowed_pieces.append(index)
+        report(printed, value)
+    }
+    return true
+}
+
+func start_reading() {
+    reads = List<String>()
+    watches = List<String>()
+    used_definers = List<SpiteCompiler.WrittenStatement>()
+    read_functions = List<String>()
+    unfollowed_texts = List<String>()
+    written_texts = List<String>()
+    function_locals = List<String>()
+    in_a_function = false
+}
+
+func add_the_definitions(lines: List<String>) {
+    var index = 0
+    while index < definers.count() {
+        var definer = definers[index]
+        if holds_the_definer(definer) and is_first_definer(definer, index) {
+            var printer = Printers.Spite.StatementPrinter(definer)
+            var printed = printer.lines_at("    ")
+            printed.each(lines.append)
+        }
+        index = index + 1
+    }
+}
+
+func holds_the_definer(definer: SpiteCompiler.WrittenStatement): Boolean {
+    var index = 0
+    while index < used_definers.count() {
+        var used = used_definers[index]
+        if used === definer {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func is_first_definer(definer: SpiteCompiler.WrittenStatement, place: Integer): Boolean {
+    var index = 0
+    while index < place {
+        var earlier = definers[index]
+        fallback earlier !== definer
+        index = index + 1
+    }
+    return true
+}
+
+func note_the_reads(index: Integer) {
+    var place = 0
     while place < reads.count() {
         var read = reads[place]
         piece_reads.append(read)
         piece_owners.append(index)
         place = place + 1
     }
+    place = 0
+    while place < watches.count() {
+        var watched_entry = watches[place]
+        file.live_watches.append("{index}|{watched_entry}")
+        place = place + 1
+    }
+}
+
+# ../../../spite_documentation/markup.md#a-read-the-compiler-cannot-follow
+func report(printed: String, value: SpiteCompiler.Expression) {
+    var line = line_of(value)
+    note_unfollowed("\{{printed}}", line)
+}
+
+# ../../../spite_documentation/markup.md#a-live-piece-only-reads
+func note_the_writes(printed: String, line: Integer) {
+    fallback not written_texts.is_empty()
+    var first = written_texts[0]
+    file.live_writes.append("{printed}|{first}")
+    file.live_writes_lines.append(line)
+}
+
+func note_unfollowed(printed: String, line: Integer) {
+    var first = unfollowed_texts[0]
+    crash first
+    file.live_unfollowed.append("{printed}|{first}")
+    file.live_unfollowed_lines.append(line)
+}
+
+func line_of(value: SpiteCompiler.Expression): Integer {
+    switch value {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.ListLiteral: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: return value.line
+        AbstractSyntaxTree.Shapes.Expressions.EntryLiteral: return value.line
+    }
+}
+
+# ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
+func read_expression(value: SpiteCompiler.Expression?) {
+    fallback value
+    switch value {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: read_a_name(value.name)
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: read_a_member(value)
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: read_a_call(value)
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: read_both(value.left, value.right)
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: read_expression(value.operand)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: read_an_index(value)
+        AbstractSyntaxTree.Shapes.Expressions.ListLiteral: value.entries.each(read_a_value)
+        AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: value.pairs.each(read_a_value)
+        AbstractSyntaxTree.Shapes.Expressions.EntryLiteral: read_both(value.key, value.value)
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: read_a_text(value)
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return
+    }
+}
+
+func read_a_value(value: SpiteCompiler.Expression) {
+    read_expression(value)
+}
+
+func read_both(first: SpiteCompiler.Expression?, second: SpiteCompiler.Expression?) {
+    read_expression(first)
+    read_expression(second)
+}
+
+func read_a_text(text: AbstractSyntaxTree.Shapes.Expressions.TextLiteral) {
+    var index = 0
+    while index < text.pieces.count() {
+        var piece = text.pieces[index]
+        read_expression(piece.hole)
+        index = index + 1
+    }
+}
+
+func read_a_name(name: String) {
+    if is_a_local(name) {
+        read_a_local(name)
+        return
+    }
+    if watched.contains(name) and not reads.contains(name) {
+        reads.append(name)
+    }
+}
+
+func is_a_local(name: String): Boolean {
+    return not in_a_function and local_names.contains(name)
+}
+
+# ../../../spite_documentation/markup.md#a-local-given-again
+func read_a_local(name: String) {
+    if unfollowed_locals.contains(name) {
+        unfollow(name)
+        return
+    }
+    var inside = given_inside[name]
+    if inside and inside !== reading_region {
+        unfollow(name)
+        return
+    }
+    var outer = in_the_region
+    in_the_region = false
+    var index = 0
+    while index < definers.count() {
+        var definer = definers[index]
+        var defined = definer_names[index]
+        if defined == name and not holds_the_definer(definer) {
+            used_definers.append(definer)
+            read_statement(definer)
+        }
+        index = index + 1
+    }
+    in_the_region = outer
+}
+
+func unfollow(text: String) {
+    if not unfollowed_texts.contains(text) {
+        unfollowed_texts.append(text)
+    }
+}
+
+# ../../../spite_documentation/markup.md#another-objects-attribute
+func read_a_member(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression) {
+    var root = chain_of(member.target)
+    if not root.is_empty() {
+        watch(root, member.name)
+        read_expression(member.target)
+        return
+    }
+    var target = member.target
+    crash target
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        read_a_member_of_a_name(target, member)
+        return
+    }
+    if target.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        var printer = Printers.Spite.ExpressionPrinter(member)
+        var printed = printer.text()
+        unfollow(printed)
+    }
+    read_expression(target)
+}
+
+func read_a_member_of_a_name(
+    target: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression,
+    member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression,
+) {
+    fallback not target.is_a_class_name and not is_a_class_path(target.name)
+    var region_value = region_locals[target.name]
+    if in_the_region and region_value {
+        watch("@{target.name}={region_value}", member.name)
+        return
+    }
+    if is_a_local(target.name) {
+        read_a_local(target.name)
+        var head = types.head_of_name(target.name)
+        if is_an_object_class(head) {
+            unfollow("{target.name}.{member.name}")
+        }
+        return
+    }
+    unfollow("{target.name}.{member.name}")
+}
+
+func is_a_class_path(name: String): Boolean {
+    var first = name.slice(0, 1)
+    fallback first
+    return first != first.lower_case()
+}
+
+func is_an_object_class(head: String): Boolean {
+    fallback not head.is_empty() and is_a_class_path(head)
+    var values = ["Integer", "Long", "Short", "Byte", "Boolean", "String", "Float", "Double", "Decimal", "Rune"]
+    return not values.contains(head)
+}
+
+func read_a_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    judge_a_changing_call(call)
+    if calls_on_its_own_local(call.callee) {
+        call.arguments.each(read_a_value)
+        return
+    }
+    crash call.callee
+    if call.callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        read_a_called_name(call.callee)
+    } else {
+        read_expression(call.callee)
+    }
+    call.arguments.each(read_a_value)
+}
+
+# ../../../spite_documentation/markup.md#a-call-reads-what-its-function-reads
+func read_a_called_name(callee: AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression) {
+    fallback not callee.is_a_class_name and not is_a_class_path(callee.name)
+    if is_a_local(callee.name) or watched.contains(callee.name) {
+        read_a_name(callee.name)
+        unfollow("{callee.name}(...)")
+        return
+    }
+    var function = function_declarations[callee.name]
+    fallback function
+    fallback not read_functions.contains(callee.name)
+    read_functions.append(callee.name)
+    var outer = in_a_function
+    var outer_region = in_the_region
+    var outer_locals = function_locals
+    function_locals = List<String>()
+    in_a_function = true
+    in_the_region = false
+    read_a_block(function.body)
+    in_a_function = outer
+    in_the_region = outer_region
+    function_locals = outer_locals
+}
+
+# ../../../spite_documentation/markup.md#a-live-piece-only-reads
+func judge_a_write(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    var root = root_name_of(statement.target)
+    fallback not root.is_empty() and not names_a_local(root)
+    fallback root == "this" or attribute_names.contains(root)
+    var printer = Printers.Spite.StatementPrinter(statement)
+    var printed = printer.text()
+    if not written_texts.contains(printed) {
+        written_texts.append(printed)
+    }
+}
+
+# ../../../spite_documentation/markup.md#a-live-piece-only-reads
+func judge_a_changing_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression) {
+    fallback call.callee and call.callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    fallback changing_calls.contains(call.callee.name)
+    var root = root_name_of(call.callee.target)
+    fallback not root.is_empty() and not names_a_local(root)
+    fallback root == "this" or attribute_names.contains(root)
+    var printer = Printers.Spite.ExpressionPrinter(call)
+    var printed = printer.text()
+    if not written_texts.contains(printed) {
+        written_texts.append(printed)
+    }
+}
+
+func root_name_of(value: SpiteCompiler.Expression?): String {
+    fallback value
+    switch value {
+        AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression: return value.name
+        AbstractSyntaxTree.Shapes.Expressions.MemberExpression: return root_name_of(value.target)
+        AbstractSyntaxTree.Shapes.Expressions.IndexExpression: return root_name_of(value.target)
+        AbstractSyntaxTree.Shapes.Expressions.LiteralExpression: return ""
+        AbstractSyntaxTree.Shapes.Expressions.TextLiteral: return ""
+        AbstractSyntaxTree.Shapes.Expressions.CallExpression: return ""
+        AbstractSyntaxTree.Shapes.Expressions.BinaryExpression: return ""
+        AbstractSyntaxTree.Shapes.Expressions.UnaryExpression: return ""
+        AbstractSyntaxTree.Shapes.Expressions.ListLiteral: return ""
+        AbstractSyntaxTree.Shapes.Expressions.DictionaryLiteral: return ""
+        AbstractSyntaxTree.Shapes.Expressions.EntryLiteral: return ""
+    }
+}
+
+func names_a_local(name: String): Boolean {
+    if in_a_function {
+        return function_locals.contains(name)
+    }
+    return local_names.contains(name) or region_locals.contains(name)
+}
+
+func calls_on_its_own_local(callee: SpiteCompiler.Expression?): Boolean {
+    fallback callee and callee.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression
+    fallback callee.target and callee.target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    if in_a_function {
+        return function_locals.contains(callee.target.name)
+    }
+    return in_the_region and region_locals.contains(callee.target.name)
+}
+
+func read_an_index(index: AbstractSyntaxTree.Shapes.Expressions.IndexExpression) {
+    var root = chain_of(index.target)
+    if not root.is_empty() {
+        watch(root, "[]")
+    }
+    read_both(index.target, index.index)
+}
+
+func watch(root: String, member: String) {
+    var entry = "{root}|{member}"
+    if not watches.contains(entry) {
+        watches.append(entry)
+    }
+}
+
+# ../../../spite_documentation/markup.md#another-objects-attribute
+func chain_of(value: SpiteCompiler.Expression?): String {
+    fallback value
+    if value.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return chain_of_a_name(value.name)
+    }
+    if value.class == AbstractSyntaxTree.Shapes.Expressions.MemberExpression {
+        var target = chain_of(value.target)
+        fallback not target.is_empty()
+        return "{target}.{value.name}"
+    }
+    fallback value.class == AbstractSyntaxTree.Shapes.Expressions.IndexExpression
+    var target = chain_of(value.target)
+    fallback not target.is_empty()
+    var place = place_of(value.index)
+    fallback not place.is_empty()
+    return "{target}[{place}]"
+}
+
+func chain_of_a_name(name: String): String {
+    if is_a_local(name) {
+        var value = local_values[name]
+        fallback value and not unfollowed_locals.contains(name)
+        return chain_of(value)
+    }
+    fallback watched.contains(name)
+    return name
+}
+
+func place_of(value: SpiteCompiler.Expression?): String {
+    fallback value
+    if value.class == AbstractSyntaxTree.Shapes.Expressions.LiteralExpression {
+        var printer = Printers.Spite.ExpressionPrinter(value)
+        return printer.text()
+    }
+    return chain_of(value)
+}
+
+# ../../../spite_documentation/markup.md#a-local-given-again
+func read_statement(statement: SpiteCompiler.WrittenStatement) {
+    switch statement {
+        AbstractSyntaxTree.Shapes.Statements.ExpressionStatement: read_a_value_and_tag(statement.value, statement.markup)
+        AbstractSyntaxTree.Shapes.Statements.VariableStatement: read_a_declared(statement)
+        AbstractSyntaxTree.Shapes.Statements.AssignmentStatement: read_an_assigned(statement)
+        AbstractSyntaxTree.Shapes.Statements.ReturnStatement: read_a_value_and_tag(statement.value, statement.markup)
+        AbstractSyntaxTree.Shapes.Statements.IfStatement: read_branches(statement)
+        AbstractSyntaxTree.Shapes.Statements.WhileStatement: read_a_loop(statement)
+        AbstractSyntaxTree.Shapes.Statements.SwitchStatement: read_cases(statement)
+        AbstractSyntaxTree.Shapes.Statements.FallbackStatement: read_expression(statement.condition)
+        AbstractSyntaxTree.Shapes.Statements.CrashStatement: read_expression(statement.condition)
+        AbstractSyntaxTree.Shapes.Statements.LoadStatement: return
+        AbstractSyntaxTree.Shapes.Statements.Block: read_a_block(statement)
+    }
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func read_a_declared(statement: AbstractSyntaxTree.Shapes.Statements.VariableStatement) {
+    read_a_value_and_tag(statement.value, statement.markup)
+    if in_a_function {
+        function_locals.append(statement.name)
+    }
+    fallback in_the_region and statement.value
+    var printer = Printers.Spite.ExpressionPrinter(statement.value)
+    var printed = printer.text()
+    region_locals[statement.name] = printed
+}
+
+func read_a_value_and_tag(value: SpiteCompiler.Expression?, element: AbstractSyntaxTree.Shapes.Markup.Element?) {
+    read_expression(value)
+    read_a_tag(element)
+}
+
+# ../../../spite_documentation/markup.md#a-call-reads-what-its-function-reads
+func read_a_tag(element: AbstractSyntaxTree.Shapes.Markup.Element?) {
+    fallback element
+    var index = 0
+    while index < element.written_attributes.count() {
+        var attribute = element.written_attributes[index]
+        read_expression(attribute.value)
+        index = index + 1
+    }
+    element.children.each(read_a_child)
+}
+
+func read_a_child(child: AbstractSyntaxTree.Shapes.Markup.Child) {
+    read_a_tag(child.element)
+    read_expression(child.expression)
+    fallback child.statement
+    read_statement(child.statement)
+}
+
+func read_an_assigned(statement: AbstractSyntaxTree.Shapes.Statements.AssignmentStatement) {
+    read_expression(statement.value)
+    judge_a_write(statement)
+    fallback statement.target and statement.target.class == AbstractSyntaxTree.Shapes.Expressions.IndexExpression
+    read_expression(statement.target.index)
+}
+
+func read_branches(statement: AbstractSyntaxTree.Shapes.Statements.IfStatement) {
+    read_expression(statement.condition)
+    read_a_block(statement.then_branch)
+    read_a_block(statement.else_branch)
+}
+
+func read_a_loop(statement: AbstractSyntaxTree.Shapes.Statements.WhileStatement) {
+    read_expression(statement.condition)
+    read_a_block(statement.body)
+}
+
+func read_cases(statement: AbstractSyntaxTree.Shapes.Statements.SwitchStatement) {
+    read_expression(statement.value)
+    var index = 0
+    while index < statement.cases.count() {
+        var switch_case = statement.cases[index]
+        read_expression(switch_case.value)
+        read_a_block(switch_case.body)
+        index = index + 1
+    }
+}
+
+func read_a_block(block: AbstractSyntaxTree.Shapes.Statements.Block?) {
+    fallback block
+    block.statements.each(read_statement)
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func starts_a_block(statement: SpiteCompiler.WrittenStatement): Boolean {
+    start_reading()
+    region_locals = Dictionary<String, String>()
+    reading_region = statement
+    in_the_region = true
+    read_statement(statement)
+    in_the_region = false
+    reading_region = null
+    var printer = Printers.Spite.StatementPrinter(statement)
+    var printed = printer.lines_at("")
+    var first = printed.first()
+    crash first
+    var opened = first.replace(" \{", "")
+    return accepts_a_region(opened, statement.line)
+}
+
+# ../../../spite_documentation/markup.md#a-brace-among-the-children
+func starts_a_child(expression: SpiteCompiler.Expression): Boolean {
+    start_reading()
+    region_locals = Dictionary<String, String>()
+    in_the_region = true
+    read_expression(expression)
+    in_the_region = false
+    var printer = Printers.Spite.ExpressionPrinter(expression)
+    var printed = printer.text()
+    var line = line_of(expression)
+    return accepts_a_region("\{{printed}}", line)
+}
+
+func accepts_a_region(printed: String, line: Integer): Boolean {
+    var follows = unfollowed_texts.is_empty()
+    fallback not reads.is_empty() or not watches.is_empty() or not follows
+    var index = pieces.count()
+    pieces.append("")
+    var lines = List<String>()
+    add_the_definitions(lines)
+    var definitions = lines.join("\n")
+    region_definitions[index] = definitions
+    used_definers.each(copied_definers.append)
+    note_the_reads(index)
+    note_the_writes(printed, line)
+    current_region = index
+    if not follows {
+        unfollowed_pieces.append(index)
+        note_unfollowed(printed, line)
+    }
     return true
+}
+
+# ../../../spite_documentation/markup.md#a-tag-in-a-live-block-is-matched
+func learn_a_region_site(name: String, tag: String) {
+    region_sites.append(name)
+    region_site_tags.append(tag)
+    region_site_pieces.append(current_region)
+}
+
+func note_a_parent_site(name: String) {
+    fallback region_sites.contains(name) and not parent_sites.contains(name)
+    parent_sites.append(name)
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func earlier_counts(index: Integer, owner: String): String {
+    var counts = List<String>()
+    var place = 0
+    while place < region_indexes.count() {
+        var earlier = region_indexes[place]
+        var earlier_owner = region_owners[place]
+        crash earlier
+        if earlier < index and earlier_owner == owner {
+            counts.append(" - _live_count_{earlier}")
+        }
+        place = place + 1
+    }
+    return counts.join("")
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func add_a_region(index: Integer, owner: String, lowered: List<SpiteCompiler.WrittenStatement>) {
+    var earlier = earlier_counts(index, owner)
+    var added = earlier.replace(" - ", " + ")
+    region_indexes.append(index)
+    region_owners.append(owner)
+    region_bodies.append(lowered)
+    current_region = -1
+    var lines = List<String>()
+    lines.append("func _live_{index}() \{")
+    if owner == "this" {
+        lines.append("    _live_in_{index}(this)")
+    } else {
+        lines.append("    fallback _live_site_{owner}")
+        lines.append("    _live_in_{index}(_live_site_{owner})")
+    }
+    lines.append("}")
+    lines.append("")
+    var owner_type = file.class_name()
+    var place = sites.index_of(owner)
+    if place {
+        var site_type = site_types[place]
+        crash site_type
+        owner_type = site_type
+    }
+    lines.append("func _live_in_{index}(live_owner_{index}: {owner_type}) \{")
+    var definitions = region_definitions[index]
+    if definitions and not definitions.is_empty() {
+        lines.append(definitions)
+    }
+    lines.append("    var live_at_{index} = _live_fixed_{index}{added}")
+    lines.append("    var live_gone_{index} = 0")
+    lines.append("    while live_gone_{index} < _live_count_{index} \{")
+    lines.append("        var live_dropped_{index} = live_owner_{index}.children[live_at_{index}]")
+    lines.append("        if live_dropped_{index} \{")
+    lines.append("            live_dropped_{index}.parent = null")
+    lines.append("        }")
+    lines.append("        live_owner_{index}.children.remove_at(live_at_{index})")
+    lines.append("        live_gone_{index} = live_gone_{index} + 1")
+    lines.append("    }")
+    lines.append("    var live_start_{index} = live_at_{index}")
+    add_the_rotations(lines, index)
+    lines.append("    _live_body()")
+    lines.append("    _live_count_{index} = live_at_{index} - live_start_{index}")
+    lines.append("}")
+    var text = lines.join("\n")
+    pieces[index] = text
+}
+
+func add_the_rotations(lines: List<String>, index: Integer) {
+    var place = 0
+    while place < region_sites.count() {
+        var site = region_sites[place]
+        var tag = region_site_tags[place]
+        var owner = region_site_pieces[place]
+        crash tag
+        crash owner
+        if owner == index {
+            lines.append("    _live_last_{site} = _live_held_{site}")
+            lines.append("    _live_held_{site} = List<{tag}>()")
+            if parent_sites.contains(site) {
+                lines.append("    _live_last_bases_{site} = _live_held_bases_{site}")
+                lines.append("    _live_held_bases_{site} = List<Integer>()")
+            }
+        }
+        place = place + 1
+    }
+}
+
+func add_the_region_members(lines: List<String>) {
+    var place = 0
+    while place < region_indexes.count() {
+        var index = region_indexes[place]
+        crash index
+        lines.append("var _live_count_{index} = 0")
+        lines.append("var _live_fixed_{index} = 0")
+        place = place + 1
+    }
+    place = 0
+    while place < region_sites.count() {
+        var site = region_sites[place]
+        var tag = region_site_tags[place]
+        crash tag
+        lines.append("var _live_last_{site} = List<{tag}>()")
+        lines.append("var _live_held_{site} = List<{tag}>()")
+        if parent_sites.contains(site) {
+            lines.append("var _live_last_bases_{site} = List<Integer>()")
+            lines.append("var _live_held_bases_{site} = List<Integer>()")
+        }
+        place = place + 1
+    }
+}
+
+# ../../../spite_documentation/markup.md#a-tag-in-a-live-block-is-matched
+func add_the_takes(lines: List<String>) {
+    var place = 0
+    while place < region_sites.count() {
+        var site = region_sites[place]
+        var tag = region_site_tags[place]
+        crash tag
+        var holds_children = parent_sites.contains(site)
+        lines.append("")
+        lines.append("func _live_take_{site}(place: Integer): {tag} \{")
+        lines.append("    if place < 0 \{")
+        lines.append("        var made = {tag}()")
+        if holds_children {
+            lines.append("        var base_made = made.children.count()")
+            lines.append("        _live_held_bases_{site}.append(base_made)")
+        }
+        lines.append("        _live_held_{site}.append(made)")
+        lines.append("        return made")
+        lines.append("    }")
+        lines.append("    var taken = _live_last_{site}[place]")
+        lines.append("    crash taken")
+        lines.append("    _live_last_{site}.remove_at(place)")
+        if holds_children {
+            lines.append("    var base = _live_last_bases_{site}[place]")
+            lines.append("    crash base")
+            lines.append("    _live_last_bases_{site}.remove_at(place)")
+            lines.append("    while taken.children.count() > base \{")
+            lines.append("        var last_place = taken.children.count() - 1")
+            lines.append("        var dropped = taken.children[last_place]")
+            lines.append("        if dropped and dropped.parent === taken \{")
+            lines.append("            dropped.parent = null")
+            lines.append("        }")
+            lines.append("        taken.children.remove_at(last_place)")
+            lines.append("    }")
+            lines.append("    _live_held_bases_{site}.append(base)")
+        }
+        lines.append("    _live_held_{site}.append(taken)")
+        lines.append("    return taken")
+        lines.append("}")
+        place = place + 1
+    }
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func splice_a_region(declaration: SpiteCompiler.Declaration) {
+    fallback declaration.class == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration and declaration.body
+    var place = 0
+    while place < region_indexes.count() {
+        var index = region_indexes[place]
+        var lowered = region_bodies[place]
+        crash index
+        crash lowered
+        if declaration.name == "_live_in_{index}" {
+            splice_the_body(declaration.body, lowered)
+        }
+        place = place + 1
+    }
+}
+
+func splice_the_body(body: AbstractSyntaxTree.Shapes.Statements.Block, lowered: List<SpiteCompiler.WrittenStatement>) {
+    var spliced = List<SpiteCompiler.WrittenStatement>()
+    var index = 0
+    while index < body.statements.count() {
+        var statement = body.statements[index]
+        if is_the_placeholder(statement) {
+            lowered.each(spliced.append)
+        } else {
+            spliced.append(statement)
+        }
+        index = index + 1
+    }
+    body.statements = spliced
+}
+
+func is_the_placeholder(statement: SpiteCompiler.WrittenStatement): Boolean {
+    fallback statement.class == AbstractSyntaxTree.Shapes.Statements.ExpressionStatement and statement.value
+    var value = statement.value
+    fallback value.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression and value.callee
+    var callee = value.callee
+    fallback callee.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    return callee.name == "_live_body"
+}
+
+# ../../../spite_documentation/markup.md#a-live-block-among-the-children
+func drop_the_unread_definers(declaration: SpiteCompiler.Declaration) {
+    fallback declaration.class == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration and declaration.body
+    var class_name = file.class_name()
+    fallback declaration.is_a_constructor_of(class_name) and declaration.parameters.is_empty()
+    var kept_statements = List<SpiteCompiler.WrittenStatement>()
+    var index = 0
+    while index < declaration.body.statements.count() {
+        var statement = declaration.body.statements[index]
+        if not is_an_unread_definer(statement, declaration.body.statements) {
+            kept_statements.append(statement)
+        }
+        index = index + 1
+    }
+    declaration.body.statements = kept_statements
+}
+
+func is_an_unread_definer(
+    statement: SpiteCompiler.WrittenStatement,
+    statements: List<SpiteCompiler.WrittenStatement>,
+): Boolean {
+    fallback statement.class == AbstractSyntaxTree.Shapes.Statements.VariableStatement
+    fallback is_a_copied_definer(statement)
+    var index = 0
+    while index < statements.count() {
+        var other = statements[index]
+        if other !== statement {
+            var printer = Printers.Spite.StatementPrinter(other)
+            var printed = printer.text()
+            fallback not mentions(printed, statement.name)
+        }
+        index = index + 1
+    }
+    return true
+}
+
+func is_a_copied_definer(statement: SpiteCompiler.WrittenStatement): Boolean {
+    var index = 0
+    while index < copied_definers.count() {
+        var copied = copied_definers[index]
+        if copied === statement {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+func mentions(text: String, name: String): Boolean {
+    var rest = text
+    var before = ""
+    var found = rest.index_of(name)
+    while found {
+        var start = found
+        var name_length = name.length()
+        var rest_length = rest.length()
+        var previous = before
+        if start > 0 {
+            var sliced_previous = rest.slice(start - 1, start)
+            crash sliced_previous
+            previous = sliced_previous
+        }
+        var next = ""
+        if start + name_length < rest_length {
+            var sliced_next = rest.slice(start + name_length, start + name_length + 1)
+            crash sliced_next
+            next = sliced_next
+        }
+        var stands_alone = not is_a_letter(previous) and not is_a_letter(next)
+        if stands_alone {
+            return true
+        }
+        var remaining = rest.slice(start + name_length, rest_length)
+        crash remaining
+        var last_letter = name.slice(name_length - 1, name_length)
+        crash last_letter
+        before = last_letter
+        rest = remaining
+        found = rest.index_of(name)
+    }
+    return false
+}
+
+func is_a_letter(text: String): Boolean {
+    fallback not text.is_empty()
+    return identifier_letters.contains(text)
 }
 
 func needs_a_handle(name: String): Boolean {
     fallback not handled.contains(name)
     handled.append(name)
     return true
-}
-
-func gathered(value: SpiteCompiler.Expression?, reads: List<String>, definitions: List<String>): Boolean {
-    var mentioned = List<String>()
-    kept.mentions_of(value, mentioned)
-    var follows = true
-    var index = 0
-    while index < mentioned.count() {
-        var name = mentioned[index]
-        if watched.contains(name) and not reads.contains(name) {
-            reads.append(name)
-        }
-        var place = local_names.index_of(name)
-        if unfollowed.contains(name) {
-            follows = false
-        } else if place {
-            var definition = local_texts[place]
-            crash definition
-            var local_value = local_values[place]
-            if not gathered(local_value, reads, definitions) {
-                follows = false
-            }
-            if not definitions.contains(definition) {
-                definitions.append(definition)
-            }
-        }
-        index = index + 1
-    }
-    return follows
 }
 
 # ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
@@ -150,15 +1040,22 @@ func add_the_members() {
         crash place
         var tag = site_types[place]
         crash tag
-        lines.append("var _live_{name}: {tag}? = null")
+        lines.append("var _live_site_{name}: {tag}? = null")
         index = index + 1
     }
+    add_the_region_members(lines)
     pieces.each(lines.append)
+    add_the_takes(lines)
     add_the_setters(lines)
     var text = lines.join("\n")
     var made = kept.parsed_declarations(text, kept.next_line)
     made.each(kept.add_a_declaration)
+    made.each(splice_a_region)
     add_the_written_calls()
+    file.declarations.each(drop_the_unread_definers)
+    var rule = Validators.AbstractSyntaxTree.LiveRead.Validator()
+    var answer = rule.check(file)
+    answer.tell()
 }
 
 func add_the_setters(lines: List<String>) {
@@ -180,14 +1077,23 @@ func add_the_setters(lines: List<String>) {
 }
 
 func calls_of(name: String): List<String> {
-    var calls = List<String>()
+    var called = List<Integer>()
     var index = 0
     while index < piece_reads.count() {
         var read = piece_reads[index]
         var owner = piece_owners[index]
         crash owner
-        if read == name {
-            calls.append("    _live_{owner}()")
+        if read == name and not called.contains(owner) {
+            called.append(owner)
+        }
+        index = index + 1
+    }
+    unfollowed_pieces.each(called.append)
+    var calls = List<String>()
+    index = 0
+    while index < pieces.count() {
+        if called.contains(index) {
+            calls.append("    _live_{index}()")
         }
         index = index + 1
     }
