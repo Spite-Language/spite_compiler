@@ -17,11 +17,35 @@ func note_a_function_list(internal_name: String, written_name: String, written: 
     if not reads.is_assigned_again(written_name) {
         class_key = listed_class_of(written)
     }
+    var filter_name = ""
+    if not class_key.is_empty() {
+        filter_name = filter_named_by(written)
+    }
     if class_key.is_empty() {
         context.known_function_lists.remove_at(internal_name)
     } else {
         context.known_function_lists[internal_name] = class_key
     }
+    if filter_name.is_empty() {
+        context.known_function_filters.remove_at(internal_name)
+    } else {
+        context.known_function_filters[internal_name] = filter_name
+    }
+}
+
+func filter_named_by(written: SpiteCompiler.Expression?): String {
+    if written.class == AbstractSyntaxTree.Shapes.Expressions.CallExpression {
+        return filter_of_the_call(written)
+    }
+    return ""
+}
+
+func filter_of_the_call(call: AbstractSyntaxTree.Shapes.Expressions.CallExpression): String {
+    var argument = call.arguments[0]
+    if argument.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return argument.name
+    }
+    return ""
 }
 
 func listed_class_of(written: SpiteCompiler.Expression?): String {
@@ -91,16 +115,18 @@ func unrolled_by(
     fallback is_a_template or needs_a_known(walker, passed_walkers)
     var descriptions = List<String>()
     var names = List<String>()
+    var filter: Model.FunctionModel? = null
     if walks_functions {
         var class_key = known_list_class(callee.target)
         fallback class_key
         listed_functions(class_key, descriptions, names)
+        filter = known_list_filter(callee.target, walker)
     } else {
         var described = known_function_of(callee.target)
         fallback described
         listed_arguments(described, descriptions, names)
     }
-    walk_each(callee, walker, descriptions, names)
+    walk_each(callee, walker, descriptions, names, filter)
     var nothing = Model.Type('nothing', "")
     return HighIntermediaryRepresentation.Values.NullConstant(nothing)
 }
@@ -140,10 +166,71 @@ func known_list_class(listed: SpiteCompiler.Expression?): String? {
     return class_key
 }
 
+# ../../../spite_documentation/reflection.md#known-while-compiling
+func known_list_filter(listed: SpiteCompiler.Expression?, walker: Model.FunctionModel): Model.FunctionModel? {
+    fallback answers_nothing(walker)
+    var filter_name: String? = null
+    if listed.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        filter_name = known_local_filter(listed.name)
+    }
+    fallback filter_name
+    var filter = context.current_class.function_named(filter_name)
+    fallback filter and filter.declaration
+    fallback filter.parameters.count() == 1 and filter.template_index() < 0
+    return filter
+}
+
+func answers_nothing(function: Model.FunctionModel): Boolean {
+    var answer = function.answer
+    if answer {
+        return answer.kind == 'nothing'
+    }
+    return true
+}
+
+func known_local_filter(name: String): String? {
+    var internal_name = context.scope.internal_name_of(name)
+    fallback internal_name
+    return context.known_function_filters[internal_name]
+}
+
 func known_local_list(name: String): String? {
     var internal_name = context.scope.internal_name_of(name)
     fallback internal_name
     return context.known_function_lists[internal_name]
+}
+
+# ../../../spite_documentation/reflection.md#known-while-compiling
+func known_name_of(member: AbstractSyntaxTree.Shapes.Expressions.MemberExpression): SpiteCompiler.Value? {
+    var target = member.target
+    if member.name == "name" and target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression {
+        return known_name_named(target.name)
+    }
+    return null
+}
+
+func known_name_named(name: String): SpiteCompiler.Value? {
+    var walk_copy = context.current_function.walk_copy_or_empty()
+    var described = walk_copy.known_reflections[name]
+    fallback described
+    var parts = described.split("|")
+    if parts.count() == 2 {
+        var function_name = parts[1]
+        crash function_name
+        return values.described_text(function_name)
+    }
+    fallback parts.count() == 3
+    var position_text = parts[2]
+    crash position_text
+    var position: Integer? = position_text
+    crash position
+    var function_length = described.length() - position_text.length() - 1
+    var function_key = described.slice(0, function_length)
+    crash function_key
+    var function = described_function(function_key)
+    var parameter = function.parameters[position]
+    crash parameter
+    return values.described_text(parameter.name)
 }
 
 func known_function_of(listed: SpiteCompiler.Expression?): String? {
@@ -310,6 +397,7 @@ func walk_each(
     walker: Model.FunctionModel,
     descriptions: List<String>,
     names: List<String>,
+    filter: Model.FunctionModel?,
 ) {
     var calls = Calls(values.context, values)
     values.temporary_count = values.temporary_count + 1
@@ -327,7 +415,7 @@ func walk_each(
         var described = descriptions[index]
         var name = names[index]
         crash name
-        walk_one(walker, listed_name, listed_type, position_name, described, name, index, walk_count)
+        walk_one(walker, listed_name, listed_type, position_name, described, name, index, walk_count, filter)
         index = index + 1
     }
     var listed = HighIntermediaryRepresentation.Values.LocalRead(listed_type, listed_name)
@@ -363,6 +451,7 @@ func walk_one(
     name: String,
     place: Integer,
     walk_count: Integer,
+    filter: Model.FunctionModel?,
 ) {
     var calls = Calls(values.context, values)
     var operators = Operators(values.context, values)
@@ -391,7 +480,7 @@ func walk_one(
     var named = HighIntermediaryRepresentation.Values.AttributeRead(proven, name_attribute)
     var expected = values.described_text(name)
     var matches = operators.present_equal(named, expected)
-    var copy = known_copy(walker, described)
+    var copy = known_copy(walker, described, filter)
     context.need(copy)
     var passed = List<SpiteCompiler.Value>()
     passed.append(proven)
@@ -417,9 +506,17 @@ func add_a_declaration(name: String, declared_type: Model.Type, value: SpiteComp
     context.pending.append(declared)
 }
 
-func known_copy(walker: Model.FunctionModel, described: String): Model.FunctionModel {
+# ../../../spite_documentation/reflection.md#known-while-compiling
+func known_copy(walker: Model.FunctionModel, described: String, filter: Model.FunctionModel?): Model.FunctionModel {
     var walker_key = walker.key()
     var copy_key = "over|{walker_key}|{described}"
+    var passes_when: Model.FunctionModel? = null
+    if filter {
+        passes_when = known_copy(filter, described, null)
+        context.need(passes_when)
+        var filter_key = filter.key()
+        copy_key = "{copy_key}|{filter_key}"
+    }
     var known = context.current_class.function_copied_for(copy_key)
     if known {
         return known
@@ -431,6 +528,7 @@ func known_copy(walker: Model.FunctionModel, described: String): Model.FunctionM
     crash parameter
     var walk_copy = Model.WalkCopy(null, "", false, null)
     walk_copy.known_reflections[parameter.name] = described
+    walk_copy.passes_when = passes_when
     var made = Model.FunctionModel(
         called_name,
         walker.owner,
