@@ -1,0 +1,233 @@
+var watched = List<String>()
+var watched_types = List<String>()
+var written_setters = List<String>()
+var local_names = List<String>()
+var local_texts = List<String>()
+var local_values = List<SpiteCompiler.Expression>()
+var unfollowed = List<String>()
+var sites = List<String>()
+var site_types = List<String>()
+var handled = List<String>()
+var pieces = List<String>()
+var piece_reads = List<String>()
+var piece_owners = List<Integer>()
+var depth = 0
+var file: AbstractSyntaxTree.Shapes.SourceFile
+var kept: KeptRender
+
+# ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
+func LivePieces(starting_file: AbstractSyntaxTree.Shapes.SourceFile, starting_kept: KeptRender) {
+    file = starting_file
+    kept = starting_kept
+    file.declarations.each(learn_a_declaration)
+}
+
+func learn_a_declaration(declaration: SpiteCompiler.Declaration) {
+    if declaration.class == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration {
+        written_setters.append(declaration.name)
+        return
+    }
+    fallback declaration.class == AbstractSyntaxTree.Shapes.Declarations.AttributeDeclaration
+    var written = kept.type_of_an_attribute(declaration)
+    fallback not written.is_empty() and not written.starts_with("List<")
+    watched.append(declaration.name)
+    watched_types.append(written)
+}
+
+func enter() {
+    depth = depth + 1
+}
+
+func leave() {
+    depth = depth - 1
+}
+
+func learn_a_site(name: String, tag: String) {
+    fallback depth == 0
+    sites.append(name)
+    site_types.append(tag)
+}
+
+# ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
+func learn_a_local(name: String, value: SpiteCompiler.Expression?) {
+    fallback value
+    if local_names.contains(name) or depth > 0 {
+        unfollowed.append(name)
+        return
+    }
+    var printer = Printers.Spite.ExpressionPrinter(value)
+    var printed = printer.text()
+    local_names.append(name)
+    local_texts.append("var {name} = {printed}")
+    local_values.append(value)
+}
+
+func forget_a_local(target: SpiteCompiler.Expression?) {
+    fallback target
+    fallback target.class == AbstractSyntaxTree.Shapes.Expressions.IdentifierExpression
+    unfollowed.append(target.name)
+}
+
+# ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
+func takes(name: String, attribute: String, value: SpiteCompiler.Expression): Boolean {
+    fallback sites.contains(name) and attribute != "parent"
+    var reads = List<String>()
+    var definitions = List<String>()
+    var follows = gathered(value, reads, definitions)
+    fallback follows and not reads.is_empty()
+    var printer = Printers.Spite.ExpressionPrinter(value)
+    var printed = printer.text()
+    var index = pieces.count()
+    var lines = List<String>()
+    lines.append("func _live_{index}() \{")
+    lines.append("    fallback _live_{name}")
+    var place = 0
+    while place < definitions.count() {
+        var definition = definitions[place]
+        lines.append("    {definition}")
+        place = place + 1
+    }
+    lines.append("    _live_{name}.{attribute} = {printed}")
+    lines.append("}")
+    var text = lines.join("\n")
+    pieces.append(text)
+    place = 0
+    while place < reads.count() {
+        var read = reads[place]
+        piece_reads.append(read)
+        piece_owners.append(index)
+        place = place + 1
+    }
+    return true
+}
+
+func needs_a_handle(name: String): Boolean {
+    fallback not handled.contains(name)
+    handled.append(name)
+    return true
+}
+
+func gathered(value: SpiteCompiler.Expression?, reads: List<String>, definitions: List<String>): Boolean {
+    var mentioned = List<String>()
+    kept.mentions_of(value, mentioned)
+    var follows = true
+    var index = 0
+    while index < mentioned.count() {
+        var name = mentioned[index]
+        if watched.contains(name) and not reads.contains(name) {
+            reads.append(name)
+        }
+        var place = local_names.index_of(name)
+        if unfollowed.contains(name) {
+            follows = false
+        } else if place {
+            var definition = local_texts[place]
+            crash definition
+            var local_value = local_values[place]
+            if not gathered(local_value, reads, definitions) {
+                follows = false
+            }
+            if not definitions.contains(definition) {
+                definitions.append(definition)
+            }
+        }
+        index = index + 1
+    }
+    return follows
+}
+
+# ../../../spite_documentation/markup.md#a-brace-runs-again-when-what-it-reads-is-written
+func add_the_members() {
+    fallback not pieces.is_empty()
+    if kept.next_line == 0 {
+        kept.next_line = kept.last_line() + 1
+    }
+    var lines = List<String>()
+    var index = 0
+    while index < handled.count() {
+        var name = handled[index]
+        var place = sites.index_of(name)
+        crash place
+        var tag = site_types[place]
+        crash tag
+        lines.append("var _live_{name}: {tag}? = null")
+        index = index + 1
+    }
+    pieces.each(lines.append)
+    add_the_setters(lines)
+    var text = lines.join("\n")
+    var made = kept.parsed_declarations(text, kept.next_line)
+    made.each(kept.add_a_declaration)
+    add_the_written_calls()
+}
+
+func add_the_setters(lines: List<String>) {
+    var index = 0
+    while index < watched.count() {
+        var name = watched[index]
+        var written = watched_types[index]
+        crash written
+        var setter = kept.setter_of(name)
+        var calls = calls_of(name)
+        if not calls.is_empty() and not written_setters.contains(setter) {
+            lines.append("func {setter}(value: {written}) \{")
+            lines.append("    attributes[\"{name}\"].value = value")
+            calls.each(lines.append)
+            lines.append("}")
+        }
+        index = index + 1
+    }
+}
+
+func calls_of(name: String): List<String> {
+    var calls = List<String>()
+    var index = 0
+    while index < piece_reads.count() {
+        var read = piece_reads[index]
+        var owner = piece_owners[index]
+        crash owner
+        if read == name {
+            calls.append("    _live_{owner}()")
+        }
+        index = index + 1
+    }
+    return calls
+}
+
+func add_the_written_calls() {
+    var index = 0
+    while index < watched.count() {
+        var name = watched[index]
+        var setter = kept.setter_of(name)
+        if written_setters.contains(setter) {
+            call_from_a_written_setter(setter, name)
+        }
+        index = index + 1
+    }
+}
+
+func call_from_a_written_setter(setter: String, name: String) {
+    var calls = calls_of(name)
+    fallback not calls.is_empty()
+    var index = 0
+    while index < file.declarations.count() {
+        var declaration = file.declarations[index]
+        append_the_calls(declaration, setter, calls)
+        index = index + 1
+    }
+}
+
+func append_the_calls(declaration: SpiteCompiler.Declaration, setter: String, calls: List<String>) {
+    fallback declaration.class == AbstractSyntaxTree.Shapes.Declarations.FunctionDeclaration
+    fallback declaration.name == setter and declaration.body
+    var place = 0
+    while place < calls.count() {
+        var call = calls[place]
+        var written = call.trim()
+        var called = kept.parsed_expression(written, declaration.line)
+        var statement = AbstractSyntaxTree.Shapes.Statements.ExpressionStatement(called)
+        statement.line = declaration.line
+        declaration.body.statements.append(statement)
+        place = place + 1
+    }
+}
