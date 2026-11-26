@@ -3253,11 +3253,6 @@ Some walks stop at a size, and past it leave the code as written, so a budget co
 - `vector_loops/decimal_translating.spite`: finding what a decimal holds before a loop stops after 400 blocks
   (`_most_blocks_walked`), and the total then keeps the loop's order. The walk ends without it too.
 
-- `LoweredProgram.most_in_flight_per_site`: a call a frame starts as a state machine of its own
-  ([a wait in a frame does not hold the frame](../spite_documentation/concurrency.md#a-wait-in-a-frame-does-not-hold-the-frame))
-  keeps at most 8 unfinished per call site, in a table laid out while compiling (9 entries a site); one more waits
-  where it is written for the oldest of its site, as the call as written waits for itself, so no call is dropped
-  and no memory grows while the program runs (#601). It is not a round limit: nothing settles there.
 - `compile_time_evaluation`: the 64 copies for known arguments (`most_clones`) and 64 split copies (`most_splits`),
   [above](#what-the-evaluation-while-compiling-stops-at).
 
@@ -4663,8 +4658,10 @@ call.
 
 The scheduler, the handle's functions and the table of calls in a row are low functions the compiler writes,
 only when the program makes a `Concurrent` or a `Parallel`; a program that makes neither carries none of them,
-not even an import. The table that bounds calls in a row (eight unfinished per site) is sized while compiling,
-nine slots for each site the program has plus one, so it never grows; a program without such a site has no table.
+not even an import. The table of calls a frame started and has not seen finish holds no fixed number: it starts
+empty, grows by doubling when a call is started and every slot holds an unfinished one, and each time a site is
+reached the finished calls are let go and the rest moved down in one pass, so a frame that starts a one-second
+fetch each frame at 60 frames a second keeps about 60 (#617). A program without such a site has no table.
 A thread's loop is found by its id: the program's first thread compares one word, and only another thread takes
 the lock that guards the list of loops.
 
